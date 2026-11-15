@@ -3,6 +3,7 @@
 
 #include "jvm.h"
 #include <stdint.h>
+#include <CoreGraphics/CoreGraphics.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -13,6 +14,7 @@ extern "C" {
 #define J2ME_UI_LIST_SELECT      11
 #define J2ME_UI_ALERT_DISMISSED  12
 
+CGImageRef _Nullable j2me_ui_copy_list_icon(int index) CF_RETURNS_RETAINED;
 int j2me_ui_get_choice_count(int index);
 const char *j2me_ui_get_choice_option(int index, int option);
 int j2me_ui_get_form_item_param2(int index);

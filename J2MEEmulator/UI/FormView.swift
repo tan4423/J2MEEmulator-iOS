@@ -15,6 +15,7 @@ class FormView: UIView {
     private let titleLabel = UILabel()
     private var commandButtons: [UIButton] = []
     private let commandBar = UIStackView()
+    private let extraCommands = UIButton(type: .system)
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -113,11 +114,21 @@ class FormView: UIView {
 
         // Commands
         let cmdCount = j2me_ui_get_command_count()
+        var overflow: [UIAction] = []
         for i in 0..<cmdCount {
             let cmdLabel = String(cString: j2me_ui_get_command_label(Int32(i)))
             let cmdId = j2me_ui_get_command_id(Int32(i))
 
+            let keepVisible = cmdCount <= 2 || cmdLabel == "Lưu" || cmdLabel == "Quay lại"
+            if !keepVisible {
+                overflow.append(UIAction(title: cmdLabel) { [weak self] _ in
+                    self?.sendFormCommand(cmdId)
+                })
+                continue
+            }
             let btn = UIButton(type: .system)
+            btn.titleLabel?.adjustsFontSizeToFitWidth = true
+            btn.titleLabel?.minimumScaleFactor = 0.7
             btn.setTitle(cmdLabel, for: .normal)
             btn.titleLabel?.font = .boldSystemFont(ofSize: 16)
             btn.tag = Int(cmdId)
@@ -127,6 +138,12 @@ class FormView: UIView {
             btn.addTarget(self, action: #selector(commandTapped(_:)), for: .touchUpInside)
             commandBar.addArrangedSubview(btn)
             commandButtons.append(btn)
+        }
+        extraCommands.menu = UIMenu(children: overflow)
+        if !overflow.isEmpty {
+            extraCommands.setTitle("Thêm…", for: .normal)
+            extraCommands.showsMenuAsPrimaryAction = true
+            commandBar.addArrangedSubview(extraCommands)
         }
     }
 
@@ -226,6 +243,10 @@ class FormView: UIView {
     }
 
     @objc private func commandTapped(_ sender: UIButton) {
+        sendFormCommand(Int32(sender.tag))
+    }
+
+    private func sendFormCommand(_ cmdId: Int32) {
         endEditing(true)
         for field in editableFields where field.isEnabled {
             let limit = max(0, Int(j2me_ui_get_form_item_param1(Int32(field.tag))))
@@ -240,7 +261,6 @@ class FormView: UIView {
                 j2me_ui_stage_text(Int32(index), p.baseAddress, Int32(p.count))
             }
         }
-        let cmdId = Int32(sender.tag)
         j2me_input_post_key(Int32(J2ME_UI_COMMAND_ACTION), cmdId)
     }
 
@@ -255,6 +275,7 @@ class J2MEListView: UIView, UITableViewDataSource, UITableViewDelegate {
     private let titleLabel = UILabel()
     private let tableView = UITableView()
     private var items: [String] = []
+    private var icons: [UIImage?] = []
     private var selectedRow: Int?
     private let actionsButton = UIButton(type: .system)
     private let launchButton = UIButton(type: .system)
@@ -310,9 +331,11 @@ class J2MEListView: UIView, UITableViewDataSource, UITableViewDelegate {
         titleLabel.text = String(cString: j2me_ui_get_form_title())
 
         items.removeAll()
+        icons.removeAll()
         let count = j2me_ui_get_list_item_count()
         for i in 0..<count {
             items.append(String(cString: j2me_ui_get_list_item(Int32(i))))
+            icons.append(j2me_ui_copy_list_icon(Int32(i)).map { UIImage(cgImage: $0) })
         }
         tableView.reloadData()
 
@@ -350,6 +373,8 @@ class J2MEListView: UIView, UITableViewDataSource, UITableViewDelegate {
         let cell = tableView.dequeueReusableCell(withIdentifier: "cell") ?? UITableViewCell(style: .default, reuseIdentifier: "cell")
         var content = cell.defaultContentConfiguration()
         content.text = items[indexPath.row]
+        content.image = icons[indexPath.row]
+        content.imageProperties.maximumSize = CGSize(width: 48, height: 48)
         cell.contentConfiguration = content
         return cell
     }

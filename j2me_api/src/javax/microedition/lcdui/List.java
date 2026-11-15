@@ -66,7 +66,13 @@ public class List extends Screen implements Choice {
     public void showNative() {
         NativeBridge.formBegin(getTitle(), 1); // type 1 = list
         NativeBridge.setListType(listType);
-        for (String s : strings) NativeBridge.listAddItem(s);
+        for (int i = 0; i < strings.size(); i++) {
+            NativeBridge.listAddItem(strings.get(i));
+            Image icon = images.get(i);
+            if (i < 64 && icon != null && icon.nativeHandle != 0) {
+                NativeBridge.listSetLastIcon(icon.nativeHandle);
+            }
+        }
         ArrayList<Command> cmds = getCommands();
         for (int i = 0; i < cmds.size(); i++) {
             Command c = cmds.get(i);

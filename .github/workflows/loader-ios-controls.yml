@@ -1,7 +1,7 @@
-name: J2ME Treo X12 launcher test
+name: J2ME Treo X12 icons, menus and dimmed AFK
 on:
   push:
-    branches: [loader-ios-x12-no-afk]
+    branches: [loader-ios-x12-ui-eco]
   workflow_dispatch:
 
 permissions:
@@ -104,9 +104,9 @@ jobs:
           staging="$(mktemp -d)"
           mkdir "$staging/Payload"
           ditto "${apps[0]}" "$staging/Payload/$(basename "${apps[0]}")"
-          (cd "$staging" && /usr/bin/zip -qry "$GITHUB_WORKSPACE/J2ME-Treo-x12-no-afk-unsigned.ipa" Payload)
+          (cd "$staging" && /usr/bin/zip -qry "$GITHUB_WORKSPACE/J2ME-Treo-x12-ui-eco-unsigned.ipa" Payload)
       - uses: actions/upload-artifact@v4
         with:
-          name: J2ME-Treo-x12-no-afk-unsigned
-          path: J2ME-Treo-x12-no-afk-unsigned.ipa
+          name: J2ME-Treo-x12-ui-eco-unsigned
+          path: J2ME-Treo-x12-ui-eco-unsigned.ipa
           if-no-files-found: error

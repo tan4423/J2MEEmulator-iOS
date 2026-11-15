@@ -366,6 +366,14 @@ static s32 n_destroyContext(Runtime *runtime, JClass *clazz) {
     return RUNTIME_STATUS_NORMAL;
 }
 
+CGImageRef j2me_render_copy_image(int64_t handle) {
+    RenderImage *img = img_acquire(handle);
+    if (!img) return NULL;
+    CGImageRef image = CGBitmapContextCreateImage(img->ctx);
+    img_release(img);
+    return image;
+}
+
 static s32 n_flushToScreen(Runtime *runtime, JClass *clazz) {
     process_dead_shells();
 

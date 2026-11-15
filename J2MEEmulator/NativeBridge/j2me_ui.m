@@ -8,6 +8,7 @@
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
 #include "j2me_ui.h"
+#include "j2me_render.h"
 #include "j2me_input.h"
 #include "jvm.h"
 #include "jvm_util.h"
@@ -56,6 +57,14 @@ static int g_form_type = 0; // 0=form, 1=list, 2=alert, 3=textbox
 // List items
 static char g_list_items[MAX_FORM_ITEMS][256];
 static int g_list_item_count = 0;
+static NSMutableDictionary<NSNumber *, id> *g_list_icons;
+
+CGImageRef j2me_ui_copy_list_icon(int index) {
+    @synchronized ([NSMutableDictionary class]) {
+        id value = g_list_icons[@(index)];
+        return value ? (CGImageRef)CFBridgingRetain(value) : NULL;
+    }
+}
 static int g_list_type = 0; // IMPLICIT=3, EXCLUSIVE=1, MULTIPLE=2
 
 // Alert
@@ -136,6 +145,7 @@ static s32 n_formBegin(Runtime *runtime, JClass *clazz) {
     g_form_item_count = 0;
     g_form_command_count = 0;
     g_list_item_count = 0;
+    @synchronized ([NSMutableDictionary class]) { [g_list_icons removeAllObjects]; }
     g_form_type = type;
 
     if (jtitle) {
@@ -289,6 +299,20 @@ static s32 n_showCanvas(Runtime *runtime, JClass *clazz) {
     return RUNTIME_STATUS_NORMAL;
 }
 
+static s32 n_listSetLastIcon(Runtime *runtime, JClass *clazz) {
+    if (g_list_item_count <= 0) return RUNTIME_STATUS_NORMAL;
+    JniEnv *env = runtime->jnienv;
+    s64 handle = env->localvar_getLong_2slot(runtime->localvar, 0);
+    CGImageRef icon = j2me_render_copy_image(handle);
+    if (icon) {
+        @synchronized ([NSMutableDictionary class]) {
+            if (!g_list_icons) g_list_icons = [NSMutableDictionary dictionary];
+            g_list_icons[@(g_list_item_count - 1)] = CFBridgingRelease(icon);
+        }
+    }
+    return RUNTIME_STATUS_NORMAL;
+}
+
 static s32 n_listAddItem(Runtime *runtime, JClass *clazz) {
     JniEnv *env = runtime->jnienv;
     Instance *jtext = env->localvar_getRefer(runtime->localvar, 0);
@@ -364,6 +388,7 @@ static java_native_method j2me_ui_methods[] = {
     {CLS, "formAddCommand",   "(Ljava/lang/String;III)V",                        n_formAddCommand},
     {CLS, "formShow",         "()V",                                             n_formShow},
     {CLS, "showCanvas",       "()V",                                             n_showCanvas},
+    {CLS, "listSetLastIcon", "(J)V", n_listSetLastIcon},
     {CLS, "listAddItem",      "(Ljava/lang/String;)V",                           n_listAddItem},
     {CLS, "setListType",      "(I)V",                                            n_setListType},
     {CLS, "setAlertText",     "(Ljava/lang/String;I)V",                          n_setAlertText},

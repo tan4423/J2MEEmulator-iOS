@@ -52,6 +52,8 @@ class GameViewController: UIViewController {
     private var portraitPadBottomPins: [NSLayoutConstraint] = []
     private let screenMenu = UIButton(type: .system)
     private var blackout: UIButton?
+    private var blackoutScreen: UIScreen?
+    private var previousBrightness: CGFloat?
     private var heldDirections: Set<Int32> = []
     private var directionTimers: [Int32: Timer] = [:]
 
@@ -470,7 +472,7 @@ class GameViewController: UIViewController {
             UIAction(title: "Phím điều hướng", state: padMode == .directions ? .on : .off) { [weak self] _ in self?.setPadMode(.directions) },
             UIAction(title: "Phím số", state: padMode == .numbers ? .on : .off) { [weak self] _ in self?.setPadMode(.numbers) },
             UIAction(title: "Ẩn phím · màn hình lớn", state: padMode == .hidden ? .on : .off) { [weak self] _ in self?.setPadMode(.hidden) },
-            UIAction(title: "Treo với màn hình đen") { [weak self] _ in self?.showBlackout() }
+            UIAction(title: "Treo · màn hình đen, giảm sáng") { [weak self] _ in self?.showBlackout() }
         ])
     }
 
@@ -493,9 +495,21 @@ class GameViewController: UIViewController {
             cover.trailingAnchor.constraint(equalTo: view.trailingAnchor)
         ])
         blackout = cover
+        if let screen = view.window?.windowScene?.screen {
+            blackoutScreen = screen
+            previousBrightness = screen.brightness
+            screen.brightness = 0
+        }
+        NotificationCenter.default.addObserver(self, selector: #selector(hideBlackout), name: UIApplication.willResignActiveNotification, object: nil)
     }
 
     @objc private func hideBlackout() {
+        NotificationCenter.default.removeObserver(self, name: UIApplication.willResignActiveNotification, object: nil)
+        if let screen = blackoutScreen, let brightness = previousBrightness, screen.brightness == 0 {
+            screen.brightness = brightness
+        }
+        blackoutScreen = nil
+        previousBrightness = nil
         blackout?.removeFromSuperview()
         blackout = nil
     }
@@ -544,6 +558,7 @@ class GameViewController: UIViewController {
             )
             DispatchQueue.main.async { [weak self] in
                 if let self {
+                    self.hideBlackout()
                     for code in Array(self.heldDirections) { self.releaseDirection(code) }
                 }
                 if let failure {
