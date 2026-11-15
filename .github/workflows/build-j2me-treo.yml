@@ -1,4 +1,4 @@
-name: Build J2ME Treo v2
+name: Build J2ME Treo v3
 on:
   workflow_dispatch:
 
@@ -14,10 +14,6 @@ jobs:
         with:
           submodules: recursive
           persist-credentials: false
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '17'
       - name: Compile foreground keep-awake module
         run: |
           cat > "$RUNNER_TEMP/J2METreo.m" <<'OBJC'
@@ -50,35 +46,22 @@ jobs:
         run: |
           xcodebuild -version
           xcrun --sdk iphoneos --show-sdk-version
-          "$JAVA_HOME/bin/javac" -version
-      - name: Find Xcode project and prepare Java resources
+      - name: Verify bundled Java resources
         shell: bash
         run: |
-          export PATH="$JAVA_HOME/bin:$PATH"
-          if [[ -d J2MEEmulator.xcodeproj ]]; then
-            project=J2MEEmulator.xcodeproj
-          elif [[ -d J2MEEmulator/J2MEEmulator.xcodeproj ]]; then
-            project=J2MEEmulator/J2MEEmulator.xcodeproj
-          else
-            echo '::error::J2MEEmulator.xcodeproj not found in the checkout'
+          project=J2MEEmulator.xcodeproj
+          if [[ ! -f "$project/project.pbxproj" ]]; then
+            echo "::error::Missing $project/project.pbxproj"
             exit 1
           fi
+          for jar in minijvm_rt.jar j2me_api.jar; do
+            path="J2MEEmulator/Resources/jars/$jar"
+            if [[ ! -s "$path" ]] || ! /usr/bin/unzip -tq "$path"; then
+              echo "::error::Missing or invalid bundled JAR: $path"
+              exit 1
+            fi
+          done
           printf 'J2ME_PROJECT=%s\n' "$project" >> "$GITHUB_ENV"
-          echo 'Java build scripts and bundled JARs in this checkout:'
-          find . -type f \( -name '*.jar' -o -name 'build_jar.sh' -o -path '*/j2me_api/build.sh' \) -not -path './.git/*' -print
-          runtime_script="$(find . -type f -path '*/binary/build_jar.sh' -not -path './.git/*' -print | sed -n '1p')"
-          if [[ -n "$runtime_script" ]]; then
-            (cd "$(dirname "$runtime_script")" && bash ./build_jar.sh)
-          else
-            echo '::notice::No miniJVM build script in checkout; trying the runtime resources referenced by the Xcode project.'
-          fi
-          if [[ -f j2me_api/build.sh ]]; then
-            (cd j2me_api && bash ./build.sh)
-          elif [[ -f J2MEEmulator/j2me_api/build.sh ]]; then
-            (cd J2MEEmulator/j2me_api && bash ./build.sh)
-          else
-            echo '::notice::No J2ME API build script in checkout; trying the resources referenced by the Xcode project.'
-          fi
       - name: Build iPhone app without signing
         shell: bash
         run: |
