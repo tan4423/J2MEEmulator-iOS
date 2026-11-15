@@ -49,6 +49,7 @@ class GameViewController: UIViewController {
     private var directionalPad: UIStackView?
     private var portraitPanel: UIView?
     private var portraitControlsHeight: NSLayoutConstraint?
+    private var portraitPadBottomPins: [NSLayoutConstraint] = []
     private let screenMenu = UIButton(type: .system)
     private var blackout: UIButton?
     private var heldDirections: Set<Int32> = []
@@ -283,12 +284,11 @@ class GameViewController: UIViewController {
             for padView in [numpad as UIView, dpad as UIView] {
                 // Optional bottom pin lets the hidden panel collapse without conflicting constraints.
                 let bottom = padView.bottomAnchor.constraint(equalTo: panel.bottomAnchor, constant: -6)
-                bottom.priority = .defaultHigh
+                portraitPadBottomPins.append(bottom)
                 NSLayoutConstraint.activate([
                     padView.topAnchor.constraint(equalTo: left.bottomAnchor, constant: 4),
                     padView.centerXAnchor.constraint(equalTo: panel.centerXAnchor),
-                    padView.widthAnchor.constraint(equalTo: panel.widthAnchor, multiplier: 0.76),
-                    bottom
+                    padView.widthAnchor.constraint(equalTo: panel.widthAnchor, multiplier: 0.76)
                 ])
             }
             for overlay in [formView as UIView, listView as UIView] {
@@ -465,6 +465,7 @@ class GameViewController: UIViewController {
         directionalPad?.isHidden = padMode != .directions
         numpadView?.isHidden = padMode != .numbers
         portraitControlsHeight?.constant = padIsVisible ? 198 : 0
+        for pin in portraitPadBottomPins { pin.isActive = padIsVisible }
         screenMenu.menu = UIMenu(children: [
             UIAction(title: "Phím điều hướng", state: padMode == .directions ? .on : .off) { [weak self] _ in self?.setPadMode(.directions) },
             UIAction(title: "Phím số", state: padMode == .numbers ? .on : .off) { [weak self] _ in self?.setPadMode(.numbers) },
@@ -542,6 +543,9 @@ class GameViewController: UIViewController {
                 height: height, scale: scale, fps: fps
             )
             DispatchQueue.main.async { [weak self] in
+                if let self {
+                    for code in Array(self.heldDirections) { self.releaseDirection(code) }
+                }
                 if let failure {
                     self?.showLaunchFailure(failure)
                 } else {
