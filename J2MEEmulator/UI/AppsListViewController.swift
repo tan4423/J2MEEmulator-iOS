@@ -462,28 +462,7 @@ class AppsListViewController: UIViewController,
                                          render3dScale: render3dScale, fpsLimit: fps)
         gameVC.modalPresentationStyle = .fullScreen
 
-        let itemIndex = indexPath.item
-        let options = UIViewController.Transition.ZoomOptions()
-        options.interactiveDismissShouldBegin = { _ in false }
-        // Zoom lands on the placeholder icon centered in the game screen
-        options.alignmentRectProvider = { context in
-            guard let gvc = context.zoomedViewController as? GameViewController,
-                  let placeholder = gvc.placeholderIconView else {
-                return .null
-            }
-            return placeholder.frame
-        }
-
-        gameVC.preferredTransition = .zoom(options: options) {
-            [weak self] _ in
-            guard let self,
-                  let cell = self.springboardCollectionView.cellForItem(
-                      at: IndexPath(item: itemIndex, section: 0)) as? SpringboardCell else {
-                return nil
-            }
-            return cell.iconView
-        }
-
-        present(gameVC, animated: true)
+        // Do not couple the game's orientation change to the springboard zoom animation.
+        present(gameVC, animated: false)
     }
 }
