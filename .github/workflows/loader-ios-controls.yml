@@ -1,7 +1,7 @@
-name: J2ME Treo X12 low-power foreground AFK
+name: J2ME Treo X12 zero-presentation foreground AFK
 on:
   push:
-    branches: [loader-ios-x12-afk-1fps]
+    branches: [loader-ios-x12-afk-zero]
   workflow_dispatch:
 
 permissions:
@@ -104,9 +104,9 @@ jobs:
           staging="$(mktemp -d)"
           mkdir "$staging/Payload"
           ditto "${apps[0]}" "$staging/Payload/$(basename "${apps[0]}")"
-          (cd "$staging" && /usr/bin/zip -qry "$GITHUB_WORKSPACE/J2ME-Treo-x12-afk-1fps-unsigned.ipa" Payload)
+          (cd "$staging" && /usr/bin/zip -qry "$GITHUB_WORKSPACE/J2ME-Treo-x12-afk-zero-unsigned.ipa" Payload)
       - uses: actions/upload-artifact@v4
         with:
-          name: J2ME-Treo-x12-afk-1fps-unsigned
-          path: J2ME-Treo-x12-afk-1fps-unsigned.ipa
+          name: J2ME-Treo-x12-afk-zero-unsigned
+          path: J2ME-Treo-x12-afk-zero-unsigned.ipa
           if-no-files-found: error

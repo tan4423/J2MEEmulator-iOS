@@ -19,7 +19,8 @@ typedef void (*j2me_flush_callback)(void *cgImage, int width, int height);
 
 /// Set the callback for receiving rendered frames.
 void j2me_render_set_flush_callback(j2me_flush_callback callback);
-void j2me_render_set_afk_frame_limit(int enabled);
+void j2me_render_set_afk_suspended(int enabled);
+int j2me_render_is_afk_suspended(void);
 
 CGImageRef _Nullable j2me_render_copy_image(int64_t handle) CF_RETURNS_RETAINED;
 

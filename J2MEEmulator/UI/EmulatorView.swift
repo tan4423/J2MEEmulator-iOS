@@ -71,6 +71,7 @@ class EmulatorView: UIView {
         guard latestFrame.submit(cgImage) else { return }
         DispatchQueue.main.async { [weak self] in
             guard let self, let cgImage = self.latestFrame.take() else { return }
+            guard j2me_render_is_afk_suspended() == 0 else { return }
             self.layer.contents = cgImage
             self.onFrame?(cgImage)
             if let cb = self.onFirstFrame {

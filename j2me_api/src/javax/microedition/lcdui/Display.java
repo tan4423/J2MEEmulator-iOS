@@ -227,18 +227,26 @@ public class Display {
                 }
             }
 
+            boolean refreshAfterAfk = NativeBridge.takeAfkRefresh();
             // 3. Repaint if needed (Canvas only)
             if (current instanceof Canvas) {
                 Canvas canvas = (Canvas) current;
                 if (canvas.repaintPending) {
                     canvas.doPaint();
+                } else if (refreshAfterAfk) {
+                    canvas.refreshAfterAfk();
                 }
             }
 
             // Sleep in short intervals so we react quickly to destroyRequested
             try {
-                for (int i = 0; i < 4 && !MIDlet.isDestroyRequested(); i++) {
-                    Thread.sleep(4);
+                if (NativeBridge.afkSuspended()) {
+                    // Same nominal cadence, fewer loader thread wakeups.
+                    if (!MIDlet.isDestroyRequested()) Thread.sleep(16);
+                } else {
+                    for (int i = 0; i < 4 && !MIDlet.isDestroyRequested(); i++) {
+                        Thread.sleep(4);
+                    }
                 }
             } catch (InterruptedException e) {
                 break;

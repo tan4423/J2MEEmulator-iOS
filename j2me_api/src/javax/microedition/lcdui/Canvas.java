@@ -199,6 +199,15 @@ public abstract class Canvas extends Displayable {
         }
     }
 
+    // Publish the already-rendered buffer even if the game is on a static screen.
+    void refreshAfterAfk() {
+        synchronized (paintLock) {
+            if (nativeContext != 0 && Display.isCurrentCanvas(this)) {
+                NativeBridge.flushToScreen(nativeContext);
+            }
+        }
+    }
+
     void destroyContext() {
         synchronized (paintLock) {
             if (nativeContext != 0) {

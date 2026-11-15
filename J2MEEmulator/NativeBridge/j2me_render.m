@@ -16,7 +16,6 @@
 #include "jvm_util.h"
 #include <stdio.h>
 #include <stdatomic.h>
-#include <time.h>
 
 // ============================================================
 // Internal structures
@@ -58,22 +57,34 @@ typedef struct RenderImage {
 } RenderImage;
 
 static j2me_flush_callback g_flush_callback = NULL;
-static atomic_int g_afk_frame_limit = 0;
-static _Atomic uint64_t g_afk_next_frame_ns = 0;
+static atomic_int g_afk_suspended = 0;
+static atomic_int g_afk_refresh = 0;
+static void stop_afk_haptics(void);
 
-void j2me_render_set_afk_frame_limit(int enabled) {
-    atomic_store(&g_afk_next_frame_ns, 0);
-    atomic_store(&g_afk_frame_limit, enabled != 0);
+int j2me_render_is_afk_suspended(void) {
+    return atomic_load_explicit(&g_afk_suspended, memory_order_relaxed);
 }
 
-static int allow_screen_snapshot(void) {
-    if (!atomic_load_explicit(&g_afk_frame_limit, memory_order_relaxed)) return 1;
-    const uint64_t now = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
-    uint64_t next = atomic_load_explicit(&g_afk_next_frame_ns, memory_order_relaxed);
-    if (now < next) return 0;
-    return atomic_compare_exchange_strong_explicit(&g_afk_next_frame_ns, &next,
-            now + UINT64_C(1000000000), memory_order_relaxed, memory_order_relaxed);
+void j2me_render_set_afk_suspended(int enabled) {
+    int previous = atomic_exchange(&g_afk_suspended, enabled != 0);
+    if (enabled) {
+        atomic_store(&g_afk_refresh, 0);
+        stop_afk_haptics();
+    } else if (previous) {
+        atomic_store(&g_afk_refresh, 1);
+    }
 }
+
+static s32 n_afkSuspended(Runtime *runtime, JClass *clazz) {
+    push_int(runtime->stack, j2me_render_is_afk_suspended());
+    return RUNTIME_STATUS_NORMAL;
+}
+
+static s32 n_takeAfkRefresh(Runtime *runtime, JClass *clazz) {
+    push_int(runtime->stack, atomic_load(&g_afk_refresh) ? atomic_exchange(&g_afk_refresh, 0) : 0);
+    return RUNTIME_STATUS_NORMAL;
+}
+
 static CGColorSpaceRef g_colorSpace = NULL;
 
 // Set by jvm_bridge before native cleanup. All acquire functions
@@ -393,7 +404,7 @@ CGImageRef j2me_render_copy_image(int64_t handle) {
 
 static s32 n_flushToScreen(Runtime *runtime, JClass *clazz) {
     process_dead_shells();
-    if (!allow_screen_snapshot()) return RUNTIME_STATUS_NORMAL;
+    if (j2me_render_is_afk_suspended()) return RUNTIME_STATUS_NORMAL;
 
     JniEnv *env = runtime->jnienv;
     s64 handle = env->localvar_getLong_2slot(runtime->localvar, 0);
@@ -1150,7 +1161,18 @@ static void ensureHapticEngine(void) API_AVAILABLE(ios(13.0)) {
     }
 }
 
+// Called by the AFK toggle on UIKit's main thread.
+static void stop_afk_haptics(void) {
+    if (@available(iOS 13.0, *)) {
+        if (g_hapticPlayer) {
+            [g_hapticPlayer stopAtTime:0 error:nil];
+            g_hapticPlayer = nil;
+        }
+    }
+}
+
 static s32 n_vibrate(Runtime *runtime, JClass *clazz) {
+    if (j2me_render_is_afk_suspended()) return RUNTIME_STATUS_NORMAL;
     s32 durationMs = runtime->jnienv->localvar_getInt(runtime->localvar, 0);
     dispatch_async(dispatch_get_main_queue(), ^{
         if (@available(iOS 13.0, *)) {
@@ -1159,7 +1181,7 @@ static s32 n_vibrate(Runtime *runtime, JClass *clazz) {
                 [g_hapticPlayer stopAtTime:0 error:&err];
                 g_hapticPlayer = nil;
             }
-            if (durationMs <= 0) return;
+            if (durationMs <= 0 || j2me_render_is_afk_suspended()) return;
 
             ensureHapticEngine();
             if (!g_hapticEngine) return;
@@ -1195,6 +1217,8 @@ static s32 n_vibrate(Runtime *runtime, JClass *clazz) {
 #define CLS "javax/microedition/lcdui/NativeBridge"
 
 static java_native_method j2me_render_methods[] = {
+    {CLS, "afkSuspended",     "()Z", n_afkSuspended},
+    {CLS, "takeAfkRefresh",   "()Z", n_takeAfkRefresh},
     // Context
     {CLS, "createContext",    "(II)J",                                   n_createContext},
     {CLS, "destroyContext",   "(J)V",                                    n_destroyContext},
