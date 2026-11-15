@@ -44,6 +44,15 @@ class GameViewController: UIViewController {
     // Controls — created based on layoutMode
     private var joystickView: JoystickView?
     private var numpadView: NumpadView?
+    private enum PadMode { case directions, numbers, hidden }
+    private var padMode: PadMode = .directions
+    private var directionalPad: UIStackView?
+    private var portraitPanel: UIView?
+    private var portraitControlsHeight: NSLayoutConstraint?
+    private let screenMenu = UIButton(type: .system)
+    private var blackout: UIButton?
+    private var heldDirections: Set<Int32> = []
+    private var directionTimers: [Int32: Timer] = [:]
 
     init(jarPath: String, appName: String, appIcon: UIImage,
          canvasWidth: Int = 240, canvasHeight: Int = 320,
@@ -215,44 +224,83 @@ class GameViewController: UIViewController {
 
         if portrait {
             let safe = view.safeAreaLayoutGuide
-            let canvasAspect = emulatorView.widthAnchor.constraint(equalTo: emulatorView.heightAnchor, multiplier: canvasRatio)
-            let canvasHeight = emulatorView.heightAnchor.constraint(equalTo: safe.heightAnchor, multiplier: 0.49)
-            canvasHeight.priority = .defaultHigh
+            let panel = UIView()
+            portraitPanel = panel
+            panel.translatesAutoresizingMaskIntoConstraints = false
+            panel.backgroundColor = UIColor(white: 0.07, alpha: 1)
+            view.addSubview(panel)
+            let dpad = makeDirectionalPad()
+            directionalPad = dpad
+            for control in [numpad as UIView, dpad as UIView, lskButton, rskButton] {
+                panel.addSubview(control)
+                control.translatesAutoresizingMaskIntoConstraints = false
+            }
+            joystick.isHidden = true
+            glowContainer.isHidden = true
+            glowBlur.isHidden = true
+            emulatorView.layer.contentsGravity = .resizeAspect
+            emulatorView.clipsToBounds = true
+            screenMenu.translatesAutoresizingMaskIntoConstraints = false
+            screenMenu.setImage(UIImage(systemName: "ellipsis.circle"), for: .normal)
+            screenMenu.tintColor = .white
+            screenMenu.accessibilityLabel = "Tùy chọn game"
+            screenMenu.showsMenuAsPrimaryAction = true
+            view.addSubview(screenMenu)
+            let height = panel.heightAnchor.constraint(equalToConstant: 198)
+            height.priority = .defaultHigh
+            portraitControlsHeight = height
             NSLayoutConstraint.activate([
                 backButton.topAnchor.constraint(equalTo: safe.topAnchor, constant: 4),
                 backButton.leadingAnchor.constraint(equalTo: safe.leadingAnchor, constant: 8),
-                emulatorView.topAnchor.constraint(equalTo: backButton.bottomAnchor, constant: 6),
-                emulatorView.centerXAnchor.constraint(equalTo: safe.centerXAnchor),
-                emulatorView.widthAnchor.constraint(lessThanOrEqualTo: safe.widthAnchor, constant: -16),
-                canvasAspect, canvasHeight,
-                lskButton.leadingAnchor.constraint(equalTo: safe.leadingAnchor, constant: 12),
-                rskButton.trailingAnchor.constraint(equalTo: safe.trailingAnchor, constant: -12),
-                lskButton.topAnchor.constraint(equalTo: emulatorView.bottomAnchor, constant: 8),
-                rskButton.topAnchor.constraint(equalTo: lskButton.topAnchor),
-                lskButton.widthAnchor.constraint(equalToConstant: 68),
-                rskButton.widthAnchor.constraint(equalToConstant: 68),
-                lskButton.heightAnchor.constraint(equalToConstant: 38),
-                rskButton.heightAnchor.constraint(equalToConstant: 38),
-                joystick.leadingAnchor.constraint(equalTo: safe.leadingAnchor, constant: 12),
-                joystick.topAnchor.constraint(equalTo: lskButton.bottomAnchor, constant: 8),
-                joystick.widthAnchor.constraint(equalTo: safe.widthAnchor, multiplier: 0.37),
-                joystick.heightAnchor.constraint(equalTo: joystick.widthAnchor),
-                numpad.trailingAnchor.constraint(equalTo: safe.trailingAnchor, constant: -12),
-                numpad.topAnchor.constraint(equalTo: joystick.topAnchor),
-                numpad.widthAnchor.constraint(equalTo: safe.widthAnchor, multiplier: 0.43),
-                numpad.bottomAnchor.constraint(equalTo: safe.bottomAnchor, constant: -8),
-                numpad.heightAnchor.constraint(greaterThanOrEqualToConstant: 118),
+                backButton.heightAnchor.constraint(equalToConstant: 36),
+                screenMenu.topAnchor.constraint(equalTo: backButton.topAnchor),
+                screenMenu.trailingAnchor.constraint(equalTo: safe.trailingAnchor, constant: -8),
+                screenMenu.widthAnchor.constraint(equalToConstant: 44),
+                screenMenu.heightAnchor.constraint(equalToConstant: 36),
+                emulatorView.topAnchor.constraint(equalTo: backButton.bottomAnchor, constant: 4),
+                emulatorView.leadingAnchor.constraint(equalTo: safe.leadingAnchor),
+                emulatorView.trailingAnchor.constraint(equalTo: safe.trailingAnchor),
+                emulatorView.bottomAnchor.constraint(equalTo: panel.topAnchor),
+                panel.leadingAnchor.constraint(equalTo: safe.leadingAnchor),
+                panel.trailingAnchor.constraint(equalTo: safe.trailingAnchor),
+                panel.bottomAnchor.constraint(equalTo: safe.bottomAnchor),
+                height
             ])
-            glowContainer.isHidden = true
-            glowBlur.isHidden = true
-            for panel in [formView as UIView, listView as UIView] {
+            let left = lskButton
+            let right = rskButton
+            NSLayoutConstraint.activate([
+                left.leadingAnchor.constraint(equalTo: panel.leadingAnchor, constant: 8),
+                right.trailingAnchor.constraint(equalTo: panel.trailingAnchor, constant: -8),
+                left.topAnchor.constraint(equalTo: panel.topAnchor, constant: 4),
+                right.topAnchor.constraint(equalTo: left.topAnchor),
+                left.widthAnchor.constraint(equalToConstant: 54),
+                right.widthAnchor.constraint(equalToConstant: 54),
+                left.heightAnchor.constraint(equalToConstant: 30),
+                right.heightAnchor.constraint(equalToConstant: 30)
+            ])
+            left.setTitle("L", for: .normal)
+            right.setTitle("R", for: .normal)
+            for padView in [numpad as UIView, dpad as UIView] {
+                // Optional bottom pin lets the hidden panel collapse without conflicting constraints.
+                let bottom = padView.bottomAnchor.constraint(equalTo: panel.bottomAnchor, constant: -6)
+                bottom.priority = .defaultHigh
                 NSLayoutConstraint.activate([
-                    panel.topAnchor.constraint(equalTo: backButton.bottomAnchor),
-                    panel.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-                    panel.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-                    panel.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+                    padView.topAnchor.constraint(equalTo: left.bottomAnchor, constant: 4),
+                    padView.centerXAnchor.constraint(equalTo: panel.centerXAnchor),
+                    padView.widthAnchor.constraint(equalTo: panel.widthAnchor, multiplier: 0.76),
+                    bottom
                 ])
             }
+            for overlay in [formView as UIView, listView as UIView] {
+                NSLayoutConstraint.activate([
+                    overlay.topAnchor.constraint(equalTo: backButton.bottomAnchor),
+                    overlay.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+                    overlay.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+                    overlay.bottomAnchor.constraint(equalTo: view.bottomAnchor)
+                ])
+                view.bringSubviewToFront(overlay)
+            }
+            applyPadMode()
             return
         }
 
@@ -334,6 +382,121 @@ class GameViewController: UIViewController {
         view.bringSubviewToFront(formView)
         view.bringSubviewToFront(listView)
         view.bringSubviewToFront(backButton)
+    }
+
+    private func makeDirectionalPad() -> UIStackView {
+        // Nokia/MIDP direction and FIRE codes, also used by upstream J2ME Loader.
+        let rows: [[(String, Int)]] = [
+            [("", 0), ("↑", -1), ("", 0)],
+            [("←", -3), ("OK", -5), ("→", -4)],
+            [("", 0), ("↓", -2), ("", 0)]
+        ]
+        let stack = UIStackView()
+        stack.axis = .vertical
+        stack.distribution = .fillEqually
+        stack.spacing = 4
+        for keys in rows {
+            let row = UIStackView()
+            row.distribution = .fillEqually
+            row.spacing = 4
+            for (title, code) in keys {
+                if code == 0 {
+                    row.addArrangedSubview(UIView())
+                    continue
+                }
+                let button = UIButton(type: .system)
+                button.tag = code
+                button.setTitle(title, for: .normal)
+                button.titleLabel?.font = .systemFont(ofSize: 19, weight: .semibold)
+                button.setTitleColor(.white, for: .normal)
+                button.backgroundColor = UIColor(white: 0.17, alpha: 1)
+                button.layer.cornerRadius = 9
+                button.addTarget(self, action: #selector(directionDown(_:)), for: .touchDown)
+                button.addTarget(self, action: #selector(directionUp(_:)),
+                                 for: [.touchUpInside, .touchUpOutside, .touchCancel])
+                row.addArrangedSubview(button)
+            }
+            stack.addArrangedSubview(row)
+        }
+        return stack
+    }
+
+    @objc private func directionDown(_ sender: UIButton) {
+        let code = Int32(sender.tag)
+        guard heldDirections.insert(code).inserted else { return }
+        j2me_input_post_key(Int32(J2ME_INPUT_KEY_PRESSED), code)
+        if code != -5 {
+            let timer = Timer(fire: Date(timeIntervalSinceNow: 0.36), interval: 0.085,
+                              target: self, selector: #selector(repeatDirection(_:)),
+                              userInfo: code, repeats: true)
+            directionTimers[code] = timer
+            RunLoop.main.add(timer, forMode: .common)
+        }
+    }
+
+    @objc private func repeatDirection(_ timer: Timer) {
+        guard let code = timer.userInfo as? Int32, heldDirections.contains(code) else { return }
+        j2me_input_post_key(Int32(J2ME_INPUT_KEY_REPEATED), code)
+    }
+
+    @objc private func directionUp(_ sender: UIButton) {
+        releaseDirection(Int32(sender.tag))
+    }
+
+    private func releaseDirection(_ code: Int32) {
+        directionTimers.removeValue(forKey: code)?.invalidate()
+        if heldDirections.remove(code) != nil {
+            j2me_input_post_key(Int32(J2ME_INPUT_KEY_RELEASED), code)
+        }
+    }
+
+    private func setPadMode(_ mode: PadMode) {
+        for code in Array(heldDirections) { releaseDirection(code) }
+        padMode = mode
+        applyPadMode()
+    }
+
+    private func applyPadMode() {
+        guard let panel = portraitPanel else { return }
+        let canvasIsVisible = !emulatorView.isHidden
+        let padIsVisible = canvasIsVisible && padMode != .hidden
+        panel.isHidden = !padIsVisible
+        screenMenu.isHidden = !canvasIsVisible
+        directionalPad?.isHidden = padMode != .directions
+        numpadView?.isHidden = padMode != .numbers
+        portraitControlsHeight?.constant = padIsVisible ? 198 : 0
+        screenMenu.menu = UIMenu(children: [
+            UIAction(title: "Phím điều hướng", state: padMode == .directions ? .on : .off) { [weak self] _ in self?.setPadMode(.directions) },
+            UIAction(title: "Phím số", state: padMode == .numbers ? .on : .off) { [weak self] _ in self?.setPadMode(.numbers) },
+            UIAction(title: "Ẩn phím · màn hình lớn", state: padMode == .hidden ? .on : .off) { [weak self] _ in self?.setPadMode(.hidden) },
+            UIAction(title: "Treo với màn hình đen") { [weak self] _ in self?.showBlackout() }
+        ])
+    }
+
+    private func showBlackout() {
+        guard blackout == nil else { return }
+        for code in Array(heldDirections) { releaseDirection(code) }
+        let cover = UIButton(type: .custom)
+        cover.backgroundColor = .black
+        cover.setTitle("Chạm để hiện game", for: .normal)
+        cover.setTitleColor(UIColor(white: 0.36, alpha: 1), for: .normal)
+        cover.titleLabel?.font = .systemFont(ofSize: 14)
+        cover.accessibilityLabel = "Hiện lại game"
+        cover.translatesAutoresizingMaskIntoConstraints = false
+        cover.addTarget(self, action: #selector(hideBlackout), for: .touchUpInside)
+        view.addSubview(cover)
+        NSLayoutConstraint.activate([
+            cover.topAnchor.constraint(equalTo: view.topAnchor),
+            cover.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            cover.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            cover.trailingAnchor.constraint(equalTo: view.trailingAnchor)
+        ])
+        blackout = cover
+    }
+
+    @objc private func hideBlackout() {
+        blackout?.removeFromSuperview()
+        blackout = nil
     }
 
     // MARK: - Soft keys
@@ -429,6 +592,7 @@ class GameViewController: UIViewController {
 
     @objc private func backTapped() {
         backButton.isEnabled = false
+        for code in Array(heldDirections) { releaseDirection(code) }
         jvm_bridge_request_stop()
     }
 
@@ -438,11 +602,12 @@ class GameViewController: UIViewController {
 
     func showCanvasView() {
         emulatorView.isHidden = false
-        joystickView?.isHidden = false
+        joystickView?.isHidden = layoutMode == .portrait
         numpadView?.isHidden = false
         formView.isHidden = true
         listView.isHidden = true
-        numpadView?.updateCommands()
+        if layoutMode == .ngage { numpadView?.updateCommands() }
+        applyPadMode()
     }
 
     func showFormView() {
@@ -452,6 +617,8 @@ class GameViewController: UIViewController {
         joystickView?.isHidden = true
         numpadView?.isHidden = true
         listView.isHidden = true
+        for code in Array(heldDirections) { releaseDirection(code) }
+        applyPadMode()
     }
 
     func showListView() {
@@ -461,6 +628,8 @@ class GameViewController: UIViewController {
         joystickView?.isHidden = true
         numpadView?.isHidden = true
         formView.isHidden = true
+        for code in Array(heldDirections) { releaseDirection(code) }
+        applyPadMode()
     }
 
     func showAlert() {
