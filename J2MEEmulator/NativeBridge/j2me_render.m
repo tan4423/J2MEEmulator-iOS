@@ -16,6 +16,7 @@
 #include "jvm_util.h"
 #include <stdio.h>
 #include <stdatomic.h>
+#include <time.h>
 
 // ============================================================
 // Internal structures
@@ -57,6 +58,22 @@ typedef struct RenderImage {
 } RenderImage;
 
 static j2me_flush_callback g_flush_callback = NULL;
+static atomic_int g_afk_frame_limit = 0;
+static _Atomic uint64_t g_afk_next_frame_ns = 0;
+
+void j2me_render_set_afk_frame_limit(int enabled) {
+    atomic_store(&g_afk_next_frame_ns, 0);
+    atomic_store(&g_afk_frame_limit, enabled != 0);
+}
+
+static int allow_screen_snapshot(void) {
+    if (!atomic_load_explicit(&g_afk_frame_limit, memory_order_relaxed)) return 1;
+    const uint64_t now = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
+    uint64_t next = atomic_load_explicit(&g_afk_next_frame_ns, memory_order_relaxed);
+    if (now < next) return 0;
+    return atomic_compare_exchange_strong_explicit(&g_afk_next_frame_ns, &next,
+            now + UINT64_C(1000000000), memory_order_relaxed, memory_order_relaxed);
+}
 static CGColorSpaceRef g_colorSpace = NULL;
 
 // Set by jvm_bridge before native cleanup. All acquire functions
@@ -376,13 +393,14 @@ CGImageRef j2me_render_copy_image(int64_t handle) {
 
 static s32 n_flushToScreen(Runtime *runtime, JClass *clazz) {
     process_dead_shells();
+    if (!allow_screen_snapshot()) return RUNTIME_STATUS_NORMAL;
 
     JniEnv *env = runtime->jnienv;
     s64 handle = env->localvar_getLong_2slot(runtime->localvar, 0);
     RenderContext *rc = rc_acquire(handle);
     if (rc && g_flush_callback) {
         CGImageRef image = CGBitmapContextCreateImage(rc->ctx);
-        g_flush_callback(image, rc->width, rc->height);
+        if (image) g_flush_callback(image, rc->width, rc->height);
     }
     rc_release(rc);
     return RUNTIME_STATUS_NORMAL;

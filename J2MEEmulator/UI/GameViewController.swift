@@ -135,6 +135,7 @@ class GameViewController: UIViewController {
 
         // Register native callbacks
         setGlobalEmulatorView(emulatorView)
+        j2me_render_set_afk_frame_limit(0)
         j2me_render_set_flush_callback(flushCallback)
         j2me_ui_set_callback(gameUICallback)
         activeGameViewController = self
@@ -472,8 +473,12 @@ class GameViewController: UIViewController {
             UIAction(title: "Phím điều hướng", state: padMode == .directions ? .on : .off) { [weak self] _ in self?.setPadMode(.directions) },
             UIAction(title: "Phím số", state: padMode == .numbers ? .on : .off) { [weak self] _ in self?.setPadMode(.numbers) },
             UIAction(title: "Ẩn phím · màn hình lớn", state: padMode == .hidden ? .on : .off) { [weak self] _ in self?.setPadMode(.hidden) },
-            UIAction(title: "Treo · màn hình đen, giảm sáng") { [weak self] _ in self?.showBlackout() }
+            UIAction(title: "Treo nhẹ · màn hình đen") { [weak self] _ in self?.showBlackout() }
         ])
+    }
+
+    fileprivate func keepBlackoutOnTop() {
+        if let blackout { view.bringSubviewToFront(blackout) }
     }
 
     private func showBlackout() {
@@ -495,6 +500,7 @@ class GameViewController: UIViewController {
             cover.trailingAnchor.constraint(equalTo: view.trailingAnchor)
         ])
         blackout = cover
+        j2me_render_set_afk_frame_limit(1)
         if let screen = view.window?.windowScene?.screen {
             blackoutScreen = screen
             previousBrightness = screen.brightness
@@ -504,6 +510,8 @@ class GameViewController: UIViewController {
     }
 
     @objc private func hideBlackout() {
+        guard blackout != nil else { return }
+        j2me_render_set_afk_frame_limit(0)
         NotificationCenter.default.removeObserver(self, name: UIApplication.willResignActiveNotification, object: nil)
         if let screen = blackoutScreen, let brightness = previousBrightness, screen.brightness == 0 {
             screen.brightness = brightness
@@ -710,5 +718,6 @@ let gameUICallback: @convention(c) (Int32, Int32) -> Void = { action, revision i
         case Int32(J2ME_UI_ACTION_SHOW_ALERT):   vc.showAlert()
         default: break
         }
+        vc.keepBlackoutOnTop()
     }
 }
