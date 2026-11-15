@@ -1,7 +1,7 @@
 name: J2ME Treo X12 launcher test
 on:
   push:
-    branches: [loader-ios-x12-test]
+    branches: [loader-ios-x12-no-afk]
   workflow_dispatch:
 
 permissions:
@@ -104,9 +104,9 @@ jobs:
           staging="$(mktemp -d)"
           mkdir "$staging/Payload"
           ditto "${apps[0]}" "$staging/Payload/$(basename "${apps[0]}")"
-          (cd "$staging" && /usr/bin/zip -qry "$GITHUB_WORKSPACE/J2ME-Treo-x12-test-unsigned.ipa" Payload)
+          (cd "$staging" && /usr/bin/zip -qry "$GITHUB_WORKSPACE/J2ME-Treo-x12-no-afk-unsigned.ipa" Payload)
       - uses: actions/upload-artifact@v4
         with:
-          name: J2ME-Treo-x12-test-unsigned
-          path: J2ME-Treo-x12-test-unsigned.ipa
+          name: J2ME-Treo-x12-no-afk-unsigned
+          path: J2ME-Treo-x12-no-afk-unsigned.ipa
           if-no-files-found: error
