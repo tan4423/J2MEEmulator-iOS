@@ -6,7 +6,10 @@ package javax.microedition.lcdui;
  * Analogous to J2ME-Loader's use of android.graphics.Canvas.
  */
 public class NativeBridge {
-    static native char[] takeText(int itemIndex);
+    static native char[] takeText(int itemIndex, int revision);
+    static native void lockScreen();
+    static native void unlockScreen();
+    static native int screenRevision();
     // Context
     public static native long createContext(int w, int h);
     public static native void destroyContext(long ctx);

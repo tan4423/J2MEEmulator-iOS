@@ -13,6 +13,8 @@
 #include "jvm.h"
 #include "jvm_util.h"
 #include <stdio.h>
+#include <pthread.h>
+#include <stdatomic.h>
 
 // ============================================================
 // Form builder state — accumulated by Java calls, flushed on show
@@ -72,11 +74,31 @@ static char g_alert_text[1024] = "";
 static int g_alert_timeout = -2; // FOREVER
 
 static j2me_ui_callback g_ui_callback = NULL;
+static pthread_mutex_t g_screen_lock = PTHREAD_MUTEX_INITIALIZER;
+static atomic_int g_screen_revision = 0;
+int j2me_ui_revision(void) { return atomic_load(&g_screen_revision); }
+void j2me_ui_lock_screen(void) { pthread_mutex_lock(&g_screen_lock); }
+void j2me_ui_unlock_screen(void) { pthread_mutex_unlock(&g_screen_lock); }
+static s32 n_lockScreen(Runtime *runtime, JClass *clazz) {
+    jthread_block_enter(runtime);
+    j2me_ui_lock_screen();
+    jthread_block_exit(runtime);
+    return RUNTIME_STATUS_NORMAL;
+}
+static s32 n_unlockScreen(Runtime *runtime, JClass *clazz) {
+    j2me_ui_unlock_screen();
+    return RUNTIME_STATUS_NORMAL;
+}
+static s32 n_screenRevision(Runtime *runtime, JClass *clazz) {
+    push_int(runtime->stack, j2me_ui_revision());
+    return RUNTIME_STATUS_NORMAL;
+}
 static NSMutableDictionary<NSNumber *, NSData *> *g_pending_text;
 
-void j2me_ui_stage_text(int index, const uint16_t *units, int count) {
+void j2me_ui_stage_text(int revision, int index, const uint16_t *units, int count) {
     if (index < 0 || index >= MAX_FORM_ITEMS || count < 0) return;
     @synchronized ([NSProcessInfo class]) {
+        if (revision != j2me_ui_revision()) return;
         if (!g_pending_text) g_pending_text = [NSMutableDictionary dictionary];
         g_pending_text[@(index)] = count == 0 ? [NSData data] :
             [NSData dataWithBytes:units length:(NSUInteger)count * sizeof(uint16_t)];
@@ -88,8 +110,12 @@ static s32 n_takeText(Runtime *runtime, JClass *clazz) {
     int index = env->localvar_getInt(runtime->localvar, 0);
     NSData *data;
     @synchronized ([NSProcessInfo class]) {
-        data = g_pending_text[@(index)];
-        [g_pending_text removeObjectForKey:@(index)];
+        int revision = env->localvar_getInt(runtime->localvar, 1);
+        data = nil;
+        if (revision == j2me_ui_revision()) {
+            data = g_pending_text[@(index)];
+            [g_pending_text removeObjectForKey:@(index)];
+        }
     }
     Instance *array = NULL;
     if (data) {
@@ -139,7 +165,10 @@ static s32 n_formBegin(Runtime *runtime, JClass *clazz) {
     Instance *jtitle = env->localvar_getRefer(runtime->localvar, 0);
     s32 type = env->localvar_getInt(runtime->localvar, 1);
 
-    @synchronized ([NSProcessInfo class]) { [g_pending_text removeAllObjects]; }
+    @synchronized ([NSProcessInfo class]) {
+        atomic_fetch_add(&g_screen_revision, 1);
+        [g_pending_text removeAllObjects];
+    }
     g_choice_item = -1;
     [g_form_choices removeAllObjects];
     g_form_item_count = 0;
@@ -286,7 +315,7 @@ static s32 n_formShow(Runtime *runtime, JClass *clazz) {
             case 3: action = J2ME_UI_ACTION_SHOW_TEXTBOX; break;
             default: action = J2ME_UI_ACTION_SHOW_FORM; break;
         }
-        g_ui_callback(action, g_form_title);
+        g_ui_callback(action, j2me_ui_revision());
     }
     return RUNTIME_STATUS_NORMAL;
 }
@@ -294,7 +323,7 @@ static s32 n_formShow(Runtime *runtime, JClass *clazz) {
 static s32 n_showCanvas(Runtime *runtime, JClass *clazz) {
     printf("[J2ME UI] showCanvas\n");
     if (g_ui_callback) {
-        g_ui_callback(J2ME_UI_ACTION_SHOW_CANVAS, NULL);
+        g_ui_callback(J2ME_UI_ACTION_SHOW_CANVAS, j2me_ui_revision());
     }
     return RUNTIME_STATUS_NORMAL;
 }
@@ -379,7 +408,10 @@ static s32 n_platformRequest(Runtime *runtime, JClass *clazz) {
 #define CLS "javax/microedition/lcdui/NativeBridge"
 
 static java_native_method j2me_ui_methods[] = {
-    {CLS, "takeText", "(I)[C", n_takeText},
+    {CLS, "takeText", "(II)[C", n_takeText},
+    {CLS, "lockScreen", "()V", n_lockScreen},
+    {CLS, "unlockScreen", "()V", n_unlockScreen},
+    {CLS, "screenRevision", "()I", n_screenRevision},
     {CLS, "formBegin",        "(Ljava/lang/String;I)V",                          n_formBegin},
     {CLS, "formAddStringItem","(Ljava/lang/String;Ljava/lang/String;I)V",        n_formAddStringItem},
     {CLS, "formAddTextField", "(Ljava/lang/String;Ljava/lang/String;II)V",       n_formAddTextField},

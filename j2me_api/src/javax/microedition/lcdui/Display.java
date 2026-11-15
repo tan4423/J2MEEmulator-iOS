@@ -12,7 +12,8 @@ import javax.microedition.midlet.MIDlet;
  */
 public class Display {
     private static Display instance;
-    private Displayable current;
+    private volatile Displayable current;
+    private final Object screenChange = new Object();
     private volatile boolean running;
     private static final EventQueue eventQueue = new EventQueue();
     private MIDlet currentMIDlet;
@@ -43,33 +44,43 @@ public class Display {
 
     public void setCurrent(Displayable d) {
         if (d == null) return;
-        Displayable old = current;
-        current = d;
+        Displayable old;
+        synchronized (screenChange) {
+            NativeBridge.lockScreen();
+            try {
+                old = current;
+                current = d;
 
-        d.width = screenWidth;
-        d.height = screenHeight;
+                d.width = screenWidth;
+                d.height = screenHeight;
 
-        if (d instanceof Canvas) {
-            // Pass canvas commands to native (for soft-key display)
-            java.util.ArrayList<Command> cmds = d.getCommands();
-            NativeBridge.formBegin("", 0); // reset command buffer
-            for (int i = 0; i < cmds.size(); i++) {
-                Command c = cmds.get(i);
-                NativeBridge.formAddCommand(c.getLabel(), c.getCommandType(), c.getPriority(), i);
+                if (d instanceof Canvas) {
+                    // Pass canvas commands to native (for soft-key display)
+                    java.util.ArrayList<Command> cmds = d.getCommands();
+                    NativeBridge.formBegin("", 0); // reset command buffer
+                    for (int i = 0; i < cmds.size(); i++) {
+                        Command c = cmds.get(i);
+                        NativeBridge.formAddCommand(c.getLabel(), c.getCommandType(), c.getPriority(), i);
+                    }
+                    NativeBridge.showCanvas();
+                } else if (d instanceof TextBox) {
+                    ((TextBox) d).showNative();
+                } else if (d instanceof Form) {
+                    ((Form) d).showNative();
+                } else if (d instanceof List) {
+                    ((List) d).showNative();
+                } else if (d instanceof Alert) {
+                    ((Alert) d).showNative();
+                }
+            } finally {
+                NativeBridge.unlockScreen();
             }
-            NativeBridge.showCanvas();
+        }
+        if (d instanceof Canvas && current == d) {
             Canvas canvas = (Canvas) d;
             canvas.initContext();
             canvas.repaintPending = true;
             canvas.showNotify();
-        } else if (d instanceof TextBox) {
-            ((TextBox) d).showNative();
-        } else if (d instanceof Form) {
-            ((Form) d).showNative();
-        } else if (d instanceof List) {
-            ((List) d).showNative();
-        } else if (d instanceof Alert) {
-            ((Alert) d).showNative();
         }
 
         if (old instanceof Canvas && old != d) {
@@ -149,33 +160,37 @@ public class Display {
             int[] nativeEvent;
             while ((nativeEvent = NativeBridge.pollInputEvent()) != null) {
                 int type = nativeEvent[0];
-                if (type <= 2 && current instanceof Canvas) {
+                Displayable target;
+                synchronized (screenChange) {
+                    if (type >= 10 && nativeEvent[1] != NativeBridge.screenRevision()) continue;
+                    target = current;
+                }
+                if (type <= 2 && target instanceof Canvas) {
                     // Pointer event → post CanvasEvent
-                    Canvas c = (Canvas) current;
+                    Canvas c = (Canvas) target;
                     int ceType = type == 0 ? CanvasEvent.POINTER_PRESSED :
                                  type == 1 ? CanvasEvent.POINTER_DRAGGED : CanvasEvent.POINTER_RELEASED;
                     Display.eventQueue.postEvent(CanvasEvent.getInstance(c, ceType, 0, (float)nativeEvent[1], (float)nativeEvent[2]));
-                } else if (type >= 3 && type <= 5 && current instanceof Canvas) {
+                } else if (type >= 3 && type <= 5 && target instanceof Canvas) {
                     // Key event → post CanvasEvent
-                    Canvas c = (Canvas) current;
+                    Canvas c = (Canvas) target;
                     int ceType = type == 3 ? CanvasEvent.KEY_PRESSED :
                                  type == 4 ? CanvasEvent.KEY_RELEASED : CanvasEvent.KEY_REPEATED;
                     Display.eventQueue.postEvent(CanvasEvent.getInstance(c, ceType, nativeEvent[3]));
                 } else if (type == 10) {
-                    int cmdId = nativeEvent[3];
-                    Displayable target = current;
+                    int cmdId = nativeEvent[2];
                     if (target instanceof TextBox) {
-                        char[] text = NativeBridge.takeText(0);
+                        char[] text = NativeBridge.takeText(0, nativeEvent[1]);
                         if (text != null) ((TextBox) target).setString(new String(text));
                     } else if (target instanceof Form) {
                         Form form = (Form) target;
                         for (int i = 0; i < form.size(); i++) {
                             Item item = form.get(i);
                             if (item instanceof TextField) {
-                                char[] text = NativeBridge.takeText(i);
+                                char[] text = NativeBridge.takeText(i, nativeEvent[1]);
                                 if (text != null) ((TextField) item).setString(new String(text));
                             } else if (item instanceof ChoiceGroup) {
-                                char[] value = NativeBridge.takeText(i);
+                                char[] value = NativeBridge.takeText(i, nativeEvent[1]);
                                 if (value != null) {
                                     ChoiceGroup group = (ChoiceGroup) item;
                                     try {
@@ -189,10 +204,10 @@ public class Display {
                         }
                     }
                     if (target != null) target.fireCommandAction(cmdId);
-                } else if (type == 11 && current instanceof List) {
-                    ((List) current).handleListSelect(nativeEvent[3]);
-                } else if (type == 12 && current instanceof Alert) {
-                    Alert alert = (Alert) current;
+                } else if (type == 11 && target instanceof List) {
+                    ((List) target).handleListSelect(nativeEvent[2]);
+                } else if (type == 12 && target instanceof Alert) {
+                    Alert alert = (Alert) target;
                     if (alert.nextDisplayable != null) setCurrent(alert.nextDisplayable);
                 }
             }

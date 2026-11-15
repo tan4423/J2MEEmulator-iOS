@@ -653,6 +653,7 @@ class GameViewController: UIViewController {
     }
 
     func showAlert() {
+        let revision = j2me_ui_revision()
         let title = String(cString: j2me_ui_get_form_title())
         let text = String(cString: j2me_ui_get_alert_text())
 
@@ -665,7 +666,7 @@ class GameViewController: UIViewController {
         if cmdCount == 0 {
             alert.addAction(UIAlertAction(title: "OK", style: .default) { [weak self] _ in
                 self?.alertTimeoutWork?.cancel()
-                j2me_input_post_key(Int32(J2ME_UI_ALERT_DISMISSED), 0)
+                j2me_input_post_touch(Int32(J2ME_UI_ALERT_DISMISSED), revision, 0)
             })
         } else {
             for i in 0..<cmdCount {
@@ -673,7 +674,7 @@ class GameViewController: UIViewController {
                 let cmdId = j2me_ui_get_command_id(Int32(i))
                 alert.addAction(UIAlertAction(title: label, style: .default) { [weak self] _ in
                     self?.alertTimeoutWork?.cancel()
-                    j2me_input_post_key(Int32(J2ME_UI_COMMAND_ACTION), cmdId)
+                    j2me_input_post_touch(Int32(J2ME_UI_COMMAND_ACTION), revision, cmdId)
                 })
             }
         }
@@ -684,7 +685,7 @@ class GameViewController: UIViewController {
         if timeout > 0 {
             let work = DispatchWorkItem { [weak alert] in
                 alert?.dismiss(animated: true) {
-                    j2me_input_post_key(Int32(J2ME_UI_ALERT_DISMISSED), 0)
+                    j2me_input_post_touch(Int32(J2ME_UI_ALERT_DISMISSED), revision, 0)
                 }
             }
             alertTimeoutWork = work
@@ -697,9 +698,11 @@ class GameViewController: UIViewController {
 
 private(set) weak var activeGameViewController: GameViewController?
 
-let gameUICallback: @convention(c) (Int32, UnsafePointer<CChar>?) -> Void = { action, data in
+let gameUICallback: @convention(c) (Int32, Int32) -> Void = { action, revision in
     DispatchQueue.main.async {
-        guard let vc = activeGameViewController else { return }
+        j2me_ui_lock_screen()
+        defer { j2me_ui_unlock_screen() }
+        guard revision == j2me_ui_revision(), let vc = activeGameViewController else { return }
         switch action {
         case Int32(J2ME_UI_ACTION_SHOW_CANVAS):  vc.showCanvasView()
         case Int32(J2ME_UI_ACTION_SHOW_FORM), Int32(J2ME_UI_ACTION_SHOW_TEXTBOX): vc.showFormView()

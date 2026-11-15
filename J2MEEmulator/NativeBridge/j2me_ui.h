@@ -18,14 +18,17 @@ CGImageRef _Nullable j2me_ui_copy_list_icon(int index) CF_RETURNS_RETAINED;
 int j2me_ui_get_choice_count(int index);
 const char *j2me_ui_get_choice_option(int index, int option);
 int j2me_ui_get_form_item_param2(int index);
-void j2me_ui_stage_text(int index, const uint16_t *units, int count);
+int j2me_ui_revision(void);
+void j2me_ui_lock_screen(void);
+void j2me_ui_unlock_screen(void);
+void j2me_ui_stage_text(int revision, int index, const uint16_t *units, int count);
 
 /// Register UI-related native methods with the JVM.
 void j2me_ui_reg_natives(MiniJVM *jvm);
 
 /// Callback for creating/showing native iOS views.
 /// Called from JVM thread — implementations must dispatch to main thread.
-typedef void (*j2me_ui_callback)(int action, const char *data);
+typedef void (*j2me_ui_callback)(int action, int revision);
 
 /// Set the UI callback.
 void j2me_ui_set_callback(j2me_ui_callback callback);
