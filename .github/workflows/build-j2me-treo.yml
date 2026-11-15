@@ -1,6 +1,10 @@
-name: Build J2ME Treo v3
+name: Build J2ME Treo v4
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/build-j2me-treo.yml'
 
 permissions:
   contents: read
@@ -91,6 +95,6 @@ jobs:
           (cd "$staging" && /usr/bin/zip -qry "$GITHUB_WORKSPACE/J2ME-Treo-unsigned.ipa" Payload)
       - uses: actions/upload-artifact@v4
         with:
-          name: J2ME-Treo-unsigned
+          name: J2ME-Treo-v4-unsigned
           path: J2ME-Treo-unsigned.ipa
           if-no-files-found: error
