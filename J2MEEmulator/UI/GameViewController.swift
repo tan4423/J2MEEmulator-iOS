@@ -132,6 +132,7 @@ class GameViewController: UIViewController {
         }
 
         // Register native callbacks
+        j2me_render_set_presentation_suspended(0)
         setGlobalEmulatorView(emulatorView)
         j2me_render_set_flush_callback(flushCallback)
         j2me_ui_set_callback(gameUICallback)
@@ -470,7 +471,7 @@ class GameViewController: UIViewController {
             UIAction(title: "Phím điều hướng", state: padMode == .directions ? .on : .off) { [weak self] _ in self?.setPadMode(.directions) },
             UIAction(title: "Phím số", state: padMode == .numbers ? .on : .off) { [weak self] _ in self?.setPadMode(.numbers) },
             UIAction(title: "Ẩn phím · màn hình lớn", state: padMode == .hidden ? .on : .off) { [weak self] _ in self?.setPadMode(.hidden) },
-            UIAction(title: "Treo với màn hình đen") { [weak self] _ in self?.showBlackout() }
+            UIAction(title: "Treo nhẹ · màn hình đen") { [weak self] _ in self?.showBlackout() }
         ])
     }
 
@@ -493,9 +494,11 @@ class GameViewController: UIViewController {
             cover.trailingAnchor.constraint(equalTo: view.trailingAnchor)
         ])
         blackout = cover
+        j2me_render_set_presentation_suspended(1)
     }
 
     @objc private func hideBlackout() {
+        j2me_render_set_presentation_suspended(0)
         blackout?.removeFromSuperview()
         blackout = nil
     }

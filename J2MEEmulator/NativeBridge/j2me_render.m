@@ -57,6 +57,11 @@ typedef struct RenderImage {
 } RenderImage;
 
 static j2me_flush_callback g_flush_callback = NULL;
+static atomic_int g_presentation_suspended = 0;
+
+void j2me_render_set_presentation_suspended(int suspended) {
+    atomic_store_explicit(&g_presentation_suspended, suspended != 0, memory_order_relaxed);
+}
 static CGColorSpaceRef g_colorSpace = NULL;
 
 // Set by jvm_bridge before native cleanup. All acquire functions
@@ -367,14 +372,18 @@ static s32 n_destroyContext(Runtime *runtime, JClass *clazz) {
 }
 
 static s32 n_flushToScreen(Runtime *runtime, JClass *clazz) {
+    // Reclaim resources even during blackout.
     process_dead_shells();
+    if (atomic_load_explicit(&g_presentation_suspended, memory_order_relaxed)) {
+        return RUNTIME_STATUS_NORMAL;
+    }
 
     JniEnv *env = runtime->jnienv;
     s64 handle = env->localvar_getLong_2slot(runtime->localvar, 0);
     RenderContext *rc = rc_acquire(handle);
     if (rc && g_flush_callback) {
         CGImageRef image = CGBitmapContextCreateImage(rc->ctx);
-        g_flush_callback(image, rc->width, rc->height);
+        if (image) g_flush_callback(image, rc->width, rc->height);
     }
     rc_release(rc);
     return RUNTIME_STATUS_NORMAL;
