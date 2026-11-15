@@ -67,6 +67,7 @@ class GameViewController: UIViewController {
     }
 
     private var alertTimeoutWork: DispatchWorkItem?
+    private var didStartGame = false
 
     override var prefersStatusBarHidden: Bool { true }
 
@@ -101,6 +102,7 @@ class GameViewController: UIViewController {
 
         // Fade out placeholder on first rendered frame
         emulatorView.onFirstFrame = { [weak self] in
+            NSLog("[J2ME Treo] First game frame displayed")
             guard let icon = self?.placeholderIconView else { return }
             UIView.animate(withDuration: 0.2) {
                 icon.alpha = 0
@@ -305,39 +307,77 @@ class GameViewController: UIViewController {
     // ============================================================
 
     private func startGame() {
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            self?.runMIDlet()
-            DispatchQueue.main.async {
-                self?.dismiss(animated: true)
+        guard !didStartGame else { return }
+        didStartGame = true
+        NSLog("[J2ME Treo] Game view appeared; scheduling JVM startup")
+
+        guard let resRoot = Bundle.main.resourcePath,
+              ["minijvm_rt.jar", "j2me_api.jar"].allSatisfy({
+                  FileManager.default.isReadableFile(atPath: resRoot + "/" + $0)
+              }),
+              FileManager.default.isReadableFile(atPath: jarPath) else {
+            showLaunchFailure("The game JAR or a bundled Java runtime file is missing.")
+            return
+        }
+
+        // Copy plain values on the main actor; the VM worker never reads the view controller.
+        let gamePath = jarPath
+        let width = Int32(canvasWidth)
+        let height = Int32(canvasHeight)
+        let scale = Int32(render3dScale)
+        let fps = Int32(fpsLimit)
+        let worker = DispatchWorkItem { [weak self] in
+            let failure = GameViewController.runMIDlet(
+                resRoot: resRoot, jarPath: gamePath, width: width,
+                height: height, scale: scale, fps: fps
+            )
+            DispatchQueue.main.async { [weak self] in
+                if let failure {
+                    self?.showLaunchFailure(failure)
+                } else {
+                    self?.dismiss(animated: true)
+                }
             }
         }
+        DispatchQueue.global(qos: .userInitiated).async(execute: worker)
     }
 
-    private func runMIDlet() {
-        guard let resRoot = Bundle.main.resourcePath else { return }
+    private func showLaunchFailure(_ message: String) {
+        NSLog("[J2ME Treo] Launch failed: %@", message)
+        let alert = UIAlertController(title: "Game could not start", message: message,
+                                      preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "Back", style: .default) { [weak self] _ in
+            self?.dismiss(animated: true)
+        })
+        present(alert, animated: true)
+    }
+
+    nonisolated private static func runMIDlet(resRoot: String, jarPath: String,
+                                              width: Int32, height: Int32,
+                                              scale: Int32, fps: Int32) -> String? {
         let docs = NSSearchPathForDirectoriesInDomains(
             .documentDirectory, .userDomainMask, true).first ?? NSTemporaryDirectory()
-
-        // Per-game save directory: Documents/Games Data/{jarFilename}/
         let jarFileName = URL(fileURLWithPath: jarPath).deletingPathExtension().lastPathComponent
         let gameId = jarFileName.replacingOccurrences(of: "[^a-zA-Z0-9._-]",
                                                        with: "_", options: .regularExpression)
         let saveRoot = docs + "/Games Data/" + gameId
-        try? FileManager.default.createDirectory(atPath: saveRoot, withIntermediateDirectories: true)
-
-        let initResult = jvm_bridge_init(resRoot, saveRoot, jarPath,
-                                         Int32(canvasWidth),
-                                         Int32(canvasHeight),
-                                         Int32(render3dScale),
-                                         Int32(fpsLimit))
-        guard initResult == 0 else {
-            print("[Swift] ERROR: JVM init failed with code \(initResult)")
-            return
+        do {
+            try FileManager.default.createDirectory(atPath: saveRoot, withIntermediateDirectories: true)
+        } catch {
+            return "Cannot create the game's save directory."
         }
 
+        NSLog("[J2ME Treo] Entering JVM initialization")
+        let initResult = jvm_bridge_init(resRoot, saveRoot, jarPath, width, height, scale, fps)
+        NSLog("[J2ME Treo] JVM initialization returned %d", initResult)
+        guard initResult == 0 else { return "Java runtime initialization failed (\(initResult))." }
+
+        NSLog("[J2ME Treo] Entering MIDlet runner")
         let runResult = jvm_bridge_run_midlet(jarPath)
-        print("[Swift] MIDlet run result: \(runResult)")
+        NSLog("[J2ME Treo] MIDlet runner returned %d; cleaning up", runResult)
         jvm_bridge_destroy()
+        NSLog("[J2ME Treo] JVM cleanup complete")
+        return runResult == 0 ? nil : "Game execution failed (\(runResult))."
     }
 
     @objc private func backTapped() {
