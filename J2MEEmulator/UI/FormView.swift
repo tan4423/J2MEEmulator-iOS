@@ -79,6 +79,7 @@ class FormView: UIView {
 
     /// Build the form from native bridge data.
     private var editableFields: [UITextField] = []
+    private var choiceSelections: [Int: Int] = [:]
 
     func buildFromNativeData() {
         // Clear previous content
@@ -86,6 +87,7 @@ class FormView: UIView {
         commandBar.arrangedSubviews.forEach { $0.removeFromSuperview() }
         commandButtons.removeAll()
         editableFields.removeAll()
+        choiceSelections.removeAll()
 
         // Title
         titleLabel.text = String(cString: j2me_ui_get_form_title())
@@ -102,6 +104,8 @@ class FormView: UIView {
                 addStringItem(label: label, text: text)
             case 1: // TextField
                 addTextField(label: label, text: text, index: Int(i))
+            case 2:
+                addChoice(label: label, index: Int(i))
             default:
                 addStringItem(label: label, text: text) // fallback
             }
@@ -124,6 +128,48 @@ class FormView: UIView {
             commandBar.addArrangedSubview(btn)
             commandButtons.append(btn)
         }
+    }
+
+    private func addChoice(label: String, index: Int) {
+        let count = Int(j2me_ui_get_choice_count(Int32(index)))
+        let options = (0..<count).map { String(cString: j2me_ui_get_choice_option(Int32(index), Int32($0))) }
+        guard !options.isEmpty else {
+            addStringItem(label: label, text: "Không có lựa chọn")
+            return
+        }
+        let selected = Int(j2me_ui_get_form_item_param1(Int32(index)))
+        choiceSelections[index] = options.indices.contains(selected) ? selected : 0
+
+        let container = UIStackView()
+        container.axis = .vertical
+        container.spacing = 4
+        let caption = UILabel()
+        caption.text = label
+        caption.font = .boldSystemFont(ofSize: 14)
+        caption.textColor = .secondaryLabel
+        container.addArrangedSubview(caption)
+
+        let picker = UIButton(type: .system)
+        picker.contentHorizontalAlignment = .leading
+        picker.accessibilityLabel = label
+        picker.showsMenuAsPrimaryAction = true
+        picker.heightAnchor.constraint(greaterThanOrEqualToConstant: 44).isActive = true
+        updateChoiceMenu(picker, index: index, options: options)
+        container.addArrangedSubview(picker)
+        stackView.addArrangedSubview(container)
+    }
+
+    private func updateChoiceMenu(_ picker: UIButton, index: Int, options: [String]) {
+        let selected = choiceSelections[index] ?? 0
+        picker.setTitle(options[selected] + "  ▾", for: .normal)
+        picker.accessibilityValue = options[selected]
+        picker.menu = UIMenu(children: options.enumerated().map { offset, name in
+            UIAction(title: name, state: offset == selected ? .on : .off) { [weak self, weak picker] _ in
+                guard let self, let picker else { return }
+                self.choiceSelections[index] = offset
+                self.updateChoiceMenu(picker, index: index, options: options)
+            }
+        })
     }
 
     private func addStringItem(label: String, text: String) {
@@ -186,6 +232,12 @@ class FormView: UIView {
             let units = Array((field.text ?? "").utf16.prefix(limit))
             units.withUnsafeBufferPointer { p in
                 j2me_ui_stage_text(Int32(field.tag), p.baseAddress, Int32(p.count))
+            }
+        }
+        for (index, selection) in choiceSelections {
+            let units = Array(String(selection).utf16)
+            units.withUnsafeBufferPointer { p in
+                j2me_ui_stage_text(Int32(index), p.baseAddress, Int32(p.count))
             }
         }
         let cmdId = Int32(sender.tag)

@@ -174,6 +174,17 @@ public class Display {
                             if (item instanceof TextField) {
                                 char[] text = NativeBridge.takeText(i);
                                 if (text != null) ((TextField) item).setString(new String(text));
+                            } else if (item instanceof ChoiceGroup) {
+                                char[] value = NativeBridge.takeText(i);
+                                if (value != null) {
+                                    ChoiceGroup group = (ChoiceGroup) item;
+                                    try {
+                                        int selected = Integer.parseInt(new String(value));
+                                        if (selected >= 0 && selected < group.size()) {
+                                            group.setSelectedIndex(selected, true);
+                                        }
+                                    } catch (NumberFormatException ignored) {}
+                                }
                             }
                         }
                     }

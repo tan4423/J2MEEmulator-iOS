@@ -1,4 +1,4 @@
-name: J2ME Treo portrait controls v2
+name: J2ME Treo portrait controls v3
 on:
   push:
     branches: [loader-ios-controls]
@@ -56,7 +56,7 @@ jobs:
           classes="$RUNNER_TEMP/lcdui-classes"
           mkdir -p "$classes"
           javac --release 8 -sourcepath '' -cp "$jars/j2me_api.jar:$jars/minijvm_rt.jar" \
-            -d "$classes" j2me_api/src/javax/microedition/lcdui/{Display,TextBox,NativeBridge}.java
+            -d "$classes" j2me_api/src/javax/microedition/lcdui/{Display,TextBox,NativeBridge,Form,ChoiceGroup}.java
           jar uf "$jars/j2me_api.jar" -C "$classes" .
       - name: Check toolchain
         run: |
@@ -104,9 +104,9 @@ jobs:
           staging="$(mktemp -d)"
           mkdir "$staging/Payload"
           ditto "${apps[0]}" "$staging/Payload/$(basename "${apps[0]}")"
-          (cd "$staging" && /usr/bin/zip -qry "$GITHUB_WORKSPACE/J2ME-Treo-portrait-v2-unsigned.ipa" Payload)
+          (cd "$staging" && /usr/bin/zip -qry "$GITHUB_WORKSPACE/J2ME-Treo-portrait-v3-unsigned.ipa" Payload)
       - uses: actions/upload-artifact@v4
         with:
-          name: J2ME-Treo-portrait-v2-unsigned
-          path: J2ME-Treo-portrait-v2-unsigned.ipa
+          name: J2ME-Treo-portrait-v3-unsigned
+          path: J2ME-Treo-portrait-v3-unsigned.ipa
           if-no-files-found: error

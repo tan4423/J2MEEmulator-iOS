@@ -13,6 +13,8 @@ extern "C" {
 #define J2ME_UI_LIST_SELECT      11
 #define J2ME_UI_ALERT_DISMISSED  12
 
+int j2me_ui_get_choice_count(int index);
+const char *j2me_ui_get_choice_option(int index, int option);
 int j2me_ui_get_form_item_param2(int index);
 void j2me_ui_stage_text(int index, const uint16_t *units, int count);
 

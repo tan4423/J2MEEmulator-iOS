@@ -38,6 +38,17 @@ typedef struct {
 static char g_form_title[256] = "";
 static FormItem g_form_items[MAX_FORM_ITEMS];
 static int g_form_item_count = 0;
+static int g_choice_item = -1;
+static NSMutableDictionary<NSNumber *, NSMutableArray<NSData *> *> *g_form_choices;
+
+int j2me_ui_get_choice_count(int index) {
+    return (int)g_form_choices[@(index)].count;
+}
+
+const char *j2me_ui_get_choice_option(int index, int option) {
+    NSArray<NSData *> *items = g_form_choices[@(index)];
+    return option >= 0 && (NSUInteger)option < items.count ? items[(NSUInteger)option].bytes : "";
+}
 static FormCommand g_form_commands[MAX_COMMANDS];
 static int g_form_command_count = 0;
 static int g_form_type = 0; // 0=form, 1=list, 2=alert, 3=textbox
@@ -120,6 +131,8 @@ static s32 n_formBegin(Runtime *runtime, JClass *clazz) {
     s32 type = env->localvar_getInt(runtime->localvar, 1);
 
     @synchronized ([NSProcessInfo class]) { [g_pending_text removeAllObjects]; }
+    g_choice_item = -1;
+    [g_form_choices removeAllObjects];
     g_form_item_count = 0;
     g_form_command_count = 0;
     g_list_item_count = 0;
@@ -191,6 +204,40 @@ static s32 n_formAddTextField(Runtime *runtime, JClass *clazz) {
         strncpy(item->text, utf8_cstr(u), sizeof(item->text) - 1);
         utf8_destroy(u);
     }
+    return RUNTIME_STATUS_NORMAL;
+}
+
+static s32 n_formAddChoice(Runtime *runtime, JClass *clazz) {
+    JniEnv *env = runtime->jnienv;
+    g_choice_item = -1;
+    if (g_form_item_count >= MAX_FORM_ITEMS) return RUNTIME_STATUS_NORMAL;
+    g_choice_item = g_form_item_count++;
+    FormItem *item = &g_form_items[g_choice_item];
+    memset(item, 0, sizeof(*item));
+    item->type = 2;
+    item->intParam1 = env->localvar_getInt(runtime->localvar, 1);
+    Instance *label = env->localvar_getRefer(runtime->localvar, 0);
+    if (label) {
+        Utf8String *u = utf8_create();
+        env->jstring_2_utf8(label, u, runtime);
+        strncpy(item->label, utf8_cstr(u), sizeof(item->label) - 1);
+        utf8_destroy(u);
+    }
+    if (!g_form_choices) g_form_choices = [NSMutableDictionary dictionary];
+    g_form_choices[@(g_choice_item)] = [NSMutableArray array];
+    return RUNTIME_STATUS_NORMAL;
+}
+
+static s32 n_formAddChoiceOption(Runtime *runtime, JClass *clazz) {
+    if (g_choice_item < 0) return RUNTIME_STATUS_NORMAL;
+    JniEnv *env = runtime->jnienv;
+    Instance *text = env->localvar_getRefer(runtime->localvar, 0);
+    Utf8String *u = utf8_create();
+    if (text) env->jstring_2_utf8(text, u, runtime);
+    const char *value = utf8_cstr(u);
+    if (!value) value = "";
+    [g_form_choices[@(g_choice_item)] addObject:[NSData dataWithBytes:value length:strlen(value) + 1]];
+    utf8_destroy(u);
     return RUNTIME_STATUS_NORMAL;
 }
 
@@ -312,6 +359,8 @@ static java_native_method j2me_ui_methods[] = {
     {CLS, "formBegin",        "(Ljava/lang/String;I)V",                          n_formBegin},
     {CLS, "formAddStringItem","(Ljava/lang/String;Ljava/lang/String;I)V",        n_formAddStringItem},
     {CLS, "formAddTextField", "(Ljava/lang/String;Ljava/lang/String;II)V",       n_formAddTextField},
+    {CLS, "formAddChoice", "(Ljava/lang/String;I)V", n_formAddChoice},
+    {CLS, "formAddChoiceOption", "(Ljava/lang/String;)V", n_formAddChoiceOption},
     {CLS, "formAddCommand",   "(Ljava/lang/String;III)V",                        n_formAddCommand},
     {CLS, "formShow",         "()V",                                             n_formShow},
     {CLS, "showCanvas",       "()V",                                             n_showCanvas},

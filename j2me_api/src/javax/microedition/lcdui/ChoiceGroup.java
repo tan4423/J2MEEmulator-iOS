@@ -25,7 +25,10 @@ public class ChoiceGroup extends Item implements Choice {
     public boolean isSelected(int i) { return selected.get(i); }
     public void set(int i, String s, Image img) { strings.set(i,s); images.set(i,img); }
     public void setSelectedIndex(int i, boolean s) {
-        if (choiceType==EXCLUSIVE) for (int j=0;j<selected.size();j++) selected.set(j,Boolean.FALSE);
+        if (choiceType!=MULTIPLE) {
+            if (!s) return;
+        }
+        if (choiceType!=MULTIPLE) for (int j=0;j<selected.size();j++) selected.set(j,Boolean.FALSE);
         selected.set(i,s);
     }
     public int size() { return strings.size(); }
@@ -35,6 +38,8 @@ public class ChoiceGroup extends Item implements Choice {
     public void setFitPolicy(int p) {}
     public Font getFont(int i) { return Font.getDefaultFont(); }
     public void setFont(int i, Font f) {}
+
+    int getChoiceType() { return choiceType; }
 
     int getItemType() { return 2; }
     String getItemText() { return strings.size()>0?strings.get(getSelectedIndex()>=0?getSelectedIndex():0):""; }
