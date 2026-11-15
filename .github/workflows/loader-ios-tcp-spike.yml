@@ -65,9 +65,9 @@ jobs:
           w="$RUNNER_TEMP/loader-spike"
           jars="$GITHUB_WORKSPACE/J2MEEmulator/Resources/jars"
           mkdir -p "$w/abi"
-          (cd "$w/abi"; jar xf "$jars/minijvm_rt.jar" java/net/Socket.class)
+          (cd "$w/abi"; jar xf "$jars/minijvm_rt.jar" java/net/Socket.class java/net/SocketImpl.class)
           if [[ -f "$w/abi/java/net/Socket.class" ]]; then
-            javap -p "$w/abi/java/net/Socket.class" | tee "$w/socket-abi.txt"
+            javap -p "$w/abi/java/net/Socket.class" "$w/abi/java/net/SocketImpl.class" | tee "$w/socket-abi.txt"
           else
             echo "java/net/Socket.class absent from bundled minijvm_rt.jar" | tee "$w/socket-abi.txt"
           fi
@@ -88,6 +88,58 @@ jobs:
             > "$w/overlay/META-INF/j2me-loader/SOURCE"
           jar uf "$jars/j2me_api.jar" -C "$w/overlay" .
           cp "$w/socket-abi.txt" loader-socket-abi.txt
+      - name: Compile an offline first-frame and input diagnostic MIDlet
+        run: |
+          set -euo pipefail
+          w="$RUNNER_TEMP/loader-midlet"
+          mkdir -p "$w/classes"
+          cat > "$w/LoaderSmoke.java" <<'JAVA'
+          import javax.microedition.midlet.MIDlet;
+          import javax.microedition.lcdui.Canvas;
+          import javax.microedition.lcdui.Display;
+          import javax.microedition.lcdui.Graphics;
+
+          public final class LoaderSmoke extends MIDlet {
+              public LoaderSmoke() { System.out.println("[LoaderSmoke] constructed"); }
+              protected void startApp() {
+                  System.out.println("[LoaderSmoke] startApp");
+                  Display.getDisplay(this).setCurrent(new Screen());
+              }
+              protected void pauseApp() {}
+              protected void destroyApp(boolean force) {}
+              static final class Screen extends Canvas {
+                  private boolean changed;
+                  private boolean painted;
+                  protected void paint(Graphics g) {
+                      if (!painted) {
+                          painted = true;
+                          System.out.println("[LoaderSmoke] paint");
+                      }
+                      g.setColor(changed ? 0x1268ad : 0x17613e);
+                      g.fillRect(0, 0, getWidth(), getHeight());
+                      g.setColor(0xffffff);
+                      g.drawString(changed ? "INPUT OK" : "FIRST FRAME OK",
+                          getWidth() / 2, 20, Graphics.TOP | Graphics.HCENTER);
+                  }
+                  protected void keyPressed(int keyCode) {
+                      changed = !changed;
+                      repaint();
+                  }
+              }
+          }
+          JAVA
+          printf '%s\n' 'MIDlet-Name: Loader Smoke' 'MIDlet-Version: 1.0' \
+            'MIDlet-Vendor: Loader Lab' 'MIDlet-1: Loader Smoke, , LoaderSmoke' \
+            'MicroEdition-Profile: MIDP-2.0' 'MicroEdition-Configuration: CLDC-1.1' '' > "$w/MANIFEST.MF"
+          javac --release 8 -cp J2MEEmulator/Resources/jars/j2me_api.jar \
+            -d "$w/classes" "$w/LoaderSmoke.java"
+          jar cfm Loader-Smoke.jar "$w/MANIFEST.MF" -C "$w/classes" .
+          jar tf Loader-Smoke.jar
+      - uses: actions/upload-artifact@v4
+        with:
+          name: loader-offline-test
+          path: Loader-Smoke.jar
+          if-no-files-found: error
       - name: Build unsigned iPhone packaging prototype
         run: |
           set -euo pipefail
