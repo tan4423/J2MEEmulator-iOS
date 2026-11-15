@@ -72,17 +72,20 @@ class FormView: UIView {
 
             commandBar.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 16),
             commandBar.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -16),
-            commandBar.bottomAnchor.constraint(equalTo: safeAreaLayoutGuide.bottomAnchor, constant: -8),
+            commandBar.bottomAnchor.constraint(equalTo: keyboardLayoutGuide.topAnchor, constant: -8),
             commandBar.heightAnchor.constraint(equalToConstant: 44),
         ])
     }
 
     /// Build the form from native bridge data.
+    private var editableFields: [UITextField] = []
+
     func buildFromNativeData() {
         // Clear previous content
         stackView.arrangedSubviews.forEach { $0.removeFromSuperview() }
         commandBar.arrangedSubviews.forEach { $0.removeFromSuperview() }
         commandButtons.removeAll()
+        editableFields.removeAll()
 
         // Title
         titleLabel.text = String(cString: j2me_ui_get_form_title())
@@ -98,7 +101,7 @@ class FormView: UIView {
             case 0: // StringItem
                 addStringItem(label: label, text: text)
             case 1: // TextField
-                addTextField(label: label, text: text)
+                addTextField(label: label, text: text, index: Int(i))
             default:
                 addStringItem(label: label, text: text) // fallback
             }
@@ -147,7 +150,7 @@ class FormView: UIView {
         stackView.addArrangedSubview(container)
     }
 
-    private func addTextField(label: String, text: String) {
+    private func addTextField(label: String, text: String, index: Int) {
         let container = UIStackView()
         container.axis = .vertical
         container.spacing = 4
@@ -164,22 +167,31 @@ class FormView: UIView {
         tf.text = text
         tf.borderStyle = .roundedRect
         tf.font = .systemFont(ofSize: 16)
-        tf.addTarget(self, action: #selector(textFieldChanged(_:)), for: .editingChanged)
+        tf.tag = index
+        let flags = j2me_ui_get_form_item_param2(Int32(index))
+        tf.isSecureTextEntry = (flags & 0x10000) != 0
+        tf.isEnabled = (flags & 0x20000) == 0
+        tf.autocapitalizationType = .none
+        tf.autocorrectionType = .no
+        editableFields.append(tf)
         container.addArrangedSubview(tf)
 
         stackView.addArrangedSubview(container)
     }
 
     @objc private func commandTapped(_ sender: UIButton) {
+        endEditing(true)
+        for field in editableFields where field.isEnabled {
+            let limit = max(0, Int(j2me_ui_get_form_item_param1(Int32(field.tag))))
+            let units = Array((field.text ?? "").utf16.prefix(limit))
+            units.withUnsafeBufferPointer { p in
+                j2me_ui_stage_text(Int32(field.tag), p.baseAddress, Int32(p.count))
+            }
+        }
         let cmdId = Int32(sender.tag)
         j2me_input_post_key(Int32(J2ME_UI_COMMAND_ACTION), cmdId)
     }
 
-    @objc private func textFieldChanged(_ sender: UITextField) {
-        // Post text change event — value synced back to Java via input queue
-        // TODO: associate with specific Item index for multi-TextField forms
-        // TextField value changed — TODO: sync back to Java Item
-    }
 }
 
 // ============================================================

@@ -11,6 +11,7 @@ import UIKit
 // MARK: - Layout mode (extensible for future layouts)
 
 enum GameLayoutMode {
+    case portrait
     case ngage      // Landscape: D-pad left, screen center, numpad right
     // Future: .classic   — Portrait: screen top, keyboard bottom
     // Future: .fullscreen — Landscape: screen fills, overlay controls
@@ -47,7 +48,7 @@ class GameViewController: UIViewController {
     init(jarPath: String, appName: String, appIcon: UIImage,
          canvasWidth: Int = 240, canvasHeight: Int = 320,
          render3dScale: Int = 3, fpsLimit: Int = 0,
-         layoutMode: GameLayoutMode = .ngage) {
+         layoutMode: GameLayoutMode = .portrait) {
         self.jarPath = jarPath
         self.appName = appName
         self.appIcon = appIcon
@@ -73,6 +74,7 @@ class GameViewController: UIViewController {
 
     override var supportedInterfaceOrientations: UIInterfaceOrientationMask {
         switch layoutMode {
+        case .portrait: return .portrait
         case .ngage: return .landscape
         }
     }
@@ -85,6 +87,7 @@ class GameViewController: UIViewController {
         emulatorView.canvasHeight = canvasHeight
 
         switch layoutMode {
+        case .portrait: setupNGageLayout(portrait: true)
         case .ngage: setupNGageLayout()
         }
 
@@ -112,9 +115,10 @@ class GameViewController: UIViewController {
             }
         }
 
-        // Mirror game frames to glow layer
-        emulatorView.onFrame = { [weak self] cgImage in
-            self?.glowContentView.layer.contents = cgImage
+        if layoutMode == .ngage {
+            emulatorView.onFrame = { [weak self] cgImage in
+                self?.glowContentView.layer.contents = cgImage
+            }
         }
 
         // Register native callbacks
@@ -144,7 +148,7 @@ class GameViewController: UIViewController {
     //  │  └─────────┘  └──────────────┘  └───────────────┘  │
     //  └──────────────────────────────────────────────────────┘
 
-    private func setupNGageLayout() {
+    private func setupNGageLayout(portrait: Bool = false) {
         let joystick = JoystickView()
         let numpad = NumpadView()
         self.joystickView = joystick
@@ -208,6 +212,49 @@ class GameViewController: UIViewController {
 
         let canvasRatio: CGFloat = CGFloat(emulatorView.canvasWidth) / CGFloat(emulatorView.canvasHeight)
         let pad: CGFloat = 8
+
+        if portrait {
+            let safe = view.safeAreaLayoutGuide
+            let canvasAspect = emulatorView.widthAnchor.constraint(equalTo: emulatorView.heightAnchor, multiplier: canvasRatio)
+            let canvasHeight = emulatorView.heightAnchor.constraint(equalTo: safe.heightAnchor, multiplier: 0.49)
+            canvasHeight.priority = .defaultHigh
+            NSLayoutConstraint.activate([
+                backButton.topAnchor.constraint(equalTo: safe.topAnchor, constant: 4),
+                backButton.leadingAnchor.constraint(equalTo: safe.leadingAnchor, constant: 8),
+                emulatorView.topAnchor.constraint(equalTo: backButton.bottomAnchor, constant: 6),
+                emulatorView.centerXAnchor.constraint(equalTo: safe.centerXAnchor),
+                emulatorView.widthAnchor.constraint(lessThanOrEqualTo: safe.widthAnchor, constant: -16),
+                canvasAspect, canvasHeight,
+                lskButton.leadingAnchor.constraint(equalTo: safe.leadingAnchor, constant: 12),
+                rskButton.trailingAnchor.constraint(equalTo: safe.trailingAnchor, constant: -12),
+                lskButton.topAnchor.constraint(equalTo: emulatorView.bottomAnchor, constant: 8),
+                rskButton.topAnchor.constraint(equalTo: lskButton.topAnchor),
+                lskButton.widthAnchor.constraint(equalToConstant: 68),
+                rskButton.widthAnchor.constraint(equalToConstant: 68),
+                lskButton.heightAnchor.constraint(equalToConstant: 38),
+                rskButton.heightAnchor.constraint(equalToConstant: 38),
+                joystick.leadingAnchor.constraint(equalTo: safe.leadingAnchor, constant: 12),
+                joystick.topAnchor.constraint(equalTo: lskButton.bottomAnchor, constant: 8),
+                joystick.widthAnchor.constraint(equalTo: safe.widthAnchor, multiplier: 0.37),
+                joystick.heightAnchor.constraint(equalTo: joystick.widthAnchor),
+                numpad.trailingAnchor.constraint(equalTo: safe.trailingAnchor, constant: -12),
+                numpad.topAnchor.constraint(equalTo: joystick.topAnchor),
+                numpad.widthAnchor.constraint(equalTo: safe.widthAnchor, multiplier: 0.43),
+                numpad.bottomAnchor.constraint(equalTo: safe.bottomAnchor, constant: -8),
+                numpad.heightAnchor.constraint(greaterThanOrEqualToConstant: 118),
+            ])
+            glowContainer.isHidden = true
+            glowBlur.isHidden = true
+            for panel in [formView as UIView, listView as UIView] {
+                NSLayoutConstraint.activate([
+                    panel.topAnchor.constraint(equalTo: backButton.bottomAnchor),
+                    panel.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+                    panel.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+                    panel.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+                ])
+            }
+            return
+        }
 
         // Layout guides for centering controls in the side panels
         let leftArea = UILayoutGuide()
@@ -466,7 +513,7 @@ let gameUICallback: @convention(c) (Int32, UnsafePointer<CChar>?) -> Void = { ac
         guard let vc = activeGameViewController else { return }
         switch action {
         case Int32(J2ME_UI_ACTION_SHOW_CANVAS):  vc.showCanvasView()
-        case Int32(J2ME_UI_ACTION_SHOW_FORM):    vc.showFormView()
+        case Int32(J2ME_UI_ACTION_SHOW_FORM), Int32(J2ME_UI_ACTION_SHOW_TEXTBOX): vc.showFormView()
         case Int32(J2ME_UI_ACTION_SHOW_LIST):    vc.showListView()
         case Int32(J2ME_UI_ACTION_SHOW_ALERT):   vc.showAlert()
         default: break

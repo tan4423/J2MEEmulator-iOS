@@ -2,6 +2,7 @@
 #define J2ME_UI_H
 
 #include "jvm.h"
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -11,6 +12,9 @@ extern "C" {
 #define J2ME_UI_COMMAND_ACTION   10
 #define J2ME_UI_LIST_SELECT      11
 #define J2ME_UI_ALERT_DISMISSED  12
+
+int j2me_ui_get_form_item_param2(int index);
+void j2me_ui_stage_text(int index, const uint16_t *units, int count);
 
 /// Register UI-related native methods with the JVM.
 void j2me_ui_reg_natives(MiniJVM *jvm);

@@ -62,6 +62,8 @@ public class Display {
             canvas.initContext();
             canvas.repaintPending = true;
             canvas.showNotify();
+        } else if (d instanceof TextBox) {
+            ((TextBox) d).showNative();
         } else if (d instanceof Form) {
             ((Form) d).showNative();
         } else if (d instanceof List) {
@@ -161,7 +163,21 @@ public class Display {
                     Display.eventQueue.postEvent(CanvasEvent.getInstance(c, ceType, nativeEvent[3]));
                 } else if (type == 10) {
                     int cmdId = nativeEvent[3];
-                    if (current != null) current.fireCommandAction(cmdId);
+                    Displayable target = current;
+                    if (target instanceof TextBox) {
+                        char[] text = NativeBridge.takeText(0);
+                        if (text != null) ((TextBox) target).setString(new String(text));
+                    } else if (target instanceof Form) {
+                        Form form = (Form) target;
+                        for (int i = 0; i < form.size(); i++) {
+                            Item item = form.get(i);
+                            if (item instanceof TextField) {
+                                char[] text = NativeBridge.takeText(i);
+                                if (text != null) ((TextField) item).setString(new String(text));
+                            }
+                        }
+                    }
+                    if (target != null) target.fireCommandAction(cmdId);
                 } else if (type == 11 && current instanceof List) {
                     ((List) current).handleListSelect(nativeEvent[3]);
                 } else if (type == 12 && current instanceof Alert) {

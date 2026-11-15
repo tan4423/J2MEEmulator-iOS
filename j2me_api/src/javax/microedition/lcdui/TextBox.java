@@ -12,6 +12,18 @@ public class TextBox extends Screen {
         this.constraints = constraints;
     }
 
+    void showNative() {
+        NativeBridge.formBegin(getTitle(), 3);
+        NativeBridge.formAddTextField("", text, maxSize, constraints);
+        java.util.ArrayList<Command> commands = getCommands();
+        for (int i = 0; i < commands.size(); i++) {
+            Command command = commands.get(i);
+            NativeBridge.formAddCommand(command.getLabel(), command.getCommandType(),
+                    command.getPriority(), i);
+        }
+        NativeBridge.formShow();
+    }
+
     public String getString() { return text; }
     public void setString(String text) { this.text = text != null ? text : ""; }
     public int getMaxSize() { return maxSize; }

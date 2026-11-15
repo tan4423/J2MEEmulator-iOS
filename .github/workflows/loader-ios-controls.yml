@@ -1,0 +1,112 @@
+name: J2ME Treo portrait and text input
+on:
+  push:
+    branches: [loader-ios-controls]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          persist-credentials: false
+      - name: Compile foreground keep-awake module
+        run: |
+          cat > "$RUNNER_TEMP/J2METreo.m" <<'OBJC'
+          #import <UIKit/UIKit.h>
+          #import <dispatch/dispatch.h>
+
+          __attribute__((constructor)) static void J2METreoInstall(void) {
+              dispatch_async(dispatch_get_main_queue(), ^{
+                  NSNotificationCenter *center = [NSNotificationCenter defaultCenter];
+                  [center addObserverForName:UIApplicationDidBecomeActiveNotification
+                                      object:nil queue:[NSOperationQueue mainQueue]
+                                  usingBlock:^(NSNotification *note) {
+                      [UIApplication sharedApplication].idleTimerDisabled = YES;
+                  }];
+                  [center addObserverForName:UIApplicationWillResignActiveNotification
+                                      object:nil queue:[NSOperationQueue mainQueue]
+                                  usingBlock:^(NSNotification *note) {
+                      [UIApplication sharedApplication].idleTimerDisabled = NO;
+                  }];
+                  UIApplication *app = [UIApplication sharedApplication];
+                  app.idleTimerDisabled = (app.applicationState == UIApplicationStateActive);
+              });
+          }
+          OBJC
+          xcrun --sdk iphoneos clang -arch arm64 \
+            -isysroot "$(xcrun --sdk iphoneos --show-sdk-path)" \
+            -miphoneos-version-min=15.0 -fobjc-arc \
+            -c "$RUNNER_TEMP/J2METreo.m" -o "$RUNNER_TEMP/J2METreo.o"
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Rebuild patched Java ME classes
+        shell: bash
+        run: |
+          set -euo pipefail
+          jars="$PWD/J2MEEmulator/Resources/jars"
+          classes="$RUNNER_TEMP/lcdui-classes"
+          mkdir -p "$classes"
+          javac --release 8 -sourcepath '' -cp "$jars/j2me_api.jar:$jars/minijvm_rt.jar" \
+            -d "$classes" j2me_api/src/javax/microedition/lcdui/{Display,TextBox,NativeBridge}.java
+          jar uf "$jars/j2me_api.jar" -C "$classes" .
+      - name: Check toolchain
+        run: |
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+      - name: Verify bundled Java resources
+        shell: bash
+        run: |
+          project=J2MEEmulator.xcodeproj
+          if [[ ! -f "$project/project.pbxproj" ]]; then
+            echo "::error::Missing $project/project.pbxproj"
+            exit 1
+          fi
+          for jar in minijvm_rt.jar j2me_api.jar; do
+            path="J2MEEmulator/Resources/jars/$jar"
+            if [[ ! -s "$path" ]] || ! /usr/bin/unzip -tq "$path"; then
+              echo "::error::Missing or invalid bundled JAR: $path"
+              exit 1
+            fi
+          done
+          printf 'J2ME_PROJECT=%s\n' "$project" >> "$GITHUB_ENV"
+      - name: Build iPhone app without signing
+        shell: bash
+        run: |
+          xcodebuild -list -project "$J2ME_PROJECT"
+          xcodebuild -project "$J2ME_PROJECT" \
+            -scheme J2MEEmulator -configuration Release \
+            -sdk iphoneos -destination 'generic/platform=iOS' \
+            -derivedDataPath "$RUNNER_TEMP/jarbox-build" \
+            "OTHER_LDFLAGS=\$(inherited) $RUNNER_TEMP/J2METreo.o -framework UIKit -framework Foundation" \
+            PRODUCT_BUNDLE_IDENTIFIER=app.j2metreo.personal \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build
+      - name: Package unsigned IPA
+        run: |
+          products="$RUNNER_TEMP/jarbox-build/Build/Products/Release-iphoneos"
+          apps=("$products"/*.app)
+          if [[ ${#apps[@]} -ne 1 || ! -d "${apps[0]}" ]]; then
+            echo 'Expected exactly one iPhone app in Release-iphoneos' >&2
+            ls -la "$products" || true
+            exit 1
+          fi
+          app="${apps[0]}"
+          /usr/libexec/PlistBuddy -c 'Set :CFBundleDisplayName J2ME Treo' "$app/Info.plist" || \
+            /usr/libexec/PlistBuddy -c 'Add :CFBundleDisplayName string J2ME Treo' "$app/Info.plist"
+          staging="$(mktemp -d)"
+          mkdir "$staging/Payload"
+          ditto "${apps[0]}" "$staging/Payload/$(basename "${apps[0]}")"
+          (cd "$staging" && /usr/bin/zip -qry "$GITHUB_WORKSPACE/J2ME-Treo-unsigned.ipa" Payload)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: J2ME-Treo-controls-unsigned
+          path: J2ME-Treo-unsigned.ipa
+          if-no-files-found: error

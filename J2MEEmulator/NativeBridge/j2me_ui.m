@@ -52,6 +52,33 @@ static char g_alert_text[1024] = "";
 static int g_alert_timeout = -2; // FOREVER
 
 static j2me_ui_callback g_ui_callback = NULL;
+static NSMutableDictionary<NSNumber *, NSData *> *g_pending_text;
+
+void j2me_ui_stage_text(int index, const uint16_t *units, int count) {
+    if (index < 0 || index >= MAX_FORM_ITEMS || count < 0) return;
+    @synchronized ([NSProcessInfo class]) {
+        if (!g_pending_text) g_pending_text = [NSMutableDictionary dictionary];
+        g_pending_text[@(index)] = count == 0 ? [NSData data] :
+            [NSData dataWithBytes:units length:(NSUInteger)count * sizeof(uint16_t)];
+    }
+}
+
+static s32 n_takeText(Runtime *runtime, JClass *clazz) {
+    JniEnv *env = runtime->jnienv;
+    int index = env->localvar_getInt(runtime->localvar, 0);
+    NSData *data;
+    @synchronized ([NSProcessInfo class]) {
+        data = g_pending_text[@(index)];
+        [g_pending_text removeObjectForKey:@(index)];
+    }
+    Instance *array = NULL;
+    if (data) {
+        array = jarray_create_by_type_index(runtime, (s32)(data.length / sizeof(uint16_t)), DATATYPE_CHAR);
+        if (array && data.length) memcpy(array->arr_body, data.bytes, data.length);
+    }
+    env->push_ref(runtime->stack, array);
+    return RUNTIME_STATUS_NORMAL;
+}
 
 void j2me_ui_set_callback(j2me_ui_callback callback) {
     g_ui_callback = callback;
@@ -66,6 +93,9 @@ int j2me_ui_get_form_item_count(void) { return g_form_item_count; }
 int j2me_ui_get_form_item_type(int index) { return index < g_form_item_count ? g_form_items[index].type : -1; }
 const char *j2me_ui_get_form_item_label(int index) { return index < g_form_item_count ? g_form_items[index].label : ""; }
 const char *j2me_ui_get_form_item_text(int index) { return index < g_form_item_count ? g_form_items[index].text : ""; }
+int j2me_ui_get_form_item_param2(int index) {
+    return index >= 0 && index < g_form_item_count ? g_form_items[index].intParam2 : 0;
+}
 int j2me_ui_get_form_item_param1(int index) { return index < g_form_item_count ? g_form_items[index].intParam1 : 0; }
 
 int j2me_ui_get_command_count(void) { return g_form_command_count; }
@@ -89,6 +119,7 @@ static s32 n_formBegin(Runtime *runtime, JClass *clazz) {
     Instance *jtitle = env->localvar_getRefer(runtime->localvar, 0);
     s32 type = env->localvar_getInt(runtime->localvar, 1);
 
+    @synchronized ([NSProcessInfo class]) { [g_pending_text removeAllObjects]; }
     g_form_item_count = 0;
     g_form_command_count = 0;
     g_list_item_count = 0;
@@ -277,6 +308,7 @@ static s32 n_platformRequest(Runtime *runtime, JClass *clazz) {
 #define CLS "javax/microedition/lcdui/NativeBridge"
 
 static java_native_method j2me_ui_methods[] = {
+    {CLS, "takeText", "(I)[C", n_takeText},
     {CLS, "formBegin",        "(Ljava/lang/String;I)V",                          n_formBegin},
     {CLS, "formAddStringItem","(Ljava/lang/String;Ljava/lang/String;I)V",        n_formAddStringItem},
     {CLS, "formAddTextField", "(Ljava/lang/String;Ljava/lang/String;II)V",       n_formAddTextField},
