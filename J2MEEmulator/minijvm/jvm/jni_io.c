@@ -45,6 +45,9 @@ extern "C" {
 #include <sys/select.h>
 #include <unistd.h>
 #include <netinet/in.h>
+#if defined(__APPLE__)
+#include <netinet/tcp.h>
+#endif
 #include <arpa/inet.h>
 #include <netdb.h>
 #include <fcntl.h>
@@ -373,6 +376,17 @@ s32 org_mini_net_SocketNative_connect0(Runtime *runtime, JClass *clazz) {
         jthread_block_enter(runtime);
         ret = mbedtls_net_connect(ctx, host->arr_body, port->arr_body, proto);
         jthread_block_exit(runtime);
+#if defined(__APPLE__)
+        // Apply only to successfully connected outbound TCP sockets. Keep the
+        // original connection usable if the OS rejects the latency option.
+        if (ret == 0 && proto == MBEDTLS_NET_PROTO_TCP) {
+            int enabled = 1;
+            int result = setsockopt(ctx->fd, IPPROTO_TCP, TCP_NODELAY,
+                                    &enabled, sizeof(enabled));
+            fprintf(stderr, "[J2ME NET] TCP_NODELAY %s\n",
+                    result == 0 ? "enabled" : "not applied");
+        }
+#endif
 #if _JVM_DEBUG_LOG_LEVEL > 5
         invoke_deepth(runtime);
         jvm_printf("org_mini_net_SocketNative_open0  \n");

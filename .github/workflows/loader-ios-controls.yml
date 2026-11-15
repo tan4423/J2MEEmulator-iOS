@@ -1,7 +1,7 @@
-name: J2ME Treo portrait controls v3
+name: J2ME Treo TCP low-latency test
 on:
   push:
-    branches: [loader-ios-controls]
+    branches: [loader-ios-net-test]
   workflow_dispatch:
 
 permissions:
@@ -104,9 +104,9 @@ jobs:
           staging="$(mktemp -d)"
           mkdir "$staging/Payload"
           ditto "${apps[0]}" "$staging/Payload/$(basename "${apps[0]}")"
-          (cd "$staging" && /usr/bin/zip -qry "$GITHUB_WORKSPACE/J2ME-Treo-portrait-v3-unsigned.ipa" Payload)
+          (cd "$staging" && /usr/bin/zip -qry "$GITHUB_WORKSPACE/J2ME-Treo-net-test-unsigned.ipa" Payload)
       - uses: actions/upload-artifact@v4
         with:
-          name: J2ME-Treo-portrait-v3-unsigned
-          path: J2ME-Treo-portrait-v3-unsigned.ipa
+          name: J2ME-Treo-net-test-unsigned
+          path: J2ME-Treo-net-test-unsigned.ipa
           if-no-files-found: error
