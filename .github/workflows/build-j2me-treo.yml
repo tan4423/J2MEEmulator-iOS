@@ -1,4 +1,4 @@
-name: Build JarBox baseline
+name: Build J2ME Treo
 on:
   workflow_dispatch:
 
