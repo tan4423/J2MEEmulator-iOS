@@ -115,7 +115,10 @@ class NumpadView: UIView {
 
     // MARK: - Canvas command buttons
 
+    private var commandRevision: Int32 = 0
+
     func updateCommands() {
+        commandRevision = j2me_ui_revision()
         commandButtons.forEach { $0.removeFromSuperview() }
         commandButtons.removeAll()
 
@@ -156,6 +159,6 @@ class NumpadView: UIView {
     }
 
     @objc private func commandTapped(_ sender: UIButton) {
-        j2me_input_post_key(Int32(J2ME_UI_COMMAND_ACTION), Int32(sender.tag - 1000))
+        j2me_input_post_touch(Int32(J2ME_UI_COMMAND_ACTION), commandRevision, Int32(sender.tag - 1000))
     }
 }
