@@ -1,0 +1,54 @@
+name: Build JarBox baseline
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          persist-credentials: false
+      - name: Check toolchain
+        run: |
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+          export JAVA_HOME="$(/usr/libexec/java_home -v 17)"
+          "$JAVA_HOME/bin/javac" -version
+      - name: Build Java runtime and J2ME API
+        run: |
+          export JAVA_HOME="$(/usr/libexec/java_home -v 17)"
+          export PATH="$JAVA_HOME/bin:$PATH"
+          (cd miniJVM-2.0.0/binary && bash ./build_jar.sh)
+          (cd J2MEEmulator/j2me_api && bash ./build.sh)
+      - name: Build iPhone app without signing
+        run: |
+          xcodebuild -list -project J2MEEmulator/J2MEEmulator.xcodeproj
+          xcodebuild -project J2MEEmulator/J2MEEmulator.xcodeproj \
+            -scheme J2MEEmulator -configuration Release \
+            -sdk iphoneos -destination 'generic/platform=iOS' \
+            -derivedDataPath "$RUNNER_TEMP/jarbox-build" \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build
+      - name: Package unsigned IPA
+        run: |
+          products="$RUNNER_TEMP/jarbox-build/Build/Products/Release-iphoneos"
+          apps=("$products"/*.app)
+          if [[ ${#apps[@]} -ne 1 || ! -d "${apps[0]}" ]]; then
+            echo 'Expected exactly one iPhone app in Release-iphoneos' >&2
+            ls -la "$products" || true
+            exit 1
+          fi
+          staging="$(mktemp -d)"
+          mkdir "$staging/Payload"
+          ditto "${apps[0]}" "$staging/Payload/$(basename "${apps[0]}")"
+          (cd "$staging" && /usr/bin/zip -qry "$GITHUB_WORKSPACE/JarBox-unsigned.ipa" Payload)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: JarBox-unsigned
+          path: JarBox-unsigned.ipa
+          if-no-files-found: error
