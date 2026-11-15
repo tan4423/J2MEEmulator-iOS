@@ -255,7 +255,9 @@ class J2MEListView: UIView, UITableViewDataSource, UITableViewDelegate {
     private let titleLabel = UILabel()
     private let tableView = UITableView()
     private var items: [String] = []
-    private var commandButtons: [UIButton] = []
+    private var selectedRow: Int?
+    private let actionsButton = UIButton(type: .system)
+    private let launchButton = UIButton(type: .system)
     private let commandBar = UIStackView()
 
     override init(frame: CGRect) {
@@ -314,22 +316,32 @@ class J2MEListView: UIView, UITableViewDataSource, UITableViewDelegate {
         }
         tableView.reloadData()
 
-        // Commands
+        selectedRow = nil
         commandBar.arrangedSubviews.forEach { $0.removeFromSuperview() }
-        commandButtons.removeAll()
-        let cmdCount = j2me_ui_get_command_count()
-        for i in 0..<cmdCount {
-            let cmdLabel = String(cString: j2me_ui_get_command_label(Int32(i)))
-            let cmdId = j2me_ui_get_command_id(Int32(i))
-            let btn = UIButton(type: .system)
-            btn.setTitle(cmdLabel, for: .normal)
-            btn.tag = Int(cmdId)
-            btn.backgroundColor = .systemBlue
-            btn.setTitleColor(.white, for: .normal)
-            btn.layer.cornerRadius = 8
-            btn.addTarget(self, action: #selector(commandTapped(_:)), for: .touchUpInside)
-            commandBar.addArrangedSubview(btn)
+        var actions: [UIAction] = []
+        var launchID: Int32?
+        for i in 0..<j2me_ui_get_command_count() {
+            let label = String(cString: j2me_ui_get_command_label(i))
+            let id = j2me_ui_get_command_id(i)
+            let normalized = label.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: Locale(identifier: "vi"))
+            if normalized == "chay ung dung" || normalized == "run application" {
+                launchID = id
+            }
+            actions.append(UIAction(title: label) { [weak self] _ in
+                self?.sendCommand(id)
+            })
         }
+        if let launchID {
+            launchButton.tag = Int(launchID)
+            launchButton.setTitle("Chạy ứng dụng", for: .normal)
+            launchButton.removeTarget(self, action: #selector(commandTapped(_:)), for: .touchUpInside)
+            launchButton.addTarget(self, action: #selector(commandTapped(_:)), for: .touchUpInside)
+            commandBar.addArrangedSubview(launchButton)
+        }
+        actionsButton.setTitle("Menu", for: .normal)
+        actionsButton.showsMenuAsPrimaryAction = true
+        actionsButton.menu = UIMenu(children: actions)
+        if !actions.isEmpty { commandBar.addArrangedSubview(actionsButton) }
     }
 
     func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int { items.count }
@@ -343,10 +355,19 @@ class J2MEListView: UIView, UITableViewDataSource, UITableViewDelegate {
     }
 
     func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
+        selectedRow = indexPath.row
         j2me_input_post_key(Int32(J2ME_UI_LIST_SELECT), Int32(indexPath.row))
     }
 
     @objc private func commandTapped(_ sender: UIButton) {
-        j2me_input_post_key(Int32(J2ME_UI_COMMAND_ACTION), Int32(sender.tag))
+        sendCommand(Int32(sender.tag))
+    }
+
+    private func sendCommand(_ id: Int32) {
+        // Commit the highlighted row immediately before invoking the MIDlet's action.
+        if let selectedRow {
+            j2me_input_post_key(Int32(J2ME_UI_LIST_SELECT), -Int32(selectedRow) - 1)
+        }
+        j2me_input_post_key(Int32(J2ME_UI_COMMAND_ACTION), id)
     }
 }

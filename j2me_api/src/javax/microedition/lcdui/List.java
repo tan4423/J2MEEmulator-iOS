@@ -33,7 +33,7 @@ public class List extends Screen implements Choice {
         strings.add(stringPart);
         images.add(imagePart);
         selected.add(Boolean.FALSE);
-        if (selectedIndex < 0 && listType == EXCLUSIVE) selectedIndex = 0;
+        if (selectedIndex < 0 && listType != MULTIPLE) setSelectedIndex(0, true);
         return strings.size() - 1;
     }
 
@@ -50,7 +50,7 @@ public class List extends Screen implements Choice {
         strings.set(elementNum, stringPart); images.set(elementNum, imagePart);
     }
     public void setSelectedIndex(int elementNum, boolean sel) {
-        if (listType == EXCLUSIVE) { for (int i = 0; i < selected.size(); i++) selected.set(i, Boolean.FALSE); }
+        if (listType != MULTIPLE && sel) { for (int i = 0; i < selected.size(); i++) selected.set(i, Boolean.FALSE); }
         selected.set(elementNum, sel);
         if (sel) selectedIndex = elementNum;
     }
@@ -76,9 +76,11 @@ public class List extends Screen implements Choice {
     }
 
     public void handleListSelect(int index) {
+        boolean activate = index >= 0;
+        if (!activate) index = -(index + 1);
         if (index >= 0 && index < strings.size()) {
-            selectedIndex = index;
-            if (listType == IMPLICIT && getCommandListener() != null) {
+            setSelectedIndex(index, true);
+            if (activate && listType == IMPLICIT && selectCommand != null && getCommandListener() != null) {
                 getCommandListener().commandAction(selectCommand, this);
             }
         }

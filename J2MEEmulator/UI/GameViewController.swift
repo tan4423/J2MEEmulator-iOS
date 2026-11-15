@@ -629,6 +629,7 @@ class GameViewController: UIViewController {
     }
 
     func showListView() {
+        placeholderIconView?.isHidden = true
         listView.buildFromNativeData()
         listView.isHidden = false
         emulatorView.isHidden = true

@@ -1,7 +1,7 @@
-name: J2ME Treo AFK low-render test
+name: J2ME Treo X12 launcher test
 on:
   push:
-    branches: [loader-ios-afk-test]
+    branches: [loader-ios-x12-test]
   workflow_dispatch:
 
 permissions:
@@ -56,7 +56,7 @@ jobs:
           classes="$RUNNER_TEMP/lcdui-classes"
           mkdir -p "$classes"
           javac --release 8 -sourcepath '' -cp "$jars/j2me_api.jar:$jars/minijvm_rt.jar" \
-            -d "$classes" j2me_api/src/javax/microedition/lcdui/{Display,TextBox,NativeBridge,Form,ChoiceGroup}.java
+            -d "$classes" j2me_api/src/javax/microedition/lcdui/{Display,TextBox,NativeBridge,Form,ChoiceGroup,List}.java
           jar uf "$jars/j2me_api.jar" -C "$classes" .
       - name: Check toolchain
         run: |
@@ -104,9 +104,9 @@ jobs:
           staging="$(mktemp -d)"
           mkdir "$staging/Payload"
           ditto "${apps[0]}" "$staging/Payload/$(basename "${apps[0]}")"
-          (cd "$staging" && /usr/bin/zip -qry "$GITHUB_WORKSPACE/J2ME-Treo-afk-test-unsigned.ipa" Payload)
+          (cd "$staging" && /usr/bin/zip -qry "$GITHUB_WORKSPACE/J2ME-Treo-x12-test-unsigned.ipa" Payload)
       - uses: actions/upload-artifact@v4
         with:
-          name: J2ME-Treo-afk-test-unsigned
-          path: J2ME-Treo-afk-test-unsigned.ipa
+          name: J2ME-Treo-x12-test-unsigned
+          path: J2ME-Treo-x12-test-unsigned.ipa
           if-no-files-found: error
