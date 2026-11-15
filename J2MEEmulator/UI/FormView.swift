@@ -277,6 +277,7 @@ class J2MEListView: UIView, UITableViewDataSource, UITableViewDelegate {
     private var items: [String] = []
     private var icons: [UIImage?] = []
     private var selectedRow: Int?
+    private var rowLaunchCommand: Int32?
     private let actionsButton = UIButton(type: .system)
     private let launchButton = UIButton(type: .system)
     private let commandBar = UIStackView()
@@ -340,6 +341,7 @@ class J2MEListView: UIView, UITableViewDataSource, UITableViewDelegate {
         tableView.reloadData()
 
         selectedRow = nil
+        rowLaunchCommand = nil
         commandBar.arrangedSubviews.forEach { $0.removeFromSuperview() }
         var actions: [UIAction] = []
         var launchID: Int32?
@@ -347,7 +349,8 @@ class J2MEListView: UIView, UITableViewDataSource, UITableViewDelegate {
             let label = String(cString: j2me_ui_get_command_label(i))
             let id = j2me_ui_get_command_id(i)
             let normalized = label.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: Locale(identifier: "vi"))
-            if normalized == "chay ung dung" || normalized == "run application" {
+                .split { !$0.isLetter }.joined(separator: " ")
+            if ["chay ung dung", "ay ung dung", "run application", "chay", "khoi chay", "launch"].contains(normalized) {
                 launchID = id
             }
             actions.append(UIAction(title: label) { [weak self] _ in
@@ -355,6 +358,11 @@ class J2MEListView: UIView, UITableViewDataSource, UITableViewDelegate {
             })
         }
         if let launchID {
+            // Only the multi-slot launcher opts into tap-to-run. Keep other
+            // MIDP lists' implicit/exclusive selection semantics unchanged.
+            if items.count > 1 && items.allSatisfy({ $0.lowercased().hasPrefix("nicknsonet ") }) {
+                rowLaunchCommand = launchID
+            }
             launchButton.tag = Int(launchID)
             launchButton.setTitle("Chạy ứng dụng", for: .normal)
             launchButton.removeTarget(self, action: #selector(commandTapped(_:)), for: .touchUpInside)
@@ -381,6 +389,10 @@ class J2MEListView: UIView, UITableViewDataSource, UITableViewDelegate {
 
     func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
         selectedRow = indexPath.row
+        if let rowLaunchCommand {
+            sendCommand(rowLaunchCommand)
+            return
+        }
         j2me_input_post_key(Int32(J2ME_UI_LIST_SELECT), Int32(indexPath.row))
     }
 
@@ -389,10 +401,11 @@ class J2MEListView: UIView, UITableViewDataSource, UITableViewDelegate {
     }
 
     private func sendCommand(_ id: Int32) {
-        // Commit the highlighted row immediately before invoking the MIDlet's action.
+        // A single event carries both the row and command to the same List.
         if let selectedRow {
-            j2me_input_post_key(Int32(J2ME_UI_LIST_SELECT), -Int32(selectedRow) - 1)
+            j2me_input_post_touch(13, Int32(selectedRow), id)
+        } else {
+            j2me_input_post_key(Int32(J2ME_UI_COMMAND_ACTION), id)
         }
-        j2me_input_post_key(Int32(J2ME_UI_COMMAND_ACTION), id)
     }
 }

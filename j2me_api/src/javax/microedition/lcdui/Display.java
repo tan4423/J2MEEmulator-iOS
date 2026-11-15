@@ -189,6 +189,10 @@ public class Display {
                         }
                     }
                     if (target != null) target.fireCommandAction(cmdId);
+                } else if (type == 13 && current instanceof List) {
+                    List target = (List) current;
+                    target.handleListSelect(-nativeEvent[1] - 1);
+                    target.fireCommandAction(nativeEvent[2]);
                 } else if (type == 11 && current instanceof List) {
                     ((List) current).handleListSelect(nativeEvent[3]);
                 } else if (type == 12 && current instanceof Alert) {
