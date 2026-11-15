@@ -8,7 +8,34 @@
 
 import UIKit
 
+// One pending frame per view. The VM may submit from a background thread;
+// UIKit is only touched by the main-queue drain.
+nonisolated private final class LatestGameFrame: @unchecked Sendable {
+    private let lock = NSLock()
+    private var pending: CGImage?
+    private var scheduled = false
+
+    func submit(_ frame: CGImage) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        pending = frame
+        if scheduled { return false }
+        scheduled = true
+        return true
+    }
+
+    func take() -> CGImage? {
+        lock.lock()
+        defer { lock.unlock() }
+        let frame = pending
+        pending = nil
+        scheduled = false
+        return frame
+    }
+}
+
 class EmulatorView: UIView {
+    private nonisolated let latestFrame = LatestGameFrame()
 
     // J2ME virtual canvas size
     var canvasWidth: Int = 240
@@ -40,9 +67,10 @@ class EmulatorView: UIView {
     var onFrame: ((CGImage) -> Void)?
 
     /// Update the displayed image from a CGImage.
-    func displayImage(_ cgImage: CGImage) {
+    nonisolated func displayImage(_ cgImage: CGImage) {
+        guard latestFrame.submit(cgImage) else { return }
         DispatchQueue.main.async { [weak self] in
-            guard let self else { return }
+            guard let self, let cgImage = self.latestFrame.take() else { return }
             self.layer.contents = cgImage
             self.onFrame?(cgImage)
             if let cb = self.onFirstFrame {
