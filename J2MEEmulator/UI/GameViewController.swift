@@ -426,7 +426,7 @@ class GameViewController: UIViewController {
         guard heldDirections.insert(code).inserted else { return }
         j2me_input_post_key(Int32(J2ME_INPUT_KEY_PRESSED), code)
         if code != -5 {
-            let timer = Timer(fire: Date(timeIntervalSinceNow: 0.36), interval: 0.085,
+            let timer = Timer(fireAt: Date(timeIntervalSinceNow: 0.36), interval: 0.085,
                               target: self, selector: #selector(repeatDirection(_:)),
                               userInfo: code, repeats: true)
             directionTimers[code] = timer
