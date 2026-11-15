@@ -1,7 +1,7 @@
-name: J2ME Treo X12 icons, menus and dimmed AFK
+name: J2ME Treo X12 visible Canvas compatibility
 on:
   push:
-    branches: [loader-ios-x12-qltk]
+    branches: [loader-ios-x12-visible-canvas]
   workflow_dispatch:
 
 permissions:
@@ -56,7 +56,7 @@ jobs:
           classes="$RUNNER_TEMP/lcdui-classes"
           mkdir -p "$classes"
           javac --release 8 -sourcepath '' -cp "$jars/j2me_api.jar:$jars/minijvm_rt.jar" \
-            -d "$classes" j2me_api/src/javax/microedition/lcdui/{Display,TextBox,NativeBridge,Form,ChoiceGroup,List}.java
+            -d "$classes" j2me_api/src/javax/microedition/lcdui/{Display,Canvas,TextBox,NativeBridge,Form,ChoiceGroup,List}.java
           jar uf "$jars/j2me_api.jar" -C "$classes" .
       - name: Check toolchain
         run: |
@@ -104,9 +104,9 @@ jobs:
           staging="$(mktemp -d)"
           mkdir "$staging/Payload"
           ditto "${apps[0]}" "$staging/Payload/$(basename "${apps[0]}")"
-          (cd "$staging" && /usr/bin/zip -qry "$GITHUB_WORKSPACE/J2ME-Treo-x12-qltk-unsigned.ipa" Payload)
+          (cd "$staging" && /usr/bin/zip -qry "$GITHUB_WORKSPACE/J2ME-Treo-x12-visible-canvas-unsigned.ipa" Payload)
       - uses: actions/upload-artifact@v4
         with:
-          name: J2ME-Treo-x12-qltk-unsigned
-          path: J2ME-Treo-x12-qltk-unsigned.ipa
+          name: J2ME-Treo-x12-visible-canvas-unsigned
+          path: J2ME-Treo-x12-visible-canvas-unsigned.ipa
           if-no-files-found: error

@@ -11,7 +11,13 @@ import javax.microedition.midlet.MIDlet;
  * Analogous to J2ME-Loader's Display.
  */
 public class Display {
-    private static Display instance;
+    private static volatile Display instance;
+
+    // Visibility query without creating a Display during startup or shutdown.
+    static boolean isCurrentCanvas(Canvas canvas) {
+        Display display = instance;
+        return display != null && display.current == canvas;
+    }
     private volatile Displayable current;
     private final Object screenChange = new Object();
     private volatile boolean running;

@@ -91,6 +91,7 @@ public abstract class Canvas extends Displayable {
 
     public void repaint(int x, int y, int w, int h) {
         limitFps();
+        if (!Display.isCurrentCanvas(this)) return;
         if (!repaintPending) {
             // First repaint request — set clip to this rect
             clipX = x;
@@ -119,7 +120,7 @@ public abstract class Canvas extends Displayable {
      * to ensure serialized access (matching J2ME-Loader behavior).
      */
     public void serviceRepaints() {
-        if (repaintPending) {
+        if (repaintPending && Display.isCurrentCanvas(this)) {
             doPaint();
         }
     }
@@ -155,10 +156,12 @@ public abstract class Canvas extends Displayable {
             return;
         }
         synchronized (paintLock) {
+            // Hidden Canvas instances must not run paint or present their buffer.
+            if (!Display.isCurrentCanvas(this)) return;
             if (nativeContext == 0) initContext();
             graphics.reset(0, 0, this.width, this.height);
             graphics.drawImage(image, 0, 0, Graphics.LEFT | Graphics.TOP);
-            NativeBridge.flushToScreen(nativeContext);
+            if (Display.isCurrentCanvas(this)) NativeBridge.flushToScreen(nativeContext);
         }
     }
 
@@ -166,10 +169,12 @@ public abstract class Canvas extends Displayable {
     public void flushBuffer(Image image, int x, int y) {
         limitFps();
         synchronized (paintLock) {
+            // Hidden Canvas instances must not run paint or present their buffer.
+            if (!Display.isCurrentCanvas(this)) return;
             if (nativeContext == 0) initContext();
             graphics.reset(0, 0, this.width, this.height);
             graphics.drawImage(image, x, y, Graphics.LEFT | Graphics.TOP);
-            NativeBridge.flushToScreen(nativeContext);
+            if (Display.isCurrentCanvas(this)) NativeBridge.flushToScreen(nativeContext);
         }
     }
 
@@ -180,11 +185,14 @@ public abstract class Canvas extends Displayable {
      */
     public void doPaint() {
         synchronized (paintLock) {
+            // Hidden Canvas instances must not run paint or present their buffer.
+            if (!Display.isCurrentCanvas(this)) return;
             if (nativeContext == 0) initContext();
             repaintPending = false;
-            graphics.reset(clipX, clipY, clipW, clipH);
+            if (fullRepaint) graphics.reset(0, 0, width, height);
+            else graphics.reset(clipX, clipY, clipW, clipH);
             paint(graphics);
-            NativeBridge.flushToScreen(nativeContext);
+            if (Display.isCurrentCanvas(this)) NativeBridge.flushToScreen(nativeContext);
             // Reset for next frame
             fullRepaint = true;
             clipX = 0; clipY = 0; clipW = width; clipH = height;
