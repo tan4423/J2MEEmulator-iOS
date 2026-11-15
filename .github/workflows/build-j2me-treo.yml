@@ -1,4 +1,4 @@
-name: Build J2ME Treo
+name: Build J2ME Treo v2
 on:
   workflow_dispatch:
 
@@ -14,25 +14,81 @@ jobs:
         with:
           submodules: recursive
           persist-credentials: false
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Compile foreground keep-awake module
+        run: |
+          cat > "$RUNNER_TEMP/J2METreo.m" <<'OBJC'
+          #import <UIKit/UIKit.h>
+          #import <dispatch/dispatch.h>
+
+          __attribute__((constructor)) static void J2METreoInstall(void) {
+              dispatch_async(dispatch_get_main_queue(), ^{
+                  NSNotificationCenter *center = [NSNotificationCenter defaultCenter];
+                  [center addObserverForName:UIApplicationDidBecomeActiveNotification
+                                      object:nil queue:[NSOperationQueue mainQueue]
+                                  usingBlock:^(NSNotification *note) {
+                      [UIApplication sharedApplication].idleTimerDisabled = YES;
+                  }];
+                  [center addObserverForName:UIApplicationWillResignActiveNotification
+                                      object:nil queue:[NSOperationQueue mainQueue]
+                                  usingBlock:^(NSNotification *note) {
+                      [UIApplication sharedApplication].idleTimerDisabled = NO;
+                  }];
+                  UIApplication *app = [UIApplication sharedApplication];
+                  app.idleTimerDisabled = (app.applicationState == UIApplicationStateActive);
+              });
+          }
+          OBJC
+          xcrun --sdk iphoneos clang -arch arm64 \
+            -isysroot "$(xcrun --sdk iphoneos --show-sdk-path)" \
+            -miphoneos-version-min=15.0 -fobjc-arc \
+            -c "$RUNNER_TEMP/J2METreo.m" -o "$RUNNER_TEMP/J2METreo.o"
       - name: Check toolchain
         run: |
           xcodebuild -version
           xcrun --sdk iphoneos --show-sdk-version
-          export JAVA_HOME="$(/usr/libexec/java_home -v 17)"
           "$JAVA_HOME/bin/javac" -version
-      - name: Build Java runtime and J2ME API
+      - name: Find Xcode project and prepare Java resources
+        shell: bash
         run: |
-          export JAVA_HOME="$(/usr/libexec/java_home -v 17)"
           export PATH="$JAVA_HOME/bin:$PATH"
-          (cd miniJVM-2.0.0/binary && bash ./build_jar.sh)
-          (cd J2MEEmulator/j2me_api && bash ./build.sh)
+          if [[ -d J2MEEmulator.xcodeproj ]]; then
+            project=J2MEEmulator.xcodeproj
+          elif [[ -d J2MEEmulator/J2MEEmulator.xcodeproj ]]; then
+            project=J2MEEmulator/J2MEEmulator.xcodeproj
+          else
+            echo '::error::J2MEEmulator.xcodeproj not found in the checkout'
+            exit 1
+          fi
+          printf 'J2ME_PROJECT=%s\n' "$project" >> "$GITHUB_ENV"
+          echo 'Java build scripts and bundled JARs in this checkout:'
+          find . -type f \( -name '*.jar' -o -name 'build_jar.sh' -o -path '*/j2me_api/build.sh' \) -not -path './.git/*' -print
+          runtime_script="$(find . -type f -path '*/binary/build_jar.sh' -not -path './.git/*' -print | sed -n '1p')"
+          if [[ -n "$runtime_script" ]]; then
+            (cd "$(dirname "$runtime_script")" && bash ./build_jar.sh)
+          else
+            echo '::notice::No miniJVM build script in checkout; trying the runtime resources referenced by the Xcode project.'
+          fi
+          if [[ -f j2me_api/build.sh ]]; then
+            (cd j2me_api && bash ./build.sh)
+          elif [[ -f J2MEEmulator/j2me_api/build.sh ]]; then
+            (cd J2MEEmulator/j2me_api && bash ./build.sh)
+          else
+            echo '::notice::No J2ME API build script in checkout; trying the resources referenced by the Xcode project.'
+          fi
       - name: Build iPhone app without signing
+        shell: bash
         run: |
-          xcodebuild -list -project J2MEEmulator/J2MEEmulator.xcodeproj
-          xcodebuild -project J2MEEmulator/J2MEEmulator.xcodeproj \
+          xcodebuild -list -project "$J2ME_PROJECT"
+          xcodebuild -project "$J2ME_PROJECT" \
             -scheme J2MEEmulator -configuration Release \
             -sdk iphoneos -destination 'generic/platform=iOS' \
             -derivedDataPath "$RUNNER_TEMP/jarbox-build" \
+            "OTHER_LDFLAGS=\$(inherited) $RUNNER_TEMP/J2METreo.o -framework UIKit -framework Foundation" \
+            PRODUCT_BUNDLE_IDENTIFIER=app.j2metreo.personal \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build
       - name: Package unsigned IPA
         run: |
@@ -43,12 +99,15 @@ jobs:
             ls -la "$products" || true
             exit 1
           fi
+          app="${apps[0]}"
+          /usr/libexec/PlistBuddy -c 'Set :CFBundleDisplayName J2ME Treo' "$app/Info.plist" || \
+            /usr/libexec/PlistBuddy -c 'Add :CFBundleDisplayName string J2ME Treo' "$app/Info.plist"
           staging="$(mktemp -d)"
           mkdir "$staging/Payload"
           ditto "${apps[0]}" "$staging/Payload/$(basename "${apps[0]}")"
-          (cd "$staging" && /usr/bin/zip -qry "$GITHUB_WORKSPACE/JarBox-unsigned.ipa" Payload)
+          (cd "$staging" && /usr/bin/zip -qry "$GITHUB_WORKSPACE/J2ME-Treo-unsigned.ipa" Payload)
       - uses: actions/upload-artifact@v4
         with:
-          name: JarBox-unsigned
-          path: JarBox-unsigned.ipa
+          name: J2ME-Treo-unsigned
+          path: J2ME-Treo-unsigned.ipa
           if-no-files-found: error
