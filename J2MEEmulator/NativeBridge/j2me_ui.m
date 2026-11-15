@@ -73,7 +73,7 @@ static s32 n_takeText(Runtime *runtime, JClass *clazz) {
     }
     Instance *array = NULL;
     if (data) {
-        array = jarray_create_by_type_index(runtime, (s32)(data.length / sizeof(uint16_t)), DATATYPE_CHAR);
+        array = jarray_create_by_type_index(runtime, (s32)(data.length / sizeof(uint16_t)), DATATYPE_JCHAR);
         if (array && data.length) memcpy(array->arr_body, data.bytes, data.length);
     }
     env->push_ref(runtime->stack, array);
