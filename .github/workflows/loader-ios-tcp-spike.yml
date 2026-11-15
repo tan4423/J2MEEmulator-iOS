@@ -1,0 +1,116 @@
+name: Loader upstream TCP experiment
+on:
+  push:
+    branches: [loader-ios-tcp-spike]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  prototype:
+    runs-on: macos-26
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          submodules: recursive
+      - uses: actions/checkout@v4
+        with:
+          repository: nikita36078/J2ME-Loader
+          ref: afffdde4e677b3d5ef516e713732abc488f19fc0
+          path: upstream-loader
+          persist-credentials: false
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Compile upstream Java ME TCP module and test localhost echo
+        run: |
+          set -euo pipefail
+          s=upstream-loader/app/src/main/java
+          w="$RUNNER_TEMP/loader-spike"
+          mkdir -p "$w/classes" "$w/overlay/META-INF/j2me-loader"
+          javac --release 8 -d "$w/classes" "$s/org/microemu/cldc/socket/SocketConnection.java" \
+            "$s"/javax/microedition/io/{Connection,InputConnection,OutputConnection,StreamConnection,SocketConnection}.java
+          cat > "$w/TcpSmoke.java" <<'JAVA'
+          import java.net.*;
+          import java.io.*;
+          import org.microemu.cldc.socket.SocketConnection;
+          public class TcpSmoke {
+              public static void main(String[] args) throws Exception {
+                  try (ServerSocket server = new ServerSocket(0, 1, InetAddress.getByName("127.0.0.1"))) {
+                      server.setSoTimeout(5000);
+                      SocketConnection client = new SocketConnection("127.0.0.1", server.getLocalPort());
+                      try (Socket peer = server.accept()) {
+                          peer.setSoTimeout(5000);
+                          DataOutputStream out = client.openDataOutputStream();
+                          out.writeInt(123456);
+                          out.flush();
+                          int data = new DataInputStream(peer.getInputStream()).readInt();
+                          new DataOutputStream(peer.getOutputStream()).writeInt(data);
+                          if (client.openDataInputStream().readInt() != 123456) throw new IOException("Bad echo");
+                          System.out.println("PASS: upstream TCP client localhost round trip on desktop JVM");
+                      } finally {
+                          client.close();
+                      }
+                  }
+              }
+          }
+          JAVA
+          javac --release 8 -cp "$w/classes" -d "$w/classes" "$w/TcpSmoke.java"
+          java -cp "$w/classes" TcpSmoke
+      - name: Inspect bundled miniJVM TCP API and stage original implementation
+        run: |
+          set -euo pipefail
+          w="$RUNNER_TEMP/loader-spike"
+          jars="$GITHUB_WORKSPACE/J2MEEmulator/Resources/jars"
+          mkdir -p "$w/abi"
+          (cd "$w/abi"; jar xf "$jars/minijvm_rt.jar" java/net/Socket.class)
+          if [[ -f "$w/abi/java/net/Socket.class" ]]; then
+            javap -p "$w/abi/java/net/Socket.class" | tee "$w/socket-abi.txt"
+          else
+            echo "java/net/Socket.class absent from bundled minijvm_rt.jar" | tee "$w/socket-abi.txt"
+          fi
+          for method in getInetAddress getLocalAddress getLocalPort getPort getTcpNoDelay \
+            getSoLinger getKeepAlive getReceiveBufferSize getSendBufferSize setTcpNoDelay \
+            setSoLinger setKeepAlive setReceiveBufferSize setSendBufferSize getInputStream getOutputStream close; do
+            if ! grep -F " $method(" "$w/socket-abi.txt" >/dev/null; then
+              echo "::warning::Bundled Socket API is missing $method"
+            fi
+          done
+          # Do not route games to this class before an on-device compatibility test.
+          cp -R "$w/classes/org" "$w/overlay/"
+          cp upstream-loader/LICENSE "$w/overlay/META-INF/j2me-loader/LICENSE"
+          if [[ -f upstream-loader/NOTICE ]]; then
+            cp upstream-loader/NOTICE "$w/overlay/META-INF/j2me-loader/NOTICE"
+          fi
+          printf '%s\n' 'nikita36078/J2ME-Loader@afffdde4e677b3d5ef516e713732abc488f19fc0' \
+            > "$w/overlay/META-INF/j2me-loader/SOURCE"
+          jar uf "$jars/j2me_api.jar" -C "$w/overlay" .
+          cp "$w/socket-abi.txt" loader-socket-abi.txt
+      - name: Build unsigned iPhone packaging prototype
+        run: |
+          set -euo pipefail
+          build="$RUNNER_TEMP/loader-build"
+          xcodebuild -project J2MEEmulator.xcodeproj -scheme J2MEEmulator \
+            -configuration Release -sdk iphoneos -destination 'generic/platform=iOS' \
+            -derivedDataPath "$build" PRODUCT_BUNDLE_IDENTIFIER=app.j2metreo.loaderlab \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build
+          app="$build/Build/Products/Release-iphoneos/JarBox.app"
+          test -s "$app/minijvm_rt.jar"
+          jar tf "$app/j2me_api.jar" > "$RUNNER_TEMP/loader-jar-entries.txt"
+          grep -Fx 'org/microemu/cldc/socket/SocketConnection.class' "$RUNNER_TEMP/loader-jar-entries.txt"
+          /usr/libexec/PlistBuddy -c 'Set :CFBundleDisplayName Loader Lab' "$app/Info.plist" || \
+            /usr/libexec/PlistBuddy -c 'Add :CFBundleDisplayName string Loader Lab' "$app/Info.plist"
+          stage="$(mktemp -d)"
+          mkdir "$stage/Payload"
+          ditto "$app" "$stage/Payload/JarBox.app"
+          (cd "$stage" && zip -qry "$GITHUB_WORKSPACE/Loader-Lab-unsigned.ipa" Payload)
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: loader-lab-experiment
+          path: |
+            Loader-Lab-unsigned.ipa
+            loader-socket-abi.txt
+          if-no-files-found: warn
