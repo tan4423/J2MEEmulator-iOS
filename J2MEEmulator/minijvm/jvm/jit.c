@@ -239,6 +239,7 @@ static void _debug_gen_print_callstack(struct sljit_compiler *C) {
 
 }
 
+#if JIT_CODE_DUMP && !__JVM_OS_IOS__
 static void dump_code(void *code, sljit_uw len) {
 
     FILE *fp = fopen("/tmp/slj_dump", "wb");
@@ -263,6 +264,7 @@ static void dump_code(void *code, sljit_uw len) {
 #endif
 #endif
 }
+#endif
 
 
 //------------------------  tool ----------------------------
@@ -3426,7 +3428,7 @@ void construct_jit(MethodInfo *method, Runtime *runtime) {
         s32 debug = 1;
         method->is_jit = 1;
     }
-#if(JIT_CODE_DUMP)
+#if JIT_CODE_DUMP && !__JVM_OS_IOS__
     if (utf8_equals_c(runtime->method->_this_class->name, "org/mini/json/JsonParser")
         && utf8_equals_c(runtime->method->name, "<init>")) {
         if (ca->jit.state == JIT_GEN_SUCCESS)dump_code(ca->jit.func, ca->jit.len);
