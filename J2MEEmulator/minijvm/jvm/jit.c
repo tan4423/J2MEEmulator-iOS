@@ -3485,6 +3485,11 @@ void jit_set_exception_jump_addr(Runtime *runtime, CodeAttribute *ca, s32 index)
 
 #else
 
+int treo_game_jit_is_enabled(void) { return 0; }
+void treo_game_jit_set_enabled(int enabled) { (void)enabled; }
+int treo_game_jit_compiled_count(void) { return 0; }
+int treo_game_jit_call_count(void) { return 0; }
+
 void jit_init(CodeAttribute *ca) {
 }
 

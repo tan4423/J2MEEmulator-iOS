@@ -250,6 +250,7 @@
 				);
 				MARKETING_VERSION = 0.1.0;
 				OTHER_CFLAGS = (
+					"$(TREO_GAME_JIT_CFLAGS)",
 					"-Wno-implicit-function-declaration",
 					"-DM3G_TARGET_GENERIC",
 					"-DGLES_SILENCE_DEPRECATION",
@@ -313,6 +314,7 @@
 				);
 				MARKETING_VERSION = 0.1.0;
 				OTHER_CFLAGS = (
+					"$(TREO_GAME_JIT_CFLAGS)",
 					"-Wno-implicit-function-declaration",
 					"-DM3G_TARGET_GENERIC",
 					"-DGLES_SILENCE_DEPRECATION",
