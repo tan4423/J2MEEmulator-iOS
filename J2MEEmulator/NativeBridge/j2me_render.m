@@ -242,6 +242,8 @@ static inline RenderImage *img_acquire(s64 handle) {
     return img;
 }
 
+static void drop_image_crops(RenderImage *img);
+
 static inline void img_release(RenderImage *img) {
     if (!img) return;
     if (atomic_fetch_sub_explicit(&img->refcount, 1, memory_order_release) == 1) {
@@ -250,6 +252,7 @@ static inline void img_release(RenderImage *img) {
         int pixels = img->width * img->height * 4;
         CGContextRef ctx = img->ctx;
         img->ctx = NULL;
+        drop_image_crops(img);
         if (img->immutableSnapshot) CGImageRelease(img->immutableSnapshot);
         if (ctx) CGContextRelease(ctx);
         if (pixels > 0) native_heap_sub(pixels);
@@ -384,6 +387,91 @@ static RenderImage *createImageFromData(const uint8_t *data, int length) {
 static CGImageRef copyImageSnapshot(RenderImage *img) {
     if (img->immutableSnapshot) return CGImageRetain(img->immutableSnapshot);
     return CGBitmapContextCreateImage(img->ctx);
+}
+
+
+/* Reuse the exact Core Graphics crop of a decoded, immutable image.
+ * Fixed storage; don't retain cache entries past their source image's lifetime. */
+enum { CROP_SETS = 64, CROP_WAYS = 4, CROP_MAX_SIDE = 64 };
+typedef struct {
+    RenderImage *owner;
+    int x, y, w, h;
+    CGImageRef crop;
+} CropEntry;
+
+static os_unfair_lock g_crop_lock = OS_UNFAIR_LOCK_INIT;
+static CropEntry g_crops[CROP_SETS][CROP_WAYS];
+static unsigned g_crop_next[CROP_SETS];
+
+static void drop_image_crops(RenderImage *img) {
+    if (!img->immutableSnapshot) return;
+    os_unfair_lock_lock(&g_crop_lock);
+    for (unsigned s = 0; s < CROP_SETS; ++s) {
+        for (unsigned i = 0; i < CROP_WAYS; ++i) {
+            CropEntry *e = &g_crops[s][i];
+            if (e->owner == img) {
+                CGImageRef crop = e->crop;
+                *e = (CropEntry){0};
+                CGImageRelease(crop);
+            }
+        }
+    }
+    os_unfair_lock_unlock(&g_crop_lock);
+}
+
+static CropEntry *find_crop(CropEntry *set, RenderImage *img,
+                            int x, int y, int w, int h) {
+    for (unsigned i = 0; i < CROP_WAYS; ++i) {
+        CropEntry *e = &set[i];
+        if (e->owner == img && e->x == x && e->y == y && e->w == w && e->h == h)
+            return e;
+    }
+    return NULL;
+}
+
+/* The caller holds the source image reference and owns the returned crop. */
+static CGImageRef copy_image_crop(RenderImage *img, int x, int y, int w, int h) {
+    const CGRect rect = CGRectMake(x, y, w, h);
+    if (!img->immutableSnapshot || w <= 0 || h <= 0 ||
+        w > CROP_MAX_SIDE || h > CROP_MAX_SIDE || x < 0 || y < 0 ||
+        w > img->width || h > img->height ||
+        x > img->width - w || y > img->height - h) {
+        CGImageRef full = copyImageSnapshot(img);
+        if (!full) return NULL;
+        CGImageRef crop = CGImageCreateWithImageInRect(full, rect);
+        CGImageRelease(full);
+        return crop;
+    }
+
+    uint32_t hash = (uint32_t)((uintptr_t)img >> 4);
+    hash ^= (uint32_t)x * 0x9e3779b1u ^ (uint32_t)y * 0x85ebca6bu;
+    hash ^= (uint32_t)w * 0xc2b2ae35u ^ (uint32_t)h * 0x27d4eb2fu;
+    hash ^= hash >> 16;
+    hash *= 0x7feb352du;
+    unsigned s = (hash ^ (hash >> 15)) & (CROP_SETS - 1);
+    CropEntry *set = g_crops[s];
+
+    if (!os_unfair_lock_trylock(&g_crop_lock))
+        return CGImageCreateWithImageInRect(img->immutableSnapshot, rect);
+    CropEntry *entry = find_crop(set, img, x, y, w, h);
+    CGImageRef hit = entry ? CGImageRetain(entry->crop) : NULL;
+    os_unfair_lock_unlock(&g_crop_lock);
+    if (hit) return hit;
+
+    CGImageRef crop = CGImageCreateWithImageInRect(img->immutableSnapshot, rect);
+    if (!crop || !os_unfair_lock_trylock(&g_crop_lock)) return crop;
+    CGImageRef victim = NULL;
+    if (!find_crop(set, img, x, y, w, h)) {
+        unsigned slot = g_crop_next[s]++ & (CROP_WAYS - 1);
+        for (unsigned i = 0; i < CROP_WAYS; ++i) {
+            if (!set[i].owner) { slot = i; break; }
+        }
+        victim = set[slot].crop;
+        set[slot] = (CropEntry){img, x, y, w, h, CGImageRetain(crop)};
+    }
+    os_unfair_lock_unlock(&g_crop_lock);
+    if (victim) CGImageRelease(victim);
+    return crop;
 }
 
 static void destroyImage(RenderImage *img) {
@@ -916,10 +1004,7 @@ static s32 n_drawRegion(Runtime *runtime, JClass *clazz) {
     if (anchor & 2) yDst -= outH / 2;
     if (anchor & 32) yDst -= outH;
 
-    CGImageRef fullImage = copyImageSnapshot(img);
-    if (!fullImage) { img_release(img); rc_release(rc); return RUNTIME_STATUS_NORMAL; }
-    CGImageRef subImage = CGImageCreateWithImageInRect(fullImage, CGRectMake(xSrc, ySrc, wSrc, hSrc));
-    CGImageRelease(fullImage);
+    CGImageRef subImage = copy_image_crop(img, xSrc, ySrc, wSrc, hSrc);
     if (!subImage) { img_release(img); rc_release(rc); return RUNTIME_STATUS_NORMAL; }
 
     CGContextSaveGState(rctx);
@@ -1319,6 +1404,7 @@ void j2me_render_cleanup(void) {
     int img_count = g_live_img_count;
     for (int i = 0; i < g_live_img_count; i++) {
         RenderImage *img = g_live_img[i];
+        drop_image_crops(img);
         if (img->immutableSnapshot) CGImageRelease(img->immutableSnapshot);
         if (img->ctx) { CGContextRelease(img->ctx); img->ctx = NULL; }
         free(img);

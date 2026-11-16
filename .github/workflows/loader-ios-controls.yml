@@ -1,7 +1,7 @@
-name: J2ME Treo X12 image cache (macOS 15)
+name: J2ME Treo X12 crop cache (macOS 15)
 on:
   push:
-    branches: [loader-ios-x12-image-cache-macos15]
+    branches: [loader-ios-x12-crop-cache]
   workflow_dispatch:
 
 permissions:
@@ -106,9 +106,9 @@ jobs:
           staging="$(mktemp -d)"
           mkdir "$staging/Payload"
           ditto "${apps[0]}" "$staging/Payload/$(basename "${apps[0]}")"
-          (cd "$staging" && /usr/bin/zip -qry "$GITHUB_WORKSPACE/J2ME-Treo-x12-image-cache-macos15-unsigned.ipa" Payload)
+          (cd "$staging" && /usr/bin/zip -qry "$GITHUB_WORKSPACE/J2ME-Treo-x12-crop-cache-unsigned.ipa" Payload)
       - uses: actions/upload-artifact@v4
         with:
-          name: J2ME-Treo-x12-image-cache-macos15-unsigned
-          path: J2ME-Treo-x12-image-cache-macos15-unsigned.ipa
+          name: J2ME-Treo-x12-crop-cache-unsigned
+          path: J2ME-Treo-x12-crop-cache-unsigned.ipa
           if-no-files-found: error
