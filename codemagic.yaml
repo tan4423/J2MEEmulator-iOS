@@ -1,0 +1,106 @@
+workflows:
+  jit-probe-unsigned:
+    name: J2ME Treo JIT probe unsigned
+    instance_type: mac_mini_m2
+    max_build_duration: 25
+    environment:
+      xcode: "26.3"
+    scripts:
+      - name: Build and package unsigned iPhone IPA
+        script: |
+          set -euo pipefail
+          export RUNNER_TEMP="$(mktemp -d)"
+          trap 'rm -rf "$RUNNER_TEMP"' EXIT
+          export GITHUB_WORKSPACE="$PWD"
+          JAVA_HOME="$(/usr/libexec/java_home -v 17)"
+          export JAVA_HOME
+          export PATH="$JAVA_HOME/bin:$PATH"
+          export J2ME_PROJECT=J2MEEmulator.xcodeproj
+          
+          cat > "$RUNNER_TEMP/J2METreo.m" <<'OBJC'
+          #import <UIKit/UIKit.h>
+          #import <dispatch/dispatch.h>
+          
+          __attribute__((constructor)) static void J2METreoInstall(void) {
+              dispatch_async(dispatch_get_main_queue(), ^{
+                  NSNotificationCenter *center = [NSNotificationCenter defaultCenter];
+                  [center addObserverForName:UIApplicationDidBecomeActiveNotification
+                                      object:nil queue:[NSOperationQueue mainQueue]
+                                  usingBlock:^(NSNotification *note) {
+                      [UIApplication sharedApplication].idleTimerDisabled = YES;
+                  }];
+                  [center addObserverForName:UIApplicationWillResignActiveNotification
+                                      object:nil queue:[NSOperationQueue mainQueue]
+                                  usingBlock:^(NSNotification *note) {
+                      [UIApplication sharedApplication].idleTimerDisabled = NO;
+                  }];
+                  UIApplication *app = [UIApplication sharedApplication];
+                  app.idleTimerDisabled = (app.applicationState == UIApplicationStateActive);
+              });
+          }
+          OBJC
+          xcrun --sdk iphoneos clang -arch arm64 \
+            -isysroot "$(xcrun --sdk iphoneos --show-sdk-path)" \
+            -miphoneos-version-min=15.0 -fobjc-arc \
+            -c "$RUNNER_TEMP/J2METreo.m" -o "$RUNNER_TEMP/J2METreo.o"
+          
+          set -euo pipefail
+          jars="$PWD/J2MEEmulator/Resources/jars"
+          classes="$RUNNER_TEMP/lcdui-classes"
+          mkdir -p "$classes"
+          javac --release 8 -sourcepath '' -cp "$jars/j2me_api.jar:$jars/minijvm_rt.jar" \
+            -d "$classes" j2me_api/src/javax/microedition/lcdui/{Display,Canvas,TextBox,NativeBridge,Form,ChoiceGroup,List}.java
+          jar uf "$jars/j2me_api.jar" -C "$classes" .
+          
+          # Use only the pinned SLJIT source; do not build or run upstream scripts.
+          git init -q "$RUNNER_TEMP/sljit-upstream"
+          git -C "$RUNNER_TEMP/sljit-upstream" fetch -q --depth=1 https://github.com/digitalgust/miniJVM.git 76f904ea4008a8058db5155bf5ee2cfe94d19e60
+          test "$(git -C "$RUNNER_TEMP/sljit-upstream" rev-parse FETCH_HEAD)" = "76f904ea4008a8058db5155bf5ee2cfe94d19e60"
+          git -C "$RUNNER_TEMP/sljit-upstream" checkout -q --detach FETCH_HEAD
+          sljit="$RUNNER_TEMP/sljit-upstream/minijvm/c/utils/sljit"
+          xcrun --sdk iphoneos clang -arch arm64 -miphoneos-version-min=15.0 -O2 -DSLJIT_CONFIG_AUTO=1 -I"$sljit" -c "$sljit/sljitLir.c" -o "$RUNNER_TEMP/TreoSLJIT.o"
+          xcrun --sdk iphoneos clang -arch arm64 -miphoneos-version-min=15.0 -O2 -DSLJIT_CONFIG_AUTO=1 -I"$sljit" -c "tools/treo_jit_probe.c" -o "$RUNNER_TEMP/TreoJITProbe.o"
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+          
+          project=J2MEEmulator.xcodeproj
+          if [[ ! -f "$project/project.pbxproj" ]]; then
+            echo "::error::Missing $project/project.pbxproj"
+            exit 1
+          fi
+          for jar in minijvm_rt.jar j2me_api.jar; do
+            path="J2MEEmulator/Resources/jars/$jar"
+            if [[ ! -s "$path" ]] || ! /usr/bin/unzip -tq "$path"; then
+              echo "::error::Missing or invalid bundled JAR: $path"
+              exit 1
+            fi
+          done
+          
+          xcodebuild -list -project "$J2ME_PROJECT"
+          xcodebuild -project "$J2ME_PROJECT" \
+            -scheme J2MEEmulator -configuration Release \
+            -sdk iphoneos -destination 'generic/platform=iOS' \
+            -derivedDataPath "$RUNNER_TEMP/jarbox-build" \
+            "OTHER_LDFLAGS=\$(inherited) $RUNNER_TEMP/J2METreo.o $RUNNER_TEMP/TreoSLJIT.o $RUNNER_TEMP/TreoJITProbe.o -framework UIKit -framework Foundation" \
+            PRODUCT_BUNDLE_IDENTIFIER=app.j2metreo.personal \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build
+          
+          products="$RUNNER_TEMP/jarbox-build/Build/Products/Release-iphoneos"
+          apps=("$products"/*.app)
+          if [[ ${#apps[@]} -ne 1 || ! -d "${apps[0]}" ]]; then
+            echo 'Expected exactly one iPhone app in Release-iphoneos' >&2
+            ls -la "$products" || true
+            exit 1
+          fi
+          app="${apps[0]}"
+          /usr/libexec/PlistBuddy -c 'Set :CFBundleDisplayName J2ME Treo' "$app/Info.plist" || \
+            /usr/libexec/PlistBuddy -c 'Add :CFBundleDisplayName string J2ME Treo' "$app/Info.plist"
+          staging="$(mktemp -d)"
+          mkdir "$staging/Payload"
+          ditto "${apps[0]}" "$staging/Payload/$(basename "${apps[0]}")"
+          (cd "$staging" && /usr/bin/zip -qry "$GITHUB_WORKSPACE/J2ME-Treo-jit-probe-unsigned.ipa" Payload)
+          
+          test -s "$GITHUB_WORKSPACE/J2ME-Treo-jit-probe-unsigned.ipa"
+          /usr/bin/unzip -tq "$GITHUB_WORKSPACE/J2ME-Treo-jit-probe-unsigned.ipa"
+    artifacts:
+      - J2ME-Treo-jit-probe-unsigned.ipa

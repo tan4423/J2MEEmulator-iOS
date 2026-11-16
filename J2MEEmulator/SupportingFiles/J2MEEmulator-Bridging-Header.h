@@ -25,3 +25,6 @@ const char *j2me_ui_get_alert_text(void);
 int j2me_ui_get_alert_timeout(void);
 
 #endif /* J2MEEmulator_Bridging_Header_h */
+
+#include <stdint.h>
+int32_t treo_jit_probe(void);

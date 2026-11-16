@@ -473,7 +473,25 @@ class GameViewController: UIViewController {
             UIAction(title: "Phím điều hướng", state: padMode == .directions ? .on : .off) { [weak self] _ in self?.setPadMode(.directions) },
             UIAction(title: "Phím số", state: padMode == .numbers ? .on : .off) { [weak self] _ in self?.setPadMode(.numbers) },
             UIAction(title: "Ẩn phím · màn hình lớn", state: padMode == .hidden ? .on : .off) { [weak self] _ in self?.setPadMode(.hidden) },
-            UIAction(title: "Treo tối đa · màn hình đen") { [weak self] _ in self?.showBlackout() }
+            UIAction(title: "Treo tối đa · màn hình đen") { [weak self] _ in self?.showBlackout() },
+            UIAction(title: "Kiểm tra JIT (ARM64)") { [weak self] _ in
+                guard let self else { return }
+                let prompt = UIAlertController(title: "JIT probe",
+                    message: "Chỉ chạy sau khi đã attach JIT vào đúng tiến trình. Đây là phép thử mã ARM64; app có thể thoát nếu iOS chặn thực thi.",
+                    preferredStyle: .alert)
+                prompt.addAction(UIAlertAction(title: "Hủy", style: .cancel))
+                prompt.addAction(UIAlertAction(title: "Chạy thử", style: .default) { [weak self] _ in
+                    NSLog("[TREO-JIT] probe starting")
+                    let result = treo_jit_probe()
+                    NSLog("[TREO-JIT] result=%d", result)
+                    let report = UIAlertController(title: result == 42 ? "JIT probe: PASS" : "JIT probe: FAIL",
+                        message: result == 42 ? "Mã ARM64 sinh lúc chạy trả về 42. JIT Java vẫn tắt." : "Mã lỗi: \(result). JIT Java vẫn tắt.",
+                        preferredStyle: .alert)
+                    report.addAction(UIAlertAction(title: "OK", style: .default))
+                    DispatchQueue.main.async { [weak self] in self?.present(report, animated: true) }
+                })
+                self.present(prompt, animated: true)
+            }
         ])
     }
 
