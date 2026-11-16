@@ -1,0 +1,70 @@
+workflows:
+  crop-cache-unsigned:
+    name: J2ME Treo X12 crop cache unsigned
+    instance_type: mac_mini_m2
+    max_build_duration: 25
+    environment:
+      xcode: "26.3"
+    scripts:
+      - name: Build and package unsigned iPhone IPA
+        script: |
+          set -euo pipefail
+          export RUNNER_TEMP="$(mktemp -d)"
+          trap 'rm -rf "$RUNNER_TEMP"' EXIT
+          export GITHUB_WORKSPACE="$PWD"
+          export JAVA_HOME="$(/usr/libexec/java_home -v 17)"
+          export PATH="$JAVA_HOME/bin:$PATH"
+          export J2ME_PROJECT=J2MEEmulator.xcodeproj
+          cat > "$RUNNER_TEMP/J2METreo.m" <<'OBJC'
+          #import <UIKit/UIKit.h>
+          #import <dispatch/dispatch.h>
+          
+          set -euo pipefail
+          jars="$PWD/J2MEEmulator/Resources/jars"
+          classes="$RUNNER_TEMP/lcdui-classes"
+          mkdir -p "$classes"
+          javac --release 8 -sourcepath '' -cp "$jars/j2me_api.jar:$jars/minijvm_rt.jar" \
+            -d "$classes" j2me_api/src/javax/microedition/lcdui/{Display,Canvas,TextBox,NativeBridge,Form,ChoiceGroup,List}.java
+          jar uf "$jars/j2me_api.jar" -C "$classes" .
+          
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+          
+          project=J2MEEmulator.xcodeproj
+          if [[ ! -f "$project/project.pbxproj" ]]; then
+            echo "::error::Missing $project/project.pbxproj"
+            exit 1
+          fi
+          for jar in minijvm_rt.jar j2me_api.jar; do
+            path="J2MEEmulator/Resources/jars/$jar"
+            if [[ ! -s "$path" ]] || ! /usr/bin/unzip -tq "$path"; then
+              echo "::error::Missing or invalid bundled JAR: $path"
+              exit 1
+            fi
+          done
+          
+          xcodebuild -list -project "$J2ME_PROJECT"
+          xcodebuild -project "$J2ME_PROJECT" \
+            -scheme J2MEEmulator -configuration Release \
+            -sdk iphoneos -destination 'generic/platform=iOS' \
+            -derivedDataPath "$RUNNER_TEMP/jarbox-build" \
+            "OTHER_LDFLAGS=\$(inherited) $RUNNER_TEMP/J2METreo.o -framework UIKit -framework Foundation" \
+            PRODUCT_BUNDLE_IDENTIFIER=app.j2metreo.personal \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build
+          
+          products="$RUNNER_TEMP/jarbox-build/Build/Products/Release-iphoneos"
+          apps=("$products"/*.app)
+          if [[ ${#apps[@]} -ne 1 || ! -d "${apps[0]}" ]]; then
+            echo 'Expected exactly one iPhone app in Release-iphoneos' >&2
+            ls -la "$products" || true
+            exit 1
+          fi
+          app="${apps[0]}"
+          /usr/libexec/PlistBuddy -c 'Set :CFBundleDisplayName J2ME Treo' "$app/Info.plist" || \
+            /usr/libexec/PlistBuddy -c 'Add :CFBundleDisplayName string J2ME Treo' "$app/Info.plist"
+          staging="$(mktemp -d)"
+          mkdir "$staging/Payload"
+          ditto "${apps[0]}" "$staging/Payload/$(basename "${apps[0]}")"
+          (cd "$staging" && /usr/bin/zip -qry "$GITHUB_WORKSPACE/J2ME-Treo-x12-crop-cache-codemagic-unsigned.ipa" Payload)
+    artifacts:
+      - J2ME-Treo-x12-crop-cache-codemagic-unsigned.ipa
