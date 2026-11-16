@@ -16,6 +16,7 @@
 #include "jvm_util.h"
 #include <stdio.h>
 #include <stdatomic.h>
+#include <os/lock.h>
 
 // ============================================================
 // Internal structures
@@ -178,8 +179,13 @@ static void enqueue_dead_img(RenderImage *img) {
         memory_order_release, memory_order_relaxed));
 }
 
+// Canvas paint locks are per instance. Different VM threads can flush
+// concurrently (including during an x12 display transition).
+static os_unfair_lock g_dead_drain_lock = OS_UNFAIR_LOCK_INIT;
+
 static void process_dead_shells(void) {
-    // Free gen1 (dead for 1+ frames — all in-flight acquires have completed)
+    // Only one drain owns gen1. The producers still enqueue atomically.
+    os_unfair_lock_lock(&g_dead_drain_lock);
     RenderContext *rc = g_dead_rc_gen1;
     while (rc) { RenderContext *next = rc->next_dead; free(rc); rc = next; }
     RenderImage *img = g_dead_img_gen1;
@@ -187,6 +193,7 @@ static void process_dead_shells(void) {
     // Promote gen0 → gen1
     g_dead_rc_gen1 = atomic_exchange_explicit(&g_dead_rc_gen0, NULL, memory_order_acquire);
     g_dead_img_gen1 = atomic_exchange_explicit(&g_dead_img_gen0, NULL, memory_order_acquire);
+    os_unfair_lock_unlock(&g_dead_drain_lock);
 }
 
 // ============================================================
@@ -1309,10 +1316,12 @@ void j2me_render_cleanup(void) {
     spin_unlock(&g_track_lock);
 
     // Clear dead queues
+    os_unfair_lock_lock(&g_dead_drain_lock);
     atomic_store_explicit(&g_dead_rc_gen0, NULL, memory_order_relaxed);
     g_dead_rc_gen1 = NULL;
     atomic_store_explicit(&g_dead_img_gen0, NULL, memory_order_relaxed);
     g_dead_img_gen1 = NULL;
+    os_unfair_lock_unlock(&g_dead_drain_lock);
 
     // Reset native heap counter
     __atomic_store_n(&g_native_extra_heap, 0, __ATOMIC_RELAXED);
