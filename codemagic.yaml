@@ -1,6 +1,6 @@
 workflows:
-  crop-cache-unsigned:
-    name: J2ME Treo X12 crop cache unsigned
+  draw-split-unsigned:
+    name: J2ME Treo X12 draw split unsigned
     instance_type: mac_mini_m2
     max_build_duration: 25
     environment:
@@ -90,9 +90,9 @@ workflows:
           staging="$(mktemp -d)"
           mkdir "$staging/Payload"
           ditto "${apps[0]}" "$staging/Payload/$(basename "${apps[0]}")"
-          (cd "$staging" && /usr/bin/zip -qry "$GITHUB_WORKSPACE/J2ME-Treo-x12-crop-cache-codemagic-unsigned.ipa" Payload)
+          (cd "$staging" && /usr/bin/zip -qry "$GITHUB_WORKSPACE/J2ME-Treo-x12-draw-split-unsigned.ipa" Payload)
           
-          test -s "$GITHUB_WORKSPACE/J2ME-Treo-x12-crop-cache-codemagic-unsigned.ipa"
-          /usr/bin/unzip -tq "$GITHUB_WORKSPACE/J2ME-Treo-x12-crop-cache-codemagic-unsigned.ipa"
+          test -s "$GITHUB_WORKSPACE/J2ME-Treo-x12-draw-split-unsigned.ipa"
+          /usr/bin/unzip -tq "$GITHUB_WORKSPACE/J2ME-Treo-x12-draw-split-unsigned.ipa"
     artifacts:
-      - J2ME-Treo-x12-crop-cache-codemagic-unsigned.ipa
+      - J2ME-Treo-x12-draw-split-unsigned.ipa

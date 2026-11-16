@@ -17,6 +17,73 @@
 #include <stdio.h>
 #include <stdatomic.h>
 #include <os/lock.h>
+#include <time.h>
+
+/* Diagnostic build only. Approximate CPU time by sampling each native path
+ * on its calling thread. No per-call logs, timers, or changes to game events. */
+enum { RP_IMAGE, RP_REGION, RP_CROP, RP_PIXELS, RP_RGB, RP_COPY, RP_FLUSH, RP_COUNT };
+enum { RP_RATE = 64 };
+static _Atomic(uint64_t) rp_ns[RP_COUNT];
+static _Atomic(uint64_t) rp_n[RP_COUNT];
+static _Atomic(uint64_t) rp_last_report;
+static _Thread_local uint32_t rp_rng = 0xa341316cu;
+
+typedef struct { uint64_t start; unsigned kind; } RenderProfileScope;
+
+static uint64_t rp_clock(clockid_t id) {
+    struct timespec ts;
+    if (clock_gettime(id, &ts) != 0) return 0;
+    return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
+}
+
+static RenderProfileScope rp_begin(unsigned kind) {
+    uint32_t x = rp_rng;
+    x ^= x << 13;
+    x ^= x >> 17;
+    x ^= x << 5;
+    rp_rng = x;
+    return (RenderProfileScope){
+        (x & (RP_RATE - 1)) ? 0 : rp_clock(CLOCK_THREAD_CPUTIME_ID), kind
+    };
+}
+
+static void rp_record(unsigned kind, uint64_t start) {
+    if (!start) return;
+    uint64_t end = rp_clock(CLOCK_THREAD_CPUTIME_ID);
+    if (end < start) return;
+    atomic_fetch_add_explicit(&rp_ns[kind], end - start, memory_order_relaxed);
+    atomic_fetch_add_explicit(&rp_n[kind], 1, memory_order_relaxed);
+}
+
+static void rp_end(RenderProfileScope *scope) {
+    if (!scope->start) return;
+    rp_record(scope->kind, scope->start);
+    uint64_t now = rp_clock(CLOCK_MONOTONIC);
+    uint64_t last = atomic_load_explicit(&rp_last_report, memory_order_relaxed);
+    if (!now || now <= last || (last && now - last < 10000000000ull)) return;
+    if (!atomic_compare_exchange_strong_explicit(&rp_last_report, &last, now,
+                                                 memory_order_relaxed, memory_order_relaxed)) return;
+    double ms_per_sec[RP_COUNT];
+    unsigned long long count[RP_COUNT];
+    for (unsigned i = 0; i < RP_COUNT; ++i) {
+        uint64_t ns = atomic_exchange_explicit(&rp_ns[i], 0, memory_order_relaxed);
+        count[i] = (unsigned long long)atomic_exchange_explicit(&rp_n[i], 0, memory_order_relaxed);
+        ms_per_sec[i] = last ? (double)ns * RP_RATE * 1000.0 / (double)(now - last) : 0;
+    }
+    if (!last) return;
+    NSLog(@"[TREO-PROF] black_now=%d window=%.1fs est_cpu_ms/s "
+          @"image=%.1f(%llu) region=%.1f(%llu) crop_in_region=%.1f(%llu) "
+          @"pixels_in_region=%.1f(%llu) rgb=%.1f(%llu) copy=%.1f(%llu) flush=%.1f(%llu)",
+          (int)j2me_render_is_afk_suspended(), (double)(now - last) / 1e9,
+          ms_per_sec[RP_IMAGE], count[RP_IMAGE], ms_per_sec[RP_REGION], count[RP_REGION],
+          ms_per_sec[RP_CROP], count[RP_CROP], ms_per_sec[RP_PIXELS], count[RP_PIXELS],
+          ms_per_sec[RP_RGB], count[RP_RGB],
+          ms_per_sec[RP_COPY], count[RP_COPY], ms_per_sec[RP_FLUSH], count[RP_FLUSH]);
+}
+
+#define RP_SCOPE(kind) \
+    RenderProfileScope rp_scope __attribute__((cleanup(rp_end))) = rp_begin(kind)
+
 
 // ============================================================
 // Internal structures
@@ -242,8 +309,6 @@ static inline RenderImage *img_acquire(s64 handle) {
     return img;
 }
 
-static void drop_image_crops(RenderImage *img);
-
 static inline void img_release(RenderImage *img) {
     if (!img) return;
     if (atomic_fetch_sub_explicit(&img->refcount, 1, memory_order_release) == 1) {
@@ -252,7 +317,6 @@ static inline void img_release(RenderImage *img) {
         int pixels = img->width * img->height * 4;
         CGContextRef ctx = img->ctx;
         img->ctx = NULL;
-        drop_image_crops(img);
         if (img->immutableSnapshot) CGImageRelease(img->immutableSnapshot);
         if (ctx) CGContextRelease(ctx);
         if (pixels > 0) native_heap_sub(pixels);
@@ -389,91 +453,6 @@ static CGImageRef copyImageSnapshot(RenderImage *img) {
     return CGBitmapContextCreateImage(img->ctx);
 }
 
-
-/* Reuse the exact Core Graphics crop of a decoded, immutable image.
- * Fixed storage; don't retain cache entries past their source image's lifetime. */
-enum { CROP_SETS = 64, CROP_WAYS = 4, CROP_MAX_SIDE = 64 };
-typedef struct {
-    RenderImage *owner;
-    int x, y, w, h;
-    CGImageRef crop;
-} CropEntry;
-
-static os_unfair_lock g_crop_lock = OS_UNFAIR_LOCK_INIT;
-static CropEntry g_crops[CROP_SETS][CROP_WAYS];
-static unsigned g_crop_next[CROP_SETS];
-
-static void drop_image_crops(RenderImage *img) {
-    if (!img->immutableSnapshot) return;
-    os_unfair_lock_lock(&g_crop_lock);
-    for (unsigned s = 0; s < CROP_SETS; ++s) {
-        for (unsigned i = 0; i < CROP_WAYS; ++i) {
-            CropEntry *e = &g_crops[s][i];
-            if (e->owner == img) {
-                CGImageRef crop = e->crop;
-                *e = (CropEntry){0};
-                CGImageRelease(crop);
-            }
-        }
-    }
-    os_unfair_lock_unlock(&g_crop_lock);
-}
-
-static CropEntry *find_crop(CropEntry *set, RenderImage *img,
-                            int x, int y, int w, int h) {
-    for (unsigned i = 0; i < CROP_WAYS; ++i) {
-        CropEntry *e = &set[i];
-        if (e->owner == img && e->x == x && e->y == y && e->w == w && e->h == h)
-            return e;
-    }
-    return NULL;
-}
-
-/* The caller holds the source image reference and owns the returned crop. */
-static CGImageRef copy_image_crop(RenderImage *img, int x, int y, int w, int h) {
-    const CGRect rect = CGRectMake(x, y, w, h);
-    if (!img->immutableSnapshot || w <= 0 || h <= 0 ||
-        w > CROP_MAX_SIDE || h > CROP_MAX_SIDE || x < 0 || y < 0 ||
-        w > img->width || h > img->height ||
-        x > img->width - w || y > img->height - h) {
-        CGImageRef full = copyImageSnapshot(img);
-        if (!full) return NULL;
-        CGImageRef crop = CGImageCreateWithImageInRect(full, rect);
-        CGImageRelease(full);
-        return crop;
-    }
-
-    uint32_t hash = (uint32_t)((uintptr_t)img >> 4);
-    hash ^= (uint32_t)x * 0x9e3779b1u ^ (uint32_t)y * 0x85ebca6bu;
-    hash ^= (uint32_t)w * 0xc2b2ae35u ^ (uint32_t)h * 0x27d4eb2fu;
-    hash ^= hash >> 16;
-    hash *= 0x7feb352du;
-    unsigned s = (hash ^ (hash >> 15)) & (CROP_SETS - 1);
-    CropEntry *set = g_crops[s];
-
-    if (!os_unfair_lock_trylock(&g_crop_lock))
-        return CGImageCreateWithImageInRect(img->immutableSnapshot, rect);
-    CropEntry *entry = find_crop(set, img, x, y, w, h);
-    CGImageRef hit = entry ? CGImageRetain(entry->crop) : NULL;
-    os_unfair_lock_unlock(&g_crop_lock);
-    if (hit) return hit;
-
-    CGImageRef crop = CGImageCreateWithImageInRect(img->immutableSnapshot, rect);
-    if (!crop || !os_unfair_lock_trylock(&g_crop_lock)) return crop;
-    CGImageRef victim = NULL;
-    if (!find_crop(set, img, x, y, w, h)) {
-        unsigned slot = g_crop_next[s]++ & (CROP_WAYS - 1);
-        for (unsigned i = 0; i < CROP_WAYS; ++i) {
-            if (!set[i].owner) { slot = i; break; }
-        }
-        victim = set[slot].crop;
-        set[slot] = (CropEntry){img, x, y, w, h, CGImageRetain(crop)};
-    }
-    os_unfair_lock_unlock(&g_crop_lock);
-    if (victim) CGImageRelease(victim);
-    return crop;
-}
-
 static void destroyImage(RenderImage *img) {
     if (!img) return;
     img_release(img);
@@ -509,6 +488,7 @@ CGImageRef j2me_render_copy_image(int64_t handle) {
 }
 
 static s32 n_flushToScreen(Runtime *runtime, JClass *clazz) {
+    RP_SCOPE(RP_FLUSH);
     process_dead_shells();
     if (j2me_render_is_afk_suspended()) return RUNTIME_STATUS_NORMAL;
 
@@ -933,6 +913,7 @@ static s32 n_getImageContext(Runtime *runtime, JClass *clazz) {
 }
 
 static s32 n_drawImage(Runtime *runtime, JClass *clazz) {
+    RP_SCOPE(RP_IMAGE);
     JniEnv *env = runtime->jnienv;
     s64 ctxHandle = env->localvar_getLong_2slot(runtime->localvar, 0);
     s64 imgHandle = env->localvar_getLong_2slot(runtime->localvar, 2);
@@ -976,6 +957,7 @@ static s32 n_drawImage(Runtime *runtime, JClass *clazz) {
 #define TRANS_MIRROR_ROT270  4
 
 static s32 n_drawRegion(Runtime *runtime, JClass *clazz) {
+    RP_SCOPE(RP_REGION);
     JniEnv *env = runtime->jnienv;
     s64 ctxHandle = env->localvar_getLong_2slot(runtime->localvar, 0);
     s64 imgHandle = env->localvar_getLong_2slot(runtime->localvar, 2);
@@ -1004,7 +986,12 @@ static s32 n_drawRegion(Runtime *runtime, JClass *clazz) {
     if (anchor & 2) yDst -= outH / 2;
     if (anchor & 32) yDst -= outH;
 
-    CGImageRef subImage = copy_image_crop(img, xSrc, ySrc, wSrc, hSrc);
+    CGImageRef fullImage = copyImageSnapshot(img);
+    if (!fullImage) { img_release(img); rc_release(rc); return RUNTIME_STATUS_NORMAL; }
+    uint64_t cropStart = rp_scope.start ? rp_clock(CLOCK_THREAD_CPUTIME_ID) : 0;
+    CGImageRef subImage = CGImageCreateWithImageInRect(fullImage, CGRectMake(xSrc, ySrc, wSrc, hSrc));
+    rp_record(RP_CROP, cropStart);
+    CGImageRelease(fullImage);
     if (!subImage) { img_release(img); rc_release(rc); return RUNTIME_STATUS_NORMAL; }
 
     CGContextSaveGState(rctx);
@@ -1055,7 +1042,9 @@ static s32 n_drawRegion(Runtime *runtime, JClass *clazz) {
             break;
     }
 
+    uint64_t pixelStart = rp_scope.start ? rp_clock(CLOCK_THREAD_CPUTIME_ID) : 0;
     CGContextDrawImage(rctx, CGRectMake(0, 0, wSrc, hSrc), subImage);
+    rp_record(RP_PIXELS, pixelStart);
     CGContextRestoreGState(rctx);
     CGImageRelease(subImage);
     img_release(img);
@@ -1066,6 +1055,7 @@ static s32 n_drawRegion(Runtime *runtime, JClass *clazz) {
 // --- drawRGB ---
 
 static s32 n_drawRGB(Runtime *runtime, JClass *clazz) {
+    RP_SCOPE(RP_RGB);
     JniEnv *env = runtime->jnienv;
     s64 ctxHandle = env->localvar_getLong_2slot(runtime->localvar, 0);
     Instance *arr = env->localvar_getRefer(runtime->localvar, 2);
@@ -1209,6 +1199,7 @@ static s32 n_drawPolygon(Runtime *runtime, JClass *clazz) {
 // --- copyArea ---
 
 static s32 n_copyArea(Runtime *runtime, JClass *clazz) {
+    RP_SCOPE(RP_COPY);
     JniEnv *env = runtime->jnienv;
     s64 handle = env->localvar_getLong_2slot(runtime->localvar, 0);
     s32 xSrc = env->localvar_getInt(runtime->localvar, 2);
@@ -1404,7 +1395,6 @@ void j2me_render_cleanup(void) {
     int img_count = g_live_img_count;
     for (int i = 0; i < g_live_img_count; i++) {
         RenderImage *img = g_live_img[i];
-        drop_image_crops(img);
         if (img->immutableSnapshot) CGImageRelease(img->immutableSnapshot);
         if (img->ctx) { CGContextRelease(img->ctx); img->ctx = NULL; }
         free(img);
