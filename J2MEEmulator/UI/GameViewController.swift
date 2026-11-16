@@ -478,23 +478,40 @@ class GameViewController: UIViewController {
             UIAction(title: "Phím số", state: padMode == .numbers ? .on : .off) { [weak self] _ in self?.setPadMode(.numbers) },
             UIAction(title: "Ẩn phím · màn hình lớn", state: padMode == .hidden ? .on : .off) { [weak self] _ in self?.setPadMode(.hidden) },
             UIAction(title: "Treo tối đa · màn hình đen") { [weak self] _ in self?.showBlackout() },
-            UIAction(title: "Kiểm tra JIT (ARM64)") { [weak self] _ in
+            UIAction(title: treo_game_jit_is_enabled() != 0 ? "Tắt JIT Java (thử nghiệm)" : "Bật JIT Java (thử nghiệm)") { [weak self] _ in
                 guard let self else { return }
-                let prompt = UIAlertController(title: "JIT probe",
-                    message: "Chỉ chạy sau khi đã attach JIT vào đúng tiến trình. Đây là phép thử mã ARM64; app có thể thoát nếu iOS chặn thực thi.",
+                if treo_game_jit_is_enabled() != 0 {
+                    treo_game_jit_set_enabled(0)
+                    self.applyPadMode()
+                    return
+                }
+                let prompt = UIAlertController(title: "JIT Java thử nghiệm",
+                    message: "Chỉ bật sau khi StikDebug đã attach vào tiến trình này. Phương thức game chạy nhiều sẽ được biên dịch; tính năng có thể gây lỗi hoặc thoát app.",
                     preferredStyle: .alert)
                 prompt.addAction(UIAlertAction(title: "Hủy", style: .cancel))
-                prompt.addAction(UIAlertAction(title: "Chạy thử", style: .default) { [weak self] _ in
-                    NSLog("[TREO-JIT] probe starting")
+                prompt.addAction(UIAlertAction(title: "Bật JIT Java", style: .default) { [weak self] _ in
                     let result = treo_jit_probe()
-                    NSLog("[TREO-JIT] result=%d", result)
-                    let report = UIAlertController(title: result == 42 ? "JIT probe: PASS" : "JIT probe: FAIL",
-                        message: result == 42 ? "Mã ARM64 sinh lúc chạy trả về 42. JIT Java vẫn tắt." : "Mã lỗi: \(result). JIT Java vẫn tắt.",
-                        preferredStyle: .alert)
-                    report.addAction(UIAlertAction(title: "OK", style: .default))
-                    DispatchQueue.main.async { [weak self] in self?.present(report, animated: true) }
+                    if result == 42 {
+                        treo_game_jit_set_enabled(1)
+                        self?.applyPadMode()
+                    } else {
+                        let report = UIAlertController(title: "Không bật được JIT Java",
+                            message: "Mã lỗi kiểm tra thực thi: \(result). Game vẫn chạy bằng trình thông dịch.",
+                            preferredStyle: .alert)
+                        report.addAction(UIAlertAction(title: "OK", style: .default))
+                        self?.present(report, animated: true)
+                    }
                 })
                 self.present(prompt, animated: true)
+            },
+            UIAction(title: "Thống kê JIT Java") { [weak self] _ in
+                let compiled = treo_game_jit_compiled_count()
+                let calls = treo_game_jit_call_count()
+                let report = UIAlertController(title: "Thống kê JIT Java",
+                    message: "Từ khi mở app: \(compiled) phương thức đã biên dịch, \(calls) lượt chạy mã đã biên dịch.",
+                    preferredStyle: .alert)
+                report.addAction(UIAlertAction(title: "OK", style: .default))
+                self?.present(report, animated: true)
             }
         ])
     }

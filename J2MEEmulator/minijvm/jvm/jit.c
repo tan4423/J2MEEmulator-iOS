@@ -13,6 +13,58 @@
 #include <stdlib.h>
 #include <math.h>
 
+#ifdef TREO_IOS_GAME_JIT
+#include <libkern/OSCacheControl.h>
+#include <pthread.h>
+#include <stdatomic.h>
+#include <string.h>
+#include <sys/mman.h>
+#include <unistd.h>
+
+static atomic_int treo_jit_enabled;
+static atomic_int treo_jit_compiled;
+static atomic_int treo_jit_calls;
+static pthread_mutex_t treo_jit_compile_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+int treo_game_jit_is_enabled(void) { return atomic_load_explicit(&treo_jit_enabled, memory_order_relaxed); }
+void treo_game_jit_set_enabled(int enabled) { atomic_store_explicit(&treo_jit_enabled, enabled != 0, memory_order_relaxed); }
+int treo_game_jit_compiled_count(void) { return atomic_load_explicit(&treo_jit_compiled, memory_order_relaxed); }
+int treo_game_jit_call_count(void) { return atomic_load_explicit(&treo_jit_calls, memory_order_relaxed); }
+void treo_game_jit_record_call(void) { atomic_fetch_add_explicit(&treo_jit_calls, 1, memory_order_relaxed); }
+
+int treo_game_jit_can_compile(MethodInfo *method) {
+    const char *name = utf8_cstr(method->_this_class->name);
+    // First rollout: x1 game classes only, not Java or MIDP runtime classes.
+    return name && (strncmp(name, "Class_", 6) == 0 || strcmp(name, "GameMidlet") == 0);
+}
+
+static size_t treo_jit_mapping_size(sljit_uw code_size) {
+    const size_t page_size = (size_t)getpagesize();
+    return ((size_t)code_size + page_size - 1) / page_size * page_size;
+}
+
+static void *treo_jit_generate(struct sljit_compiler *compiler, size_t capacity) {
+    const size_t length = treo_jit_mapping_size(capacity);
+    void *page = mmap(NULL, length, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+    if (page == MAP_FAILED) return NULL;
+    struct sljit_generate_code_buffer buffer = {
+        .buffer = page, .size = (sljit_uw)length, .executable_offset = 0,
+    };
+    void *entry = sljit_generate_code(compiler, SLJIT_GENERATE_CODE_BUFFER, &buffer);
+    sljit_uw actual = sljit_get_generated_code_size(compiler);
+    if (entry != page || !actual || actual > length ||
+        mprotect(page, length, PROT_READ | PROT_EXEC) != 0) {
+        munmap(page, length);
+        return NULL;
+    }
+    sys_icache_invalidate(page, (size_t)actual);
+    // Keep the mapping length recoverable from the final generated size.
+    const size_t used = treo_jit_mapping_size(actual);
+    if (used < length) munmap((char *)page + used, length - used);
+    return entry;
+}
+#endif
+
 //------------------------  note ----------------------------
 
 //   This jit implementation is dependend on SLJIT (github https://github.com/zherczeg/sljit)
@@ -1135,6 +1187,7 @@ static s32 instanceof(JClass *other, Instance *ins, Runtime *runtime) {
 
 void gen_jit_suspend_check_func() {
     struct sljit_compiler *C = sljit_create_compiler(NULL);
+    if (!C) return;
     sljit_set_context(C, 0, 0, 3, 3, LOCAL_COUNT * sizeof(sljit_sw));
 
     sljit_emit_op_dst(C, SLJIT_FAST_ENTER, SLJIT_R2, 0);
@@ -1185,7 +1238,11 @@ void gen_jit_suspend_check_func() {
     sljit_emit_op_src(C, SLJIT_FAST_RETURN, SLJIT_R2, 0);
 
 
+#ifdef TREO_IOS_GAME_JIT
+    check_suspend = (thread_suspend_check_func)treo_jit_generate(C, 4096);
+#else
     check_suspend = sljit_generate_code(C, 0, NULL);
+#endif
     sljit_uw len = sljit_get_generated_code_size(C);
     sljit_free_compiler(C);
     //dump_code(check_suspend, len);
@@ -3235,6 +3292,7 @@ s32 gen_jit_bytecode_func(struct sljit_compiler *C, MethodInfo *method, Runtime 
             }
             default: {
                 jvm_printf("jit instruct %x not found\n", cur_inst);
+                return JIT_GEN_ERROR;
             }
         }
         //garbage stop world detect
@@ -3269,8 +3327,13 @@ s32 gen_jit_bytecode_func(struct sljit_compiler *C, MethodInfo *method, Runtime 
     }
 
     //Generate machine code
+#ifdef TREO_IOS_GAME_JIT
+    if (ca->code_length <= 0 || ca->code_length > 65535) return JIT_GEN_ERROR;
+    genfunc = treo_jit_generate(C, (size_t)ca->code_length * 128 + 4096);
+#else
     genfunc = sljit_generate_code(C, 0, NULL);
-    if (sljit_get_compiler_error(C) != SLJIT_ERR_COMPILED) {
+#endif
+    if (!genfunc || sljit_get_compiler_error(C) != SLJIT_ERR_COMPILED) {
         return JIT_GEN_ERROR;
     }
 
@@ -3328,17 +3391,36 @@ void construct_jit(MethodInfo *method, Runtime *runtime) {
 //    printf("size of sljit_sw :%d\n", (s32) sizeof(sljit_sw));
     CodeAttribute *ca = method->converted_code;
 
+#ifdef TREO_IOS_GAME_JIT
+    if (!treo_game_jit_is_enabled() || pthread_mutex_trylock(&treo_jit_compile_mutex) != 0) return;
+#endif
     if (!check_suspend) {
         gen_jit_suspend_check_func();
     }
-    if (runtime->jvm->jdwp_enable) {
+    if (!check_suspend || runtime->jvm->jdwp_enable || !ca->bytecode_for_jit) {
+#ifdef TREO_IOS_GAME_JIT
+        __atomic_store_n(&ca->jit.state, JIT_GEN_ERROR, __ATOMIC_RELEASE);
+        pthread_mutex_unlock(&treo_jit_compile_mutex);
+#else
         ca->jit.state = JIT_GEN_ERROR;
+#endif
         return;
     }
     /* Create a SLJIT compiler */
     struct sljit_compiler *C = sljit_create_compiler(NULL);
+#ifdef TREO_IOS_GAME_JIT
+    __atomic_store_n(&ca->jit.state, JIT_GEN_COMPILING, __ATOMIC_RELEASE);
+    const s32 result = C ? gen_jit_bytecode_func(C, method, runtime) : JIT_GEN_ERROR;
+    if (result == JIT_GEN_SUCCESS) {
+        atomic_fetch_add_explicit(&treo_jit_compiled, 1, memory_order_relaxed);
+    }
+    __atomic_store_n(&ca->jit.state, result, __ATOMIC_RELEASE);
+    if (C) sljit_free_compiler(C);
+    pthread_mutex_unlock(&treo_jit_compile_mutex);
+    return;
+#else
     ca->jit.state = JIT_GEN_COMPILING;
-    ca->jit.state = gen_jit_bytecode_func(C, method, runtime);
+    ca->jit.state = C ? gen_jit_bytecode_func(C, method, runtime) : JIT_GEN_ERROR;
 
     if (ca->jit.state == JIT_GEN_SUCCESS) {
         s32 debug = 1;
@@ -3350,7 +3432,8 @@ void construct_jit(MethodInfo *method, Runtime *runtime) {
         if (ca->jit.state == JIT_GEN_SUCCESS)dump_code(ca->jit.func, ca->jit.len);
     }
 #endif
-    sljit_free_compiler(C);
+    if (C) sljit_free_compiler(C);
+#endif
 }
 
 SwitchTable *switchtable_create(Jit *jit, s32 size) {
@@ -3374,6 +3457,7 @@ void jit_destroy(Jit *jit) {
 
     while (jit->switchtable) {
         SwitchTable *tmp = jit->switchtable->next;
+        jvm_free(jit->switchtable->table);
         jvm_free(jit->switchtable);
         jit->switchtable = tmp;
     }
@@ -3384,7 +3468,11 @@ void jit_destroy(Jit *jit) {
     }
 
     if (jit->func) {
+#ifdef TREO_IOS_GAME_JIT
+        munmap((void *)jit->func, treo_jit_mapping_size((sljit_uw)jit->len));
+#else
         sljit_free_code(jit->func, NULL);
+#endif
     }
 }
 

@@ -599,7 +599,13 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                 goto label_exit_while;
             }
 
+#ifdef TREO_IOS_GAME_JIT
+            const int treo_enabled = treo_game_jit_is_enabled();
+            if (treo_enabled && __atomic_load_n(&ca->jit.state, __ATOMIC_ACQUIRE) == JIT_GEN_SUCCESS) {
+                treo_game_jit_record_call();
+#else
             if (JIT_ENABLE && ca->jit.state == JIT_GEN_SUCCESS) {
+#endif
                 //jvm_printf("jit call %s.%s()\n", method->_this_class->name->data, method->name->data);
                 ret = ca->jit.func(method, runtime);
                 if (!ret) {
@@ -626,6 +632,20 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                     }
                 }
             } else {
+#ifdef TREO_IOS_GAME_JIT
+                if (treo_enabled &&
+                    __atomic_load_n(&ca->jit.state, __ATOMIC_ACQUIRE) == JIT_GEN_UNKNOW &&
+                    treo_game_jit_can_compile(method)) {
+                    const s32 count = __atomic_load_n(&ca->jit.interpreted_count, __ATOMIC_RELAXED);
+                    if (count >= JIT_COMPILE_EXEC_COUNT ||
+                        __atomic_add_fetch(&ca->jit.interpreted_count, 1, __ATOMIC_RELAXED) >= JIT_COMPILE_EXEC_COUNT) {
+                        spin_lock(&ca->compile_lock);
+                        if (__atomic_load_n(&ca->jit.state, __ATOMIC_ACQUIRE) == JIT_GEN_UNKNOW)
+                            construct_jit(method, runtime);
+                        spin_unlock(&ca->compile_lock);
+                    }
+                }
+#else
                 if (JIT_ENABLE && ca->jit.state == JIT_GEN_UNKNOW) {
                     if (ca->jit.interpreted_count++ > JIT_COMPILE_EXEC_COUNT) {
                         spin_lock(&ca->compile_lock);
@@ -637,6 +657,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                     }
                 }
 
+#endif
                 thrd_info = runtime->thrd_info;
                 localvar = runtime->localvar;
                 sp = runtime->stack->sp;

@@ -11,7 +11,9 @@ extern "C" {
 #include "jvm.h"
 #include "jvm_util.h"
 
-#if __JVM_OS_IOS__ || __JVM_OS_CYGWIN__ || __JVM_ARCH_32__
+#if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__ && !__JVM_ARCH_32__
+    #define JIT_ENABLE 1
+#elif __JVM_OS_IOS__ || __JVM_OS_CYGWIN__ || __JVM_ARCH_32__
     #define JIT_ENABLE 0
 #else
     #define JIT_ENABLE 01
@@ -60,6 +62,14 @@ void jit_init(CodeAttribute *ca) ;
 void jit_destroy(Jit *jit);
 
 void construct_jit(MethodInfo *method, Runtime *runtime);
+#ifdef TREO_IOS_GAME_JIT
+int treo_game_jit_is_enabled(void);
+void treo_game_jit_set_enabled(int enabled);
+int treo_game_jit_compiled_count(void);
+int treo_game_jit_call_count(void);
+void treo_game_jit_record_call(void);
+int treo_game_jit_can_compile(MethodInfo *method);
+#endif
 
 void jit_set_exception_jump_addr(Runtime* runtime, CodeAttribute *ca, s32 index);
 

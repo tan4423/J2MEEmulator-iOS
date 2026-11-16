@@ -28,3 +28,7 @@ int j2me_ui_get_alert_timeout(void);
 
 #include <stdint.h>
 int32_t treo_jit_probe(void);
+int treo_game_jit_is_enabled(void);
+void treo_game_jit_set_enabled(int enabled);
+int treo_game_jit_compiled_count(void);
+int treo_game_jit_call_count(void);
