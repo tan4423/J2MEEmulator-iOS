@@ -17,6 +17,72 @@
 #include <stdio.h>
 #include <stdatomic.h>
 #include <os/lock.h>
+#include <time.h>
+
+/* Diagnostic build only. Approximate CPU time by sampling each native path
+ * on its calling thread. No per-call logs, timers, or changes to game events. */
+enum { RP_IMAGE, RP_REGION, RP_CROP, RP_RGB, RP_COPY, RP_FLUSH, RP_COUNT };
+enum { RP_RATE = 64 };
+static _Atomic(uint64_t) rp_ns[RP_COUNT];
+static _Atomic(uint64_t) rp_n[RP_COUNT];
+static _Atomic(uint64_t) rp_last_report;
+static _Thread_local uint32_t rp_rng = 0xa341316cu;
+
+typedef struct { uint64_t start; unsigned kind; } RenderProfileScope;
+
+static uint64_t rp_clock(clockid_t id) {
+    struct timespec ts;
+    if (clock_gettime(id, &ts) != 0) return 0;
+    return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
+}
+
+static RenderProfileScope rp_begin(unsigned kind) {
+    uint32_t x = rp_rng;
+    x ^= x << 13;
+    x ^= x >> 17;
+    x ^= x << 5;
+    rp_rng = x;
+    return (RenderProfileScope){
+        (x & (RP_RATE - 1)) ? 0 : rp_clock(CLOCK_THREAD_CPUTIME_ID), kind
+    };
+}
+
+static void rp_record(unsigned kind, uint64_t start) {
+    if (!start) return;
+    uint64_t end = rp_clock(CLOCK_THREAD_CPUTIME_ID);
+    if (end < start) return;
+    atomic_fetch_add_explicit(&rp_ns[kind], end - start, memory_order_relaxed);
+    atomic_fetch_add_explicit(&rp_n[kind], 1, memory_order_relaxed);
+}
+
+static void rp_end(RenderProfileScope *scope) {
+    if (!scope->start) return;
+    rp_record(scope->kind, scope->start);
+    uint64_t now = rp_clock(CLOCK_MONOTONIC);
+    uint64_t last = atomic_load_explicit(&rp_last_report, memory_order_relaxed);
+    if (!now || now <= last || (last && now - last < 10000000000ull)) return;
+    if (!atomic_compare_exchange_strong_explicit(&rp_last_report, &last, now,
+                                                 memory_order_relaxed, memory_order_relaxed)) return;
+    double ms_per_sec[RP_COUNT];
+    unsigned long long count[RP_COUNT];
+    for (unsigned i = 0; i < RP_COUNT; ++i) {
+        uint64_t ns = atomic_exchange_explicit(&rp_ns[i], 0, memory_order_relaxed);
+        count[i] = (unsigned long long)atomic_exchange_explicit(&rp_n[i], 0, memory_order_relaxed);
+        ms_per_sec[i] = last ? (double)ns * RP_RATE * 1000.0 / (double)(now - last) : 0;
+    }
+    if (!last) return;
+    NSLog(@"[TREO-PROF] black_now=%d window=%.1fs est_cpu_ms/s "
+          @"image=%.1f(%llu) region=%.1f(%llu) crop_in_region=%.1f(%llu) "
+          @"rgb=%.1f(%llu) copy=%.1f(%llu) flush=%.1f(%llu)",
+          (int)j2me_render_is_afk_suspended(), (double)(now - last) / 1e9,
+          ms_per_sec[RP_IMAGE], count[RP_IMAGE], ms_per_sec[RP_REGION], count[RP_REGION],
+          ms_per_sec[RP_CROP], count[RP_CROP], ms_per_sec[RP_RGB], count[RP_RGB],
+          ms_per_sec[RP_COPY], count[RP_COPY], ms_per_sec[RP_FLUSH], count[RP_FLUSH]);
+}
+
+#define RP_SCOPE(kind) \
+    RenderProfileScope rp_scope __attribute__((cleanup(rp_end))) = rp_begin(kind)
+
 
 // ============================================================
 // Internal structures
@@ -421,6 +487,7 @@ CGImageRef j2me_render_copy_image(int64_t handle) {
 }
 
 static s32 n_flushToScreen(Runtime *runtime, JClass *clazz) {
+    RP_SCOPE(RP_FLUSH);
     process_dead_shells();
     if (j2me_render_is_afk_suspended()) return RUNTIME_STATUS_NORMAL;
 
@@ -845,6 +912,7 @@ static s32 n_getImageContext(Runtime *runtime, JClass *clazz) {
 }
 
 static s32 n_drawImage(Runtime *runtime, JClass *clazz) {
+    RP_SCOPE(RP_IMAGE);
     JniEnv *env = runtime->jnienv;
     s64 ctxHandle = env->localvar_getLong_2slot(runtime->localvar, 0);
     s64 imgHandle = env->localvar_getLong_2slot(runtime->localvar, 2);
@@ -888,6 +956,7 @@ static s32 n_drawImage(Runtime *runtime, JClass *clazz) {
 #define TRANS_MIRROR_ROT270  4
 
 static s32 n_drawRegion(Runtime *runtime, JClass *clazz) {
+    RP_SCOPE(RP_REGION);
     JniEnv *env = runtime->jnienv;
     s64 ctxHandle = env->localvar_getLong_2slot(runtime->localvar, 0);
     s64 imgHandle = env->localvar_getLong_2slot(runtime->localvar, 2);
@@ -918,7 +987,9 @@ static s32 n_drawRegion(Runtime *runtime, JClass *clazz) {
 
     CGImageRef fullImage = copyImageSnapshot(img);
     if (!fullImage) { img_release(img); rc_release(rc); return RUNTIME_STATUS_NORMAL; }
+    uint64_t cropStart = rp_scope.start ? rp_clock(CLOCK_THREAD_CPUTIME_ID) : 0;
     CGImageRef subImage = CGImageCreateWithImageInRect(fullImage, CGRectMake(xSrc, ySrc, wSrc, hSrc));
+    rp_record(RP_CROP, cropStart);
     CGImageRelease(fullImage);
     if (!subImage) { img_release(img); rc_release(rc); return RUNTIME_STATUS_NORMAL; }
 
@@ -981,6 +1052,7 @@ static s32 n_drawRegion(Runtime *runtime, JClass *clazz) {
 // --- drawRGB ---
 
 static s32 n_drawRGB(Runtime *runtime, JClass *clazz) {
+    RP_SCOPE(RP_RGB);
     JniEnv *env = runtime->jnienv;
     s64 ctxHandle = env->localvar_getLong_2slot(runtime->localvar, 0);
     Instance *arr = env->localvar_getRefer(runtime->localvar, 2);
@@ -1124,6 +1196,7 @@ static s32 n_drawPolygon(Runtime *runtime, JClass *clazz) {
 // --- copyArea ---
 
 static s32 n_copyArea(Runtime *runtime, JClass *clazz) {
+    RP_SCOPE(RP_COPY);
     JniEnv *env = runtime->jnienv;
     s64 handle = env->localvar_getLong_2slot(runtime->localvar, 0);
     s32 xSrc = env->localvar_getInt(runtime->localvar, 2);
