@@ -50,6 +50,7 @@ typedef struct RenderContext {
 
 typedef struct RenderImage {
     CGContextRef ctx;
+    CGImageRef immutableSnapshot;
     int width;
     int height;
     int isMutable;
@@ -249,6 +250,7 @@ static inline void img_release(RenderImage *img) {
         int pixels = img->width * img->height * 4;
         CGContextRef ctx = img->ctx;
         img->ctx = NULL;
+        if (img->immutableSnapshot) CGImageRelease(img->immutableSnapshot);
         if (ctx) CGContextRelease(ctx);
         if (pixels > 0) native_heap_sub(pixels);
         enqueue_dead_img(img);
@@ -369,10 +371,19 @@ static RenderImage *createImageFromData(const uint8_t *data, int length) {
     CGContextDrawImage(img->ctx, CGRectMake(0, 0, img->width, img->height), cgImage);
     CGImageRelease(cgImage);
 
+    // Decoded images cannot be drawing targets. Reuse the same normalized
+    // bitmap snapshot for every draw; publish it before handing out the handle.
+    img->immutableSnapshot = CGBitmapContextCreateImage(img->ctx);
 
     track_img(img);
     native_heap_add(img->width * img->height * 4);
     return img;
+}
+
+// Caller holds an image reference. Return an owned CGImage in either path.
+static CGImageRef copyImageSnapshot(RenderImage *img) {
+    if (img->immutableSnapshot) return CGImageRetain(img->immutableSnapshot);
+    return CGBitmapContextCreateImage(img->ctx);
 }
 
 static void destroyImage(RenderImage *img) {
@@ -404,7 +415,7 @@ static s32 n_destroyContext(Runtime *runtime, JClass *clazz) {
 CGImageRef j2me_render_copy_image(int64_t handle) {
     RenderImage *img = img_acquire(handle);
     if (!img) return NULL;
-    CGImageRef image = CGBitmapContextCreateImage(img->ctx);
+    CGImageRef image = copyImageSnapshot(img);
     img_release(img);
     return image;
 }
@@ -851,7 +862,7 @@ static s32 n_drawImage(Runtime *runtime, JClass *clazz) {
     if (anchor & 2) y -= imgH / 2;
     if (anchor & 32) y -= imgH;
 
-    CGImageRef cgImage = CGBitmapContextCreateImage(img->ctx);
+    CGImageRef cgImage = copyImageSnapshot(img);
     if (cgImage) {
         CGContextSaveGState(rc->ctx);
         CGContextTranslateCTM(rc->ctx, x, y + imgH);
@@ -893,7 +904,6 @@ static s32 n_drawRegion(Runtime *runtime, JClass *clazz) {
     RenderImage *img = img_acquire(imgHandle);
     if (!rc || !img) { img_release(img); rc_release(rc); return RUNTIME_STATUS_NORMAL; }
     CGContextRef rctx = rc->ctx;
-    CGContextRef ictx = img->ctx;
 
     int outW = wSrc, outH = hSrc;
     if (transform == TRANS_ROT90 || transform == TRANS_ROT270 ||
@@ -906,7 +916,7 @@ static s32 n_drawRegion(Runtime *runtime, JClass *clazz) {
     if (anchor & 2) yDst -= outH / 2;
     if (anchor & 32) yDst -= outH;
 
-    CGImageRef fullImage = CGBitmapContextCreateImage(ictx);
+    CGImageRef fullImage = copyImageSnapshot(img);
     if (!fullImage) { img_release(img); rc_release(rc); return RUNTIME_STATUS_NORMAL; }
     CGImageRef subImage = CGImageCreateWithImageInRect(fullImage, CGRectMake(xSrc, ySrc, wSrc, hSrc));
     CGImageRelease(fullImage);
@@ -1309,6 +1319,7 @@ void j2me_render_cleanup(void) {
     int img_count = g_live_img_count;
     for (int i = 0; i < g_live_img_count; i++) {
         RenderImage *img = g_live_img[i];
+        if (img->immutableSnapshot) CGImageRelease(img->immutableSnapshot);
         if (img->ctx) { CGContextRelease(img->ctx); img->ctx = NULL; }
         free(img);
     }
