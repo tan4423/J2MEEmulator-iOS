@@ -15,6 +15,8 @@
 #include "jvm.h"
 #include "jvm_util.h"
 #include <stdio.h>
+#include <string.h>
+#include <stdint.h>
 #include <stdatomic.h>
 #include <os/lock.h>
 
@@ -44,6 +46,11 @@ typedef struct RenderContext {
     int fontStyle;
     int clipSaved;
     int ownsPixels;
+    int blitDetached;
+    int blitDisabled;
+    unsigned blitChecks;
+    unsigned blitCalls;
+    unsigned blitHits;
     _Atomic int32_t refcount;
     struct RenderContext *next_dead;
 } RenderContext;
@@ -428,6 +435,7 @@ static s32 n_flushToScreen(Runtime *runtime, JClass *clazz) {
     s64 handle = env->localvar_getLong_2slot(runtime->localvar, 0);
     RenderContext *rc = rc_acquire(handle);
     if (rc && g_flush_callback) {
+        rc->blitDetached = 0;
         CGImageRef image = CGBitmapContextCreateImage(rc->ctx);
         if (image) g_flush_callback(image, rc->width, rc->height);
     }
@@ -887,6 +895,105 @@ static s32 n_drawImage(Runtime *runtime, JClass *clazz) {
 #define TRANS_MIRROR_ROT180  1
 #define TRANS_MIRROR_ROT270  4
 
+// Experimental AFK-only path. Screen contexts use tightly packed top-down
+// premultiplied BGRA8 pixels. Native clips are rectangles and the CTM is
+// normally (1,0,0,-1,0,height); fall back if either assumption is not usable.
+#define BLIT_MAX 64
+
+static __attribute__((noinline)) int validateDirectBlit(
+    RenderContext *rc, RenderImage *img, const uint32_t *src,
+    size_t srcStride, const uint32_t *dst, size_t dstStride,
+    size_t dstOffset, int width, int height,
+    int sx, int sy, int sw, int sh, int dx, int dy) {
+    CGImageRef sub = CGImageCreateWithImageInRect(
+        img->immutableSnapshot, CGRectMake(sx, sy, sw, sh));
+    if (!sub) return 0;
+
+    uint32_t expected[BLIT_MAX * BLIT_MAX];
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            uint32_t p = src[y * srcStride + x];
+            expected[y * width + x] = (p >> 24) ? p : dst[y * dstStride + x];
+        }
+    }
+
+    // Produce the actual output through Core Graphics, including any
+    // copy-on-write detach from the last published screen snapshot.
+    CGContextSaveGState(rc->ctx);
+    CGContextTranslateCTM(rc->ctx, dx, dy);
+    CGContextTranslateCTM(rc->ctx, 0, sh);
+    CGContextScaleCTM(rc->ctx, 1, -1);
+    CGContextDrawImage(rc->ctx, CGRectMake(0, 0, sw, sh), sub);
+    CGContextRestoreGState(rc->ctx);
+    CGImageRelease(sub);
+
+    const uint32_t *actual = CGBitmapContextGetData(rc->ctx);
+    int equal = actual != NULL;
+    for (int y = 0; equal && y < height; ++y) {
+        equal = memcmp(actual + dstOffset + y * dstStride,
+                       expected + y * width, width * sizeof(uint32_t)) == 0;
+    }
+    rc->blitDetached = equal;
+    if (!equal) {
+        rc->blitDisabled = 1;
+        NSLog(@"[TREO-BLIT] pixel mismatch; using Core Graphics for this canvas");
+    } else if (++rc->blitChecks == 16) {
+        NSLog(@"[TREO-BLIT] 16 live draws matched Core Graphics");
+    }
+    return 1; // CG already rendered this call, even on a mismatch.
+}
+
+static int tryDirectBlit(RenderContext *rc, RenderImage *img,
+                         int sx, int sy, int sw, int sh, int dx, int dy) {
+    if (rc->blitDisabled || !img->immutableSnapshot || img->isMutable ||
+        sw <= 0 || sh <= 0 || sw > BLIT_MAX || sh > BLIT_MAX ||
+        sx < 0 || sy < 0 || sw > img->width || sh > img->height ||
+        sx > img->width - sw || sy > img->height - sh) return 0;
+
+    CGAffineTransform t = CGContextGetCTM(rc->ctx);
+    if (t.a != 1 || t.b != 0 || t.c != 0 || t.d != -1 ||
+        t.tx != 0 || t.ty != rc->height) return 0;
+    CGRect c = CGRectIntersection(CGContextGetClipBoundingBox(rc->ctx),
+                                  CGRectMake(0, 0, rc->width, rc->height));
+    if (CGRectIsNull(c) || CGRectIsEmpty(c)) return 0;
+    if (!CGRectEqualToRect(c, CGRectIntegral(c))) return 0;
+    int64_t l = MAX((int64_t)dx, (int64_t)CGRectGetMinX(c));
+    int64_t top = MAX((int64_t)dy, (int64_t)CGRectGetMinY(c));
+    int64_t r = MIN((int64_t)dx + sw, (int64_t)CGRectGetMaxX(c));
+    int64_t bot = MIN((int64_t)dy + sh, (int64_t)CGRectGetMaxY(c));
+    if (l >= r || top >= bot) return 0;
+
+    size_t ss = CGBitmapContextGetBytesPerRow(img->ctx);
+    size_t ds = CGBitmapContextGetBytesPerRow(rc->ctx);
+    if (ss != (size_t)img->width * 4 || ds != (size_t)rc->width * 4) return 0;
+    const uint32_t *source = CGBitmapContextGetData(img->ctx);
+    uint32_t *target = CGBitmapContextGetData(rc->ctx);
+    if (!source || !target || (((uintptr_t)source | (uintptr_t)target) & 3u))
+        return 0;
+    ss /= 4; ds /= 4;
+    const uint32_t *src = source + (size_t)(sy + top - dy) * ss + (sx + l - dx);
+    size_t off = (size_t)top * ds + (size_t)l;
+    uint32_t *dst = target + off;
+    int w = (int)(r - l), h = (int)(bot - top);
+    // Preflight before writing anything. Fractional alpha must use CG.
+    for (int y = 0; y < h; ++y) {
+        for (int x = 0; x < w; ++x) {
+            uint32_t a = src[y * ss + x] >> 24;
+            if (a != 0 && a != 255) return 0;
+        }
+    }
+    if (!rc->blitDetached || rc->blitChecks < 16 || (rc->blitHits & 2047u) == 2047u)
+        return validateDirectBlit(rc, img, src, ss, dst, ds, off, w, h,
+                                  sx, sy, sw, sh, dx, dy);
+    for (int y = 0; y < h; ++y) {
+        for (int x = 0; x < w; ++x) {
+            uint32_t p = src[y * ss + x];
+            if (p >> 24) dst[y * ds + x] = p;
+        }
+    }
+    return 2;
+}
+
 static s32 n_drawRegion(Runtime *runtime, JClass *clazz) {
     JniEnv *env = runtime->jnienv;
     s64 ctxHandle = env->localvar_getLong_2slot(runtime->localvar, 0);
@@ -915,6 +1022,23 @@ static s32 n_drawRegion(Runtime *runtime, JClass *clazz) {
     if (anchor & 8) xDst -= outW;
     if (anchor & 2) yDst -= outH / 2;
     if (anchor & 32) yDst -= outH;
+
+    if (rc->ownsPixels && j2me_render_is_afk_suspended()) {
+        ++rc->blitCalls;
+        int result = transform == TRANS_NONE
+            ? tryDirectBlit(rc, img, xSrc, ySrc, wSrc, hSrc, xDst, yDst) : 0;
+        // Include reference checks in the sequence so the periodic check advances.
+        if (result) ++rc->blitHits;
+        if ((rc->blitCalls & 65535u) == 0) {
+            NSLog(@"[TREO-BLIT] eligible=%u calls=%u checks=%u disabled=%d",
+                  rc->blitHits, rc->blitCalls, rc->blitChecks, rc->blitDisabled);
+        }
+        if (result) {
+            img_release(img);
+            rc_release(rc);
+            return RUNTIME_STATUS_NORMAL;
+        }
+    }
 
     CGImageRef fullImage = copyImageSnapshot(img);
     if (!fullImage) { img_release(img); rc_release(rc); return RUNTIME_STATUS_NORMAL; }
@@ -1134,6 +1258,7 @@ static s32 n_copyArea(Runtime *runtime, JClass *clazz) {
     s32 yDst = env->localvar_getInt(runtime->localvar, 7);
     RenderContext *rc = rc_acquire(handle);
     if (!rc || w <= 0 || h <= 0) { rc_release(rc); return RUNTIME_STATUS_NORMAL; }
+    rc->blitDetached = 0;
     CGImageRef fullImg = CGBitmapContextCreateImage(rc->ctx);
     if (!fullImg) { rc_release(rc); return RUNTIME_STATUS_NORMAL; }
     CGImageRef subImg = CGImageCreateWithImageInRect(fullImg, CGRectMake(xSrc, ySrc, w, h));
