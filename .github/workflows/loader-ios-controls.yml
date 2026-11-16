@@ -1,7 +1,7 @@
-name: J2ME Treo X12 render profile (macOS 15)
+name: J2ME Treo X12 render profile (macOS 26)
 on:
   push:
-    branches: [loader-ios-x12-render-profile]
+    branches: [loader-ios-x12-render-profile-macos26]
   workflow_dispatch:
 
 permissions:
@@ -9,7 +9,7 @@ permissions:
 
 jobs:
   build:
-    runs-on: macos-15
+    runs-on: macos-26
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
     timeout-minutes: 25
@@ -106,9 +106,9 @@ jobs:
           staging="$(mktemp -d)"
           mkdir "$staging/Payload"
           ditto "${apps[0]}" "$staging/Payload/$(basename "${apps[0]}")"
-          (cd "$staging" && /usr/bin/zip -qry "$GITHUB_WORKSPACE/J2ME-Treo-x12-render-profile-unsigned.ipa" Payload)
+          (cd "$staging" && /usr/bin/zip -qry "$GITHUB_WORKSPACE/J2ME-Treo-x12-render-profile-macos26-unsigned.ipa" Payload)
       - uses: actions/upload-artifact@v4
         with:
-          name: J2ME-Treo-x12-render-profile-unsigned
-          path: J2ME-Treo-x12-render-profile-unsigned.ipa
+          name: J2ME-Treo-x12-render-profile-macos26-unsigned
+          path: J2ME-Treo-x12-render-profile-macos26-unsigned.ipa
           if-no-files-found: error
