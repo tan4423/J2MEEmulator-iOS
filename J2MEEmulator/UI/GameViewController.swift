@@ -75,12 +75,15 @@ class GameViewController: UIViewController {
     required init?(coder: NSCoder) { fatalError() }
 
     deinit {
-        setGlobalEmulatorView(nil)
+        // The render target is weak. An older controller must not clear the
+        // render target that a newer game session has already registered.
         alertTimeoutWork?.cancel()
+        startupWatchdog?.cancel()
     }
 
     private var alertTimeoutWork: DispatchWorkItem?
     private var didStartGame = false
+    private var startupWatchdog: DispatchWorkItem?
 
     override var prefersStatusBarHidden: Bool { true }
 
@@ -118,6 +121,7 @@ class GameViewController: UIViewController {
         // Fade out placeholder on first rendered frame
         emulatorView.onFirstFrame = { [weak self] in
             NSLog("[J2ME Treo] First game frame displayed")
+            self?.finishStartupWatchdog()
             guard let icon = self?.placeholderIconView else { return }
             UIView.animate(withDuration: 0.2) {
                 icon.alpha = 0
@@ -584,6 +588,7 @@ class GameViewController: UIViewController {
             )
             DispatchQueue.main.async { [weak self] in
                 if let self {
+                    self.finishStartupWatchdog()
                     self.hideBlackout()
                     for code in Array(self.heldDirections) { self.releaseDirection(code) }
                 }
@@ -594,7 +599,18 @@ class GameViewController: UIViewController {
                 }
             }
         }
+        let watchdog = DispatchWorkItem { [weak self] in
+            guard let self, let icon = self.placeholderIconView, !icon.isHidden else { return }
+            NSLog("[J2ME Treo] Startup: no game frame or native screen after 15 seconds")
+        }
+        startupWatchdog = watchdog
+        DispatchQueue.main.asyncAfter(deadline: .now() + 15, execute: watchdog)
         DispatchQueue.global(qos: .userInitiated).async(execute: worker)
+    }
+
+    private func finishStartupWatchdog() {
+        startupWatchdog?.cancel()
+        startupWatchdog = nil
     }
 
     private func showLaunchFailure(_ message: String) {
@@ -637,6 +653,7 @@ class GameViewController: UIViewController {
 
     @objc private func backTapped() {
         backButton.isEnabled = false
+        finishStartupWatchdog()
         for code in Array(heldDirections) { releaseDirection(code) }
         jvm_bridge_request_stop()
     }
@@ -656,6 +673,8 @@ class GameViewController: UIViewController {
     }
 
     func showFormView() {
+        finishStartupWatchdog()
+        placeholderIconView?.isHidden = true
         formView.buildFromNativeData()
         formView.isHidden = false
         emulatorView.isHidden = true
@@ -667,6 +686,7 @@ class GameViewController: UIViewController {
     }
 
     func showListView() {
+        finishStartupWatchdog()
         placeholderIconView?.isHidden = true
         listView.buildFromNativeData()
         listView.isHidden = false
@@ -679,6 +699,7 @@ class GameViewController: UIViewController {
     }
 
     func showAlert() {
+        finishStartupWatchdog()
         let revision = j2me_ui_revision()
         let title = String(cString: j2me_ui_get_form_title())
         let text = String(cString: j2me_ui_get_alert_text())
