@@ -68,6 +68,26 @@ extern "C" {
 #include "ssl_client.h"
 #include "../utils/https/mbedtls/include/mbedtls/net_sockets.h"
 
+#if defined(__APPLE__)
+#include <errno.h>
+#include <os/log.h>
+
+// Diagnostic only: never log payloads, endpoints, or normal packet traffic.
+static void treo_net_event(const char *event, int fd, int code, int syscall_errno) {
+    int saved = errno;
+    os_log(OS_LOG_DEFAULT, "[TREO-NET] %{public}s fd=%d code=%d errno=%d",
+           event, fd, code, syscall_errno);
+    errno = saved;
+}
+
+static int treo_net_errno(int code, int saved) {
+    return code == MBEDTLS_ERR_NET_CONN_RESET ||
+           code == MBEDTLS_ERR_NET_RECV_FAILED ||
+           code == MBEDTLS_ERR_NET_SEND_FAILED ? saved : 0;
+}
+#endif
+
+
 #if __JVM_OS_MINGW__
 
 #ifndef InetNtopA
@@ -377,6 +397,9 @@ s32 org_mini_net_SocketNative_connect0(Runtime *runtime, JClass *clazz) {
         ret = mbedtls_net_connect(ctx, host->arr_body, port->arr_body, proto);
         jthread_block_exit(runtime);
 #if defined(__APPLE__)
+        if (ret != 0) treo_net_event("connect_error", ctx->fd, ret, 0);
+        else if (proto == MBEDTLS_NET_PROTO_TCP)
+            treo_net_event("tcp_connected", ctx->fd, 0, 0);
         // Apply only to successfully connected outbound TCP sockets. Keep the
         // original connection usable if the OS rejects the latency option.
         if (ret == 0 && proto == MBEDTLS_NET_PROTO_TCP) {
@@ -417,12 +440,21 @@ static s32 sock_recv(VmSock *vmsock, u8 *buf, s32 count, Runtime *runtime) {
         } else {
             ret = mbedtls_net_recv_timeout(&vmsock->contex, buf, count, vmsock->rcv_time_out ? vmsock->rcv_time_out : 100);
         }
+#if defined(__APPLE__)
+        int read_errno = errno;
+#endif
         if (runtime->thrd_info->is_interrupt) {//vm waiting for destroy
+#if defined(__APPLE__)
+            treo_net_event("vm_read_interrupt", vmsock->contex.fd, ret, treo_net_errno(ret, read_errno));
+#endif
             ret = -1;
             break;
         }
         if (ret == MBEDTLS_ERR_SSL_TIMEOUT) {
             if (vmsock->rcv_time_out) {
+#if defined(__APPLE__)
+                treo_net_event("read_timeout", vmsock->contex.fd, ret, 0);
+#endif
                 ret = -2;
                 break;
             }
@@ -432,6 +464,11 @@ static s32 sock_recv(VmSock *vmsock, u8 *buf, s32 count, Runtime *runtime) {
             ret = 0;
             break;
         } else if (ret <= 0) {
+#if defined(__APPLE__)
+            if (ret < 0 || count > 0)
+                treo_net_event(ret == 0 ? "read_eof" : "read_error", vmsock->contex.fd,
+                               ret, treo_net_errno(ret, read_errno));
+#endif
             ret = -1;
             break;
         } else {
@@ -493,6 +530,11 @@ s32 org_mini_net_SocketNative_writeBuf(Runtime *runtime, JClass *clazz) {
         mbedtls_net_context *ctx = &vmsock->contex;
         jthread_block_enter(runtime);
         ret = mbedtls_net_send(ctx, (const u8 *) jbyte_arr->arr_body + offset, count);
+#if defined(__APPLE__)
+        int write_errno = errno;
+        if (ret < 0 && ret != MBEDTLS_ERR_SSL_WANT_WRITE)
+            treo_net_event("write_error", ctx->fd, ret, treo_net_errno(ret, write_errno));
+#endif
         jthread_block_exit(runtime);
         if (ret == MBEDTLS_ERR_SSL_WANT_WRITE) {
             ret = 0;
@@ -518,6 +560,11 @@ s32 org_mini_net_SocketNative_writeByte(Runtime *runtime, JClass *clazz) {
         mbedtls_net_context *ctx = &vmsock->contex;
         jthread_block_enter(runtime);
         ret = mbedtls_net_send(ctx, &b, 1);
+#if defined(__APPLE__)
+        int write_errno = errno;
+        if (ret < 0 && ret != MBEDTLS_ERR_SSL_WANT_WRITE)
+            treo_net_event("write_error", ctx->fd, ret, treo_net_errno(ret, write_errno));
+#endif
         jthread_block_exit(runtime);
         if (ret == MBEDTLS_ERR_SSL_WANT_WRITE) {
             ret = 0;
@@ -546,6 +593,9 @@ s32 org_mini_net_SocketNative_close0(Runtime *runtime, JClass *clazz) {
     Instance *vmarr = localvar_getRefer(runtime->localvar, 0);
     VmSock *vmsock = (VmSock *) vmarr->arr_body;
     mbedtls_net_context *ctx = &vmsock->contex;
+#if defined(__APPLE__)
+    if (ctx->fd >= 0) treo_net_event("java_close", ctx->fd, 0, 0);
+#endif
     mbedtls_net_free(ctx);
 #if _JVM_DEBUG_LOG_LEVEL > 5
     invoke_deepth(runtime);
