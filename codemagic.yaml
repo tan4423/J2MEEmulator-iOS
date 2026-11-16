@@ -58,7 +58,7 @@ workflows:
           test "$(git -C "$RUNNER_TEMP/sljit-upstream" rev-parse FETCH_HEAD)" = "76f904ea4008a8058db5155bf5ee2cfe94d19e60"
           git -C "$RUNNER_TEMP/sljit-upstream" checkout -q --detach FETCH_HEAD
           sljit="$RUNNER_TEMP/sljit-upstream/minijvm/c/utils/sljit"
-          xcrun --sdk iphoneos clang -arch arm64 -miphoneos-version-min=15.0 -O2 -DSLJIT_CONFIG_AUTO=1 -I"$sljit" -c "$sljit/sljitLir.c" -o "$RUNNER_TEMP/TreoSLJIT.o"
+          xcrun --sdk iphoneos clang -arch arm64 -miphoneos-version-min=15.0 -O2 -DSLJIT_CONFIG_AUTO=1 '-DSLJIT_UPDATE_WX_FLAGS(from,to,enable_exec)=((void)0)' -I"$sljit" -c "$sljit/sljitLir.c" -o "$RUNNER_TEMP/TreoSLJIT.o"
           xcrun --sdk iphoneos clang -arch arm64 -miphoneos-version-min=15.0 -O2 -DSLJIT_CONFIG_AUTO=1 -I"$sljit" -c "tools/treo_jit_probe.c" -o "$RUNNER_TEMP/TreoJITProbe.o"
           xcodebuild -version
           xcrun --sdk iphoneos --show-sdk-version
