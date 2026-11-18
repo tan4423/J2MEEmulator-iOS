@@ -79,12 +79,16 @@ class GameViewController: UIViewController {
         // render target that a newer game session has already registered.
         alertTimeoutWork?.cancel()
         startupWatchdog?.cancel()
+        measurementDeadline?.cancel()
     }
 
     private var alertTimeoutWork: DispatchWorkItem?
     private var didStartGame = false
     private var cpuProfileStartedAt: TimeInterval?
     private var powerRun: PowerRun?
+    private var measurementDeadline: DispatchWorkItem?
+    private var measurementID: UUID?
+    private var lastMeasurement: (title: String, message: String)?
     private var cpuMetalBaseline: (UInt64, UInt64, UInt64) = (0, 0, 0)
     private var startupWatchdog: DispatchWorkItem?
 
@@ -480,6 +484,10 @@ class GameViewController: UIViewController {
             UIAction(title: "Phím điều hướng", state: padMode == .directions ? .on : .off) { [weak self] _ in self?.setPadMode(.directions) },
             UIAction(title: "Phím số", state: padMode == .numbers ? .on : .off) { [weak self] _ in self?.setPadMode(.numbers) },
             UIAction(title: "Ẩn phím · màn hình lớn", state: padMode == .hidden ? .on : .off) { [weak self] _ in self?.setPadMode(.hidden) },
+            UIAction(title: "Xem kết quả đo gần nhất",
+                     attributes: lastMeasurement == nil ? .disabled : []) { [weak self] _ in
+                self?.showLastMeasurement()
+            },
             UIAction(title: powerRun == nil ? "Bắt đầu đo nhiệt và CPU tổng" : "Dừng đo nhiệt và CPU tổng",
                      attributes: cpuProfileStartedAt == nil ? [] : .disabled) { [weak self] _ in
                 self?.togglePowerRun()
@@ -565,6 +573,46 @@ class GameViewController: UIViewController {
         ])
     }
 
+    private func cancelMeasurementDeadline() {
+        measurementDeadline?.cancel()
+        measurementDeadline = nil
+        measurementID = nil
+    }
+
+    private func scheduleMeasurementDeadline(power: Bool) {
+        cancelMeasurementDeadline()
+        let id = UUID()
+        measurementID = id
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.measurementID == id else { return }
+            if power {
+                if self.powerRun != nil { self.togglePowerRun() }
+            } else if self.cpuProfileStartedAt != nil {
+                self.toggleCPUProfile()
+            }
+        }
+        measurementDeadline = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + .seconds(60), execute: work)
+    }
+
+    private func publishMeasurement(title: String, message: String) {
+        lastMeasurement = (title, message)
+        applyPadMode()
+        showLastMeasurement()
+    }
+
+    private func showLastMeasurement() {
+        guard let report = lastMeasurement, viewIfLoaded?.window != nil,
+              presentedViewController == nil, !isBeingDismissed,
+              UIApplication.shared.applicationState == .active else { return }
+        let alert = UIAlertController(title: report.title, message: report.message, preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "Sao chép", style: .default) { _ in
+            UIPasteboard.general.string = report.message
+        })
+        alert.addAction(UIAlertAction(title: "Đóng", style: .cancel))
+        present(alert, animated: true)
+    }
+
     private struct PowerRun {
         let time: TimeInterval
         let cpu: Double
@@ -593,11 +641,12 @@ class GameViewController: UIViewController {
                                 cull: cull, gpuFrames: gpuFrames, batch: treo_cpu_batch_enabled(),
                                 queued: treo_cpu_batch_queued(), reused: treo_cpu_batch_reused(),
                                 software: treo_software_enabled(), softwareStats: treo_software_stats())
+            scheduleMeasurementDeadline(power: true)
             applyPadMode()
             return
         }
+        cancelMeasurementDeadline()
         powerRun = nil
-        applyPadMode()
         let duration = now - start.time
         let valid = start.cpu >= 0 && cpu >= start.cpu && duration > 0
         let cpuText = valid ? String(format: "%.1f%% một lõi", 100.0 * (cpu - start.cpu) / duration) : "Không đọc được"
@@ -625,12 +674,7 @@ class GameViewController: UIViewController {
         Lệnh dùng lại: \(treo_cpu_batch_reused() &- start.reused)/\(treo_cpu_batch_queued() &- start.queued) lệnh gom đủ cụm
         Không đo công suất, độ C hoặc mức tải GPU.
         """
-        let alert = UIAlertController(title: "Nhiệt và CPU tổng", message: report, preferredStyle: .alert)
-        alert.addAction(UIAlertAction(title: "Sao chép", style: .default) { _ in
-            UIPasteboard.general.string = report
-        })
-        alert.addAction(UIAlertAction(title: "Đóng", style: .cancel))
-        present(alert, animated: true)
+        publishMeasurement(title: "Nhiệt và CPU tổng", message: report)
     }
 
     private func showMetalReplay() {
@@ -655,13 +699,14 @@ class GameViewController: UIViewController {
             cpuMetalBaseline = (treo_metal_live_frames(), treo_metal_live_sprites(), treo_metal_live_fallback_sprites())
             treo_render_profile_start()
             cpuProfileStartedAt = ProcessInfo.processInfo.systemUptime
+            scheduleMeasurementDeadline(power: false)
             applyPadMode()
             return
         }
+        cancelMeasurementDeadline()
         let result = treo_render_profile_stop()
         let seconds = ProcessInfo.processInfo.systemUptime - start
         cpuProfileStartedAt = nil
-        applyPadMode()
         let paint = Double(result.paint_ns) / 1_000_000
         let snapshot = Double(result.snapshot_ns) / 1_000_000
         let region = Double(result.region_sample_ns) / 1_000_000
@@ -685,15 +730,11 @@ class GameViewController: UIViewController {
         drawRegion: \(result.region_calls) lượt · \(result.region_samples) mẫu, \(String(format: "%.1f", region)) ms CPU trong mẫu
         """
         NSLog("[TREO-CPU] %@", report)
-        let alert = UIAlertController(title: "CPU khi hiện game", message: report, preferredStyle: .alert)
-        alert.addAction(UIAlertAction(title: "Sao chép", style: .default) { _ in
-            UIPasteboard.general.string = report
-        })
-        alert.addAction(UIAlertAction(title: "Đóng", style: .cancel))
-        present(alert, animated: true)
+        publishMeasurement(title: "CPU khi hiện game", message: report)
     }
 
     private func discardCPUProfile() {
+        cancelMeasurementDeadline()
         let hadPowerRun = powerRun != nil
         powerRun = nil
         guard cpuProfileStartedAt != nil else {
