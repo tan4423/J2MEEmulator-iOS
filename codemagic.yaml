@@ -99,9 +99,9 @@ workflows:
           staging="$(mktemp -d)"
           mkdir "$staging/Payload"
           ditto "${apps[0]}" "$staging/Payload/$(basename "${apps[0]}")"
-          (cd "$staging" && /usr/bin/zip -qry "$GITHUB_WORKSPACE/J2ME-Treo-metal-frame-unsigned.ipa" Payload)
+          (cd "$staging" && /usr/bin/zip -qry "$GITHUB_WORKSPACE/J2ME-Treo-energy-baseline-unsigned.ipa" Payload)
           
-          test -s "$GITHUB_WORKSPACE/J2ME-Treo-metal-frame-unsigned.ipa"
-          /usr/bin/unzip -tq "$GITHUB_WORKSPACE/J2ME-Treo-metal-frame-unsigned.ipa"
+          test -s "$GITHUB_WORKSPACE/J2ME-Treo-energy-baseline-unsigned.ipa"
+          /usr/bin/unzip -tq "$GITHUB_WORKSPACE/J2ME-Treo-energy-baseline-unsigned.ipa"
     artifacts:
-      - J2ME-Treo-metal-frame-unsigned.ipa
+      - J2ME-Treo-energy-baseline-unsigned.ipa

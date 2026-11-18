@@ -20,6 +20,7 @@
 #include <stdio.h>
 #include <stdatomic.h>
 #include <time.h>
+#include <sys/resource.h>
 #include <os/lock.h>
 
 // ============================================================
@@ -140,6 +141,13 @@ static uint64_t treo_thread_cpu_ns(void) {
     if (clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts) != 0) return 0;
     return (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
 }
+double treo_process_cpu_seconds(void) {
+    struct rusage usage;
+    if (getrusage(RUSAGE_SELF, &usage) != 0) return -1.0;
+    return (double)usage.ru_utime.tv_sec + (double)usage.ru_stime.tv_sec +
+           ((double)usage.ru_utime.tv_usec + (double)usage.ru_stime.tv_usec) / 1000000.0;
+}
+
 void treo_render_profile_start(void) {
     atomic_store_explicit(&treo_prof_paints, 0, memory_order_relaxed);
     atomic_store_explicit(&treo_prof_paint_ns, 0, memory_order_relaxed);

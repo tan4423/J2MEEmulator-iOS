@@ -84,6 +84,7 @@ class GameViewController: UIViewController {
     private var alertTimeoutWork: DispatchWorkItem?
     private var didStartGame = false
     private var cpuProfileStartedAt: TimeInterval?
+    private var powerRun: PowerRun?
     private var cpuMetalBaseline: (UInt64, UInt64, UInt64) = (0, 0, 0)
     private var startupWatchdog: DispatchWorkItem?
 
@@ -479,8 +480,12 @@ class GameViewController: UIViewController {
             UIAction(title: "Phím điều hướng", state: padMode == .directions ? .on : .off) { [weak self] _ in self?.setPadMode(.directions) },
             UIAction(title: "Phím số", state: padMode == .numbers ? .on : .off) { [weak self] _ in self?.setPadMode(.numbers) },
             UIAction(title: "Ẩn phím · màn hình lớn", state: padMode == .hidden ? .on : .off) { [weak self] _ in self?.setPadMode(.hidden) },
+            UIAction(title: powerRun == nil ? "Bắt đầu đo nhiệt và CPU tổng" : "Dừng đo nhiệt và CPU tổng",
+                     attributes: cpuProfileStartedAt == nil ? [] : .disabled) { [weak self] _ in
+                self?.togglePowerRun()
+            },
             UIAction(title: "Treo tối đa · màn hình đen") { [weak self] _ in self?.showBlackout() },
-            UIAction(title: treo_game_jit_is_enabled() != 0 ? "Tắt JIT Java (thử nghiệm)" : "Bật JIT Java (thử nghiệm)") { [weak self] _ in
+            UIAction(title: treo_game_jit_is_enabled() != 0 ? "Tắt JIT Java (thử nghiệm)" : "Bật JIT Java (thử nghiệm)", attributes: powerRun == nil ? [] : .disabled) { [weak self] _ in
                 guard let self else { return }
                 if treo_game_jit_is_enabled() != 0 {
                     treo_game_jit_set_enabled(0)
@@ -507,22 +512,23 @@ class GameViewController: UIViewController {
                 self.present(prompt, animated: true)
             },
             UIAction(title: "Bỏ sprite ngoài vùng vẽ (thử nghiệm)",
-                     attributes: cpuProfileStartedAt == nil ? [] : .disabled,
+                     attributes: cpuProfileStartedAt == nil && powerRun == nil ? [] : .disabled,
                      state: treo_render_region_cull_enabled() != 0 ? .on : .off) { [weak self] _ in
                 let enabled = treo_render_region_cull_enabled() != 0
                 treo_render_set_region_cull_enabled(enabled ? 0 : 1)
                 self?.applyPadMode()
             },
-            UIAction(title: cpuProfileStartedAt == nil ? "Bắt đầu đo CPU" : "Dừng và xem số liệu CPU") { [weak self] _ in
+            UIAction(title: cpuProfileStartedAt == nil ? "Bắt đầu đo CPU" : "Dừng và xem số liệu CPU",
+                     attributes: powerRun == nil ? [] : .disabled) { [weak self] _ in
                 self?.toggleCPUProfile()
             },
             UIAction(title: "Metal toàn khung (thử nghiệm)",
-                     attributes: cpuProfileStartedAt == nil ? [] : .disabled,
+                     attributes: cpuProfileStartedAt == nil && powerRun == nil ? [] : .disabled,
                      state: treo_metal_live_enabled() != 0 ? .on : .off) { [weak self] _ in
                 treo_metal_live_set_enabled(treo_metal_live_enabled() == 0 ? 1 : 0)
                 self?.applyPadMode()
             },
-            UIAction(title: "Đo thử Metal · drawRegion") { [weak self] _ in
+            UIAction(title: "Đo thử Metal · drawRegion", attributes: powerRun == nil ? [] : .disabled) { [weak self] _ in
                 self?.showMetalReplay()
             },
             UIAction(title: "Thống kê JIT Java") { [weak self] _ in
@@ -535,6 +541,60 @@ class GameViewController: UIViewController {
                 self?.present(report, animated: true)
             }
         ])
+    }
+
+    private struct PowerRun {
+        let time: TimeInterval
+        let cpu: Double
+        let thermal: ProcessInfo.ThermalState
+        let metal: Int32
+        let jit: Int32
+        let cull: Int32
+        let gpuFrames: UInt64
+    }
+
+    private func togglePowerRun() {
+        let now = ProcessInfo.processInfo.systemUptime
+        let cpu = treo_process_cpu_seconds()
+        let thermal = ProcessInfo.processInfo.thermalState
+        let metal = treo_metal_live_enabled()
+        let jit = treo_game_jit_is_enabled()
+        let cull = treo_render_region_cull_enabled()
+        let gpuFrames = treo_metal_live_frames()
+        guard let start = powerRun else {
+            powerRun = PowerRun(time: now, cpu: cpu, thermal: thermal, metal: metal, jit: jit,
+                                cull: cull, gpuFrames: gpuFrames)
+            applyPadMode()
+            return
+        }
+        powerRun = nil
+        applyPadMode()
+        let duration = now - start.time
+        let valid = start.cpu >= 0 && cpu >= start.cpu && duration > 0
+        let cpuText = valid ? String(format: "%.1f%% một lõi", 100.0 * (cpu - start.cpu) / duration) : "Không đọc được"
+        func thermalLabel(_ value: ProcessInfo.ThermalState) -> String {
+            switch value {
+            case .nominal: return "Bình thường"
+            case .fair: return "Tăng nhẹ"
+            case .serious: return "Cao"
+            case .critical: return "Rất cao"
+            @unknown default: return "Không rõ"
+            }
+        }
+        let report = """
+        Thời gian: \(String(format: "%.1f", duration)) s
+        CPU toàn app: \(cpuText)
+        Mức nhiệt iOS (đầu → cuối): \(thermalLabel(start.thermal)) → \(thermalLabel(thermal))
+        Metal: \(metal != 0 ? "Bật" : "Tắt") · \(gpuFrames &- start.gpuFrames) khung GPU
+        JIT: \(jit != 0 ? "Bật" : "Tắt") · Bỏ sprite: \(cull != 0 ? "Bật" : "Tắt")
+        Không đo công suất, độ C hoặc mức tải GPU.
+        """
+        let alert = UIAlertController(title: "Nhiệt và CPU tổng", message: report, preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "Sao chép", style: .default) { _ in
+            UIPasteboard.general.string = report
+        })
+        alert.addAction(UIAlertAction(title: "Đóng", style: .cancel))
+        present(alert, animated: true)
     }
 
     private func showMetalReplay() {
@@ -598,7 +658,12 @@ class GameViewController: UIViewController {
     }
 
     private func discardCPUProfile() {
-        guard cpuProfileStartedAt != nil else { return }
+        let hadPowerRun = powerRun != nil
+        powerRun = nil
+        guard cpuProfileStartedAt != nil else {
+            if hadPowerRun { applyPadMode() }
+            return
+        }
         _ = treo_render_profile_stop()
         cpuProfileStartedAt = nil
         applyPadMode()
