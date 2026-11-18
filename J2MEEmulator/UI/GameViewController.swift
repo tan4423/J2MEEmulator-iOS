@@ -18,6 +18,78 @@ enum GameLayoutMode {
     // Future: .fullscreen — Landscape: screen fills, overlay controls
 }
 
+// Passive UIKit phase observer, active only inside a measured audit leg.
+@MainActor private final class JarCommitBudget {
+    struct Result {
+        let pairs: Int
+        let dropped: Int
+        let cpu: Double
+        let wall: Double
+
+        var pairsPerSecond: Double { Double(pairs) / wall }
+        var millisecondsPerPair: Double { cpu * 1000 / Double(max(1, pairs)) }
+        var millisecondsPerSecond: Double { cpu * 1000 / wall }
+
+        var detail: String {
+            guard pairs > 0 else {
+                return "Mốc commit UIKit: không có cặp hợp lệ (\(dropped) lỗi ghép/đồng hồ)."
+            }
+            return String(format: "Mốc commit UIKit: %.2f cặp/s · %.3f ms CPU/cặp · %.1f ms CPU/s",
+                          pairsPerSecond, millisecondsPerPair, millisecondsPerSecond)
+                + " · \(pairs) cặp · \(dropped) lỗi ghép/đồng hồ"
+        }
+    }
+
+    private var disable: (() -> Void)?
+    private var pending: (modelTime: Double, cpu: Double)?
+    private var pairs = 0
+    private var dropped = 0
+    private var cpu = 0.0
+
+    @available(iOS 18.0, *)
+    func start(in view: UIView) {
+        let link = UIUpdateLink(view: view)
+        link.requiresContinuousUpdates = false
+        link.addAction(to: .beforeCATransactionCommit) { [weak self] _, info in
+            let now = treo_afk_current_thread_cpu()
+            guard let self else { return }
+            if self.pending != nil { self.dropped += 1 }
+            if now >= 0 {
+                self.pending = (info.modelTime, now)
+            } else {
+                self.pending = nil
+                self.dropped += 1
+            }
+        }
+        link.addAction(to: .afterCATransactionCommit) { [weak self] _, info in
+            let now = treo_afk_current_thread_cpu()
+            guard let self else { return }
+            let start = self.pending
+            self.pending = nil
+            guard let start, start.modelTime == info.modelTime, now >= start.cpu else {
+                self.dropped += 1
+                return
+            }
+            self.pairs += 1
+            self.cpu += now - start.cpu
+        }
+        disable = { link.isEnabled = false }
+        link.isEnabled = true
+    }
+
+    func finish(wall: Double) -> Result {
+        let result = Result(pairs: pairs, dropped: dropped + (pending == nil ? 0 : 1), cpu: cpu, wall: wall)
+        stop()
+        return result
+    }
+
+    func stop() {
+        disable?()
+        disable = nil
+        pending = nil
+    }
+}
+
 // Partition the main thread's CPU clock between run-loop markers.
 // These are time windows, not attribution to an individual observer or framework.
 @MainActor private enum JarMainBudget {
@@ -208,6 +280,8 @@ class GameViewController: UIViewController {
     private var jarMainProfile = false
     private var jarLoadComparison = false
     private var jarBudgetAudit = false
+    private var jarCommitAudit = false
+    private var jarCommitBudget: JarCommitBudget?
     private var jarDetachAudit = false
     private var jarDetachShield: UIView?
     private var jarDetachedViews: [UIView] = []
@@ -659,6 +733,10 @@ class GameViewController: UIViewController {
             UIAction(title: "Thử tháo giao diện game · JAR") { [weak self] _ in
                 self?.confirmJarAudit(budgetMain: true, detachUI: true)
             },
+            UIAction(title: "Đo CPU quanh commit UIKit · JAR",
+                     attributes: Self.jarCommitAuditSupported ? [] : .disabled) { [weak self] _ in
+                self?.confirmJarAudit(budgetMain: true, measureCommit: true)
+            },
             UIAction(title: "Đo pha CPU main · JAR") { [weak self] _ in self?.confirmJarAudit(budgetMain: true) },
             UIAction(title: "Tìm stack sau Source · JAR") { [weak self] _ in
                 self?.confirmJarAudit(profileMain: true, budgetMain: true)
@@ -1065,15 +1143,24 @@ class GameViewController: UIViewController {
         }
     }
 
-    private func confirmJarAudit(profileMain: Bool = false, compareLoad: Bool = false, budgetMain: Bool = false, detachUI: Bool = false) {
+    private static var jarCommitAuditSupported: Bool {
+        if #available(iOS 18.0, *) { return true }
+        return false
+    }
+
+    private func confirmJarAudit(profileMain: Bool = false, compareLoad: Bool = false, budgetMain: Bool = false, detachUI: Bool = false, measureCommit: Bool = false) {
+        guard !measureCommit || Self.jarCommitAuditSupported else { return }
         guard jarAuditID == nil, blackout == nil, powerRun == nil, cpuProfileStartedAt == nil else { return }
         let sourceProfile = budgetMain && profileMain
-        let alert = UIAlertController(title: detachUI ? "Thử tháo giao diện game · JAR" :
+        let alert = UIAlertController(title: measureCommit ? "Đo CPU quanh commit UIKit · JAR" :
+                detachUI ? "Thử tháo giao diện game · JAR" :
                 sourceProfile ? "Tìm stack sau Source · JAR" :
                 budgetMain ? "Đo pha CPU main · JAR" :
                 (compareLoad ? "Thử chờ thụ động · CPU main" :
                  (profileMain ? "Tìm hàm ăn CPU main" : "Chẩn đoán CPU JAR")),
-            message: detachUI
+            message: measureCommit
+                ? "Map 37, auto x1, treo trong JAR đang TẮT. Đo tắt → bật → tắt theo lời nhắc. Không bật màn đen Treo riêng. App chặn khung, tạm tắt JIT và chỉ quan sát các mốc UIKit; không lấy stack."
+                : detachUI
                 ? "Map 37, auto x1, BẬT treo trong JAR trước. Ba lượt tự động: giao diện gắn → tháo thật khỏi cửa sổ → gắn lại. Giữ treo JAR bật suốt bài. Không bật màn đen Treo. Chặn khung, tắt JIT trong bài, không lấy stack. Có nút Hủy đo."
                 : sourceProfile
                 ? "Map 37, auto x1, treo trong JAR đang TẮT. Ba lượt × 60 giây: tắt → bật → tắt theo lời nhắc. Không bật màn đen Treo. App chặn khung, tạm tắt JIT, và chỉ lấy stack trong khoảng sau mốc Source."
@@ -1087,16 +1174,17 @@ class GameViewController: UIViewController {
             preferredStyle: .alert)
         alert.addAction(UIAlertAction(title: "Hủy", style: .cancel))
         alert.addAction(UIAlertAction(title: profileMain ? "Lấy mẫu" : "Đo", style: .default) { [weak self] _ in
-            self?.startJarAudit(profileMain: profileMain, compareLoad: compareLoad, budgetMain: budgetMain, detachUI: detachUI)
+            self?.startJarAudit(profileMain: profileMain, compareLoad: compareLoad, budgetMain: budgetMain, detachUI: detachUI, measureCommit: measureCommit)
         })
         present(alert, animated: true)
     }
 
-    private func startJarAudit(profileMain: Bool, compareLoad: Bool, budgetMain: Bool, detachUI: Bool) {
+    private func startJarAudit(profileMain: Bool, compareLoad: Bool, budgetMain: Bool, detachUI: Bool, measureCommit: Bool) {
         guard jarAuditID == nil, blackout == nil, powerRun == nil, cpuProfileStartedAt == nil else { return }
         jarMainProfile = profileMain
         jarLoadComparison = compareLoad
         jarBudgetAudit = budgetMain
+        jarCommitAudit = measureCommit
         jarDetachAudit = detachUI
         let id = UUID()
         jarAuditID = id
@@ -1120,6 +1208,9 @@ class GameViewController: UIViewController {
         jarMainProfile = false
         if jarBudgetAudit { JarMainBudget.stop() }
         jarBudgetAudit = false
+        jarCommitBudget?.stop()
+        jarCommitBudget = nil
+        jarCommitAudit = false
         if jarDetachAudit {
             restoreJarGameViews()
             jarDetachShield?.removeFromSuperview()
@@ -1151,6 +1242,7 @@ class GameViewController: UIViewController {
         let ticks: Double
         let paint: Double
         let budget: [Double]?
+        let commit: JarCommitBudget.Result?
     }
 
     private func runJarAudit(id: UUID, leg: Int, rows: [String], results: [JarAuditResult]) {
@@ -1181,6 +1273,11 @@ class GameViewController: UIViewController {
             let budgetMain = self.jarBudgetAudit
             let sourceProfile = budgetMain && profileMain
             if budgetMain { JarMainBudget.start(sampleSource: sourceProfile) }
+            if self.jarCommitAudit, #available(iOS 18.0, *) {
+                let commitBudget = JarCommitBudget()
+                self.jarCommitBudget = commitBudget
+                commitBudget.start(in: self.view)
+            }
             if sourceProfile { treo_afk_main_source_trace_begin() }
             else if profileMain { treo_afk_main_stack_begin() }
             self.scheduleJarAudit(id: id, after: profileMain && !sourceProfile ? 20 : (self.jarLoadComparison ? 25 : 60)) { [weak self] in
@@ -1200,6 +1297,8 @@ class GameViewController: UIViewController {
                 let main: Double? = start.base.mainCPU >= 0 && end.base.mainCPU >= start.base.mainCPU
                     ? 100 * (end.base.mainCPU - start.base.mainCPU) / dt : nil
                 let budget = budgetMain ? JarMainBudget.finish(wall: dt, mainPercent: main) : nil
+                let commit = self.jarCommitBudget?.finish(wall: dt)
+                self.jarCommitBudget = nil
                 let ticks = Double(on + off) / dt
                 let frames = end.frames &- start.frames
                 let cpuText = total.map { String(format: "%.1f%%", $0) } ?? "?"
@@ -1232,6 +1331,7 @@ class GameViewController: UIViewController {
                         row += "\nKhông đủ mốc hợp lệ để chia CPU theo pha."
                     }
                 }
+                if let commit { row += "\n" + commit.detail }
                 if compareLoad {
                     let calls = end.loadCalls &- start.loadCalls
                     let wall = Double(end.loadWall &- start.loadWall) / Double(max(1, calls)) / 1_000_000
@@ -1243,7 +1343,7 @@ class GameViewController: UIViewController {
                     self.finishJarAudit(rows: all, results: [])
                     return
                 }
-                let measured = results + [JarAuditResult(total: total, main: main, ticks: ticks, paint: paint, budget: budget)]
+                let measured = results + [JarAuditResult(total: total, main: main, ticks: ticks, paint: paint, budget: budget, commit: commit)]
                 if leg == (compareLoad ? 3 : 2) || (profileMain && !sourceProfile && leg == 1) {
                     self.finishJarAudit(rows: all, results: measured)
                 } else if compareLoad || detachUI {
@@ -1293,6 +1393,7 @@ class GameViewController: UIViewController {
         let compareLoad = jarLoadComparison
         let budgetMain = jarBudgetAudit
         let detachUI = jarDetachAudit
+        let measureCommit = jarCommitAudit
         stopJarAudit()
         if profileMain && !budgetMain {
             publishMeasurement(title: "Tìm hàm ăn CPU main", message:
@@ -1323,9 +1424,24 @@ class GameViewController: UIViewController {
                 summary += "Chênh CPU main theo pha (ms/s): "
                     + (measured + ["Ngoài mốc \(residual)"]).joined(separator: " · ") + "\n\n"
             }
-            let title = detachUI ? "Thử tháo giao diện game · JAR" :
+            if measureCommit, results.count == 3 {
+                let commits = results.compactMap(\.commit)
+                if commits.count == 3, commits.allSatisfy({ $0.pairs > 0 && $0.dropped <= max(2, $0.pairs / 100) }) {
+                    let a = commits[0], b = commits[1], c = commits[2]
+                    summary += String(format: "B − trung bình A1/A2 quanh commit UIKit: %+.1f ms CPU/s · %+.2f cặp/s · %+.3f ms CPU/cặp.\n\n",
+                                      b.millisecondsPerSecond - (a.millisecondsPerSecond + c.millisecondsPerSecond) / 2,
+                                      b.pairsPerSecond - (a.pairsPerSecond + c.pairsPerSecond) / 2,
+                                      b.millisecondsPerPair - (a.millisecondsPerPair + c.millisecondsPerPair) / 2)
+                } else {
+                    summary += "Mốc UIKit không đủ hoặc lỗi ghép nhiều: không kết luận về commit.\n\n"
+                }
+            }
+            let title = measureCommit ? "Đo CPU quanh commit UIKit · JAR" :
+                detachUI ? "Thử tháo giao diện game · JAR" :
                 (profileMain ? "Tìm stack sau Source · JAR" : "Đo pha CPU main · JAR")
-            let sampling = profileMain
+            let sampling = measureCommit
+                ? "UIUpdateLink thụ động, không yêu cầu cập nhật liên tục. Chỉ đo CPU main giữa hai mốc UIKit; không đếm mọi commit QuartzCore. Không cộng số này vào CPU theo pha. Đối chiếu với mức tăng sau Source cũ (~253 ms/s); nếu không tái hiện thì không quy kết."
+                : profileMain
                 ? "Lấy mẫu sau Source. Kiểm tra chênh pha so với bài không lấy stack (~+253 ms/s); nếu lệch rõ thì không quy nguyên nhân từ mẫu. Số mẫu không phải CPU time."
                 : (detachUI ? "JAR bật cả ba lượt. Tháo view con ở B; giữ controller, cửa sổ và VM. Không lấy stack." : "Không lấy stack.")
             publishMeasurement(title: title, message:
