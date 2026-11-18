@@ -2041,10 +2041,29 @@ static s32 n_fillPolygon(Runtime *runtime, JClass *clazz) {
     Instance *yArr = env->localvar_getRefer(runtime->localvar, 3);
     s32 nPoints = env->localvar_getInt(runtime->localvar, 4);
     RenderContext *rc = rc_acquire(handle);
-    treo_live_barrier(rc);
     if (!rc || !xArr || !yArr || nPoints < 3) { rc_release(rc); return RUNTIME_STATUS_NORMAL; }
     s32 *xPts = (s32 *)xArr->arr_body;
     s32 *yPts = (s32 *)yArr->arr_body;
+    if (treo_live_recording(rc) && nPoints <= 1024 &&
+        nPoints <= xArr->arr_length && nPoints <= yArr->arr_length) {
+        CGMutablePathRef path = CGPathCreateMutable();
+        if (path) {
+            CGPathMoveToPoint(path, NULL, xPts[0] + 0.0, yPts[0] + 0.0);
+            for (int i = 1; i < nPoints; i++)
+                CGPathAddLineToPoint(path, NULL, xPts[i] + 0.0, yPts[i] + 0.0);
+            CGPathCloseSubpath(path);
+            // Capture an owning ARC reference, never a pointer into Java's heap.
+            id ownedPath = (__bridge_transfer id)path;
+            int recorded = treo_live_shape(rc, CGRectInset(CGPathGetPathBoundingBox(path), -6, -6),
+                ^(CGContextRef target) {
+                    CGContextBeginPath(target);
+                    CGContextAddPath(target, (__bridge CGPathRef)ownedPath);
+                    CGContextFillPath(target);
+                });
+            if (recorded) { rc_release(rc); return RUNTIME_STATUS_NORMAL; }
+        }
+    }
+    treo_live_barrier(rc);
     CGContextBeginPath(rc->ctx);
     CGContextMoveToPoint(rc->ctx, xPts[0], yPts[0]);
     for (int i = 1; i < nPoints; i++) {
@@ -2063,10 +2082,29 @@ static s32 n_drawPolygon(Runtime *runtime, JClass *clazz) {
     Instance *yArr = env->localvar_getRefer(runtime->localvar, 3);
     s32 nPoints = env->localvar_getInt(runtime->localvar, 4);
     RenderContext *rc = rc_acquire(handle);
-    treo_live_barrier(rc);
     if (!rc || !xArr || !yArr || nPoints < 3) { rc_release(rc); return RUNTIME_STATUS_NORMAL; }
     s32 *xPts = (s32 *)xArr->arr_body;
     s32 *yPts = (s32 *)yArr->arr_body;
+    if (treo_live_recording(rc) && nPoints <= 1024 &&
+        nPoints <= xArr->arr_length && nPoints <= yArr->arr_length) {
+        CGMutablePathRef path = CGPathCreateMutable();
+        if (path) {
+            CGPathMoveToPoint(path, NULL, xPts[0] + 0.5, yPts[0] + 0.5);
+            for (int i = 1; i < nPoints; i++)
+                CGPathAddLineToPoint(path, NULL, xPts[i] + 0.5, yPts[i] + 0.5);
+            CGPathCloseSubpath(path);
+            // Capture an owning ARC reference, never a pointer into Java's heap.
+            id ownedPath = (__bridge_transfer id)path;
+            int recorded = treo_live_shape(rc, CGRectInset(CGPathGetPathBoundingBox(path), -6, -6),
+                ^(CGContextRef target) {
+                    CGContextBeginPath(target);
+                    CGContextAddPath(target, (__bridge CGPathRef)ownedPath);
+                    CGContextStrokePath(target);
+                });
+            if (recorded) { rc_release(rc); return RUNTIME_STATUS_NORMAL; }
+        }
+    }
+    treo_live_barrier(rc);
     CGContextBeginPath(rc->ctx);
     CGContextMoveToPoint(rc->ctx, xPts[0] + 0.5, yPts[0] + 0.5);
     for (int i = 1; i < nPoints; i++) {
@@ -2090,8 +2128,8 @@ static s32 n_copyArea(Runtime *runtime, JClass *clazz) {
     s32 xDst = env->localvar_getInt(runtime->localvar, 6);
     s32 yDst = env->localvar_getInt(runtime->localvar, 7);
     RenderContext *rc = rc_acquire(handle);
-    treo_live_barrier(rc);
     if (!rc || w <= 0 || h <= 0) { rc_release(rc); return RUNTIME_STATUS_NORMAL; }
+    treo_live_barrier(rc);
     CGImageRef fullImg = CGBitmapContextCreateImage(rc->ctx);
     if (!fullImg) { rc_release(rc); return RUNTIME_STATUS_NORMAL; }
     CGImageRef subImg = CGImageCreateWithImageInRect(fullImg, CGRectMake(xSrc, ySrc, w, h));
