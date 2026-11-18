@@ -505,6 +505,13 @@ class GameViewController: UIViewController {
                 })
                 self.present(prompt, animated: true)
             },
+            UIAction(title: "Bỏ sprite ngoài vùng vẽ (thử nghiệm)",
+                     attributes: cpuProfileStartedAt == nil ? [] : .disabled,
+                     state: treo_render_region_cull_enabled() != 0 ? .on : .off) { [weak self] _ in
+                let enabled = treo_render_region_cull_enabled() != 0
+                treo_render_set_region_cull_enabled(enabled ? 0 : 1)
+                self?.applyPadMode()
+            },
             UIAction(title: cpuProfileStartedAt == nil ? "Bắt đầu đo CPU" : "Dừng và xem số liệu CPU") { [weak self] _ in
                 self?.toggleCPUProfile()
             },
@@ -534,7 +541,11 @@ class GameViewController: UIViewController {
         let paint = Double(result.paint_ns) / 1_000_000
         let snapshot = Double(result.snapshot_ns) / 1_000_000
         let region = Double(result.region_sample_ns) / 1_000_000
+        let cullMode = treo_render_region_cull_enabled() != 0 ? "Bật" : "Tắt"
+        let cullPercent = 100.0 * Double(result.region_culled) / max(1.0, Double(result.region_calls))
         let report = """
+        Bỏ sprite ngoài vùng vẽ: \(cullMode)
+        Bỏ sớm: \(result.region_culled)/\(result.region_calls) · \(String(format: "%.1f", cullPercent))%
         Thời gian đo: \(String(format: "%.1f", seconds)) s
         paint(): \(result.paints) lần · \(String(format: "%.1f", paint)) ms CPU
         Flush: \(result.flushes) · Ảnh tạo: \(result.snapshots)

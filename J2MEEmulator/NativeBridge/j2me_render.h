@@ -32,9 +32,13 @@ typedef struct {
     uint64_t replaced;
     uint64_t submitted;
     uint64_t region_calls;
+    uint64_t region_culled;
     uint64_t region_samples;
     uint64_t region_sample_ns;
 } TreoRenderProfile;
+// Experimental foreground drawRegion rejection. Off by default.
+int treo_render_region_cull_enabled(void);
+void treo_render_set_region_cull_enabled(int enabled);
 void treo_render_profile_start(void);
 TreoRenderProfile treo_render_profile_stop(void);
 void treo_render_profile_replaced(void);

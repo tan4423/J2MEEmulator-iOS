@@ -45,6 +45,7 @@ typedef struct RenderContext {
     int fontStyle;
     int clipSaved;
     int ownsPixels;
+    CGRect regionClipBounds;
     _Atomic int32_t refcount;
     struct RenderContext *next_dead;
 } RenderContext;
@@ -90,6 +91,13 @@ static s32 n_takeAfkRefresh(Runtime *runtime, JClass *clazz) {
 
 // Per-thread CPU time excludes sleeps and time waiting to be scheduled.
 static atomic_bool treo_profile_enabled;
+static atomic_bool treo_region_cull_enabled;
+int treo_render_region_cull_enabled(void) {
+    return atomic_load_explicit(&treo_region_cull_enabled, memory_order_relaxed);
+}
+void treo_render_set_region_cull_enabled(int enabled) {
+    atomic_store_explicit(&treo_region_cull_enabled, enabled != 0, memory_order_relaxed);
+}
 static _Atomic uint64_t treo_prof_paints;
 static _Atomic uint64_t treo_prof_paint_ns;
 static _Atomic uint64_t treo_prof_flushes;
@@ -98,6 +106,7 @@ static _Atomic uint64_t treo_prof_snapshot_ns;
 static _Atomic uint64_t treo_prof_replaced;
 static _Atomic uint64_t treo_prof_submitted;
 static _Atomic uint64_t treo_prof_region_calls;
+static _Atomic uint64_t treo_prof_region_culled;
 static _Atomic uint64_t treo_prof_region_samples;
 static _Atomic uint64_t treo_prof_region_sample_ns;
 #define TREO_PROF_ADD(field, amount) atomic_fetch_add_explicit(&treo_prof_##field, (amount), memory_order_relaxed)
@@ -119,6 +128,7 @@ void treo_render_profile_start(void) {
     atomic_store_explicit(&treo_prof_replaced, 0, memory_order_relaxed);
     atomic_store_explicit(&treo_prof_submitted, 0, memory_order_relaxed);
     atomic_store_explicit(&treo_prof_region_calls, 0, memory_order_relaxed);
+    atomic_store_explicit(&treo_prof_region_culled, 0, memory_order_relaxed);
     atomic_store_explicit(&treo_prof_region_samples, 0, memory_order_relaxed);
     atomic_store_explicit(&treo_prof_region_sample_ns, 0, memory_order_relaxed);
     atomic_store_explicit(&treo_profile_enabled, 1, memory_order_release);
@@ -134,6 +144,7 @@ TreoRenderProfile treo_render_profile_stop(void) {
         .replaced = atomic_load_explicit(&treo_prof_replaced, memory_order_relaxed),
         .submitted = atomic_load_explicit(&treo_prof_submitted, memory_order_relaxed),
         .region_calls = atomic_load_explicit(&treo_prof_region_calls, memory_order_relaxed),
+        .region_culled = atomic_load_explicit(&treo_prof_region_culled, memory_order_relaxed),
         .region_samples = atomic_load_explicit(&treo_prof_region_samples, memory_order_relaxed),
         .region_sample_ns = atomic_load_explicit(&treo_prof_region_sample_ns, memory_order_relaxed),
     };
@@ -380,6 +391,7 @@ static RenderContext *createRenderContext(int width, int height) {
     rc->fontStyle = 0;
     rc->font = CTFontCreateWithName(CFSTR("Helvetica"), rc->fontSize, NULL);
     rc->ownsPixels = 1;
+    rc->regionClipBounds = CGRectMake(0, 0, width, height);
 
     track_rc(rc);
     native_heap_add(width * height * 4);
@@ -543,6 +555,11 @@ static s32 n_setClip(Runtime *runtime, JClass *clazz) {
         CGContextSaveGState(rc->ctx);
         rc->clipSaved = 1;
         CGContextClipToRect(rc->ctx, CGRectMake(x, y, w, h));
+        // Canvas CTM is restored after each draw; clip and draw share its user space.
+        if (rc->ownsPixels) {
+            rc->regionClipBounds = CGRectIntersection(CGRectMake(0, 0, rc->width, rc->height),
+                                                       CGRectStandardize(CGRectMake(x, y, w, h)));
+        }
     }
     rc_release(rc);
     return RUNTIME_STATUS_NORMAL;
@@ -968,6 +985,16 @@ static s32 n_drawImage(Runtime *runtime, JClass *clazz) {
 #define TRANS_MIRROR_ROT180  1
 #define TRANS_MIRROR_ROT270  4
 
+// A bounding-box rejection only. Keep a one-pixel guard at clip edges and
+// leave all overlapping sprites on the original Core Graphics path.
+static int treo_region_outside_clip(CGRect clip, int64_t x, int64_t y, int w, int h) {
+    if (CGRectIsNull(clip) || CGRectIsEmpty(clip)) return 1;
+    return x + w <= CGRectGetMinX(clip) - 1 ||
+           y + h <= CGRectGetMinY(clip) - 1 ||
+           x >= CGRectGetMaxX(clip) + 1 ||
+           y >= CGRectGetMaxY(clip) + 1;
+}
+
 static s32 n_drawRegion(Runtime *runtime, JClass *clazz) {
     JniEnv *env = runtime->jnienv;
     s64 ctxHandle = env->localvar_getLong_2slot(runtime->localvar, 0);
@@ -977,14 +1004,12 @@ static s32 n_drawRegion(Runtime *runtime, JClass *clazz) {
     s32 wSrc = env->localvar_getInt(runtime->localvar, 6);
     s32 hSrc = env->localvar_getInt(runtime->localvar, 7);
     s32 transform = env->localvar_getInt(runtime->localvar, 8);
-    s32 xDst = env->localvar_getInt(runtime->localvar, 9);
-    s32 yDst = env->localvar_getInt(runtime->localvar, 10);
+    int64_t xDst = env->localvar_getInt(runtime->localvar, 9);
+    int64_t yDst = env->localvar_getInt(runtime->localvar, 10);
     s32 anchor = env->localvar_getInt(runtime->localvar, 11);
 
     RenderContext *rc = rc_acquire(ctxHandle);
-    RenderImage *img = img_acquire(imgHandle);
-    if (!rc || !img) { img_release(img); rc_release(rc); return RUNTIME_STATUS_NORMAL; }
-    CGContextRef rctx = rc->ctx;
+    if (!rc) return RUNTIME_STATUS_NORMAL;
 
     int outW = wSrc, outH = hSrc;
     if (transform == TRANS_ROT90 || transform == TRANS_ROT270 ||
@@ -997,6 +1022,18 @@ static s32 n_drawRegion(Runtime *runtime, JClass *clazz) {
     if (anchor & 2) yDst -= outH / 2;
     if (anchor & 32) yDst -= outH;
 
+    if (rc->ownsPixels && treo_render_region_cull_enabled() &&
+        !j2me_render_is_afk_suspended() && wSrc > 0 && hSrc > 0 &&
+        transform >= 0 && transform <= 7 &&
+        treo_region_outside_clip(rc->regionClipBounds, xDst, yDst, outW, outH)) {
+        if (treo_profile_active()) TREO_PROF_ADD(region_culled, 1);
+        rc_release(rc);
+        return RUNTIME_STATUS_NORMAL;
+    }
+
+    RenderImage *img = img_acquire(imgHandle);
+    if (!img) { rc_release(rc); return RUNTIME_STATUS_NORMAL; }
+    CGContextRef rctx = rc->ctx;
     CGImageRef fullImage = copyImageSnapshot(img);
     if (!fullImage) { img_release(img); rc_release(rc); return RUNTIME_STATUS_NORMAL; }
     CGImageRef subImage = CGImageCreateWithImageInRect(fullImage, CGRectMake(xSrc, ySrc, wSrc, hSrc));
