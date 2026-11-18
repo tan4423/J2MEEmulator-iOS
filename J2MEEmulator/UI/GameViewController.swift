@@ -928,8 +928,8 @@ class GameViewController: UIViewController {
                              paintCPU: Double(end.paintNS &- start.paintNS) / seconds / 10_000_000,
                              paintRate: Double(end.paints &- start.paints) / seconds,
                              bypassed: end.bypassed &- start.bypassed,
-                             jitCalls: UInt64(end.jitCalls &- start.jitCalls),
-                             jitCompiled: UInt64(end.jitCompiled &- start.jitCompiled))
+                             jitCalls: UInt64(UInt32(bitPattern: end.jitCalls &- start.jitCalls)),
+                             jitCompiled: UInt64(UInt32(bitPattern: end.jitCompiled &- start.jitCompiled)))
             let all = results + [leg]
             if index + 1 < modes.count {
                 self.runAfkLeg(id: id, index: index + 1, modes: modes, results: all)
