@@ -80,12 +80,16 @@ class GameViewController: UIViewController {
         alertTimeoutWork?.cancel()
         startupWatchdog?.cancel()
         measurementDeadline?.cancel()
+        afkMeasure?.cancel()
     }
 
     private var alertTimeoutWork: DispatchWorkItem?
     private var didStartGame = false
     private var cpuProfileStartedAt: TimeInterval?
     private var powerRun: PowerRun?
+    private var afkMeasure: DispatchWorkItem?
+    private var afkMeasureID: UUID?
+    private var afkComparisonDone = false
     private var measurementDeadline: DispatchWorkItem?
     private var measurementID: UUID?
     private var lastMeasurement: (title: String, message: String)?
@@ -493,6 +497,8 @@ class GameViewController: UIViewController {
                 self?.togglePowerRun()
             },
             UIAction(title: "Treo tối đa · màn hình đen") { [weak self] _ in self?.showBlackout() },
+            UIAction(title: "Treo · bỏ vẽ canvas (thử nghiệm)") { [weak self] _ in self?.showBlackout(skipRaster: true) },
+            UIAction(title: "So CPU treo · 60 giây mỗi chế độ") { [weak self] _ in self?.startAfkComparison() },
             UIAction(title: treo_game_jit_is_enabled() != 0 ? "Tắt JIT Java (thử nghiệm)" : "Bật JIT Java (thử nghiệm)", attributes: powerRun == nil ? [] : .disabled) { [weak self] _ in
                 guard let self else { return }
                 if treo_game_jit_is_enabled() != 0 {
@@ -758,7 +764,7 @@ class GameViewController: UIViewController {
         if let blackout { view.bringSubviewToFront(blackout) }
     }
 
-    private func showBlackout() {
+    private func showBlackout(skipRaster: Bool = false) {
         guard blackout == nil else { return }
         discardCPUProfile()
         for code in Array(heldDirections) { releaseDirection(code) }
@@ -778,7 +784,7 @@ class GameViewController: UIViewController {
             cover.trailingAnchor.constraint(equalTo: view.trailingAnchor)
         ])
         blackout = cover
-        j2me_render_set_afk_suspended(1)
+        treo_render_set_afk_mode(skipRaster ? 2 : 1)
         if let screen = view.window?.windowScene?.screen {
             blackoutScreen = screen
             previousBrightness = screen.brightness
@@ -789,6 +795,11 @@ class GameViewController: UIViewController {
 
     @objc private func hideBlackout() {
         guard blackout != nil else { return }
+        afkMeasure?.cancel()
+        afkMeasure = nil
+        afkMeasureID = nil
+        let showComparison = afkComparisonDone
+        afkComparisonDone = false
         j2me_render_set_afk_suspended(0)
         NotificationCenter.default.removeObserver(self, name: UIApplication.willResignActiveNotification, object: nil)
         if let screen = blackoutScreen, let brightness = previousBrightness, screen.brightness == 0 {
@@ -798,6 +809,68 @@ class GameViewController: UIViewController {
         previousBrightness = nil
         blackout?.removeFromSuperview()
         blackout = nil
+        if showComparison { showLastMeasurement() }
+    }
+
+    private struct AfkSample {
+        let time = ProcessInfo.processInfo.systemUptime
+        let cpu = treo_process_cpu_seconds()
+        let draws = treo_afk_skipped_draws()
+        let paints = treo_afk_skipped_paints()
+
+        func cpuPercent(since start: AfkSample) -> Double? {
+            let seconds = time - start.time
+            guard seconds > 0, start.cpu >= 0, cpu >= start.cpu else { return nil }
+            return 100 * (cpu - start.cpu) / seconds
+        }
+    }
+
+    private func startAfkComparison() {
+        guard blackout == nil else { return }
+        showBlackout()
+        let id = UUID()
+        afkMeasureID = id
+        blackout?.setTitle("Đang đo treo cũ · Chạm để hủy", for: .normal)
+        let first = AfkSample()
+        let baseline = DispatchWorkItem { [weak self] in
+            guard let self, self.afkMeasureID == id, self.blackout != nil else { return }
+            let firstEnd = AfkSample()
+            treo_render_set_afk_mode(2)
+            self.blackout?.setTitle("Đang đo bỏ vẽ · Chạm để hủy", for: .normal)
+            let second = AfkSample()
+            let optimized = DispatchWorkItem { [weak self] in
+                guard let self, self.afkMeasureID == id, self.blackout != nil else { return }
+                let end = AfkSample()
+                let before = firstEnd.cpuPercent(since: first)
+                let after = end.cpuPercent(since: second)
+                func text(_ value: Double?) -> String {
+                    value.map { String(format: "%.1f%% một lõi", $0) } ?? "Không đọc được"
+                }
+                let delta: String
+                if let before, let after {
+                    delta = String(format: "%+.1f điểm %% CPU (mới − cũ)", after - before)
+                } else {
+                    delta = "Không tính được chênh lệch"
+                }
+                let report = """
+                Màn đen cũ: \(text(before)) · \(String(format: "%.1f", firstEnd.time - first.time)) s
+                Màn đen bỏ vẽ: \(text(after)) · \(String(format: "%.1f", end.time - second.time)) s
+                \(delta)
+                Bỏ \(end.draws &- second.draws) lệnh vẽ trong \(end.paints &- second.paints) lượt paint.
+                CPU toàn app; không đo GPU %.
+                """
+                self.afkMeasure = nil
+                self.afkMeasureID = nil
+                self.afkComparisonDone = true
+                self.lastMeasurement = ("So CPU treo", report)
+                self.applyPadMode()
+                self.blackout?.setTitle("Đo xong · Chạm xem kết quả", for: .normal)
+            }
+            self.afkMeasure = optimized
+            DispatchQueue.main.asyncAfter(deadline: .now() + .seconds(60), execute: optimized)
+        }
+        afkMeasure = baseline
+        DispatchQueue.main.asyncAfter(deadline: .now() + .seconds(60), execute: baseline)
     }
 
     // MARK: - Soft keys

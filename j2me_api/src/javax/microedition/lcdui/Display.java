@@ -227,14 +227,16 @@ public class Display {
                 }
             }
 
-            boolean refreshAfterAfk = NativeBridge.takeAfkRefresh();
+            int refreshAfterAfk = NativeBridge.takeAfkRefresh();
             // 3. Repaint if needed (Canvas only)
             if (current instanceof Canvas) {
                 Canvas canvas = (Canvas) current;
-                if (canvas.repaintPending) {
+                if (refreshAfterAfk == 2) {
+                    canvas.refreshAfterAfk(true);
+                } else if (canvas.repaintPending) {
                     canvas.doPaint();
-                } else if (refreshAfterAfk) {
-                    canvas.refreshAfterAfk();
+                } else if (refreshAfterAfk == 1) {
+                    canvas.refreshAfterAfk(false);
                 }
             }
 

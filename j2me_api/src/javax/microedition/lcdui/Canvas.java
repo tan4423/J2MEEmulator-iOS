@@ -191,24 +191,34 @@ public abstract class Canvas extends Displayable {
             repaintPending = false;
             if (fullRepaint) graphics.reset(0, 0, width, height);
             else graphics.reset(clipX, clipY, clipW, clipH);
-            long profileStart = NativeBridge.profilePaintBegin();
+            long previousAfkCanvas = NativeBridge.beginAfkPaint(nativeContext);
             try {
-                paint(graphics);
+                long profileStart = NativeBridge.profilePaintBegin();
+                try {
+                    paint(graphics);
+                } finally {
+                    if (profileStart != 0) NativeBridge.profilePaintEnd(profileStart);
+                }
+                if (Display.isCurrentCanvas(this)) NativeBridge.flushToScreen(nativeContext);
             } finally {
-                if (profileStart != 0) NativeBridge.profilePaintEnd(profileStart);
+                NativeBridge.endAfkPaint(previousAfkCanvas);
             }
-            if (Display.isCurrentCanvas(this)) NativeBridge.flushToScreen(nativeContext);
             // Reset for next frame
             fullRepaint = true;
             clipX = 0; clipY = 0; clipW = width; clipH = height;
         }
     }
 
-    // Publish the already-rendered buffer even if the game is on a static screen.
-    void refreshAfterAfk() {
+    // Repaint after skipped raster; legacy blackout can publish the old buffer.
+    void refreshAfterAfk(boolean redraw) {
         synchronized (paintLock) {
             if (nativeContext != 0 && Display.isCurrentCanvas(this)) {
-                NativeBridge.flushToScreen(nativeContext);
+                if (redraw) {
+                    fullRepaint = true;
+                    doPaint();
+                } else {
+                    NativeBridge.flushToScreen(nativeContext);
+                }
             }
         }
     }

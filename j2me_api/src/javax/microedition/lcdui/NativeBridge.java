@@ -17,7 +17,9 @@ public class NativeBridge {
     static native long profilePaintBegin();
     static native void profilePaintEnd(long cpuStart);
     static native boolean afkSuspended();
-    static native boolean takeAfkRefresh();
+    static native int takeAfkRefresh();
+    static native long beginAfkPaint(long canvas);
+    static native void endAfkPaint(long previous);
 
     // Color & State
     public static native void setColor(long ctx, int argb);

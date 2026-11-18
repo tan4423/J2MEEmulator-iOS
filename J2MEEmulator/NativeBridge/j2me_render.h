@@ -21,6 +21,10 @@ typedef void (*j2me_flush_callback)(void *cgImage, int width, int height);
 void j2me_render_set_flush_callback(j2me_flush_callback callback);
 void j2me_render_set_afk_suspended(int enabled);
 int j2me_render_is_afk_suspended(void);
+// 0: visible, 1: legacy blackout, 2: blackout with canvas raster suppressed.
+void treo_render_set_afk_mode(int mode);
+uint64_t treo_afk_skipped_draws(void);
+uint64_t treo_afk_skipped_paints(void);
 
 // Foreground CPU diagnostics; only the UI controls the measurement window.
 typedef struct {

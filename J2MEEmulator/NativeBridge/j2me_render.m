@@ -98,21 +98,56 @@ static int treo_live_enqueue(RenderContext *rc, RenderImage *img, int64_t x, int
 static j2me_flush_callback g_flush_callback = NULL;
 static atomic_int g_afk_suspended = 0;
 static atomic_int g_afk_refresh = 0;
+static atomic_bool g_afk_needs_redraw;
+static _Atomic uint64_t g_afk_skipped_draws, g_afk_skipped_paints;
+static _Thread_local s64 g_afk_canvas;
+static _Thread_local uint64_t g_afk_draw_count;
+uint64_t treo_afk_skipped_draws(void) { return atomic_load_explicit(&g_afk_skipped_draws, memory_order_relaxed); }
+uint64_t treo_afk_skipped_paints(void) { return atomic_load_explicit(&g_afk_skipped_paints, memory_order_relaxed); }
+
+static int treo_afk_skip_draw(RenderContext *rc) {
+    if (!g_afk_canvas || g_afk_canvas != (s64)(intptr_t)rc) return 0;
+    g_afk_draw_count++;
+    return 1;
+}
+
+static s32 n_beginAfkPaint(Runtime *runtime, JClass *clazz) {
+    s64 previous = g_afk_canvas;
+    if (atomic_load_explicit(&g_afk_suspended, memory_order_acquire) == 2) {
+        s64 canvas = runtime->jnienv->localvar_getLong_2slot(runtime->localvar, 0);
+        if (canvas) {
+            g_afk_canvas = canvas;
+            atomic_fetch_add_explicit(&g_afk_skipped_paints, 1, memory_order_relaxed);
+        }
+    }
+    runtime->jnienv->push_long(runtime->stack, previous);
+    return RUNTIME_STATUS_NORMAL;
+}
+static s32 n_endAfkPaint(Runtime *runtime, JClass *clazz) {
+    g_afk_canvas = runtime->jnienv->localvar_getLong_2slot(runtime->localvar, 0);
+    if (!g_afk_canvas && g_afk_draw_count) {
+        atomic_fetch_add_explicit(&g_afk_skipped_draws, g_afk_draw_count, memory_order_relaxed);
+        g_afk_draw_count = 0;
+    }
+    return RUNTIME_STATUS_NORMAL;
+}
 static void stop_afk_haptics(void);
 
 int j2me_render_is_afk_suspended(void) {
-    return atomic_load_explicit(&g_afk_suspended, memory_order_relaxed);
+    return atomic_load_explicit(&g_afk_suspended, memory_order_relaxed) != 0;
 }
 
-void j2me_render_set_afk_suspended(int enabled) {
-    int previous = atomic_exchange(&g_afk_suspended, enabled != 0);
-    if (enabled) {
+void treo_render_set_afk_mode(int mode) {
+    if (mode == 2) atomic_store(&g_afk_needs_redraw, 1);
+    int previous = atomic_exchange(&g_afk_suspended, mode);
+    if (mode) {
         atomic_store(&g_afk_refresh, 0);
-        stop_afk_haptics();
+        if (!previous) stop_afk_haptics();
     } else if (previous) {
-        atomic_store(&g_afk_refresh, 1);
+        atomic_store(&g_afk_refresh, atomic_exchange(&g_afk_needs_redraw, 0) ? 2 : 1);
     }
 }
+void j2me_render_set_afk_suspended(int enabled) { treo_render_set_afk_mode(enabled ? 1 : 0); }
 
 static s32 n_afkSuspended(Runtime *runtime, JClass *clazz) {
     push_int(runtime->stack, j2me_render_is_afk_suspended());
@@ -636,7 +671,7 @@ static s32 n_flushToScreen(Runtime *runtime, JClass *clazz) {
         }
     }
     if (rc) { rc->liveBlocked = 0; treo_software_publish(rc); }
-    if (afk) { rc_release(rc); return RUNTIME_STATUS_NORMAL; }
+    if (afk || (g_afk_canvas && g_afk_canvas == handle)) { rc_release(rc); return RUNTIME_STATUS_NORMAL; }
     const int profiling = treo_profile_active();
     if (profiling) TREO_PROF_ADD(flushes, 1);
     if (rc && g_flush_callback) {
@@ -746,6 +781,7 @@ static s32 n_drawLine(Runtime *runtime, JClass *clazz) {
     s32 x2 = env->localvar_getInt(runtime->localvar, 4);
     s32 y2 = env->localvar_getInt(runtime->localvar, 5);
     RenderContext *rc = rc_acquire(handle);
+    if (rc && treo_afk_skip_draw(rc)) { rc_release(rc); return RUNTIME_STATUS_NORMAL; }
     if (rc) {
         TreoShapeDraw draw = ^(CGContextRef target) {
             CGContextBeginPath(target);
@@ -771,6 +807,7 @@ static s32 n_fillRect(Runtime *runtime, JClass *clazz) {
     s32 w = env->localvar_getInt(runtime->localvar, 4);
     s32 h = env->localvar_getInt(runtime->localvar, 5);
     RenderContext *rc = rc_acquire(handle);
+    if (rc && treo_afk_skip_draw(rc)) { rc_release(rc); return RUNTIME_STATUS_NORMAL; }
     if (rc && !treo_live_rect(rc, x, y, w, h)) {
         treo_live_barrier(rc);
         CGContextFillRect(rc->ctx, CGRectMake(x, y, w, h));
@@ -787,6 +824,7 @@ static s32 n_drawRect(Runtime *runtime, JClass *clazz) {
     s32 w = env->localvar_getInt(runtime->localvar, 4);
     s32 h = env->localvar_getInt(runtime->localvar, 5);
     RenderContext *rc = rc_acquire(handle);
+    if (rc && treo_afk_skip_draw(rc)) { rc_release(rc); return RUNTIME_STATUS_NORMAL; }
     if (rc) {
         TreoShapeDraw draw = ^(CGContextRef target) {
             CGContextStrokeRect(target, CGRectMake(x + 0.5, y + 0.5, w, h));
@@ -811,6 +849,7 @@ static s32 n_fillArc(Runtime *runtime, JClass *clazz) {
     s32 startAngle = env->localvar_getInt(runtime->localvar, 6);
     s32 arcAngle = env->localvar_getInt(runtime->localvar, 7);
     RenderContext *rc = rc_acquire(handle);
+    if (rc && treo_afk_skip_draw(rc)) { rc_release(rc); return RUNTIME_STATUS_NORMAL; }
     if (rc) {
         TreoShapeDraw draw = ^(CGContextRef target) {
             CGFloat cx = x + w / 2.0, cy = y + h / 2.0;
@@ -847,6 +886,7 @@ static s32 n_drawArc(Runtime *runtime, JClass *clazz) {
     s32 startAngle = env->localvar_getInt(runtime->localvar, 6);
     s32 arcAngle = env->localvar_getInt(runtime->localvar, 7);
     RenderContext *rc = rc_acquire(handle);
+    if (rc && treo_afk_skip_draw(rc)) { rc_release(rc); return RUNTIME_STATUS_NORMAL; }
     if (rc) {
         TreoShapeDraw draw = ^(CGContextRef target) {
             CGFloat cx = x + w / 2.0, cy = y + h / 2.0;
@@ -881,6 +921,7 @@ static s32 n_fillRoundRect(Runtime *runtime, JClass *clazz) {
     s32 aw = env->localvar_getInt(runtime->localvar, 6);
     s32 ah = env->localvar_getInt(runtime->localvar, 7);
     RenderContext *rc = rc_acquire(handle);
+    if (rc && treo_afk_skip_draw(rc)) { rc_release(rc); return RUNTIME_STATUS_NORMAL; }
     if (rc) {
         TreoShapeDraw draw = ^(CGContextRef target) {
             CGFloat radius = fmin(aw, ah) / 2.0;
@@ -909,6 +950,7 @@ static s32 n_drawRoundRect(Runtime *runtime, JClass *clazz) {
     s32 aw = env->localvar_getInt(runtime->localvar, 6);
     s32 ah = env->localvar_getInt(runtime->localvar, 7);
     RenderContext *rc = rc_acquire(handle);
+    if (rc && treo_afk_skip_draw(rc)) { rc_release(rc); return RUNTIME_STATUS_NORMAL; }
     if (rc) {
         TreoShapeDraw draw = ^(CGContextRef target) {
             CGFloat radius = fmin(aw, ah) / 2.0;
@@ -974,6 +1016,7 @@ static s32 n_drawString(Runtime *runtime, JClass *clazz) {
     s32 y = env->localvar_getInt(runtime->localvar, 4);
     s32 anchor = env->localvar_getInt(runtime->localvar, 5);
     RenderContext *rc = rc_acquire(handle);
+    if (rc && treo_afk_skip_draw(rc)) { rc_release(rc); return RUNTIME_STATUS_NORMAL; }
 
     if (!rc || !jstr) { rc_release(rc); return RUNTIME_STATUS_NORMAL; }
 
@@ -1151,6 +1194,7 @@ static s32 n_drawImage(Runtime *runtime, JClass *clazz) {
     s32 anchor = env->localvar_getInt(runtime->localvar, 6);
 
     RenderContext *rc = rc_acquire(ctxHandle);
+    if (rc && treo_afk_skip_draw(rc)) { rc_release(rc); return RUNTIME_STATUS_NORMAL; }
     RenderImage *img = img_acquire(imgHandle);
     if (!rc || !img) { img_release(img); rc_release(rc); return RUNTIME_STATUS_NORMAL; }
 
@@ -2250,6 +2294,7 @@ static s32 treo_draw_region(const TreoRegionArgs *p, int direct) {
     s32 anchor = p->anchor;
     RenderContext *rc = rc_acquire(ctxHandle);
     if (!rc) return RUNTIME_STATUS_NORMAL;
+    if (treo_afk_skip_draw(rc)) { rc_release(rc); return RUNTIME_STATUS_NORMAL; }
     if (direct && rc->ownsPixels) rc->swDirect++;
 
     int outW = wSrc, outH = hSrc;
@@ -2418,6 +2463,7 @@ static s32 n_drawRGB(Runtime *runtime, JClass *clazz) {
     s32 processAlpha = env->localvar_getInt(runtime->localvar, 9);
 
     RenderContext *rc = rc_acquire(ctxHandle);
+    if (rc && treo_afk_skip_draw(rc)) { rc_release(rc); return RUNTIME_STATUS_NORMAL; }
     if (!rc || !arr || w <= 0 || h <= 0) { rc_release(rc); return RUNTIME_STATUS_NORMAL; }
 
     s32 arrLen = arr->arr_length;
@@ -2517,6 +2563,7 @@ static s32 n_fillPolygon(Runtime *runtime, JClass *clazz) {
     Instance *yArr = env->localvar_getRefer(runtime->localvar, 3);
     s32 nPoints = env->localvar_getInt(runtime->localvar, 4);
     RenderContext *rc = rc_acquire(handle);
+    if (rc && treo_afk_skip_draw(rc)) { rc_release(rc); return RUNTIME_STATUS_NORMAL; }
     if (!rc || !xArr || !yArr || nPoints < 3) { rc_release(rc); return RUNTIME_STATUS_NORMAL; }
     s32 *xPts = (s32 *)xArr->arr_body;
     s32 *yPts = (s32 *)yArr->arr_body;
@@ -2558,6 +2605,7 @@ static s32 n_drawPolygon(Runtime *runtime, JClass *clazz) {
     Instance *yArr = env->localvar_getRefer(runtime->localvar, 3);
     s32 nPoints = env->localvar_getInt(runtime->localvar, 4);
     RenderContext *rc = rc_acquire(handle);
+    if (rc && treo_afk_skip_draw(rc)) { rc_release(rc); return RUNTIME_STATUS_NORMAL; }
     if (!rc || !xArr || !yArr || nPoints < 3) { rc_release(rc); return RUNTIME_STATUS_NORMAL; }
     s32 *xPts = (s32 *)xArr->arr_body;
     s32 *yPts = (s32 *)yArr->arr_body;
@@ -2604,6 +2652,7 @@ static s32 n_copyArea(Runtime *runtime, JClass *clazz) {
     s32 xDst = env->localvar_getInt(runtime->localvar, 6);
     s32 yDst = env->localvar_getInt(runtime->localvar, 7);
     RenderContext *rc = rc_acquire(handle);
+    if (rc && treo_afk_skip_draw(rc)) { rc_release(rc); return RUNTIME_STATUS_NORMAL; }
     if (!rc || w <= 0 || h <= 0) { rc_release(rc); return RUNTIME_STATUS_NORMAL; }
     treo_live_barrier(rc);
     CGImageRef fullImg = treo_canvas_snapshot(rc);
@@ -2709,7 +2758,9 @@ static java_native_method j2me_render_methods[] = {
     {CLS, "profilePaintBegin", "()J", n_profilePaintBegin},
     {CLS, "profilePaintEnd", "(J)V", n_profilePaintEnd},
     {CLS, "afkSuspended",     "()Z", n_afkSuspended},
-    {CLS, "takeAfkRefresh",   "()Z", n_takeAfkRefresh},
+    {CLS, "takeAfkRefresh",   "()I", n_takeAfkRefresh},
+    {CLS, "beginAfkPaint", "(J)J", n_beginAfkPaint},
+    {CLS, "endAfkPaint", "(J)V", n_endAfkPaint},
     // Context
     {CLS, "createContext",    "(II)J",                                   n_createContext},
     {CLS, "destroyContext",   "(J)V",                                    n_destroyContext},
