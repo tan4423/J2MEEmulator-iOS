@@ -41,6 +41,7 @@
 //    the struct shell is kept for one frame to prevent ABA in acquire.
 
 typedef struct TreoLiveRun TreoLiveRun;
+typedef struct TreoCPUCache TreoCPUCache;
 typedef struct RenderContext {
     CGContextRef ctx;
     int width;
@@ -52,6 +53,7 @@ typedef struct RenderContext {
     int ownsPixels;
     CGRect regionClipBounds;
     TreoLiveRun *liveRun;
+    TreoCPUCache *cpuCache;
     uint32_t liveColor, liveSavedColor;
     int liveStroke, liveSavedStroke;
     CGRect liveRawClip;
@@ -70,6 +72,8 @@ typedef struct RenderImage {
     struct RenderImage *next_dead;
 } RenderImage;
 
+static void treo_cpu_batch_drain(RenderContext *rc);
+static void treo_cpu_batch_free(RenderContext *rc);
 static void treo_live_discard(RenderContext *rc);
 static void treo_live_drain(RenderContext *rc, int allowMetal);
 static void treo_live_barrier(RenderContext *rc);
@@ -544,6 +548,7 @@ static s32 n_flushToScreen(Runtime *runtime, JClass *clazz) {
     JniEnv *env = runtime->jnienv;
     s64 handle = env->localvar_getLong_2slot(runtime->localvar, 0);
     RenderContext *rc = rc_acquire(handle);
+    if (rc && rc->cpuCache) treo_cpu_batch_drain(rc);
     if (rc && rc->liveRun) {
         const uint64_t start = treo_profile_active() ? treo_thread_cpu_ns() : 0;
         treo_live_drain(rc, !afk);
@@ -593,6 +598,7 @@ static s32 n_setClip(Runtime *runtime, JClass *clazz) {
     if (rc) {
         CGRect nextClip = CGRectIntersection(CGRectMake(0, 0, rc->width, rc->height),
                                              CGRectStandardize(CGRectMake(x, y, w, h)));
+        if (rc->cpuCache) treo_cpu_batch_drain(rc);
         if (w < 0 || h < 0) treo_live_barrier(rc);
         if (rc->clipSaved) {
             CGContextRestoreGState(rc->ctx);
@@ -1073,6 +1079,7 @@ static s32 n_drawImage(Runtime *runtime, JClass *clazz) {
     if (anchor & 2) y -= imgH / 2;
     if (anchor & 32) y -= imgH;
 
+    if (rc->cpuCache) treo_cpu_batch_drain(rc);
     if (treo_live_enqueue(rc, img, x, y, 0, 0, imgW, imgH, 0)) {
         img_release(img);
         rc_release(rc);
@@ -1519,6 +1526,7 @@ static void treo_live_clear(TreoLiveRun *run) {
 }
 
 static void treo_live_discard(RenderContext *rc) {
+    treo_cpu_batch_free(rc);
     if (!rc->liveRun) return;
     treo_live_clear(rc->liveRun);
     free(rc->liveRun);
@@ -1738,6 +1746,7 @@ static void treo_live_drain(RenderContext *rc, int allowMetal) {
 
 static void treo_live_barrier(RenderContext *rc) {
     if (!rc || !rc->ownsPixels) return;
+    if (rc->cpuCache) treo_cpu_batch_drain(rc);
     if (rc->liveRun && rc->liveRun->count) treo_live_drain(rc, 0);
     if (treo_metal_live_enabled()) rc->liveBlocked = 1;
 }
@@ -1860,6 +1869,174 @@ static int treo_live_text(RenderContext *rc, CTLineRef line, CGFloat x, CGFloat 
     return ok;
 }
 
+// Exact CPU raster reuse. A hit requires the same ordered commands, same
+// clip and byte-for-byte identical destination pixels before the batch.
+enum { TreoBatchSize = 32, TreoBatchSlots = 8, TreoBatchMaxPixels = 48000 };
+typedef struct {
+    CGImageRef image;
+    int x, y, sx, sy, w, h, transform;
+} TreoBatchDraw;
+typedef struct {
+    TreoBatchDraw draws[TreoBatchSize];
+    CGRect clip, area;
+    uint8_t *before;
+    CGImageRef after;
+} TreoBatchEntry;
+struct TreoCPUCache {
+    unsigned count, next;
+    TreoBatchDraw pending[TreoBatchSize];
+    TreoBatchEntry entries[TreoBatchSlots];
+};
+static atomic_bool treo_batch_enabled;
+static _Atomic uint64_t treo_batch_reused, treo_batch_queued;
+int treo_cpu_batch_enabled(void) { return atomic_load_explicit(&treo_batch_enabled, memory_order_relaxed); }
+void treo_cpu_batch_set_enabled(int enabled) { atomic_store_explicit(&treo_batch_enabled, enabled != 0, memory_order_relaxed); }
+uint64_t treo_cpu_batch_reused(void) { return atomic_load_explicit(&treo_batch_reused, memory_order_relaxed); }
+uint64_t treo_cpu_batch_queued(void) { return atomic_load_explicit(&treo_batch_queued, memory_order_relaxed); }
+
+static void treo_batch_entry_clear(TreoBatchEntry *entry) {
+    if (!entry->after) return;
+    for (unsigned i = 0; i < TreoBatchSize; i++) CGImageRelease(entry->draws[i].image);
+    CGImageRelease(entry->after);
+    free(entry->before);
+    *entry = (TreoBatchEntry){0};
+}
+static void treo_batch_pending_clear(TreoCPUCache *cache) {
+    for (unsigned i = 0; i < cache->count; i++) CGImageRelease(cache->pending[i].image);
+    cache->count = 0;
+}
+static void treo_cpu_batch_free(RenderContext *rc) {
+    TreoCPUCache *cache = rc->cpuCache;
+    if (!cache) return;
+    treo_batch_pending_clear(cache);
+    for (unsigned i = 0; i < TreoBatchSlots; i++) treo_batch_entry_clear(&cache->entries[i]);
+    free(cache);
+    rc->cpuCache = NULL;
+}
+static int treo_batch_matches(const TreoBatchDraw *a, const TreoBatchDraw *b) {
+    for (unsigned i = 0; i < TreoBatchSize; i++, a++, b++) {
+        if (a->image != b->image || a->x != b->x || a->y != b->y ||
+            a->sx != b->sx || a->sy != b->sy || a->w != b->w || a->h != b->h ||
+            a->transform != b->transform) return 0;
+    }
+    return 1;
+}
+static void treo_cpu_batch_drain(RenderContext *rc) {
+    TreoCPUCache *cache = rc->cpuCache;
+    if (!cache || !cache->count) return;
+    int full = cache->count == TreoBatchSize && treo_cpu_batch_enabled();
+    CGRect clip = rc->regionClipBounds;
+    CGRect area = CGRectNull;
+    if (full) {
+        for (unsigned i = 0; i < TreoBatchSize; i++) {
+            const TreoBatchDraw *d = &cache->pending[i];
+            int turned = d->transform >= 4;
+            CGRect rect = CGRectInset(CGRectMake(d->x, d->y, turned ? d->h : d->w,
+                                                   turned ? d->w : d->h), -2, -2);
+            area = CGRectUnion(area, rect);
+        }
+        area = CGRectIntersection(area, clip);
+    }
+    uint8_t *before = NULL;
+    size_t stride = 0, row = 0, height = 0;
+    uint8_t *base = NULL;
+    TreoBatchEntry *replace = NULL;
+    if (full && !CGRectIsNull(area) && !CGRectIsEmpty(area) &&
+        area.size.width * area.size.height <= TreoBatchMaxPixels) {
+        CGContextFlush(rc->ctx);
+        stride = CGBitmapContextGetBytesPerRow(rc->ctx);
+        uint8_t *data = CGBitmapContextGetData(rc->ctx);
+        if (data && stride >= (size_t)rc->width * 4) {
+            base = data + (size_t)area.origin.y * stride + (size_t)area.origin.x * 4;
+            row = (size_t)area.size.width * 4;
+            height = (size_t)area.size.height;
+            for (unsigned i = 0; i < TreoBatchSlots; i++) {
+                TreoBatchEntry *entry = &cache->entries[i];
+                if (!entry->after || !CGRectEqualToRect(clip, entry->clip) ||
+                    !CGRectEqualToRect(area, entry->area) ||
+                    !treo_batch_matches(cache->pending, entry->draws)) continue;
+                size_t j = 0;
+                while (j < height && memcmp(base + j * stride, entry->before + j * row, row) == 0) j++;
+                if (j == height) {
+                    CGContextSaveGState(rc->ctx);
+                    CGContextSetBlendMode(rc->ctx, kCGBlendModeCopy);
+                    CGContextSetInterpolationQuality(rc->ctx, kCGInterpolationNone);
+                    treo_draw_region_cg(rc->ctx, entry->after, (int)area.origin.x, (int)area.origin.y,
+                                        (int)area.size.width, (int)area.size.height, TRANS_NONE);
+                    CGContextRestoreGState(rc->ctx);
+                    atomic_fetch_add_explicit(&treo_batch_reused, TreoBatchSize, memory_order_relaxed);
+                    treo_batch_pending_clear(cache);
+                    return;
+                }
+                replace = entry;
+            }
+            before = malloc(row * height);
+            if (before) for (size_t j = 0; j < height; j++) memcpy(before + j * row, base + j * stride, row);
+        }
+    }
+    for (unsigned i = 0; i < cache->count; i++) {
+        const TreoBatchDraw *d = &cache->pending[i];
+        CGImageRef crop = CGImageCreateWithImageInRect(d->image, CGRectMake(d->sx, d->sy, d->w, d->h));
+        if (!crop) continue;
+        treo_draw_region_cg(rc->ctx, crop, d->x, d->y, d->w, d->h, d->transform);
+        CGImageRelease(crop);
+    }
+    if (before) {
+        CGContextFlush(rc->ctx);
+        // Copy only the rectangle, not a snapshot that keeps a whole canvas alive.
+        uint8_t *current = CGBitmapContextGetData(rc->ctx);
+        CFMutableDataRef pixels = current ? CFDataCreateMutable(NULL, (CFIndex)(row * height)) : NULL;
+        if (pixels) {
+            CFDataSetLength(pixels, (CFIndex)(row * height));
+            uint8_t *dst = CFDataGetMutableBytePtr(pixels);
+            current += (size_t)area.origin.y * stride + (size_t)area.origin.x * 4;
+            for (size_t j = 0; j < height; j++) memcpy(dst + j * row, current + j * stride, row);
+            CGDataProviderRef provider = CGDataProviderCreateWithCFData(pixels);
+            CGImageRef result = provider ? CGImageCreate(row / 4, height, 8, 32, row, getColorSpace(),
+                kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Little, provider, NULL,
+                false, kCGRenderingIntentDefault) : NULL;
+            if (provider) CGDataProviderRelease(provider);
+            CFRelease(pixels);
+            if (result) {
+                if (!replace) replace = &cache->entries[(cache->next++) % TreoBatchSlots];
+                treo_batch_entry_clear(replace);
+                replace->after = result;
+                replace->before = before;
+                replace->clip = clip;
+                replace->area = area;
+                for (unsigned i = 0; i < TreoBatchSize; i++) {
+                    replace->draws[i] = cache->pending[i];
+                    CGImageRetain(replace->draws[i].image);
+                }
+                before = NULL;
+            }
+        }
+        free(before);
+    }
+    treo_batch_pending_clear(cache);
+}
+
+static int treo_cpu_batch_enqueue(RenderContext *rc, RenderImage *img, int64_t x, int64_t y,
+                                  int sx, int sy, int w, int h, int transform) {
+    if (!rc->ownsPixels || !img->immutableSnapshot || !treo_cpu_batch_enabled() ||
+        treo_metal_live_enabled() || j2me_render_is_afk_suspended() ||
+        atomic_load_explicit(&treo_replay_state, memory_order_relaxed) ||
+        (rc->liveRun && rc->liveRun->count) || x < -32768 || x > 32768 || y < -32768 || y > 32768 ||
+        transform < 0 || transform > 7 || sx < 0 || sy < 0 || w <= 0 || h <= 0 ||
+        (int64_t)sx + w > img->width || (int64_t)sy + h > img->height) return 0;
+    if (!rc->cpuCache) rc->cpuCache = calloc(1, sizeof(TreoCPUCache));
+    TreoCPUCache *cache = rc->cpuCache;
+    if (!cache) return 0;
+    cache->pending[cache->count++] = (TreoBatchDraw){
+        CGImageRetain(img->immutableSnapshot), (int)x, (int)y, sx, sy, w, h, transform
+    };
+    if (cache->count == TreoBatchSize) {
+        atomic_fetch_add_explicit(&treo_batch_queued, TreoBatchSize, memory_order_relaxed);
+        treo_cpu_batch_drain(rc);
+    }
+    return 1;
+}
+
 static s32 n_drawRegion(Runtime *runtime, JClass *clazz) {
     JniEnv *env = runtime->jnienv;
     s64 ctxHandle = env->localvar_getLong_2slot(runtime->localvar, 0);
@@ -1898,6 +2075,12 @@ static s32 n_drawRegion(Runtime *runtime, JClass *clazz) {
 
     RenderImage *img = img_acquire(imgHandle);
     if (!img) { rc_release(rc); return RUNTIME_STATUS_NORMAL; }
+    if (treo_cpu_batch_enqueue(rc, img, xDst, yDst, xSrc, ySrc, wSrc, hSrc, transform)) {
+        img_release(img);
+        rc_release(rc);
+        return RUNTIME_STATUS_NORMAL;
+    }
+    if (rc->cpuCache) treo_cpu_batch_drain(rc);
     if (treo_live_enqueue(rc, img, xDst, yDst, xSrc, ySrc, wSrc, hSrc, transform)) {
         img_release(img);
         rc_release(rc);

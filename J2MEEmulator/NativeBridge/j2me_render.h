@@ -50,6 +50,10 @@ uint64_t treo_metal_live_fallback_sprites(void);
 char * _Nullable treo_metal_replay_copy_report(void); // caller frees
 // Total CPU of all threads in this app, in seconds; negative on error.
 double treo_process_cpu_seconds(void);
+int treo_cpu_batch_enabled(void);
+void treo_cpu_batch_set_enabled(int enabled);
+uint64_t treo_cpu_batch_reused(void);
+uint64_t treo_cpu_batch_queued(void);
 void treo_render_profile_start(void);
 TreoRenderProfile treo_render_profile_stop(void);
 void treo_render_profile_replaced(void);

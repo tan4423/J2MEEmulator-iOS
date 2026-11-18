@@ -522,10 +522,20 @@ class GameViewController: UIViewController {
                      attributes: powerRun == nil ? [] : .disabled) { [weak self] _ in
                 self?.toggleCPUProfile()
             },
+            UIAction(title: "Dùng lại cụm sprite (CPU)",
+                     attributes: cpuProfileStartedAt == nil && powerRun == nil ? [] : .disabled,
+                     state: treo_cpu_batch_enabled() != 0 ? .on : .off) { [weak self] _ in
+                let enabling = treo_cpu_batch_enabled() == 0
+                if enabling { treo_metal_live_set_enabled(0) }
+                treo_cpu_batch_set_enabled(enabling ? 1 : 0)
+                self?.applyPadMode()
+            },
             UIAction(title: "Metal toàn khung (thử nghiệm)",
                      attributes: cpuProfileStartedAt == nil && powerRun == nil ? [] : .disabled,
                      state: treo_metal_live_enabled() != 0 ? .on : .off) { [weak self] _ in
-                treo_metal_live_set_enabled(treo_metal_live_enabled() == 0 ? 1 : 0)
+                let enabling = treo_metal_live_enabled() == 0
+                if enabling { treo_cpu_batch_set_enabled(0) }
+                treo_metal_live_set_enabled(enabling ? 1 : 0)
                 self?.applyPadMode()
             },
             UIAction(title: "Đo thử Metal · drawRegion", attributes: powerRun == nil ? [] : .disabled) { [weak self] _ in
@@ -551,6 +561,9 @@ class GameViewController: UIViewController {
         let jit: Int32
         let cull: Int32
         let gpuFrames: UInt64
+        let batch: Int32
+        let queued: UInt64
+        let reused: UInt64
     }
 
     private func togglePowerRun() {
@@ -563,7 +576,8 @@ class GameViewController: UIViewController {
         let gpuFrames = treo_metal_live_frames()
         guard let start = powerRun else {
             powerRun = PowerRun(time: now, cpu: cpu, thermal: thermal, metal: metal, jit: jit,
-                                cull: cull, gpuFrames: gpuFrames)
+                                cull: cull, gpuFrames: gpuFrames, batch: treo_cpu_batch_enabled(),
+                                queued: treo_cpu_batch_queued(), reused: treo_cpu_batch_reused())
             applyPadMode()
             return
         }
@@ -587,6 +601,8 @@ class GameViewController: UIViewController {
         Mức nhiệt iOS (đầu → cuối): \(thermalLabel(start.thermal)) → \(thermalLabel(thermal))
         Metal: \(metal != 0 ? "Bật" : "Tắt") · \(gpuFrames &- start.gpuFrames) khung GPU
         JIT: \(jit != 0 ? "Bật" : "Tắt") · Bỏ sprite: \(cull != 0 ? "Bật" : "Tắt")
+        Cụm sprite CPU: \(start.batch != 0 ? "Bật" : "Tắt")
+        Lệnh dùng lại: \(treo_cpu_batch_reused() &- start.reused)/\(treo_cpu_batch_queued() &- start.queued) lệnh gom đủ cụm
         Không đo công suất, độ C hoặc mức tải GPU.
         """
         let alert = UIAlertController(title: "Nhiệt và CPU tổng", message: report, preferredStyle: .alert)
@@ -606,7 +622,7 @@ class GameViewController: UIViewController {
         alert.addAction(UIAlertAction(title: "Sao chép", style: .default) { _ in
             UIPasteboard.general.string = report
         })
-        if cpuProfileStartedAt == nil && treo_render_region_cull_enabled() == 0 && treo_metal_live_enabled() == 0 {
+        if cpuProfileStartedAt == nil && treo_render_region_cull_enabled() == 0 && treo_metal_live_enabled() == 0 && treo_cpu_batch_enabled() == 0 {
             alert.addAction(UIAlertAction(title: "Thu và đo", style: .default) { _ in
                 _ = treo_metal_replay_start()
             })
