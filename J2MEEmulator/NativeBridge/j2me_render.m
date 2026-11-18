@@ -102,7 +102,7 @@ static int treo_live_enqueue(RenderContext *rc, RenderImage *img, int64_t x, int
                              int sx, int sy, int w, int h, int transform);
 static j2me_flush_callback g_flush_callback = NULL;
 _Atomic int treo_afk_mode = 0;
-static _Atomic uint64_t treo_afk_bypass_deadline, treo_afk_bypassed;
+static _Atomic uint64_t treo_afk_bypass_deadline, treo_afk_bypassed, treo_afk_next_paint;
 static void process_dead_shells(void);
 static uint64_t treo_afk_now_ns(void) {
     struct timespec ts;
@@ -114,9 +114,21 @@ uint64_t treo_afk_bypassed_paints(void) {
 }
 static s32 n_afkBypassPaint(Runtime *runtime, JClass *clazz) {
     int bypass = 0;
-    if (atomic_load_explicit(&treo_afk_mode, memory_order_acquire) == 6) {
+    const int mode = atomic_load_explicit(&treo_afk_mode, memory_order_acquire);
+    if (mode == 6 || mode == 7) {
         uint64_t now = treo_afk_now_ns();
         bypass = now && now < atomic_load_explicit(&treo_afk_bypass_deadline, memory_order_relaxed);
+        if (bypass && mode == 7) {
+            uint64_t next = atomic_load_explicit(&treo_afk_next_paint, memory_order_relaxed);
+            // One genuine paint every >=200ms, across both possible caller threads.
+            while (now >= next) {
+                if (atomic_compare_exchange_weak_explicit(&treo_afk_next_paint, &next,
+                        now + 200000000ULL, memory_order_relaxed, memory_order_relaxed)) {
+                    bypass = 0;
+                    break;
+                }
+            }
+        }
         if (bypass) {
             // Preserve the native resource housekeeping normally done by flush.
             process_dead_shells();
@@ -189,12 +201,15 @@ int j2me_render_is_afk_suspended(void) {
 }
 
 void treo_render_set_afk_mode(int mode) {
-    if (mode == 6) {
+    if (mode == 6 || mode == 7) {
         const uint64_t now = treo_afk_now_ns();
-        atomic_store_explicit(&treo_afk_bypass_deadline, now ? now + 60000000000ULL : 0,
+        atomic_store_explicit(&treo_afk_next_paint, 0, memory_order_relaxed);
+        // Mode 7 is a bounded experiment; fail open if the UI timer stalls.
+        atomic_store_explicit(&treo_afk_bypass_deadline,
+                              now ? now + (mode == 7 ? 65000000000ULL : 60000000000ULL) : 0,
                               memory_order_relaxed);
     }
-    if ((mode >= 2 && mode <= 4) || mode == 6) atomic_store(&g_afk_needs_redraw, 1);
+    if ((mode >= 2 && mode <= 4) || mode == 6 || mode == 7) atomic_store(&g_afk_needs_redraw, 1);
     int previous = atomic_exchange(&treo_afk_mode, mode);
     if (mode) {
         atomic_store(&g_afk_refresh, 0);

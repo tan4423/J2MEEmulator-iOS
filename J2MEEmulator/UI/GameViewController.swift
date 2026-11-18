@@ -90,6 +90,7 @@ class GameViewController: UIViewController {
     private var afkMeasure: DispatchWorkItem?
     private var afkMeasureID: UUID?
     private var afkComparisonDone = false
+    private var afkOriginalJIT: Int32?
     private var lastAFKTrace = ""
     private var afkFrozenLayers: [CALayer] = []
 
@@ -528,7 +529,7 @@ class GameViewController: UIViewController {
             },
             UIAction(title: "Treo tối đa · màn hình đen") { [weak self] _ in self?.showBlackout() },
             UIAction(title: "Treo · vẽ SIMD ngầm (thử nghiệm)") { [weak self] _ in self?.showBlackout(mode: 5) },
-            UIAction(title: "Thử CPU luồng chính · màn hình chờ") { [weak self] _ in self?.confirmAfkPaintTest() },
+            UIAction(title: "So CPU treo · paint 5 Hz / JIT") { [weak self] _ in self?.confirmAfkPaintTest() },
             UIAction(title: treo_game_jit_is_enabled() != 0 ? "Tắt JIT Java (thử nghiệm)" : "Bật JIT Java (thử nghiệm)", attributes: powerRun == nil ? [] : .disabled) { [weak self] _ in
                 guard let self else { return }
                 if treo_game_jit_is_enabled() != 0 {
@@ -834,6 +835,7 @@ class GameViewController: UIViewController {
         if !afkFrozenLayers.isEmpty || afkMeasureID != nil { setAFKUICut(false) }
         afkMeasure = nil
         afkMeasureID = nil
+        restoreAfkJIT()
         let showComparison = afkComparisonDone
         afkComparisonDone = false
         j2me_render_set_afk_suspended(0)
@@ -855,7 +857,8 @@ class GameViewController: UIViewController {
         let paintNS = treo_afk_paint_cpu_ns()
         let bypassed = treo_afk_bypassed_paints()
         let mainCPU = treo_afk_current_thread_cpu()
-        let notices = treo_afk_ui_notices_saved()
+        let jitCalls = treo_game_jit_call_count()
+        let jitCompiled = treo_game_jit_compiled_count()
 
         func cpuPercent(since start: AfkSample) -> Double? {
             let seconds = time - start.time
@@ -866,7 +869,7 @@ class GameViewController: UIViewController {
 
     private func confirmAfkPaintTest() {
         let alert = UIAlertController(title: "Thử ở màn hình chờ",
-            message: "Bốn lượt tự động. Một lượt thử lọc UI và giữ paint; một lượt đối chứng bỏ paint tối đa 60 giây. Chỉ thử trước khi đăng nhập, không dùng để treo auto.",
+            message: "Thử giới hạn callback paint tối đa 5 lần/giây khi màn đen. Có thể đổi hành vi nếu paint chứa logic; chỉ thử trước đăng nhập. Nếu đã bật JIT bằng StikDebug, app tự đo thêm lượt JIT ở nhịp paint gốc.",
             preferredStyle: .alert)
         alert.addAction(UIAlertAction(title: "Hủy", style: .cancel))
         alert.addAction(UIAlertAction(title: "Bắt đầu", style: .default) { [weak self] _ in
@@ -884,77 +887,74 @@ class GameViewController: UIViewController {
         showBlackout()
         let id = UUID()
         afkMeasureID = id
-        runAfkLeg(id: id, index: 0, results: [])
+        let original = treo_game_jit_is_enabled()
+        afkOriginalJIT = original
+        let modes: [Int32] = original != 0 ? [0, 1, 2, 0] : [0, 2, 0]
+        runAfkLeg(id: id, index: 0, modes: modes, results: [])
+    }
+
+    private func restoreAfkJIT() {
+        if let original = afkOriginalJIT {
+            afkOriginalJIT = nil
+            treo_game_jit_set_enabled(original)
+        }
     }
 
     private struct AfkLeg {
+        let label: String
         let cpu: Double?
+        let mainCPU: Double?
         let paintCPU: Double
         let paintRate: Double
         let bypassed: UInt64
-        let threads: String
-        let mainCPU: Double?
-        let notices: UInt64
-        let trace: String
+        let jitCalls: UInt64
+        let jitCompiled: UInt64
     }
 
-    private func runAfkLeg(id: UUID, index: Int, results: [AfkLeg]) {
-        // Every leg uses the same overlay and brightness; no modal transitions.
-        let modes: [Int32] = [1, 1, 6, 1]
-        setAFKUICut(index == 1)
-        treo_render_set_afk_mode(modes[index])
+    private func runAfkLeg(id: UUID, index: Int, modes: [Int32], results: [AfkLeg]) {
+        let mode = modes[index]
+        treo_game_jit_set_enabled(mode == 1 ? 1 : 0)
+        treo_render_set_afk_mode(mode == 2 ? 7 : 1)
         blackout?.setTitle("Đang đo \(index + 1)/\(modes.count) · Chạm để hủy", for: .normal)
-        treo_afk_threads_begin()
-        treo_afk_main_trace_begin()
         let start = AfkSample()
         let work = DispatchWorkItem { [weak self] in
             guard let self, self.afkMeasureID == id, self.blackout != nil else { return }
             let end = AfkSample()
             let seconds = max(0.001, end.time - start.time)
-            let raw = treo_afk_threads_report(seconds)
-            let threads = raw.map { String(cString: $0) } ?? "Không đọc được luồng"
-            if let raw { free(raw) }
-            let rawTrace = treo_afk_main_trace_end()
-            let trace = rawTrace.map { String(cString: $0) } ?? "Không đọc được mẫu"
-            if let rawTrace { free(rawTrace) }
-            let leg = AfkLeg(cpu: end.cpuPercent(since: start),
+            let label = mode == 2 ? "Paint ≤5 Hz" : (mode == 1 ? "JIT · nhịp gốc" : (index == 0 ? "Cũ 1" : "Cũ 2"))
+            let leg = AfkLeg(label: label, cpu: end.cpuPercent(since: start),
+                             mainCPU: start.mainCPU >= 0 && end.mainCPU >= start.mainCPU
+                                ? 100 * (end.mainCPU - start.mainCPU) / seconds : nil,
                              paintCPU: Double(end.paintNS &- start.paintNS) / seconds / 10_000_000,
                              paintRate: Double(end.paints &- start.paints) / seconds,
                              bypassed: end.bypassed &- start.bypassed,
-                             threads: threads,
-                             mainCPU: start.mainCPU >= 0 && end.mainCPU >= start.mainCPU
-                                ? 100 * (end.mainCPU - start.mainCPU) / seconds : nil,
-                             notices: end.notices &- start.notices, trace: trace)
+                             jitCalls: UInt64(end.jitCalls &- start.jitCalls),
+                             jitCompiled: UInt64(end.jitCompiled &- start.jitCompiled))
             let all = results + [leg]
             if index + 1 < modes.count {
-                self.runAfkLeg(id: id, index: index + 1, results: all)
+                self.runAfkLeg(id: id, index: index + 1, modes: modes, results: all)
                 return
             }
-            let labels = ["Cũ 1", "Lọc UI (giữ paint)", "Cắt paint", "Cũ 2"]
+            self.restoreAfkJIT()
             func percent(_ value: Double?) -> String {
                 value.map { String(format: "%.1f%%", $0) } ?? "?"
             }
-            func difference(_ i: Int) -> String {
-                guard let a = all[0].cpu, let b = all[i].cpu, let c = all[3].cpu else { return "?" }
-                return String(format: "%+.1f", b - (a + c) / 2)
-            }
-            let rows = all.indices.map { i in
-                let v = all[i]
-                return "\(labels[i]): \(percent(v.cpu)) tổng · main \(percent(v.mainCPU)) · \(String(format: "%.1f", v.paintRate)) paint/s"
+            let rows = all.map { v in
+                "\(v.label): \(percent(v.cpu)) tổng · main \(percent(v.mainCPU)) · \(String(format: "%.1f%%", v.paintCPU)) trong paint · \(String(format: "%.1f", v.paintRate)) paint/s"
             }.joined(separator: "\n")
+            let paced = all.first { $0.label == "Paint ≤5 Hz" }
+            let jit = all.first { $0.label == "JIT · nhịp gốc" }
+            let jitText = jit.map { "JIT: \($0.jitCalls) lượt mã máy · \($0.jitCompiled) biên dịch mới." } ?? "Không đo JIT (chưa bật trước bài thử)."
             let report = """
             \(rows)
-            So mốc cũ: lọc UI \(difference(1)) · cắt paint \(difference(2)) điểm CPU.
-            Bỏ \(all[1].notices) báo Canvas trùng · cắt \(all[2].bypassed) yêu cầu paint.
-            Bấm Sao chép để lấy mẫu hàm. Không đo GPU %.
+            Bỏ \(paced?.bypassed ?? 0) yêu cầu paint ở lượt 5 Hz.
+            \(jitText)
+            Cùng màn đen; CPU quy về một lõi. Không lấy mẫu hàm hay đo GPU %.
             """
-            self.lastAFKTrace = all.indices.map { i in
-                "\(labels[i])\n\(all[i].threads)\n\(all[i].trace)"
-            }.joined(separator: "\n\n")
             self.afkMeasure = nil
             self.afkMeasureID = nil
             self.afkComparisonDone = true
-            self.lastMeasurement = ("CPU luồng chính", report)
+            self.lastMeasurement = ("So CPU treo", report)
             self.applyPadMode()
             self.blackout?.setTitle("Đo xong · Chạm xem kết quả", for: .normal)
         }
