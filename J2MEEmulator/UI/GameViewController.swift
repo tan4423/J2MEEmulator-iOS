@@ -800,7 +800,7 @@ class GameViewController: UIViewController {
         case Int32(J2ME_UI_ACTION_SHOW_FORM), Int32(J2ME_UI_ACTION_SHOW_TEXTBOX),
              Int32(J2ME_UI_ACTION_SHOW_LIST), Int32(J2ME_UI_ACTION_SHOW_ALERT):
             // Never hide a prompt or leave the user unable to interact with it.
-            hideBlackout(offerReport: false)
+            finishBlackout(offerReport: false)
             return false
         default: return false
         }
@@ -836,9 +836,9 @@ class GameViewController: UIViewController {
         NotificationCenter.default.addObserver(self, selector: #selector(hideBlackout), name: UIApplication.willResignActiveNotification, object: nil)
     }
 
-    @objc private func hideBlackout() { hideBlackout(offerReport: true) }
+    @objc private func hideBlackout() { finishBlackout(offerReport: true) }
 
-    private func hideBlackout(offerReport: Bool) {
+    private func finishBlackout(offerReport: Bool) {
         guard blackout != nil else { return }
         if !offerReport { quietCanvasRefresh = false }
         setQuietBlackoutUI(false)
