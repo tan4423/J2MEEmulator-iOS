@@ -67,6 +67,9 @@ int treo_game_jit_is_enabled(void);
 void treo_game_jit_set_enabled(int enabled);
 int treo_game_jit_compiled_count(void);
 int treo_game_jit_call_count(void);
+int treo_game_jit_backend_probe(void);
+int treo_game_jit_fallback_count(void);
+int treo_game_jit_code_kib(void);
 void treo_game_jit_record_call(void);
 int treo_game_jit_can_compile(MethodInfo *method);
 #endif

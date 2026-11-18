@@ -406,7 +406,9 @@ static inline void _synchronized_unlock_method(MethodInfo *method, Runtime *runt
  */
 static inline void _optimize_empty_method_call(MethodInfo *subm, CodeAttribute *parent_ca, u8 *parent_method_code) {
     CodeAttribute *ca = subm->converted_code;
+#ifndef TREO_IOS_GAME_JIT
     u8 *parent_jit_code = &parent_ca->bytecode_for_jit[parent_method_code - parent_ca->code];
+#endif
     if (ca && ca->code_length == 1 && *ca->code == op_return) {//empty method, do nothing
         s32 paras = subm->para_slots;//
 
@@ -415,25 +417,31 @@ static inline void _optimize_empty_method_call(MethodInfo *subm, CodeAttribute *
             *(parent_method_code + 1) = op_nop;
             *(parent_method_code + 2) = op_nop;
 
+#ifndef TREO_IOS_GAME_JIT
             *parent_jit_code = op_nop;
             *(parent_jit_code + 1) = op_nop;
             *(parent_jit_code + 2) = op_nop;
+#endif
         } else if (paras == 1) {
             *parent_method_code = op_pop;
             *(parent_method_code + 1) = op_nop;
             *(parent_method_code + 2) = op_nop;
 
+#ifndef TREO_IOS_GAME_JIT
             *parent_jit_code = op_pop;
             *(parent_jit_code + 1) = op_nop;
             *(parent_jit_code + 2) = op_nop;
+#endif
         } else if (paras == 2) {
             *parent_method_code = op_pop2;
             *(parent_method_code + 1) = op_nop;
             *(parent_method_code + 2) = op_nop;
 
+#ifndef TREO_IOS_GAME_JIT
             *parent_jit_code = op_pop2;
             *(parent_jit_code + 1) = op_nop;
             *(parent_jit_code + 2) = op_nop;
+#endif
         }
     }
 }
@@ -684,7 +692,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
             }
 #endif
 #ifdef TREO_IOS_GAME_JIT
-            const int treo_enabled = treo_game_jit_is_enabled();
+            const int treo_enabled = !jvm->jdwp_enable && treo_game_jit_is_enabled();
             if (treo_enabled && __atomic_load_n(&ca->jit.state, __ATOMIC_ACQUIRE) == JIT_GEN_SUCCESS) {
                 treo_game_jit_record_call();
 #else
@@ -723,10 +731,9 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                     const s32 count = __atomic_load_n(&ca->jit.interpreted_count, __ATOMIC_RELAXED);
                     if (count >= JIT_COMPILE_EXEC_COUNT ||
                         __atomic_add_fetch(&ca->jit.interpreted_count, 1, __ATOMIC_RELAXED) >= JIT_COMPILE_EXEC_COUNT) {
-                        spin_lock(&ca->compile_lock);
-                        if (__atomic_load_n(&ca->jit.state, __ATOMIC_ACQUIRE) == JIT_GEN_UNKNOW)
-                            construct_jit(method, runtime);
-                        spin_unlock(&ca->compile_lock);
+                        // The compiler owns a try-lock and rechecks state.
+                        // Contending game threads keep interpreting, never spin.
+                        construct_jit(method, runtime);
                     }
                 }
 #else

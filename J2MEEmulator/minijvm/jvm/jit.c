@@ -24,6 +24,11 @@
 static atomic_int treo_jit_enabled;
 static atomic_int treo_jit_compiled;
 static atomic_int treo_jit_calls;
+static atomic_int treo_jit_fallbacks;
+static _Atomic size_t treo_jit_rx_bytes;
+enum { TREO_JIT_RX_LIMIT = 32 * 1024 * 1024 };
+int treo_game_jit_fallback_count(void) { return atomic_load_explicit(&treo_jit_fallbacks, memory_order_relaxed); }
+int treo_game_jit_code_kib(void) { return (int)(atomic_load_explicit(&treo_jit_rx_bytes, memory_order_relaxed) / 1024); }
 static pthread_mutex_t treo_jit_compile_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 int treo_game_jit_is_enabled(void) { return atomic_load_explicit(&treo_jit_enabled, memory_order_relaxed); }
@@ -34,8 +39,18 @@ void treo_game_jit_record_call(void) { atomic_fetch_add_explicit(&treo_jit_calls
 
 int treo_game_jit_can_compile(MethodInfo *method) {
     const char *name = utf8_cstr(method->_this_class->name);
-    // First rollout: x1 game classes only, not Java or MIDP runtime classes.
-    return name && (strncmp(name, "Class_", 6) == 0 || strcmp(name, "GameMidlet") == 0);
+    // Support named and obfuscated MIDlets, without compiling platform code.
+    static const char *const platform[] = {
+        "java/", "javax/", "jdk/", "sun/", "com/sun/", "org/mini/",
+        "org/xml/", "org/w3c/", "com/nokia/", "com/siemens/", "com/mascotcapsule/",
+        "com/samsung/", "com/motorola/", "com/sonyericsson/", "org/microemu/"
+    };
+    if (!name || !*name || name[0] == '[' || method->is_native || method->is_sync ||
+        method->_this_class->status < CLASS_STATUS_CLINITED ||
+        utf8_equals_c(method->name, "<clinit>")) return 0;
+    for (size_t i = 0; i < sizeof(platform)/sizeof(platform[0]); ++i)
+        if (!strncmp(name, platform[i], strlen(platform[i]))) return 0;
+    return 1;
 }
 
 static size_t treo_jit_mapping_size(sljit_uw code_size) {
@@ -43,7 +58,7 @@ static size_t treo_jit_mapping_size(sljit_uw code_size) {
     return ((size_t)code_size + page_size - 1) / page_size * page_size;
 }
 
-static void *treo_jit_generate(struct sljit_compiler *compiler, size_t capacity) {
+static void *treo_jit_generate(struct sljit_compiler *compiler, size_t capacity, int account) {
     const size_t length = treo_jit_mapping_size(capacity);
     void *page = mmap(NULL, length, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
     if (page == MAP_FAILED) return NULL;
@@ -61,7 +76,34 @@ static void *treo_jit_generate(struct sljit_compiler *compiler, size_t capacity)
     // Keep the mapping length recoverable from the final generated size.
     const size_t used = treo_jit_mapping_size(actual);
     if (used < length) munmap((char *)page + used, length - used);
+    if (account) {
+        // Account page-rounded executable storage, not just emitted bytes.
+        if (used > TREO_JIT_RX_LIMIT ||
+            atomic_load_explicit(&treo_jit_rx_bytes, memory_order_relaxed) > TREO_JIT_RX_LIMIT - used) {
+            munmap(page, used);
+            return NULL;
+        }
+        atomic_fetch_add_explicit(&treo_jit_rx_bytes, used, memory_order_relaxed);
+    }
     return entry;
+}
+
+// Exercise the same SLJIT buffer and RW-to-RX path used for Java, not a
+// hard-coded ARM instruction fallback. Caller must first attach the debugger.
+int treo_game_jit_backend_probe(void) {
+    struct sljit_compiler *compiler = sljit_create_compiler(NULL);
+    if (!compiler) return -401;
+    sljit_s32 err = sljit_emit_enter(compiler, 0, SLJIT_ARGS1(W, W), 1, 0, 0);
+    if (!err) err = sljit_emit_op2(compiler, SLJIT_ADD, SLJIT_R0, 0, SLJIT_R0, 0, SLJIT_IMM, 7);
+    if (!err) err = sljit_emit_return(compiler, SLJIT_MOV, SLJIT_R0, 0);
+    void *entry = err ? NULL : treo_jit_generate(compiler, 4096, 0);
+    const size_t len = treo_jit_mapping_size(sljit_get_generated_code_size(compiler));
+    sljit_free_compiler(compiler);
+    if (!entry) return -402;
+    sljit_sw (*call)(sljit_sw) = (sljit_sw (*)(sljit_sw))entry;
+    const int ok = call(35) == 42 && call(-12) == -5;
+    munmap(entry, len);
+    return ok ? 42 : -403;
 }
 #endif
 
@@ -1241,7 +1283,7 @@ void gen_jit_suspend_check_func() {
 
 
 #ifdef TREO_IOS_GAME_JIT
-    check_suspend = (thread_suspend_check_func)treo_jit_generate(C, 4096);
+    check_suspend = (thread_suspend_check_func)treo_jit_generate(C, 4096, 0);
 #else
     check_suspend = sljit_generate_code(C, 0, NULL);
 #endif
@@ -1333,6 +1375,17 @@ s32 gen_jit_bytecode_func(struct sljit_compiler *C, MethodInfo *method, Runtime 
     while (ip < end) {
         u8 cur_inst = *ip;
         s32 code_idx = (s32) (ip - ca->bytecode_for_jit);
+#ifdef TREO_IOS_GAME_JIT
+        // These paths need a dedicated semantics audit. Prefer the VM's
+        // reference behavior instead of publishing partially correct code.
+        switch (cur_inst) {
+            case op_ldiv: case op_lrem:
+            case op_f2i: case op_f2l: case op_d2i: case op_d2l:
+            case op_invokedynamic: case op_monitorenter: case op_monitorexit:
+                return JIT_GEN_ERROR;
+            default: break;
+        }
+#endif
 
         //generate label
         if (pairlist_getl(method->pos_2_label, code_idx)) {
@@ -1436,6 +1489,9 @@ s32 gen_jit_bytecode_func(struct sljit_compiler *C, MethodInfo *method, Runtime 
                         break;
                     }
                     case CONSTANT_CLASS: {
+#ifdef TREO_IOS_GAME_JIT
+                        return JIT_GEN_ERROR;
+#endif
                         JClass *cl = classes_load_get_with_clinit(clazz->jloader, class_get_constant_classref(clazz, index)->name, runtime);
                         if (!cl->ins_class) {
                             cl->ins_class = insOfJavaLangClass_create_get(runtime, cl);
@@ -1446,6 +1502,7 @@ s32 gen_jit_bytecode_func(struct sljit_compiler *C, MethodInfo *method, Runtime 
                     }
                     default: {
                         jvm_printf("ldc: something not implemention \n");
+                        return JIT_GEN_ERROR;
                     }
                 }
 
@@ -2556,6 +2613,9 @@ s32 gen_jit_bytecode_func(struct sljit_compiler *C, MethodInfo *method, Runtime 
                 u16 idx = *((u16 *) (ip + 1));
                 FieldInfo *fi = class_get_constant_fieldref(clazz, idx)->fieldInfo;
 
+#ifdef TREO_IOS_GAME_JIT
+                if (!fi) return JIT_GEN_ERROR;
+#endif
                 if (!fi) {
                     ConstantFieldRef *cfr = class_get_constant_fieldref(clazz, idx);
                     fi = find_fieldInfo_by_fieldref(clazz, cfr->item.index, runtime);
@@ -2564,9 +2624,15 @@ s32 gen_jit_bytecode_func(struct sljit_compiler *C, MethodInfo *method, Runtime 
                         return JIT_GEN_ERROR;
                     }
                 }
+#ifdef TREO_IOS_GAME_JIT
+                // Do not initialize classes or use plain loads for volatile fields.
+                if (fi->isvolatile || fi->_this_class->status < CLASS_STATUS_CLINITED)
+                    return JIT_GEN_ERROR;
+#else
                 if (fi->_this_class->status < CLASS_STATUS_CLINITED) {
                     class_clinit(fi->_this_class, runtime);
                 }
+#endif
 
                 c8 *ptr = getStaticFieldPtr(fi);
                 if (fi->isrefer) {
@@ -2621,6 +2687,9 @@ s32 gen_jit_bytecode_func(struct sljit_compiler *C, MethodInfo *method, Runtime 
             case op_putstatic: {
                 u16 idx = *((u16 *) (ip + 1));
                 FieldInfo *fi = class_get_constant_fieldref(clazz, idx)->fieldInfo;
+#ifdef TREO_IOS_GAME_JIT
+                if (!fi) return JIT_GEN_ERROR;
+#endif
                 if (!fi) {
                     ConstantFieldRef *cfr = class_get_constant_fieldref(clazz, idx);
                     fi = find_fieldInfo_by_fieldref(clazz, cfr->item.index, runtime);
@@ -2629,9 +2698,15 @@ s32 gen_jit_bytecode_func(struct sljit_compiler *C, MethodInfo *method, Runtime 
                         return JIT_GEN_ERROR;
                     }
                 }
+#ifdef TREO_IOS_GAME_JIT
+                // Do not initialize classes or use plain loads for volatile fields.
+                if (fi->isvolatile || fi->_this_class->status < CLASS_STATUS_CLINITED)
+                    return JIT_GEN_ERROR;
+#else
                 if (fi->_this_class->status < CLASS_STATUS_CLINITED) {
                     class_clinit(fi->_this_class, runtime);
                 }
+#endif
                 c8 *ptr = getStaticFieldPtr(fi);
 
                 if (fi->isrefer) {
@@ -2674,6 +2749,9 @@ s32 gen_jit_bytecode_func(struct sljit_compiler *C, MethodInfo *method, Runtime 
             case op_getfield: {
                 u16 idx = *((u16 *) (ip + 1));
                 FieldInfo *fi = class_get_constant_fieldref(clazz, idx)->fieldInfo;
+#ifdef TREO_IOS_GAME_JIT
+                if (!fi) return JIT_GEN_ERROR;
+#endif
                 if (!fi) {
                     ConstantFieldRef *cfr = class_get_constant_fieldref(clazz, idx);
                     fi = find_fieldInfo_by_fieldref(clazz, cfr->item.index, runtime);
@@ -2682,9 +2760,15 @@ s32 gen_jit_bytecode_func(struct sljit_compiler *C, MethodInfo *method, Runtime 
                         return JIT_GEN_ERROR;
                     }
                 }
+#ifdef TREO_IOS_GAME_JIT
+                // Do not initialize classes or use plain loads for volatile fields.
+                if (fi->isvolatile || fi->_this_class->status < CLASS_STATUS_CLINITED)
+                    return JIT_GEN_ERROR;
+#else
                 if (fi->_this_class->status < CLASS_STATUS_CLINITED) {
                     class_clinit(fi->_this_class, runtime);
                 }
+#endif
 
                 _gen_stack_peek_ref(C, -1, SLJIT_R0, 0);
                 _gen_exception_check_throw_handle(C, SLJIT_EQUAL, SLJIT_R0, 0, SLJIT_IMM, RUNTIME_STATUS_EXCEPTION, JVM_EXCEPTION_NULLPOINTER, -1);
@@ -2747,6 +2831,9 @@ s32 gen_jit_bytecode_func(struct sljit_compiler *C, MethodInfo *method, Runtime 
             case op_putfield: {
                 u16 idx = *((u16 *) (ip + 1));
                 FieldInfo *fi = class_get_constant_fieldref(clazz, idx)->fieldInfo;
+#ifdef TREO_IOS_GAME_JIT
+                if (!fi) return JIT_GEN_ERROR;
+#endif
                 if (!fi) {
                     ConstantFieldRef *cfr = class_get_constant_fieldref(clazz, idx);
                     fi = find_fieldInfo_by_fieldref(clazz, cfr->item.index, runtime);
@@ -2755,9 +2842,15 @@ s32 gen_jit_bytecode_func(struct sljit_compiler *C, MethodInfo *method, Runtime 
                         return JIT_GEN_ERROR;
                     }
                 }
+#ifdef TREO_IOS_GAME_JIT
+                // Do not initialize classes or use plain loads for volatile fields.
+                if (fi->isvolatile || fi->_this_class->status < CLASS_STATUS_CLINITED)
+                    return JIT_GEN_ERROR;
+#else
                 if (fi->_this_class->status < CLASS_STATUS_CLINITED) {
                     class_clinit(fi->_this_class, runtime);
                 }
+#endif
                 s32 stack_size;
 
                 if (fi->isrefer) {
@@ -2863,7 +2956,10 @@ s32 gen_jit_bytecode_func(struct sljit_compiler *C, MethodInfo *method, Runtime 
                 _gen_save_sp_ip(C);
 
                 ConstantMethodRef *cmr = class_get_constant_method_ref(clazz, *((u16 *) (ip + 1)));
-                MethodInfo *m = cmr->methodInfo;
+                MethodInfo *m = cmr ? cmr->methodInfo : NULL;
+#ifdef TREO_IOS_GAME_JIT
+                if (!m || m->_this_class->status < CLASS_STATUS_CLINITED) return JIT_GEN_ERROR;
+#endif
 
                 //R0 = method
                 sljit_emit_op1(C, SLJIT_MOV_P, SLJIT_R0, 0, SLJIT_IMM, (sljit_sw) m);
@@ -2911,6 +3007,10 @@ s32 gen_jit_bytecode_func(struct sljit_compiler *C, MethodInfo *method, Runtime 
                 s32 idx = *((u16 *) (ip + 1));
 
                 ConstantClassRef *ccf = class_get_constant_classref(clazz, idx);
+#ifdef TREO_IOS_GAME_JIT
+                if (!ccf || !ccf->clazz || ccf->clazz->status < CLASS_STATUS_CLINITED)
+                    return JIT_GEN_ERROR;
+#endif
                 if (!ccf->clazz) {
                     Utf8String *clsName = class_get_utf8_string(clazz, ccf->stringIndex);
                     ccf->clazz = classes_load_get_with_clinit(clazz->jloader, clsName, runtime);
@@ -3321,7 +3421,10 @@ s32 gen_jit_bytecode_func(struct sljit_compiler *C, MethodInfo *method, Runtime 
         Pair p = pairlist_get_pair(method->jump_2_pos, i);
         struct sljit_jump *jump = (__refer) (intptr_t) p.leftl;
         struct sljit_label *label = (__refer) (intptr_t) pairlist_getl(method->pos_2_label, p.rightl);
-        if (!label) {
+        if (!label || (intptr_t)label == -1 || !jump) {
+#ifdef TREO_IOS_GAME_JIT
+            return JIT_GEN_ERROR;
+#endif
             jvm_printf("label not found %s.%s pc: %d\n", utf8_cstr(method->_this_class->name), utf8_cstr(method->name), (s32) (intptr_t) p.rightl);
         } else {
             sljit_set_label(jump, label);
@@ -3330,8 +3433,16 @@ s32 gen_jit_bytecode_func(struct sljit_compiler *C, MethodInfo *method, Runtime 
 
     //Generate machine code
 #ifdef TREO_IOS_GAME_JIT
+    if (!label_interrupt_handle) return JIT_GEN_ERROR;
+    for (SwitchTable *table = ca->jit.switchtable; table; table = table->next)
+        for (s32 n = 0; n < table->size; ++n)
+            if (pairlist_getl(method->pos_2_label, table->table[n].bc_pos) <= 0)
+                return JIT_GEN_ERROR;
+    for (s32 n = 0; n < ca->exception_table_length; ++n)
+        if (pairlist_getl(method->pos_2_label, ca->exception_table[n].handler_pc) <= 0)
+            return JIT_GEN_ERROR;
     if (ca->code_length <= 0 || ca->code_length > 65535) return JIT_GEN_ERROR;
-    genfunc = treo_jit_generate(C, (size_t)ca->code_length * 128 + 4096);
+    genfunc = treo_jit_generate(C, (size_t)ca->code_length * 128 + 4096, 1);
 #else
     genfunc = sljit_generate_code(C, 0, NULL);
 #endif
@@ -3394,13 +3505,19 @@ void construct_jit(MethodInfo *method, Runtime *runtime) {
     CodeAttribute *ca = method->converted_code;
 
 #ifdef TREO_IOS_GAME_JIT
-    if (!treo_game_jit_is_enabled() || pthread_mutex_trylock(&treo_jit_compile_mutex) != 0) return;
+    if (!treo_game_jit_is_enabled() || runtime->jvm->jdwp_enable ||
+        pthread_mutex_trylock(&treo_jit_compile_mutex) != 0) return;
+    if (__atomic_load_n(&ca->jit.state, __ATOMIC_ACQUIRE) != JIT_GEN_UNKNOW) {
+        pthread_mutex_unlock(&treo_jit_compile_mutex);
+        return;
+    }
 #endif
     if (!check_suspend) {
         gen_jit_suspend_check_func();
     }
     if (!check_suspend || runtime->jvm->jdwp_enable || !ca->bytecode_for_jit) {
 #ifdef TREO_IOS_GAME_JIT
+        atomic_fetch_add_explicit(&treo_jit_fallbacks, 1, memory_order_relaxed);
         __atomic_store_n(&ca->jit.state, JIT_GEN_ERROR, __ATOMIC_RELEASE);
         pthread_mutex_unlock(&treo_jit_compile_mutex);
 #else
@@ -3415,6 +3532,8 @@ void construct_jit(MethodInfo *method, Runtime *runtime) {
     const s32 result = C ? gen_jit_bytecode_func(C, method, runtime) : JIT_GEN_ERROR;
     if (result == JIT_GEN_SUCCESS) {
         atomic_fetch_add_explicit(&treo_jit_compiled, 1, memory_order_relaxed);
+    } else {
+        atomic_fetch_add_explicit(&treo_jit_fallbacks, 1, memory_order_relaxed);
     }
     __atomic_store_n(&ca->jit.state, result, __ATOMIC_RELEASE);
     if (C) sljit_free_compiler(C);
@@ -3471,7 +3590,9 @@ void jit_destroy(Jit *jit) {
 
     if (jit->func) {
 #ifdef TREO_IOS_GAME_JIT
-        munmap((void *)jit->func, treo_jit_mapping_size((sljit_uw)jit->len));
+        size_t bytes = treo_jit_mapping_size((sljit_uw)jit->len);
+        if (munmap((void *)jit->func, bytes) == 0)
+            atomic_fetch_sub_explicit(&treo_jit_rx_bytes, bytes, memory_order_relaxed);
 #else
         sljit_free_code(jit->func, NULL);
 #endif

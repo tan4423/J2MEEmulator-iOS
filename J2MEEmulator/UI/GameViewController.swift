@@ -542,7 +542,8 @@ class GameViewController: UIViewController {
                     preferredStyle: .alert)
                 prompt.addAction(UIAlertAction(title: "Hủy", style: .cancel))
                 prompt.addAction(UIAlertAction(title: "Bật JIT Java", style: .default) { [weak self] _ in
-                    let result = treo_jit_probe()
+                    let smoke = treo_jit_probe()
+                    let result = smoke == 42 ? treo_game_jit_backend_probe() : smoke
                     if result == 42 {
                         treo_game_jit_set_enabled(1)
                         self?.applyPadMode()
@@ -608,7 +609,7 @@ class GameViewController: UIViewController {
                 let compiled = treo_game_jit_compiled_count()
                 let calls = treo_game_jit_call_count()
                 let report = UIAlertController(title: "Thống kê JIT Java",
-                    message: "Từ khi mở app: \(compiled) phương thức đã biên dịch, \(calls) lượt chạy mã đã biên dịch.",
+                    message: "Từ khi mở app: \(compiled) phương thức đã biên dịch · \(calls) lượt mã máy.\n\(treo_game_jit_fallback_count()) lần biên dịch không dùng được; tiếp tục thông dịch.\nBộ nhớ mã Java: \(treo_game_jit_code_kib()) KiB / 32 MiB.",
                     preferredStyle: .alert)
                 report.addAction(UIAlertAction(title: "OK", style: .default))
                 self?.present(report, animated: true)
