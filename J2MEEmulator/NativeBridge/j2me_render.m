@@ -393,7 +393,17 @@ static thread_t treo_trace_thread;
 enum { TreoTraceMax = 2048, TreoTraceDepth = 64 };
 static struct { uintptr_t pc, lr, frames[TreoTraceDepth]; unsigned depth; } treo_trace_points[TreoTraceMax];
 static unsigned treo_trace_count, treo_trace_ticks, treo_trace_errors, treo_trace_chains, treo_trace_unstable;
-static bool treo_trace_has_stack, treo_trace_snapshot_mode;
+static bool treo_trace_has_stack, treo_trace_snapshot_mode, treo_trace_source_only;
+// Main writes; sampler checks the same epoch again with main suspended.
+// Low bit marks the interval opened by the BeforeSources marker.
+static _Atomic uint64_t treo_trace_source_epoch;
+static unsigned treo_trace_source_checks, treo_trace_source_changed;
+
+void treo_afk_main_source_mark(int active) {
+    uint64_t old = atomic_load_explicit(&treo_trace_source_epoch, memory_order_relaxed);
+    atomic_store_explicit(&treo_trace_source_epoch, ((old + 2) & ~UINT64_C(1)) | (active != 0),
+                          memory_order_release);
+}
 
 #if defined(__arm64__)
 static unsigned treo_trace_walk(uintptr_t fp, uintptr_t low, uintptr_t high,
@@ -421,13 +431,16 @@ static unsigned treo_trace_walk(uintptr_t fp, uintptr_t low, uintptr_t high,
 #if defined(__arm64__)
 // Single bounded copy; no allocation, ObjC, unwinding, or symbolization while
 // main is suspended. The buffer is private to the serial sampler queue.
-static bool treo_trace_snapshot(thread_t target, uintptr_t low, uintptr_t high, unsigned slot) {
+// 1 = captured, 0 = Mach error, -1 = phase changed before suspension.
+static int treo_trace_snapshot(thread_t target, uintptr_t low, uintptr_t high, unsigned slot, uint64_t epoch) {
     static uintptr_t words[16384 / sizeof(uintptr_t)];
     arm_thread_state64_t state;
     mach_msg_type_number_t n = ARM_THREAD_STATE64_COUNT;
     vm_size_t copied = 0;
     uintptr_t sp = 0, fp = 0;
-    if (thread_suspend(target) != KERN_SUCCESS) return false;
+    if (thread_suspend(target) != KERN_SUCCESS) return 0;
+    if (epoch && atomic_load_explicit(&treo_trace_source_epoch, memory_order_acquire) != epoch)
+        return thread_resume(target) == KERN_SUCCESS ? -1 : 0;
     kern_return_t status = thread_get_state(target, ARM_THREAD_STATE64, (thread_state_t)&state, &n);
     if (status == KERN_SUCCESS) {
         sp = (uintptr_t)arm_thread_state64_get_sp(state);
@@ -459,18 +472,20 @@ static bool treo_trace_snapshot(thread_t target, uintptr_t low, uintptr_t high, 
     }
     treo_trace_points[slot].depth = depth;
     if (depth) ++treo_trace_chains;
-    return true;
+    return 1;
 }
 #endif
 
-static void treo_afk_trace_begin(bool stack) {
+static void treo_afk_trace_begin(bool stack, bool sourceOnly) {
     treo_afk_main_trace_cancel();
 #if defined(__arm64__)
     if (!treo_trace_queue) treo_trace_queue = dispatch_queue_create("treo.afk.main.trace", DISPATCH_QUEUE_SERIAL);
     treo_trace_thread = mach_thread_self();
     treo_trace_count = treo_trace_ticks = treo_trace_errors = treo_trace_chains = treo_trace_unstable = 0;
     treo_trace_has_stack = stack;
-    treo_trace_snapshot_mode = stack && atomic_load_explicit(&treo_jar_auditing, memory_order_relaxed);
+    treo_trace_source_only = sourceOnly;
+    treo_trace_source_checks = treo_trace_source_changed = 0;
+    treo_trace_snapshot_mode = sourceOnly || (stack && atomic_load_explicit(&treo_jar_auditing, memory_order_relaxed));
     const pthread_t main = pthread_self();
     const uintptr_t high = (uintptr_t)pthread_get_stackaddr_np(main);
     const size_t stack_size = pthread_get_stacksize_np(main);
@@ -481,6 +496,12 @@ static void treo_afk_trace_begin(bool stack) {
     dispatch_source_set_timer(treo_trace_timer, dispatch_time(DISPATCH_TIME_NOW, (int64_t)interval), interval, 9000000);
     dispatch_source_set_event_handler(treo_trace_timer, ^{
         ++treo_trace_ticks;
+        uint64_t epoch = 0;
+        if (sourceOnly) {
+            epoch = atomic_load_explicit(&treo_trace_source_epoch, memory_order_acquire);
+            if (!(epoch & 1)) return;
+            ++treo_trace_source_checks;
+        }
         thread_basic_info_data_t info;
         mach_msg_type_number_t n = THREAD_BASIC_INFO_COUNT;
         if (thread_info(target, THREAD_BASIC_INFO, (thread_info_t)&info, &n) != KERN_SUCCESS) {
@@ -488,7 +509,9 @@ static void treo_afk_trace_begin(bool stack) {
         }
         if (info.run_state != TH_STATE_RUNNING || treo_trace_count == TreoTraceMax) return;
         if (treo_trace_snapshot_mode) {
-            if (treo_trace_snapshot(target, low, high, treo_trace_count)) ++treo_trace_count;
+            int captured = treo_trace_snapshot(target, low, high, treo_trace_count, epoch);
+            if (captured > 0) ++treo_trace_count;
+            else if (captured < 0) ++treo_trace_source_changed;
             else ++treo_trace_errors;
             return;
         }
@@ -524,8 +547,9 @@ static void treo_afk_trace_begin(bool stack) {
     dispatch_resume(treo_trace_timer);
 #endif
 }
-void treo_afk_main_trace_begin(void) { treo_afk_trace_begin(false); }
-void treo_afk_main_stack_begin(void) { treo_afk_trace_begin(true); }
+void treo_afk_main_trace_begin(void) { treo_afk_trace_begin(false, false); }
+void treo_afk_main_stack_begin(void) { treo_afk_trace_begin(true, false); }
+void treo_afk_main_source_trace_begin(void) { treo_afk_trace_begin(true, true); }
 
 void treo_afk_main_trace_cancel(void) {
     if (!treo_trace_timer) return;
@@ -546,8 +570,60 @@ static NSString *treo_trace_symbol(uintptr_t address) {
         return [NSString stringWithFormat:@"%@:%s", image, info.dli_sname];
     return [NSString stringWithFormat:@"%@+0x%llx", image, (unsigned long long)(address - (uintptr_t)info.dli_fbase)];
 }
+static void treo_trace_append_chains(NSMutableString *out, NSDictionary<NSString *, NSNumber *> *hist,
+                                    NSUInteger limit) {
+    NSArray<NSString *> *keys = [hist keysSortedByValueUsingSelector:@selector(compare:)];
+    for (NSUInteger k = keys.count, shown = 0; k && shown < limit; --k, ++shown) {
+        NSString *key = keys[k - 1];
+        [out appendFormat:@"\n%@ × %@", hist[key], key];
+    }
+}
+
+static char *treo_trace_source_report(void) {
+    NSMutableDictionary<NSNumber *, NSString *> *symbols = [NSMutableDictionary new];
+    NSMutableDictionary<NSString *, NSNumber *> *work = [NSMutableDictionary new];
+    NSMutableDictionary<NSString *, NSNumber *> *wait = [NSMutableDictionary new];
+    unsigned waits = 0, capped = 0;
+    for (unsigned i = 0; i < treo_trace_count; ++i) {
+        uintptr_t pc = treo_trace_points[i].pc;
+        NSString *leaf = symbols[@(pc)];
+        if (!leaf) { leaf = treo_trace_symbol(pc); symbols[@(pc)] = leaf; }
+        NSString *name = [[leaf componentsSeparatedByString:@":"] lastObject];
+        // Identify recognizable wait/syscall leaves only. Remaining samples
+        // can still be runnable or in an unrecognized wait, not necessarily on CPU.
+        bool looksWaiting = [name hasPrefix:@"mach_msg"] || [name hasPrefix:@"__mach_msg"]
+            || [name hasPrefix:@"semaphore_wait"] || [name hasPrefix:@"semaphore_timedwait"]
+            || [name hasPrefix:@"__psynch_cvwait"] || [name hasPrefix:@"__psynch_mutexwait"]
+            || [name hasPrefix:@"__ulock_wait"] || [name hasPrefix:@"__semwait_signal"]
+            || [name hasPrefix:@"kevent"] || [name hasPrefix:@"__kevent"];
+        NSMutableString *key = [NSMutableString stringWithString:leaf];
+        unsigned depth = treo_trace_points[i].depth;
+        if (depth == TreoTraceDepth) ++capped;
+        for (unsigned j = 0; j < depth; ++j) {
+            NSNumber *addr = @(treo_trace_points[i].frames[j]);
+            NSString *frame = symbols[addr];
+            if (!frame) { frame = treo_trace_symbol(addr.unsignedLongLongValue); symbols[addr] = frame; }
+            [key appendFormat:@" ← %@", frame];
+        }
+        if (!depth) [key appendFormat:@" | LR %@", treo_trace_symbol(treo_trace_points[i].lr)];
+        if (looksWaiting) ++waits;
+        NSMutableDictionary<NSString *, NSNumber *> *bucket = looksWaiting ? wait : work;
+        bucket[key] = @(bucket[key].unsignedIntValue + 1);
+    }
+    NSMutableString *out = [NSMutableString stringWithFormat:
+        @"Stack sau mốc Source: %u mẫu / %u lần trong pha / %u lần kiểm; %u đổi mốc, %u lỗi; %u có chuỗi FP, %u chạm giới hạn %u frame.",
+        treo_trace_count, treo_trace_source_checks, treo_trace_ticks, treo_trace_source_changed,
+        treo_trace_errors, treo_trace_chains, capped, TreoTraceDepth];
+    [out appendFormat:@"\nKhông thấy leaf chờ đã biết (%u mẫu), chuỗi hay gặp:", treo_trace_count - waits];
+    treo_trace_append_chains(out, work, 5);
+    [out appendFormat:@"\nLeaf dạng chờ/Mach IPC (%u mẫu), chuỗi hay gặp:", waits];
+    treo_trace_append_chains(out, wait, 2);
+    return strdup(out.UTF8String);
+}
+
 char *treo_afk_main_trace_end(void) {
     treo_afk_main_trace_cancel();
+    if (treo_trace_source_only) return treo_trace_source_report();
     NSMutableDictionary<NSString *, NSNumber *> *hist = [NSMutableDictionary new];
     NSMutableDictionary<NSNumber *, NSString *> *symbols = [NSMutableDictionary new];
     NSMutableDictionary<NSString *, NSNumber *> *caEntry = [NSMutableDictionary new];

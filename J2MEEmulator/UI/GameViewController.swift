@@ -43,12 +43,15 @@ enum GameLayoutMode {
     private static var cpu = Array(repeating: 0.0, count: Group.allCases.count)
     private static var counts = Array(repeating: 0, count: Group.allCases.count)
     private static var failed = false
+    private static var sampleSource = false
 
-    static func start() {
+    static func start(sampleSource: Bool) {
         stop()
         cpu = Array(repeating: 0, count: Group.allCases.count)
         counts = Array(repeating: 0, count: Group.allCases.count)
         failed = false
+        self.sampleSource = sampleSource
+        if sampleSource { treo_afk_main_source_mark(0) }
         let early = CFRunLoopActivity.entry.rawValue | CFRunLoopActivity.exit.rawValue
             | CFRunLoopActivity.beforeTimers.rawValue | CFRunLoopActivity.beforeSources.rawValue
             | CFRunLoopActivity.beforeWaiting.rawValue | CFRunLoopActivity.afterWaiting.rawValue
@@ -68,6 +71,8 @@ enum GameLayoutMode {
     }
 
     static func stop() {
+        if sampleSource { treo_afk_main_source_mark(0) }
+        sampleSource = false
         for observer in observers { CFRunLoopObserverInvalidate(observer) }
         observers.removeAll()
         last = nil
@@ -84,6 +89,7 @@ enum GameLayoutMode {
         case .afterWaiting: marker = late ? .afterWaitLast : .afterWaitFirst
         default: return
         }
+        if sampleSource { treo_afk_main_source_mark(marker == .sources ? 1 : 0) }
         let now = treo_afk_current_thread_cpu()
         guard now >= 0 else { failed = true; last = nil; return }
         if let prev = last {
@@ -647,6 +653,9 @@ class GameViewController: UIViewController {
             },
             UIAction(title: "Thử chờ thụ động · CPU main") { [weak self] _ in self?.confirmJarAudit(compareLoad: true) },
             UIAction(title: "Đo pha CPU main · JAR") { [weak self] _ in self?.confirmJarAudit(budgetMain: true) },
+            UIAction(title: "Tìm stack sau Source · JAR") { [weak self] _ in
+                self?.confirmJarAudit(profileMain: true, budgetMain: true)
+            },
             UIAction(title: "Chẩn đoán CPU JAR · tắt → bật → tắt") { [weak self] _ in self?.confirmJarAudit() },
             UIAction(title: "Treo tối đa · màn hình đen") { [weak self] _ in self?.showBlackout() },
             UIAction(title: "Treo · vẽ SIMD ngầm (thử nghiệm)") { [weak self] _ in self?.showBlackout(mode: 5) },
@@ -993,10 +1002,14 @@ class GameViewController: UIViewController {
 
     private func confirmJarAudit(profileMain: Bool = false, compareLoad: Bool = false, budgetMain: Bool = false) {
         guard jarAuditID == nil, blackout == nil, powerRun == nil, cpuProfileStartedAt == nil else { return }
-        let alert = UIAlertController(title: budgetMain ? "Đo pha CPU main · JAR" :
+        let sourceProfile = budgetMain && profileMain
+        let alert = UIAlertController(title: sourceProfile ? "Tìm stack sau Source · JAR" :
+                budgetMain ? "Đo pha CPU main · JAR" :
                 (compareLoad ? "Thử chờ thụ động · CPU main" :
                  (profileMain ? "Tìm hàm ăn CPU main" : "Chẩn đoán CPU JAR")),
-            message: budgetMain
+            message: sourceProfile
+                ? "Map 37, auto x1, treo trong JAR đang TẮT. Ba lượt × 60 giây: tắt → bật → tắt theo lời nhắc. Không bật màn đen Treo. App chặn khung, tạm tắt JIT, và chỉ lấy stack trong khoảng sau mốc Source."
+                : budgetMain
                 ? "Map 37, auto x1, treo trong JAR đang TẮT. Ba lượt × 60 giây: tắt → bật → tắt theo lời nhắc. Không bật màn đen Treo. Cả ba lượt chặn khung và tạm tắt JIT. Không lấy stack hay tạo tải giả."
                 : compareLoad
                 ? "Trong map 37, để auto chạy và BẬT Treo tối ưu CPU trong game trước. Không bật màn đen Treo. App tự đo 4 lượt × 25 giây: mốc đầu → xung tính toán → chờ thụ động cùng vị trí → mốc cuối. Giữ treo JAR bật, không vẽ, không lấy stack. Hình đứng yên do chặn khung. Không chạm vào vùng game trong lúc đo."
@@ -1074,9 +1087,11 @@ class GameViewController: UIViewController {
             let start = JarAuditSample()
             let profileMain = self.jarMainProfile
             let budgetMain = self.jarBudgetAudit
-            if budgetMain { JarMainBudget.start() }
-            if profileMain { treo_afk_main_stack_begin() }
-            self.scheduleJarAudit(id: id, after: profileMain ? 20 : (self.jarLoadComparison ? 25 : 60)) { [weak self] in
+            let sourceProfile = budgetMain && profileMain
+            if budgetMain { JarMainBudget.start(sampleSource: sourceProfile) }
+            if sourceProfile { treo_afk_main_source_trace_begin() }
+            else if profileMain { treo_afk_main_stack_begin() }
+            self.scheduleJarAudit(id: id, after: profileMain && !sourceProfile ? 20 : (self.jarLoadComparison ? 25 : 60)) { [weak self] in
                 guard let self else { return }
                 let end = JarAuditSample()
                 let dt = max(0.001, end.base.time - start.base.time)
@@ -1130,7 +1145,7 @@ class GameViewController: UIViewController {
                     return
                 }
                 let measured = results + [JarAuditResult(total: total, main: main, ticks: ticks, paint: paint, budget: budget)]
-                if leg == (compareLoad ? 3 : 2) || (profileMain && leg == 1) {
+                if leg == (compareLoad ? 3 : 2) || (profileMain && !sourceProfile && leg == 1) {
                     self.finishJarAudit(rows: all, results: measured)
                 } else if compareLoad {
                     self.runJarAudit(id: id, leg: leg + 1, rows: all, results: measured)
@@ -1179,7 +1194,7 @@ class GameViewController: UIViewController {
         let compareLoad = jarLoadComparison
         let budgetMain = jarBudgetAudit
         stopJarAudit()
-        if profileMain {
+        if profileMain && !budgetMain {
             publishMeasurement(title: "Tìm hàm ăn CPU main", message:
                 "JIT tắt · cùng chặn khung game ở hai lượt. CPU chỉ để tham khảo vì có sampler; dùng chuỗi gọi để đối chiếu. Mẫu runnable không đồng nghĩa thời gian CPU.\n\n"
                 + rows.joined(separator: "\n\n"))
@@ -1208,8 +1223,12 @@ class GameViewController: UIViewController {
                 summary += "Chênh CPU main theo pha (ms/s): "
                     + (measured + ["Ngoài mốc \(residual)"]).joined(separator: " · ") + "\n\n"
             }
-            publishMeasurement(title: "Đo pha CPU main · JAR", message:
-                "JIT tắt · FPS cap: \(fpsLimit) · Không lấy stack.\n\n" + summary +
+            let title = profileMain ? "Tìm stack sau Source · JAR" : "Đo pha CPU main · JAR"
+            let sampling = profileMain
+                ? "Lấy mẫu sau Source. Kiểm tra chênh pha so với bài không lấy stack (~+253 ms/s); nếu lệch rõ thì không quy nguyên nhân từ mẫu. Số mẫu không phải CPU time."
+                : "Không lấy stack."
+            publishMeasurement(title: title, message:
+                "JIT tắt · FPS cap: \(fpsLimit) · \(sampling)\n\n" + summary +
                 rows.joined(separator: "\n\n") +
                 "\n\n[ ]: số khoảng giữa mốc. Ngoài mốc = CPU main tổng trừ phần ghép được. Đồng hồ CPU không tính thời gian ngủ. Mốc đo chỉ gắn vào common modes; pha không định danh hàm hay framework.")
             return

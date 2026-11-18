@@ -46,6 +46,8 @@ void treo_afk_threads_begin(void);
 double treo_afk_current_thread_cpu(void);
 void treo_afk_main_trace_begin(void);
 void treo_afk_main_stack_begin(void);
+void treo_afk_main_source_trace_begin(void);
+void treo_afk_main_source_mark(int active);
 void treo_afk_main_trace_cancel(void);
 char * _Nullable treo_afk_main_trace_end(void); // caller frees
 void treo_afk_ui_cut_set(int enabled);
