@@ -964,8 +964,11 @@ class GameViewController: UIViewController {
             cover.autoresizingMask = [.flexibleWidth, .flexibleHeight]
             cover.backgroundColor = .black
             // Swallow touches so the JAR cannot wake accidentally.
-            view.addSubview(cover)
-            view.bringSubviewToFront(screenMenu)
+            if screenMenu.superview === view {
+                view.insertSubview(cover, belowSubview: screenMenu)
+            } else {
+                view.addSubview(cover)
+            }
             jarUIProbeCover = cover
         } else {
             jarUIProbeCover?.removeFromSuperview()
