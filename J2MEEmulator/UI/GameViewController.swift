@@ -63,7 +63,7 @@ enum GameLayoutMode {
         }
         observers = [first, final]
         for observer in observers {
-            CFRunLoopAddObserver(CFRunLoopGetMain(), observer, kCFRunLoopCommonModes)
+            CFRunLoopAddObserver(CFRunLoopGetMain(), observer, CFRunLoopMode.commonModes)
         }
     }
 
