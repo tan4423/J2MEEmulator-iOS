@@ -10,6 +10,9 @@
 #import <ImageIO/ImageIO.h>
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
+#import <Metal/Metal.h>
+#include <string.h>
+#include <stdlib.h>
 #import <CoreHaptics/CoreHaptics.h>
 #include "j2me_render.h"
 #include "jvm.h"
@@ -995,51 +998,8 @@ static int treo_region_outside_clip(CGRect clip, int64_t x, int64_t y, int w, in
            y >= CGRectGetMaxY(clip) + 1;
 }
 
-static s32 n_drawRegion(Runtime *runtime, JClass *clazz) {
-    JniEnv *env = runtime->jnienv;
-    s64 ctxHandle = env->localvar_getLong_2slot(runtime->localvar, 0);
-    s64 imgHandle = env->localvar_getLong_2slot(runtime->localvar, 2);
-    s32 xSrc = env->localvar_getInt(runtime->localvar, 4);
-    s32 ySrc = env->localvar_getInt(runtime->localvar, 5);
-    s32 wSrc = env->localvar_getInt(runtime->localvar, 6);
-    s32 hSrc = env->localvar_getInt(runtime->localvar, 7);
-    s32 transform = env->localvar_getInt(runtime->localvar, 8);
-    int64_t xDst = env->localvar_getInt(runtime->localvar, 9);
-    int64_t yDst = env->localvar_getInt(runtime->localvar, 10);
-    s32 anchor = env->localvar_getInt(runtime->localvar, 11);
-
-    RenderContext *rc = rc_acquire(ctxHandle);
-    if (!rc) return RUNTIME_STATUS_NORMAL;
-
-    int outW = wSrc, outH = hSrc;
-    if (transform == TRANS_ROT90 || transform == TRANS_ROT270 ||
-        transform == TRANS_MIRROR_ROT90 || transform == TRANS_MIRROR_ROT270) {
-        outW = hSrc; outH = wSrc;
-    }
-
-    if (anchor & 1) xDst -= outW / 2;
-    if (anchor & 8) xDst -= outW;
-    if (anchor & 2) yDst -= outH / 2;
-    if (anchor & 32) yDst -= outH;
-
-    if (rc->ownsPixels && treo_render_region_cull_enabled() &&
-        !j2me_render_is_afk_suspended() && wSrc > 0 && hSrc > 0 &&
-        transform >= 0 && transform <= 7 &&
-        treo_region_outside_clip(rc->regionClipBounds, xDst, yDst, outW, outH)) {
-        if (treo_profile_active()) TREO_PROF_ADD(region_culled, 1);
-        rc_release(rc);
-        return RUNTIME_STATUS_NORMAL;
-    }
-
-    RenderImage *img = img_acquire(imgHandle);
-    if (!img) { rc_release(rc); return RUNTIME_STATUS_NORMAL; }
-    CGContextRef rctx = rc->ctx;
-    CGImageRef fullImage = copyImageSnapshot(img);
-    if (!fullImage) { img_release(img); rc_release(rc); return RUNTIME_STATUS_NORMAL; }
-    CGImageRef subImage = CGImageCreateWithImageInRect(fullImage, CGRectMake(xSrc, ySrc, wSrc, hSrc));
-    CGImageRelease(fullImage);
-    if (!subImage) { img_release(img); rc_release(rc); return RUNTIME_STATUS_NORMAL; }
-
+static void treo_draw_region_cg(CGContextRef rctx, CGImageRef subImage,
+                                int64_t xDst, int64_t yDst, int wSrc, int hSrc, int transform) {
     CGContextSaveGState(rctx);
     CGContextTranslateCTM(rctx, xDst, yDst);
 
@@ -1090,6 +1050,365 @@ static s32 n_drawRegion(Runtime *runtime, JClass *clazz) {
 
     CGContextDrawImage(rctx, CGRectMake(0, 0, wSrc, hSrc), subImage);
     CGContextRestoreGState(rctx);
+}
+
+// Bounded, opt-in replay of an ordered drawRegion workload. All live draws
+// still use Core Graphics; other LCDUI commands are not part of this replay.
+enum { TreoReplayCount = 768, TreoReplayRepeats = 16 };
+typedef struct {
+    CGImageRef image;
+    CGRect clip;
+    int64_t x, y;
+    int sx, sy, w, h, transform;
+} TreoSprite;
+typedef struct { float x, y, u, v, l, t, r, b; } TreoVertex;
+static os_unfair_lock treo_replay_lock = OS_UNFAIR_LOCK_INIT;
+static atomic_int treo_replay_state; // 0 idle/done, 1 capture, 2 benchmark
+static TreoSprite treo_replay_sprites[TreoReplayCount];
+static unsigned treo_replay_count, treo_replay_width, treo_replay_height;
+static uintptr_t treo_replay_context;
+static size_t treo_replay_bytes;
+static char treo_replay_report[1024];
+
+static CGContextRef treo_replay_bitmap(size_t w, size_t h) {
+    return CGBitmapContextCreate(NULL, w, h, 8, w * 4, getColorSpace(),
+                                 kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Little);
+}
+
+static void treo_replay_vertex(TreoVertex *v, const TreoSprite *s, int right, int bottom,
+                               size_t tw, size_t th, size_t w, size_t h) {
+    int sx = right ? s->w : 0, sy = bottom ? s->h : 0;
+    int x = sx, y = sy;
+    switch (s->transform) {
+        case 1: y = s->h - sy; break;
+        case 2: x = s->w - sx; break;
+        case 3: x = s->w - sx; y = s->h - sy; break;
+        case 4: x = sy; y = sx; break;
+        case 5: x = s->h - sy; y = sx; break;
+        case 6: x = sy; y = s->w - sx; break;
+        case 7: x = s->h - sy; y = s->w - sx; break;
+    }
+    *v = (TreoVertex){
+        2.0f * (float)(s->x + x) / w - 1.0f, 1.0f - 2.0f * (float)(s->y + y) / h,
+        (float)(s->sx + sx) / tw, (float)(s->sy + sy) / th,
+        (float)CGRectGetMinX(s->clip), (float)CGRectGetMinY(s->clip),
+        (float)CGRectGetMaxX(s->clip), (float)CGRectGetMaxY(s->clip)
+    };
+}
+
+static NSString *treo_run_metal_replay(void) {
+    const size_t w = treo_replay_width, h = treo_replay_height;
+    id<MTLDevice> device = MTLCreateSystemDefaultDevice();
+    id<MTLCommandQueue> queue = [device newCommandQueue];
+    if (!queue) return @"Không tạo được Metal command queue.";
+    NSString *shader = @
+        "#include <metal_stdlib>\n"
+        "using namespace metal;\n"
+        "struct V { float4 xyuv; float4 clip; };\n"
+        "struct O { float4 p [[position]]; float2 uv; float4 clip [[flat]]; };\n"
+        "vertex O treo_v(const device V *v [[buffer(0)]], uint i [[vertex_id]]) {\n"
+        "  O o; o.p=float4(v[i].xyuv.xy,0,1); o.uv=v[i].xyuv.zw; o.clip=v[i].clip; return o;\n"
+        "}\n"
+        "fragment float4 treo_f(O i [[stage_in]], texture2d<float> tex [[texture(0)]]) {\n"
+        "  if (any(i.p.xy<i.clip.xy) || any(i.p.xy>=i.clip.zw)) discard_fragment();\n"
+        "  constexpr sampler smp(coord::normalized,address::clamp_to_edge,filter::nearest);\n"
+        "  return tex.sample(smp,i.uv);\n"
+        "}\n";
+    NSError *error = nil;
+    id<MTLLibrary> library = [device newLibraryWithSource:shader options:nil error:&error];
+    if (!library) return [NSString stringWithFormat:@"Shader Metal lỗi: %@", error.localizedDescription];
+    MTLRenderPipelineDescriptor *p = [MTLRenderPipelineDescriptor new];
+    p.vertexFunction = [library newFunctionWithName:@"treo_v"];
+    p.fragmentFunction = [library newFunctionWithName:@"treo_f"];
+    p.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
+    p.colorAttachments[0].blendingEnabled = YES;
+    p.colorAttachments[0].sourceRGBBlendFactor = MTLBlendFactorOne;
+    p.colorAttachments[0].sourceAlphaBlendFactor = MTLBlendFactorOne;
+    p.colorAttachments[0].destinationRGBBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
+    p.colorAttachments[0].destinationAlphaBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
+    id<MTLRenderPipelineState> pipeline = [device newRenderPipelineStateWithDescriptor:p error:&error];
+    if (!pipeline) return [NSString stringWithFormat:@"Pipeline Metal lỗi: %@", error.localizedDescription];
+
+    NSMutableDictionary<NSValue *, id<MTLTexture>> *textures = [NSMutableDictionary new];
+    NSMutableArray<id<MTLTexture>> *sources = [NSMutableArray arrayWithCapacity:TreoReplayCount];
+    for (unsigned i = 0; i < TreoReplayCount; i++) {
+        CGImageRef image = treo_replay_sprites[i].image;
+        NSValue *key = [NSValue valueWithPointer:image];
+        id<MTLTexture> tex = textures[key];
+        if (!tex) {
+            size_t tw = CGImageGetWidth(image), th = CGImageGetHeight(image);
+            MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:
+                MTLPixelFormatBGRA8Unorm width:tw height:th mipmapped:NO];
+            td.storageMode = MTLStorageModeShared;
+            td.usage = MTLTextureUsageShaderRead;
+            tex = [device newTextureWithDescriptor:td];
+            CGContextRef bitmap = treo_replay_bitmap(tw, th);
+            if (!tex || !bitmap) {
+                if (bitmap) CGContextRelease(bitmap);
+                return @"Không cấp phát được texture nguồn.";
+            }
+            CGContextSetBlendMode(bitmap, kCGBlendModeCopy);
+            CGContextDrawImage(bitmap, CGRectMake(0, 0, tw, th), image);
+            [tex replaceRegion:MTLRegionMake2D(0, 0, tw, th) mipmapLevel:0
+                     withBytes:CGBitmapContextGetData(bitmap) bytesPerRow:tw * 4];
+            CGContextRelease(bitmap);
+            textures[key] = tex;
+        }
+        [sources addObject:tex];
+    }
+    MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:
+        MTLPixelFormatBGRA8Unorm width:w height:h mipmapped:NO];
+    td.storageMode = MTLStorageModeShared;
+    td.usage = MTLTextureUsageRenderTarget;
+    id<MTLTexture> target = [device newTextureWithDescriptor:td];
+    id<MTLBuffer> vertices = [device newBufferWithLength:TreoReplayCount * 6 * sizeof(TreoVertex)
+                                                 options:MTLResourceStorageModeShared];
+    if (!target || !vertices) return @"Không cấp phát được đích hoặc bộ đệm Metal.";
+    CGContextRef cg = treo_replay_bitmap(w, h);
+    if (!cg) return @"Không cấp phát được đích Core Graphics.";
+    CGContextTranslateCTM(cg, 0, h);
+    CGContextScaleCTM(cg, 1, -1);
+
+    MTLRenderPassDescriptor *pass = [MTLRenderPassDescriptor renderPassDescriptor];
+    pass.colorAttachments[0].texture = target;
+    pass.colorAttachments[0].loadAction = MTLLoadActionClear;
+    pass.colorAttachments[0].storeAction = MTLStoreActionStore;
+    pass.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 0);
+    uint64_t cgNS = 0, metalNS = 0;
+    double gpuMS = 0;
+    unsigned gpuSamples = 0, batches = 0;
+    for (unsigned run = 0; run <= TreoReplayRepeats; run++) {
+        @autoreleasepool {
+            uint64_t start = treo_thread_cpu_ns();
+            CGContextClearRect(cg, CGRectMake(0, 0, w, h));
+            for (unsigned i = 0; i < TreoReplayCount; i++) {
+                const TreoSprite *s = &treo_replay_sprites[i];
+                CGImageRef crop = CGImageCreateWithImageInRect(s->image, CGRectMake(s->sx, s->sy, s->w, s->h));
+                if (!crop) { CGContextRelease(cg); return @"Core Graphics không tạo được ảnh con."; }
+                if (!CGRectIsEmpty(s->clip)) {
+                    CGContextSaveGState(cg);
+                    CGContextClipToRect(cg, s->clip);
+                    treo_draw_region_cg(cg, crop, s->x, s->y, s->w, s->h, s->transform);
+                    CGContextRestoreGState(cg);
+                }
+                CGImageRelease(crop);
+            }
+            CGContextFlush(cg);
+            uint64_t end = treo_thread_cpu_ns();
+            if (run && start && end >= start) cgNS += end - start;
+
+            start = treo_thread_cpu_ns();
+            id<MTLCommandBuffer> command = [queue commandBuffer];
+            id<MTLRenderCommandEncoder> enc = [command renderCommandEncoderWithDescriptor:pass];
+            if (!enc) { CGContextRelease(cg); return @"Không tạo được Metal render encoder."; }
+            [enc setRenderPipelineState:pipeline];
+            [enc setVertexBuffer:vertices offset:0 atIndex:0];
+            TreoVertex *v = (TreoVertex *)vertices.contents;
+            const unsigned corners[6] = {0, 1, 2, 2, 1, 3};
+            batches = 0;
+            for (unsigned i = 0; i < TreoReplayCount;) {
+                unsigned first = i;
+                id<MTLTexture> tex = sources[i];
+                do {
+                    const TreoSprite *s = &treo_replay_sprites[i];
+                    for (unsigned k = 0; k < 6; k++)
+                        treo_replay_vertex(&v[i * 6 + k], s, corners[k] & 1, corners[k] >> 1,
+                                           tex.width, tex.height, w, h);
+                    i++;
+                } while (i < TreoReplayCount && sources[i] == tex);
+                [enc setFragmentTexture:tex atIndex:0];
+                [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:first * 6 vertexCount:(i - first) * 6];
+                batches++;
+            }
+            [enc endEncoding];
+            [command commit];
+            end = treo_thread_cpu_ns();
+            if (run && start && end >= start) metalNS += end - start;
+            // Diagnostic only: no wait or pixel readback on the live paint path.
+            [command waitUntilCompleted];
+            if (command.status != MTLCommandBufferStatusCompleted) {
+                CGContextRelease(cg);
+                return [NSString stringWithFormat:@"GPU lỗi: %@", command.error.localizedDescription];
+            }
+            if (run && command.GPUStartTime > 0 && command.GPUEndTime >= command.GPUStartTime) {
+                gpuMS += (command.GPUEndTime - command.GPUStartTime) * 1000.0;
+                gpuSamples++;
+            }
+        }
+    }
+
+    NSMutableData *metalPixels = [NSMutableData dataWithLength:w * h * 4];
+    [target getBytes:metalPixels.mutableBytes bytesPerRow:w * 4 fromRegion:MTLRegionMake2D(0, 0, w, h) mipmapLevel:0];
+    const uint8_t *a = CGBitmapContextGetData(cg), *b = metalPixels.bytes;
+    size_t different = 0, overOne = 0, visible = 0;
+    unsigned maxDelta = 0;
+    for (size_t i = 0; i < w * h; i++) {
+        unsigned peak = 0;
+        if (a[i * 4 + 3]) visible++;
+        for (unsigned k = 0; k < 4; k++) {
+            unsigned d = (unsigned)abs((int)a[i * 4 + k] - (int)b[i * 4 + k]);
+            if (d > peak) peak = d;
+        }
+        different += peak > 0;
+        overOne += peak > 1;
+        if (peak > maxDelta) maxDelta = peak;
+    }
+    CGContextRelease(cg);
+    NSString *gpu = gpuSamples ? [NSString stringWithFormat:@"%.3f ms", gpuMS / gpuSamples] : @"không có";
+    return [NSString stringWithFormat:
+        @"%u lệnh · %lu texture · %u lô\nCore Graphics: %.3f ms CPU/lượt\n"
+         "Metal dựng lệnh + submit: %.3f ms CPU/lượt\nGPU: %@/lượt\n"
+         "Pixel có nội dung (CG): %zu/%zu\nPixel lệch: %zu · lệch >1: %zu · max: %u\n"
+         "Replay ngoài màn hình, không tính nạp texture/đọc lại pixel.",
+        TreoReplayCount, (unsigned long)textures.count, batches,
+        cgNS / (1e6 * TreoReplayRepeats), metalNS / (1e6 * TreoReplayRepeats),
+        gpu, visible, w * h, different, overOne, maxDelta];
+}
+
+static void treo_replay_complete(NSString *report) {
+    for (unsigned i = 0; i < treo_replay_count; i++) {
+        CGImageRelease(treo_replay_sprites[i].image);
+        treo_replay_sprites[i].image = NULL;
+    }
+    snprintf(treo_replay_report, sizeof(treo_replay_report), "%s", report.UTF8String);
+    treo_replay_count = 0;
+    atomic_store_explicit(&treo_replay_state, 0, memory_order_release);
+}
+
+int treo_metal_replay_start(void) {
+    os_unfair_lock_lock(&treo_replay_lock);
+    if (atomic_load_explicit(&treo_replay_state, memory_order_relaxed)) {
+        os_unfair_lock_unlock(&treo_replay_lock);
+        return 0;
+    }
+    treo_replay_context = 0;
+    treo_replay_bytes = 0;
+    treo_replay_report[0] = '\0';
+    atomic_store_explicit(&treo_replay_state, 1, memory_order_release);
+    os_unfair_lock_unlock(&treo_replay_lock);
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 8 * NSEC_PER_SEC),
+                   dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        os_unfair_lock_lock(&treo_replay_lock);
+        if (atomic_load_explicit(&treo_replay_state, memory_order_relaxed) == 1) {
+            treo_replay_complete(@"Không thu đủ lệnh. Thử khi đang ở map và game đang hiện.");
+        }
+        os_unfair_lock_unlock(&treo_replay_lock);
+    });
+    return 1;
+}
+
+char *treo_metal_replay_copy_report(void) {
+    os_unfair_lock_lock(&treo_replay_lock);
+    int state = atomic_load_explicit(&treo_replay_state, memory_order_relaxed);
+    const char *message = state == 1 ? "Đang thu lệnh vẽ." :
+                          state == 2 ? "Đang chạy replay Metal và Core Graphics." :
+                          treo_replay_report[0] ? treo_replay_report : "Chưa đo Metal.";
+    char *copy = strdup(message);
+    os_unfair_lock_unlock(&treo_replay_lock);
+    return copy;
+}
+
+static void treo_replay_capture(RenderContext *rc, CGImageRef image, int64_t x, int64_t y,
+                                int sx, int sy, int w, int h, int transform) {
+    if (atomic_load_explicit(&treo_replay_state, memory_order_relaxed) != 1 ||
+        !rc->ownsPixels || j2me_render_is_afk_suspended()) return;
+    size_t tw = CGImageGetWidth(image), th = CGImageGetHeight(image);
+    if (rc->width <= 0 || rc->height <= 0 || rc->width > 2048 || rc->height > 2048 ||
+        tw > 4096 || th > 4096 || sx < 0 || sy < 0 || w <= 0 || h <= 0 ||
+        (size_t)sx + (size_t)w > tw || (size_t)sy + (size_t)h > th ||
+        transform < 0 || transform > 7) return;
+    os_unfair_lock_lock(&treo_replay_lock);
+    if (atomic_load_explicit(&treo_replay_state, memory_order_relaxed) != 1) {
+        os_unfair_lock_unlock(&treo_replay_lock);
+        return;
+    }
+    if (!treo_replay_context) {
+        treo_replay_context = (uintptr_t)rc;
+        treo_replay_width = (unsigned)rc->width;
+        treo_replay_height = (unsigned)rc->height;
+    }
+    if (treo_replay_context != (uintptr_t)rc || treo_replay_width != (unsigned)rc->width ||
+        treo_replay_height != (unsigned)rc->height) {
+        os_unfair_lock_unlock(&treo_replay_lock);
+        return;
+    }
+    unsigned seen = 0;
+    for (unsigned i = treo_replay_count; i > 0; i--) {
+        if (treo_replay_sprites[i - 1].image == image) { seen = 1; break; }
+    }
+    size_t extra = seen ? 0 : tw * th * 4;
+    if (treo_replay_bytes + extra > 32u * 1024u * 1024u) {
+        treo_replay_complete(@"Dừng capture: ảnh nguồn vượt giới hạn 32 MiB.");
+        os_unfair_lock_unlock(&treo_replay_lock);
+        return;
+    }
+    treo_replay_bytes += extra;
+    CGRect clip = rc->regionClipBounds;
+    if (CGRectIsNull(clip)) clip = CGRectZero;
+    treo_replay_sprites[treo_replay_count++] = (TreoSprite){
+        CGImageRetain(image), clip, x, y, sx, sy, w, h, transform
+    };
+    if (treo_replay_count == TreoReplayCount) {
+        atomic_store_explicit(&treo_replay_state, 2, memory_order_release);
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+            @autoreleasepool {
+                NSString *report = treo_run_metal_replay();
+                os_unfair_lock_lock(&treo_replay_lock);
+                treo_replay_complete(report);
+                os_unfair_lock_unlock(&treo_replay_lock);
+            }
+        });
+    }
+    os_unfair_lock_unlock(&treo_replay_lock);
+}
+
+static s32 n_drawRegion(Runtime *runtime, JClass *clazz) {
+    JniEnv *env = runtime->jnienv;
+    s64 ctxHandle = env->localvar_getLong_2slot(runtime->localvar, 0);
+    s64 imgHandle = env->localvar_getLong_2slot(runtime->localvar, 2);
+    s32 xSrc = env->localvar_getInt(runtime->localvar, 4);
+    s32 ySrc = env->localvar_getInt(runtime->localvar, 5);
+    s32 wSrc = env->localvar_getInt(runtime->localvar, 6);
+    s32 hSrc = env->localvar_getInt(runtime->localvar, 7);
+    s32 transform = env->localvar_getInt(runtime->localvar, 8);
+    int64_t xDst = env->localvar_getInt(runtime->localvar, 9);
+    int64_t yDst = env->localvar_getInt(runtime->localvar, 10);
+    s32 anchor = env->localvar_getInt(runtime->localvar, 11);
+
+    RenderContext *rc = rc_acquire(ctxHandle);
+    if (!rc) return RUNTIME_STATUS_NORMAL;
+
+    int outW = wSrc, outH = hSrc;
+    if (transform == TRANS_ROT90 || transform == TRANS_ROT270 ||
+        transform == TRANS_MIRROR_ROT90 || transform == TRANS_MIRROR_ROT270) {
+        outW = hSrc; outH = wSrc;
+    }
+
+    if (anchor & 1) xDst -= outW / 2;
+    if (anchor & 8) xDst -= outW;
+    if (anchor & 2) yDst -= outH / 2;
+    if (anchor & 32) yDst -= outH;
+
+    if (rc->ownsPixels && treo_render_region_cull_enabled() &&
+        !j2me_render_is_afk_suspended() && wSrc > 0 && hSrc > 0 &&
+        transform >= 0 && transform <= 7 &&
+        treo_region_outside_clip(rc->regionClipBounds, xDst, yDst, outW, outH)) {
+        if (treo_profile_active()) TREO_PROF_ADD(region_culled, 1);
+        rc_release(rc);
+        return RUNTIME_STATUS_NORMAL;
+    }
+
+    RenderImage *img = img_acquire(imgHandle);
+    if (!img) { rc_release(rc); return RUNTIME_STATUS_NORMAL; }
+    CGContextRef rctx = rc->ctx;
+    CGImageRef fullImage = copyImageSnapshot(img);
+    if (!fullImage) { img_release(img); rc_release(rc); return RUNTIME_STATUS_NORMAL; }
+    CGImageRef subImage = CGImageCreateWithImageInRect(fullImage, CGRectMake(xSrc, ySrc, wSrc, hSrc));
+    if (subImage) treo_replay_capture(rc, fullImage, xDst, yDst, xSrc, ySrc, wSrc, hSrc, transform);
+    CGImageRelease(fullImage);
+    if (!subImage) { img_release(img); rc_release(rc); return RUNTIME_STATUS_NORMAL; }
+
+    treo_draw_region_cg(rctx, subImage, xDst, yDst, wSrc, hSrc, transform);
     CGImageRelease(subImage);
     img_release(img);
     rc_release(rc);

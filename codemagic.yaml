@@ -81,7 +81,7 @@ workflows:
             -scheme J2MEEmulator -configuration Release \
             -sdk iphoneos -destination 'generic/platform=iOS' \
             -derivedDataPath "$RUNNER_TEMP/jarbox-build" \
-            "OTHER_LDFLAGS=\$(inherited) $RUNNER_TEMP/J2METreo.o $RUNNER_TEMP/TreoSLJIT.o $RUNNER_TEMP/TreoJITProbe.o -framework UIKit -framework Foundation" \
+            "OTHER_LDFLAGS=\$(inherited) $RUNNER_TEMP/J2METreo.o $RUNNER_TEMP/TreoSLJIT.o $RUNNER_TEMP/TreoJITProbe.o -framework UIKit -framework Foundation -framework Metal" \
             "TREO_GAME_JIT_CFLAGS=-DTREO_IOS_GAME_JIT=1 -I$sljit" \
             PRODUCT_BUNDLE_IDENTIFIER=app.j2metreo.personal \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build
@@ -99,9 +99,9 @@ workflows:
           staging="$(mktemp -d)"
           mkdir "$staging/Payload"
           ditto "${apps[0]}" "$staging/Payload/$(basename "${apps[0]}")"
-          (cd "$staging" && /usr/bin/zip -qry "$GITHUB_WORKSPACE/J2ME-Treo-region-cull-unsigned.ipa" Payload)
+          (cd "$staging" && /usr/bin/zip -qry "$GITHUB_WORKSPACE/J2ME-Treo-metal-replay-unsigned.ipa" Payload)
           
-          test -s "$GITHUB_WORKSPACE/J2ME-Treo-region-cull-unsigned.ipa"
-          /usr/bin/unzip -tq "$GITHUB_WORKSPACE/J2ME-Treo-region-cull-unsigned.ipa"
+          test -s "$GITHUB_WORKSPACE/J2ME-Treo-metal-replay-unsigned.ipa"
+          /usr/bin/unzip -tq "$GITHUB_WORKSPACE/J2ME-Treo-metal-replay-unsigned.ipa"
     artifacts:
-      - J2ME-Treo-region-cull-unsigned.ipa
+      - J2ME-Treo-metal-replay-unsigned.ipa

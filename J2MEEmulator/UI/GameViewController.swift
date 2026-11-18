@@ -515,6 +515,9 @@ class GameViewController: UIViewController {
             UIAction(title: cpuProfileStartedAt == nil ? "Bắt đầu đo CPU" : "Dừng và xem số liệu CPU") { [weak self] _ in
                 self?.toggleCPUProfile()
             },
+            UIAction(title: "Đo thử Metal · drawRegion") { [weak self] _ in
+                self?.showMetalReplay()
+            },
             UIAction(title: "Thống kê JIT Java") { [weak self] _ in
                 let compiled = treo_game_jit_compiled_count()
                 let calls = treo_game_jit_call_count()
@@ -525,6 +528,23 @@ class GameViewController: UIViewController {
                 self?.present(report, animated: true)
             }
         ])
+    }
+
+    private func showMetalReplay() {
+        let raw = treo_metal_replay_copy_report()
+        let report = raw.map { String(cString: $0) } ?? "Không đọc được báo cáo."
+        if let raw { free(raw) }
+        let alert = UIAlertController(title: "Replay Metal · drawRegion", message: report, preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "Đóng", style: .cancel))
+        alert.addAction(UIAlertAction(title: "Sao chép", style: .default) { _ in
+            UIPasteboard.general.string = report
+        })
+        if cpuProfileStartedAt == nil && treo_render_region_cull_enabled() == 0 {
+            alert.addAction(UIAlertAction(title: "Thu và đo", style: .default) { _ in
+                _ = treo_metal_replay_start()
+            })
+        }
+        present(alert, animated: true)
     }
 
     private func toggleCPUProfile() {

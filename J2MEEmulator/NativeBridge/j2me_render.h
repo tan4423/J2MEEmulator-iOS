@@ -39,6 +39,9 @@ typedef struct {
 // Experimental foreground drawRegion rejection. Off by default.
 int treo_render_region_cull_enabled(void);
 void treo_render_set_region_cull_enabled(int enabled);
+// Offscreen A/B of captured drawRegion commands; never replaces live rendering.
+int treo_metal_replay_start(void);
+char * _Nullable treo_metal_replay_copy_report(void); // caller frees
 void treo_render_profile_start(void);
 TreoRenderProfile treo_render_profile_stop(void);
 void treo_render_profile_replaced(void);
