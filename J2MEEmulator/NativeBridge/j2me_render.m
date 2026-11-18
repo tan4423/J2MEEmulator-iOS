@@ -59,7 +59,7 @@ typedef struct RenderContext {
     TreoLiveRun *liveRun;
     TreoCPUCache *cpuCache;
     uint32_t *softwarePixels;
-    uint64_t swRegions, swFast, swChecked, swMismatch;
+    uint64_t swRegions, swFast, swChecked, swMismatch, swDirect;
     unsigned swSequence;
     uint32_t liveColor, liveSavedColor;
     int liveStroke, liveSavedStroke;
@@ -127,7 +127,14 @@ static s32 n_takeAfkRefresh(Runtime *runtime, JClass *clazz) {
 // Per-thread CPU time excludes sleeps and time waiting to be scheduled.
 static atomic_bool treo_profile_enabled;
 static atomic_bool treo_software_on;
-static _Atomic uint64_t sw_frames, sw_regions, sw_fast, sw_checked, sw_mismatch;
+static atomic_bool treo_direct_graphics_on;
+static _Atomic uint64_t sw_frames, sw_regions, sw_fast, sw_checked, sw_mismatch, sw_direct;
+int treo_direct_graphics_enabled(void) {
+    return atomic_load_explicit(&treo_direct_graphics_on, memory_order_relaxed);
+}
+void treo_direct_graphics_set_enabled(int enabled) {
+    atomic_store_explicit(&treo_direct_graphics_on, enabled != 0, memory_order_relaxed);
+}
 int treo_software_enabled(void) {
     return atomic_load_explicit(&treo_software_on, memory_order_relaxed);
 }
@@ -141,6 +148,7 @@ TreoSoftwareStats treo_software_stats(void) {
         atomic_load_explicit(&sw_fast, memory_order_relaxed),
         atomic_load_explicit(&sw_checked, memory_order_relaxed),
         atomic_load_explicit(&sw_mismatch, memory_order_relaxed),
+        atomic_load_explicit(&sw_direct, memory_order_relaxed),
     };
 }
 static void treo_software_publish(RenderContext *rc) {
@@ -148,7 +156,8 @@ static void treo_software_publish(RenderContext *rc) {
     if (rc->swFast) atomic_fetch_add_explicit(&sw_fast, rc->swFast, memory_order_relaxed);
     if (rc->swChecked) atomic_fetch_add_explicit(&sw_checked, rc->swChecked, memory_order_relaxed);
     if (rc->swMismatch) atomic_fetch_add_explicit(&sw_mismatch, rc->swMismatch, memory_order_relaxed);
-    rc->swRegions = rc->swFast = rc->swChecked = rc->swMismatch = 0;
+    if (rc->swDirect) atomic_fetch_add_explicit(&sw_direct, rc->swDirect, memory_order_relaxed);
+    rc->swRegions = rc->swFast = rc->swChecked = rc->swMismatch = rc->swDirect = 0;
 }
 static atomic_bool treo_region_cull_enabled;
 int treo_render_region_cull_enabled(void) {
@@ -2125,13 +2134,22 @@ static inline uint32_t treo_sw_over(uint32_t s, uint32_t d) {
     return result;
 }
 
-static inline void treo_sw_row(uint32_t *d, const uint32_t *s, int n) {
+static inline void treo_sw_row(uint32_t *d, const uint32_t *s, int n, int binaryFast) {
 #if defined(__ARM_NEON)
     for (; n >= 8; n -= 8, s += 8, d += 8) {
         uint8x8x4_t src = vld4_u8((const uint8_t *)s);
         if (vminv_u8(src.val[3]) == 255) { vst4_u8((uint8_t *)d, src); continue; }
         if (vmaxv_u8(src.val[3]) == 0) continue;
         uint8x8x4_t dst = vld4_u8((const uint8_t *)d);
+        if (binaryFast) {
+            uint8x8_t opaque = vceq_u8(src.val[3], vdup_n_u8(255));
+            uint8x8_t clear = vceq_u8(src.val[3], vdup_n_u8(0));
+            if (vminv_u8(vorr_u8(opaque, clear)) == 255) {
+                for (int k = 0; k < 4; k++) dst.val[k] = vbsl_u8(opaque, src.val[k], dst.val[k]);
+                vst4_u8((uint8_t *)d, dst);
+                continue;
+            }
+        }
         uint8x8_t f = vmvn_u8(src.val[3]);
         for (int k = 0; k < 4; k++) {
             uint16x8_t q = vaddq_u16(vmull_u8(dst.val[k], f), vdupq_n_u16(128));
@@ -2145,7 +2163,7 @@ static inline void treo_sw_row(uint32_t *d, const uint32_t *s, int n) {
 
 static void treo_sw_raster(RenderContext *rc, RenderImage *img, int x, int y,
                             int sx, int sy, int w, int h, int t,
-                            int l, int top, int right, int bottom) {
+                            int l, int top, int right, int bottom, int binaryFast) {
     const ptrdiff_t stride = (ptrdiff_t)img->softwareStride;
     const uint32_t *origin = img->softwareSource + sy * stride + sx;
     for (int dy = top; dy < bottom; dy++) {
@@ -2153,7 +2171,7 @@ static void treo_sw_raster(RenderContext *rc, RenderImage *img, int x, int y,
         int u = l - x, v = dy - y;
         if (t == 0 || t == 1) {
             int row = t == 0 ? v : h - 1 - v;
-            treo_sw_row(d, origin + row * stride + u, right - l);
+            treo_sw_row(d, origin + row * stride + u, right - l, binaryFast);
             continue;
         }
         ptrdiff_t index, step;
@@ -2170,7 +2188,7 @@ static void treo_sw_raster(RenderContext *rc, RenderImage *img, int x, int y,
 }
 
 static int treo_sw_draw(RenderContext *rc, RenderImage *img, int64_t x, int64_t y,
-                        int sx, int sy, int w, int h, int t) {
+                        int sx, int sy, int w, int h, int t, int binaryFast) {
     if (!rc->softwarePixels || !img->immutableSnapshot || !img->softwareSource ||
         t < 0 || t > 7 || x < -32768 || x > 32768 || y < -32768 || y > 32768 ||
         sx < 0 || sy < 0 || w <= 0 || h <= 0 ||
@@ -2196,7 +2214,7 @@ static int treo_sw_draw(RenderContext *rc, RenderImage *img, int64_t x, int64_t 
         if (!crop) { free(scratch); return 0; }
         uint32_t *base = rc->softwarePixels + top * rc->width + l;
         for (int i = 0; i < b - top; i++) memcpy(scratch + i * row, base + i * rc->width, row * 4);
-        treo_sw_raster(rc, img, (int)x, (int)y, sx, sy, w, h, t, l, top, r, b);
+        treo_sw_raster(rc, img, (int)x, (int)y, sx, sy, w, h, t, l, top, r, b, binaryFast);
         for (int i = 0; i < b - top; i++) {
             memcpy(scratch + n + i * row, base + i * rc->width, row * 4);
             memcpy(base + i * rc->width, scratch + i * row, row * 4);
@@ -2215,26 +2233,24 @@ static int treo_sw_draw(RenderContext *rc, RenderImage *img, int64_t x, int64_t 
         }
         return 1;
     }
-    treo_sw_raster(rc, img, (int)x, (int)y, sx, sy, w, h, t, l, top, r, b);
+    treo_sw_raster(rc, img, (int)x, (int)y, sx, sy, w, h, t, l, top, r, b, binaryFast);
     rc->swFast++;
     return 1;
 }
 
-static s32 n_drawRegion(Runtime *runtime, JClass *clazz) {
-    JniEnv *env = runtime->jnienv;
-    s64 ctxHandle = env->localvar_getLong_2slot(runtime->localvar, 0);
-    s64 imgHandle = env->localvar_getLong_2slot(runtime->localvar, 2);
-    s32 xSrc = env->localvar_getInt(runtime->localvar, 4);
-    s32 ySrc = env->localvar_getInt(runtime->localvar, 5);
-    s32 wSrc = env->localvar_getInt(runtime->localvar, 6);
-    s32 hSrc = env->localvar_getInt(runtime->localvar, 7);
-    s32 transform = env->localvar_getInt(runtime->localvar, 8);
-    int64_t xDst = env->localvar_getInt(runtime->localvar, 9);
-    int64_t yDst = env->localvar_getInt(runtime->localvar, 10);
-    s32 anchor = env->localvar_getInt(runtime->localvar, 11);
+typedef struct {
+    s64 ctx, img;
+    s32 sx, sy, w, h, transform, x, y, anchor;
+} TreoRegionArgs;
 
+static s32 treo_draw_region(const TreoRegionArgs *p, int direct) {
+    s64 ctxHandle = p->ctx, imgHandle = p->img;
+    s32 xSrc = p->sx, ySrc = p->sy, wSrc = p->w, hSrc = p->h, transform = p->transform;
+    int64_t xDst = p->x, yDst = p->y;
+    s32 anchor = p->anchor;
     RenderContext *rc = rc_acquire(ctxHandle);
     if (!rc) return RUNTIME_STATUS_NORMAL;
+    if (direct && rc->ownsPixels) rc->swDirect++;
 
     int outW = wSrc, outH = hSrc;
     if (transform == TRANS_ROT90 || transform == TRANS_ROT270 ||
@@ -2265,7 +2281,7 @@ static s32 n_drawRegion(Runtime *runtime, JClass *clazz) {
         // Finish any commands queued before changing mode, preserving draw order.
         if (rc->cpuCache) treo_cpu_batch_drain(rc);
         if (rc->liveRun && rc->liveRun->count) treo_live_drain(rc, 0);
-        if (treo_sw_draw(rc, img, xDst, yDst, xSrc, ySrc, wSrc, hSrc, transform)) {
+        if (treo_sw_draw(rc, img, xDst, yDst, xSrc, ySrc, wSrc, hSrc, transform, direct)) {
             img_release(img);
             rc_release(rc);
             return RUNTIME_STATUS_NORMAL;
@@ -2299,19 +2315,92 @@ static s32 n_drawRegion(Runtime *runtime, JClass *clazz) {
 }
 
 // Time one call in 64 per render thread; no clock read for each sprite.
-static s32 n_profiledDrawRegion(Runtime *runtime, JClass *clazz) {
+static s32 treo_profiled_region(const TreoRegionArgs *p, int direct) {
     static _Thread_local unsigned sequence;
-    if (!treo_profile_active()) return n_drawRegion(runtime, clazz);
+    if (!treo_profile_active()) return treo_draw_region(p, direct);
     TREO_PROF_ADD(region_calls, 1);
-    if ((++sequence & 63u) != 0) return n_drawRegion(runtime, clazz);
+    if ((++sequence & 63u) != 0) return treo_draw_region(p, direct);
     uint64_t begin = treo_thread_cpu_ns();
-    s32 result = n_drawRegion(runtime, clazz);
+    s32 result = treo_draw_region(p, direct);
     uint64_t end = treo_thread_cpu_ns();
     if (begin && end >= begin && treo_profile_active()) {
         TREO_PROF_ADD(region_samples, 1);
         TREO_PROF_ADD(region_sample_ns, end - begin);
     }
     return result;
+}
+
+static s32 n_profiledDrawRegion(Runtime *runtime, JClass *clazz) {
+    JniEnv *env = runtime->jnienv;
+    s64 ctxHandle = env->localvar_getLong_2slot(runtime->localvar, 0);
+    s64 imgHandle = env->localvar_getLong_2slot(runtime->localvar, 2);
+    s32 xSrc = env->localvar_getInt(runtime->localvar, 4);
+    s32 ySrc = env->localvar_getInt(runtime->localvar, 5);
+    s32 wSrc = env->localvar_getInt(runtime->localvar, 6);
+    s32 hSrc = env->localvar_getInt(runtime->localvar, 7);
+    s32 transform = env->localvar_getInt(runtime->localvar, 8);
+    int64_t xDst = env->localvar_getInt(runtime->localvar, 9);
+    int64_t yDst = env->localvar_getInt(runtime->localvar, 10);
+    s32 anchor = env->localvar_getInt(runtime->localvar, 11);
+
+    const TreoRegionArgs p = {ctxHandle, imgHandle, xSrc, ySrc, wSrc, hSrc,
+                              transform, (s32)xDst, (s32)yDst, anchor};
+    return treo_profiled_region(&p, 0);
+}
+
+static int treo_instance_offset(JClass *clazz, const char *name, const char *type, size_t size) {
+    for (s32 n = 0; n < clazz->fieldPool.field_used; n++) {
+        FieldInfo *f = &clazz->fieldPool.field[n];
+        if (!(f->access_flags & 0x0008) && !f->isvolatile &&
+            utf8_equals_c(f->name, name) && utf8_equals_c(f->descriptor, type) &&
+            clazz->field_instance_len >= (s32)((size_t)f->offset_instance + size)) return f->offset_instance;
+    }
+    return -1;
+}
+
+static u64 treo_graphics_offsets(JClass *clazz, int image) {
+    u64 cached = __atomic_load_n(&clazz->treo_graphics_layout, __ATOMIC_RELAXED);
+    if (cached) return cached;
+    int a = treo_instance_offset(clazz, image ? "nativeHandle" : "nativeContext", "J", 8);
+    int x = image ? 0 : treo_instance_offset(clazz, "translateX", "I", 4);
+    int y = image ? 0 : treo_instance_offset(clazz, "translateY", "I", 4);
+    if (a < 0 || x < 0 || y < 0) return 0;
+    cached = ((u64)(image ? 2 : 1) << 48) | (u64)a | ((u64)x << 16) | ((u64)y << 32);
+    __atomic_store_n(&clazz->treo_graphics_layout, cached, __ATOMIC_RELAXED);
+    return cached;
+}
+
+// The original Java bytecode stays available for the A/B baseline and any
+// incompatible layout. Only replace the tiny bundled Graphics API wrapper.
+int treo_try_graphics_draw_region(Runtime *runtime, JClass *clazz) {
+    if (!treo_software_enabled() || j2me_render_is_afk_suspended()) return 0;
+    LocalVarItem *locals = runtime->localvar;
+    Instance *graphics = localvar_getRefer(locals, 0);
+    Instance *image = localvar_getRefer(locals, 1);
+    if (!image) return 1; // Graphics.drawRegion(null, ...) is a no-op.
+    if (!graphics || graphics->mb.clazz != clazz || !image->mb.clazz) return 0;
+    JClass *ic = image->mb.clazz;
+    if (ic->jloader != clazz->jloader) return 0;
+    u64 io = __atomic_load_n(&ic->treo_graphics_layout, __ATOMIC_RELAXED);
+    if (!io) {
+        if (!utf8_equals_c(ic->name, "javax/microedition/lcdui/Image")) return 0;
+        io = treo_graphics_offsets(ic, 1);
+    }
+    if ((io >> 48) != 2) return 0;
+    u64 go = treo_graphics_offsets(clazz, 0);
+    if (!go || !io) return 0;
+    s64 ctx, img;
+    s32 tx, ty;
+    memcpy(&ctx, graphics->obj_fields + (u16)go, sizeof(ctx));
+    memcpy(&tx, graphics->obj_fields + (u16)(go >> 16), sizeof(tx));
+    memcpy(&ty, graphics->obj_fields + (u16)(go >> 32), sizeof(ty));
+    memcpy(&img, image->obj_fields + (u16)io, sizeof(img));
+    const TreoRegionArgs p = {ctx, img, localvar_getInt(locals, 2), localvar_getInt(locals, 3),
+        localvar_getInt(locals, 4), localvar_getInt(locals, 5), localvar_getInt(locals, 6),
+        (s32)((u32)localvar_getInt(locals, 7) + (u32)tx),
+        (s32)((u32)localvar_getInt(locals, 8) + (u32)ty), localvar_getInt(locals, 9)};
+    treo_profiled_region(&p, 1);
+    return 1;
 }
 
 // --- drawRGB ---

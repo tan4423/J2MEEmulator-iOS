@@ -542,6 +542,12 @@ class GameViewController: UIViewController {
                 treo_software_set_enabled(enabling ? 1 : 0)
                 self?.applyPadMode()
             },
+            UIAction(title: "Đường vẽ trực tiếp · SIMD+",
+                     attributes: cpuProfileStartedAt == nil && powerRun == nil && treo_software_enabled() != 0 ? [] : .disabled,
+                     state: treo_direct_graphics_enabled() != 0 && treo_software_enabled() != 0 ? .on : .off) { [weak self] _ in
+                treo_direct_graphics_set_enabled(treo_direct_graphics_enabled() == 0 ? 1 : 0)
+                self?.applyPadMode()
+            },
             UIAction(title: "Dùng lại cụm sprite (CPU)",
                      attributes: cpuProfileStartedAt == nil && powerRun == nil ? [] : .disabled,
                      state: treo_cpu_batch_enabled() != 0 ? .on : .off) { [weak self] _ in
@@ -626,6 +632,7 @@ class GameViewController: UIViewController {
         let reused: UInt64
         let software: Int32
         let softwareStats: TreoSoftwareStats
+        let direct: Int32
     }
 
     private func togglePowerRun() {
@@ -640,7 +647,7 @@ class GameViewController: UIViewController {
             powerRun = PowerRun(time: now, cpu: cpu, thermal: thermal, metal: metal, jit: jit,
                                 cull: cull, gpuFrames: gpuFrames, batch: treo_cpu_batch_enabled(),
                                 queued: treo_cpu_batch_queued(), reused: treo_cpu_batch_reused(),
-                                software: treo_software_enabled(), softwareStats: treo_software_stats())
+                                software: treo_software_enabled(), softwareStats: treo_software_stats(), direct: treo_direct_graphics_enabled())
             scheduleMeasurementDeadline(power: true)
             applyPadMode()
             return
@@ -663,6 +670,7 @@ class GameViewController: UIViewController {
         let fps = Double(sw.frames &- start.softwareStats.frames) / max(0.001, duration)
         let report = """
         SIMD: \(start.software != 0 ? "Bật" : "Tắt") · \(String(format: "%.1f", fps)) khung gửi/giây
+        SIMD+: \(start.direct != 0 && start.software != 0 ? "Bật" : "Tắt") · \(sw.direct &- start.softwareStats.direct) lệnh API trực tiếp
         Vẽ nhanh: \(sw.fast &- start.softwareStats.fast)/\(sw.regions &- start.softwareStats.regions)
         Đối chiếu CG: \(sw.checked &- start.softwareStats.checked) · Lệch: \(sw.mismatch &- start.softwareStats.mismatch)
         Thời gian: \(String(format: "%.1f", duration)) s

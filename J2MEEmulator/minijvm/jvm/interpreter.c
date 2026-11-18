@@ -3,6 +3,27 @@
 #include "jit.h"
 #include "garbage.h"
 
+#if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__
+extern int treo_direct_graphics_enabled(void);
+extern int treo_try_graphics_draw_region(Runtime *runtime, JClass *clazz);
+static int treo_is_bundled_draw_region(MethodInfo *method, JClass *clazz) {
+    u8 tag = __atomic_load_n(&method->treo_graphics_kind, __ATOMIC_RELAXED);
+    if (tag) return tag == 2;
+    tag = 1;
+    if (utf8_equals_c(clazz->name, "javax/microedition/lcdui/Graphics") &&
+        utf8_equals_c(method->name, "drawRegion") &&
+        utf8_equals_c(method->descriptor, "(Ljavax/microedition/lcdui/Image;IIIIIIII)V")) {
+        for (s32 n = 0; n < clazz->fieldPool.field_used; n++) {
+            FieldInfo *f = &clazz->fieldPool.field[n];
+            if ((f->access_flags & 0x0008) && utf8_equals_c(f->name, "TREO_DRAW_REGION_ABI_V1") &&
+                utf8_equals_c(f->descriptor, "I")) { tag = 2; break; }
+        }
+    }
+    __atomic_store_n(&method->treo_graphics_kind, tag, __ATOMIC_RELAXED);
+    return tag == 2;
+}
+#endif
+
 
 /* ==================================opcode implementation =============================*/
 
@@ -599,6 +620,17 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                 goto label_exit_while;
             }
 
+#if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__
+            if (method->para_slots == 10 && method->return_slots == 0 &&
+                !method->is_static && !method->is_sync && !jvm->jdwp_enable &&
+                !runtime->thrd_info->suspend_count &&
+                treo_direct_graphics_enabled() &&
+                treo_is_bundled_draw_region(method, clazz) &&
+                treo_try_graphics_draw_region(runtime, clazz)) {
+                localvar_dispose(runtime);
+                goto treo_graphics_return;
+            }
+#endif
 #ifdef TREO_IOS_GAME_JIT
             const int treo_enabled = treo_game_jit_is_enabled();
             if (treo_enabled && __atomic_load_n(&ca->jit.state, __ATOMIC_ACQUIRE) == JIT_GEN_SUCCESS) {
@@ -4116,6 +4148,9 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                 } while (1);//end while
             }
 
+#if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__
+            treo_graphics_return: ;
+#endif
             //sync end
             if (method->is_sync)_synchronized_unlock_method(method, runtime);
 

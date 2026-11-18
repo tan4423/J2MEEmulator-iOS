@@ -49,7 +49,7 @@ workflows:
           classes="$RUNNER_TEMP/lcdui-classes"
           mkdir -p "$classes"
           javac --release 8 -sourcepath '' -cp "$jars/j2me_api.jar:$jars/minijvm_rt.jar" \
-            -d "$classes" j2me_api/src/javax/microedition/lcdui/{Display,Canvas,TextBox,NativeBridge,Form,ChoiceGroup,List}.java
+            -d "$classes" j2me_api/src/javax/microedition/lcdui/{Display,Canvas,Graphics,TextBox,NativeBridge,Form,ChoiceGroup,List}.java
           jar uf "$jars/j2me_api.jar" -C "$classes" .
           
           # Use only the pinned SLJIT source; do not build or run upstream scripts.
@@ -99,9 +99,9 @@ workflows:
           staging="$(mktemp -d)"
           mkdir "$staging/Payload"
           ditto "${apps[0]}" "$staging/Payload/$(basename "${apps[0]}")"
-          (cd "$staging" && /usr/bin/zip -qry "$GITHUB_WORKSPACE/J2ME-Treo-software-simd-unsigned.ipa" Payload)
+          (cd "$staging" && /usr/bin/zip -qry "$GITHUB_WORKSPACE/J2ME-Treo-simd-direct-unsigned.ipa" Payload)
           
-          test -s "$GITHUB_WORKSPACE/J2ME-Treo-software-simd-unsigned.ipa"
-          /usr/bin/unzip -tq "$GITHUB_WORKSPACE/J2ME-Treo-software-simd-unsigned.ipa"
+          test -s "$GITHUB_WORKSPACE/J2ME-Treo-simd-direct-unsigned.ipa"
+          /usr/bin/unzip -tq "$GITHUB_WORKSPACE/J2ME-Treo-simd-direct-unsigned.ipa"
     artifacts:
-      - J2ME-Treo-software-simd-unsigned.ipa
+      - J2ME-Treo-simd-direct-unsigned.ipa

@@ -51,9 +51,11 @@ char * _Nullable treo_metal_replay_copy_report(void); // caller frees
 // Total CPU of all threads in this app, in seconds; negative on error.
 double treo_process_cpu_seconds(void);
 typedef struct {
-    uint64_t frames, regions, fast, checked, mismatch;
+    uint64_t frames, regions, fast, checked, mismatch, direct;
 } TreoSoftwareStats;
 int treo_software_enabled(void);
+int treo_direct_graphics_enabled(void);
+void treo_direct_graphics_set_enabled(int enabled);
 void treo_software_set_enabled(int enabled);
 TreoSoftwareStats treo_software_stats(void);
 int treo_cpu_batch_enabled(void);

@@ -5,6 +5,8 @@ package javax.microedition.lcdui;
  * Analogous to J2ME-Loader's Graphics wrapping android.graphics.Canvas.
  */
 public class Graphics {
+    // The interpreter can recognize this exact bundled drawRegion ABI.
+    private static final int TREO_DRAW_REGION_ABI_V1 = 1;
     // Anchor constants
     public static final int HCENTER = 1;
     public static final int VCENTER = 2;
