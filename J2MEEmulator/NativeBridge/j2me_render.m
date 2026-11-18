@@ -67,6 +67,8 @@ typedef struct RenderImage {
 
 static void treo_live_discard(RenderContext *rc);
 static void treo_live_drain(RenderContext *rc, int allowMetal);
+static int treo_live_enqueue(RenderContext *rc, RenderImage *img, int64_t x, int64_t y,
+                             int sx, int sy, int w, int h, int transform);
 static j2me_flush_callback g_flush_callback = NULL;
 static atomic_int g_afk_suspended = 0;
 static atomic_int g_afk_refresh = 0;
@@ -114,6 +116,7 @@ static _Atomic uint64_t treo_prof_replaced;
 static _Atomic uint64_t treo_prof_submitted;
 static _Atomic uint64_t treo_prof_region_calls;
 static _Atomic uint64_t treo_prof_region_culled;
+static _Atomic uint64_t treo_prof_live_boundary_ns;
 static _Atomic uint64_t treo_prof_region_samples;
 static _Atomic uint64_t treo_prof_region_sample_ns;
 #define TREO_PROF_ADD(field, amount) atomic_fetch_add_explicit(&treo_prof_##field, (amount), memory_order_relaxed)
@@ -136,6 +139,7 @@ void treo_render_profile_start(void) {
     atomic_store_explicit(&treo_prof_submitted, 0, memory_order_relaxed);
     atomic_store_explicit(&treo_prof_region_calls, 0, memory_order_relaxed);
     atomic_store_explicit(&treo_prof_region_culled, 0, memory_order_relaxed);
+    atomic_store_explicit(&treo_prof_live_boundary_ns, 0, memory_order_relaxed);
     atomic_store_explicit(&treo_prof_region_samples, 0, memory_order_relaxed);
     atomic_store_explicit(&treo_prof_region_sample_ns, 0, memory_order_relaxed);
     atomic_store_explicit(&treo_profile_enabled, 1, memory_order_release);
@@ -152,6 +156,7 @@ TreoRenderProfile treo_render_profile_stop(void) {
         .submitted = atomic_load_explicit(&treo_prof_submitted, memory_order_relaxed),
         .region_calls = atomic_load_explicit(&treo_prof_region_calls, memory_order_relaxed),
         .region_culled = atomic_load_explicit(&treo_prof_region_culled, memory_order_relaxed),
+        .live_boundary_ns = atomic_load_explicit(&treo_prof_live_boundary_ns, memory_order_relaxed),
         .region_samples = atomic_load_explicit(&treo_prof_region_samples, memory_order_relaxed),
         .region_sample_ns = atomic_load_explicit(&treo_prof_region_sample_ns, memory_order_relaxed),
     };
@@ -519,7 +524,14 @@ static s32 n_flushToScreen(Runtime *runtime, JClass *clazz) {
     JniEnv *env = runtime->jnienv;
     s64 handle = env->localvar_getLong_2slot(runtime->localvar, 0);
     RenderContext *rc = rc_acquire(handle);
-    if (rc && rc->liveRun) treo_live_drain(rc, !afk);
+    if (rc && rc->liveRun) {
+        const uint64_t start = treo_profile_active() ? treo_thread_cpu_ns() : 0;
+        treo_live_drain(rc, !afk);
+        if (start && treo_profile_active()) {
+            const uint64_t end = treo_thread_cpu_ns();
+            if (end >= start) TREO_PROF_ADD(live_boundary_ns, end - start);
+        }
+    }
     if (afk) { rc_release(rc); return RUNTIME_STATUS_NORMAL; }
     const int profiling = treo_profile_active();
     if (profiling) TREO_PROF_ADD(flushes, 1);
@@ -557,8 +569,13 @@ static s32 n_setClip(Runtime *runtime, JClass *clazz) {
     s32 w = env->localvar_getInt(runtime->localvar, 4);
     s32 h = env->localvar_getInt(runtime->localvar, 5);
     RenderContext *rc = rc_acquire(handle);
-    if (rc && rc->liveRun) treo_live_drain(rc, 0);
     if (rc) {
+        CGRect nextClip = CGRectIntersection(CGRectMake(0, 0, rc->width, rc->height),
+                                             CGRectStandardize(CGRectMake(x, y, w, h)));
+        // A redundant clip does not split the sprite run. Still perform the
+        // original CGContext state operations; other graphics state may reset.
+        if (rc->liveRun && (w < 0 || h < 0 ||
+            !CGRectEqualToRect(nextClip, rc->regionClipBounds))) treo_live_drain(rc, 0);
         if (rc->clipSaved) {
             CGContextRestoreGState(rc->ctx);
         }
@@ -567,8 +584,7 @@ static s32 n_setClip(Runtime *runtime, JClass *clazz) {
         CGContextClipToRect(rc->ctx, CGRectMake(x, y, w, h));
         // Canvas CTM is restored after each draw; clip and draw share its user space.
         if (rc->ownsPixels) {
-            rc->regionClipBounds = CGRectIntersection(CGRectMake(0, 0, rc->width, rc->height),
-                                                       CGRectStandardize(CGRectMake(x, y, w, h)));
+            rc->regionClipBounds = nextClip;
         }
     }
     rc_release(rc);
@@ -969,7 +985,6 @@ static s32 n_drawImage(Runtime *runtime, JClass *clazz) {
     s32 anchor = env->localvar_getInt(runtime->localvar, 6);
 
     RenderContext *rc = rc_acquire(ctxHandle);
-    if (rc && rc->liveRun) treo_live_drain(rc, 0);
     RenderImage *img = img_acquire(imgHandle);
     if (!rc || !img) { img_release(img); rc_release(rc); return RUNTIME_STATUS_NORMAL; }
 
@@ -979,6 +994,12 @@ static s32 n_drawImage(Runtime *runtime, JClass *clazz) {
     if (anchor & 2) y -= imgH / 2;
     if (anchor & 32) y -= imgH;
 
+    if (treo_live_enqueue(rc, img, x, y, 0, 0, imgW, imgH, 0)) {
+        img_release(img);
+        rc_release(rc);
+        return RUNTIME_STATUS_NORMAL;
+    }
+    if (rc->liveRun) treo_live_drain(rc, 0);
     CGImageRef cgImage = copyImageSnapshot(img);
     if (cgImage) {
         CGContextSaveGState(rc->ctx);

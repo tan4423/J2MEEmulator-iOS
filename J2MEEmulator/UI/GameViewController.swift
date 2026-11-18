@@ -578,6 +578,7 @@ class GameViewController: UIViewController {
         let report = """
         Metal live: \(metalMode) · \(metalFrames) khung · \(metalSprites) sprite GPU
         Sprite đã xếp hàng nhưng vẽ lại bằng CG: \(metalFallback)
+        Xử lý sprite cuối khung (ngoài paint): \(String(format: "%.1f", Double(result.live_boundary_ns) / 1_000_000)) ms CPU
         Bỏ sprite ngoài vùng vẽ: \(cullMode)
         Bỏ sớm: \(result.region_culled)/\(result.region_calls) · \(String(format: "%.1f", cullPercent))%
         Thời gian đo: \(String(format: "%.1f", seconds)) s

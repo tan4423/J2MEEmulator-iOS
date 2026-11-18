@@ -33,6 +33,7 @@ typedef struct {
     uint64_t submitted;
     uint64_t region_calls;
     uint64_t region_culled;
+    uint64_t live_boundary_ns;
     uint64_t region_samples;
     uint64_t region_sample_ns;
 } TreoRenderProfile;
