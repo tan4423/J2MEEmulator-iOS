@@ -93,7 +93,8 @@ static void *treo_jit_generate(struct sljit_compiler *compiler, size_t capacity,
 int treo_game_jit_backend_probe(void) {
     struct sljit_compiler *compiler = sljit_create_compiler(NULL);
     if (!compiler) return -401;
-    sljit_s32 err = sljit_emit_enter(compiler, 0, SLJIT_ARGS1(W, W), 1, 0, 0);
+    // This probe reads the argument in R0 and reserves no saved registers.
+    sljit_s32 err = sljit_emit_enter(compiler, 0, SLJIT_ARGS1(W, W_R), 1, 0, 0);
     if (!err) err = sljit_emit_op2(compiler, SLJIT_ADD, SLJIT_R0, 0, SLJIT_R0, 0, SLJIT_IMM, 7);
     if (!err) err = sljit_emit_return(compiler, SLJIT_MOV, SLJIT_R0, 0);
     void *entry = err ? NULL : treo_jit_generate(compiler, 4096, 0);
