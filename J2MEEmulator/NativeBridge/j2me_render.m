@@ -620,9 +620,19 @@ void treo_render_profile_submitted(void) {
     atomic_fetch_add_explicit(&treo_layer_frames, 1, memory_order_relaxed);
     if (treo_profile_active()) TREO_PROF_ADD(submitted, 1);
 }
+static atomic_bool treo_jar_auditing;
+static _Atomic uint64_t treo_jar_ticks_on, treo_jar_ticks_off;
+void treo_jar_audit_set(int enabled) { atomic_store_explicit(&treo_jar_auditing, enabled != 0, memory_order_relaxed); }
+int treo_jar_audit_enabled(void) { return atomic_load_explicit(&treo_jar_auditing, memory_order_relaxed); }
+void treo_jar_audit_tick(int active) {
+    atomic_fetch_add_explicit(active ? &treo_jar_ticks_on : &treo_jar_ticks_off, 1, memory_order_relaxed);
+}
+uint64_t treo_jar_audit_ticks(int active) {
+    return atomic_load_explicit(active ? &treo_jar_ticks_on : &treo_jar_ticks_off, memory_order_relaxed);
+}
 static s32 n_profilePaintBegin(Runtime *runtime, JClass *clazz) {
     s64 start = 0;
-    if (j2me_render_is_afk_suspended()) {
+    if (j2me_render_is_afk_suspended() || treo_jar_audit_enabled()) {
         if (!g_afk_thread_id) pthread_threadid_np(NULL, &g_afk_thread_id);
         atomic_store_explicit(&g_afk_paint_tid, g_afk_thread_id, memory_order_relaxed);
         start = -(s64)treo_thread_cpu_ns();

@@ -1062,6 +1062,7 @@ struct _MethodInfo {
     u8 is_setter;
     u8 treo_afk_kind; // cached eligibility for headless void calls
     u8 treo_graphics_kind; // 0 unclassified, 1 ordinary, 2 bundled drawRegion
+    u8 treo_jar_audit_kind;
 };
 //============================================
 

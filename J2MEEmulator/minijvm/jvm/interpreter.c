@@ -41,6 +41,30 @@ static int treo_headless_eligible(MethodInfo *m) {
     return tag == 2;
 }
 extern int treo_try_graphics_draw_region(Runtime *runtime, JClass *clazz);
+extern int treo_jar_audit_enabled(void);
+extern void treo_jar_audit_tick(int active);
+
+// Passive probe for this exact JAR helper, called once per normal game tick.
+// Read the flag on the VM thread, before executing the original method.
+static void treo_jar_audit_observe(MethodInfo *m, JClass *c) {
+    u8 tag = __atomic_load_n(&m->treo_jar_audit_kind, __ATOMIC_RELAXED);
+    if (!tag) {
+        tag = (utf8_equals_c(c->name, "NickCpuSleep") &&
+               utf8_equals_c(m->name, "requestFrame") &&
+               utf8_equals_c(m->descriptor, "(LClass_hef;)V")) ? 2 : 1;
+        __atomic_store_n(&m->treo_jar_audit_kind, tag, __ATOMIC_RELAXED);
+    }
+    if (tag != 2) return;
+    for (s32 n = 0; n < c->fieldPool.field_used; ++n) {
+        FieldInfo *f = &c->fieldPool.field[n];
+        if ((f->access_flags & 0x0008) && utf8_equals_c(f->name, "active") &&
+            utf8_equals_c(f->descriptor, "Z")) {
+            const s8 *flag = (const s8 *)getStaticFieldPtr(f);
+            if (flag) treo_jar_audit_tick(__atomic_load_n(flag, __ATOMIC_RELAXED) != 0);
+            return;
+        }
+    }
+}
 static int treo_is_bundled_draw_region(MethodInfo *method, JClass *clazz) {
     u8 tag = __atomic_load_n(&method->treo_graphics_kind, __ATOMIC_RELAXED);
     if (tag) return tag == 2;
@@ -681,6 +705,9 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
             }
 
 #if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__
+            if (method->is_static && method->para_slots == 1 && method->return_slots == 0 &&
+                treo_jar_audit_enabled())
+                treo_jar_audit_observe(method, clazz);
             if (method->para_slots == 10 && method->return_slots == 0 &&
                 !method->is_static && !method->is_sync && !jvm->jdwp_enable &&
                 !runtime->thrd_info->suspend_count &&
