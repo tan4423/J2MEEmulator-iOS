@@ -540,7 +540,7 @@ class GameViewController: UIViewController {
                      attributes: cpuProfileStartedAt == nil ? [] : .disabled) { [weak self] _ in
                 self?.togglePowerRun()
             },
-            UIAction(title: "Thử tải giả · CPU main") { [weak self] _ in self?.confirmJarAudit(compareLoad: true) },
+            UIAction(title: "Thử chờ thụ động · CPU main") { [weak self] _ in self?.confirmJarAudit(compareLoad: true) },
             UIAction(title: "Tìm hàm ăn CPU main · JAR") { [weak self] _ in self?.confirmJarAudit(profileMain: true) },
             UIAction(title: "Chẩn đoán CPU JAR · tắt → bật → tắt") { [weak self] _ in self?.confirmJarAudit() },
             UIAction(title: "Treo tối đa · màn hình đen") { [weak self] _ in self?.showBlackout() },
@@ -878,6 +878,8 @@ class GameViewController: UIViewController {
     private struct JarAuditSample {
         let base = AfkSample()
         let loadNS = treo_jar_load_cpu_ns()
+        let loadWall = treo_jar_load_wall_ns()
+        let loadCalls = treo_jar_load_calls()
         let on = treo_jar_audit_ticks(1)
         let off = treo_jar_audit_ticks(0)
         let frames = treo_afk_layer_frames()
@@ -886,10 +888,10 @@ class GameViewController: UIViewController {
 
     private func confirmJarAudit(profileMain: Bool = false, compareLoad: Bool = false) {
         guard jarAuditID == nil, blackout == nil, powerRun == nil, cpuProfileStartedAt == nil else { return }
-        let alert = UIAlertController(title: compareLoad ? "Thử tải giả · CPU main" :
+        let alert = UIAlertController(title: compareLoad ? "Thử chờ thụ động · CPU main" :
                 (profileMain ? "Tìm hàm ăn CPU main" : "Chẩn đoán CPU JAR"),
             message: compareLoad
-                ? "Trong map 37, để auto chạy và BẬT Treo tối ưu CPU trong game trước. Không bật màn đen Treo. App tự đo 3 lượt × 30 giây: không tải giả → có tải giả trên luồng game → không tải giả. Giữ treo JAR bật, không vẽ, không lấy stack. Hình đứng yên do chặn khung. Không chạm vào vùng game trong lúc đo."
+                ? "Trong map 37, để auto chạy và BẬT Treo tối ưu CPU trong game trước. Không bật màn đen Treo. App tự đo 4 lượt × 25 giây: mốc đầu → xung tính toán → chờ thụ động cùng vị trí → mốc cuối. Giữ treo JAR bật, không vẽ, không lấy stack. Hình đứng yên do chặn khung. Không chạm vào vùng game trong lúc đo."
                 : profileMain
                 ? "Dùng Farm-Clean-CPU.jar trong map 37, auto đang chạy, treo trong game đang TẮT. App lấy stack main ở hai lượt tắt/bật, mỗi lượt 20 giây. Hình đứng yên khi lấy mẫu vì app chặn khung game. Bật treo khi được nhắc. Đây không phải bài chấm CPU. Không bật màn đen Treo."
                 : "Dùng Farm-Clean-CPU.jar trong map 37, auto đang chạy, mục treo trong game đang TẮT. App đo 3 lượt × 60 giây, cùng chặn khung game. Chỉ thao tác bật treo và chạm để thoát khi app nhắc. Không bật màn đen Treo. JIT tạm tắt trong bài đo.",
@@ -953,21 +955,21 @@ class GameViewController: UIViewController {
     private func runJarAudit(id: UUID, leg: Int, rows: [String], results: [JarAuditResult]) {
         // Same native mode throughout each CPU window; restore frames only for user input.
         treo_render_set_afk_mode(1)
-        treo_jar_load_set(jarLoadComparison && leg == 1 ? 1 : 0)
+        treo_jar_load_set(jarLoadComparison && (leg == 1 || leg == 2) ? Int32(leg) : 0)
         scheduleJarAudit(id: id, after: 3) { [weak self] in
             guard let self else { return }
             treo_afk_threads_begin()
             let start = JarAuditSample()
             let profileMain = self.jarMainProfile
             if profileMain { treo_afk_main_stack_begin() }
-            self.scheduleJarAudit(id: id, after: profileMain ? 20 : (self.jarLoadComparison ? 30 : 60)) { [weak self] in
+            self.scheduleJarAudit(id: id, after: profileMain ? 20 : (self.jarLoadComparison ? 25 : 60)) { [weak self] in
                 guard let self else { return }
                 let end = JarAuditSample()
                 let dt = max(0.001, end.base.time - start.base.time)
                 let on = end.on &- start.on, off = end.off &- start.off
                 let compareLoad = self.jarLoadComparison
                 let names = compareLoad
-                    ? ["A1 · Không tải giả", "B · Có tải giả", "A2 · Không tải giả"]
+                    ? ["A1 · Mốc đầu", "B · Xung tính toán", "C · Chờ thụ động", "A2 · Mốc cuối"]
                     : ["A1 · JAR tắt", "B · JAR bật", "A2 · JAR tắt"]
                 let total = end.base.cpuPercent(since: start.base)
                 let paint = Double(end.base.paintNS &- start.base.paintNS) / dt / 10_000_000
@@ -995,7 +997,10 @@ class GameViewController: UIViewController {
                     free(raw)
                 }
                 if compareLoad {
-                    row += String(format: "\nCPU tải giả: %.1f điểm", Double(end.loadNS &- start.loadNS) / dt / 10_000_000)
+                    let calls = end.loadCalls &- start.loadCalls
+                    let wall = Double(end.loadWall &- start.loadWall) / Double(max(1, calls)) / 1_000_000
+                    row += String(format: "\nCPU xung: %.1f điểm · thời gian thực/xung: %.2f ms · %llu xung",
+                        Double(end.loadNS &- start.loadNS) / dt / 10_000_000, wall, calls)
                 }
                 let all = rows + [row]
                 guard validState && frames == 0 else {
@@ -1003,7 +1008,7 @@ class GameViewController: UIViewController {
                     return
                 }
                 let measured = results + [JarAuditResult(total: total, main: main, ticks: ticks, paint: paint)]
-                if leg == 2 || (profileMain && leg == 1) {
+                if leg == (compareLoad ? 3 : 2) || (profileMain && leg == 1) {
                     self.finishJarAudit(rows: all, results: measured)
                 } else if compareLoad {
                     self.runJarAudit(id: id, leg: leg + 1, rows: all, results: measured)
@@ -1068,8 +1073,8 @@ class GameViewController: UIViewController {
                 + "\(delta(a.main, b.main, c.main)) điểm main; \(delta(a.paint, b.paint, c.paint)) điểm trong paint; "
                 + "\(delta(a.ticks, b.ticks, c.ticks)) vòng/s.\nĐối chiếu B với từng mốc A bên dưới.\n\n"
         }
-        let uiNote = compareLoad ? "\n\nTreo JAR bật suốt bài. B chỉ thêm phép tính trên luồng game, không vẽ hoặc đổi UI. CPU tổng của B đã gồm tải giả; đây là phép thử nguyên nhân, không phải bản tối ưu." : ""
-        publishMeasurement(title: compareLoad ? "Thử tải giả · CPU main" : "Chẩn đoán CPU JAR", message:
+        let uiNote = compareLoad ? "\n\nTreo JAR bật suốt bài. B thêm tính toán, C ngủ bằng nanosleep tại cùng chỗ trên luồng game. C lấy thời lượng mục tiêu từ B; đối chiếu thời gian thực/xung và vòng game/s trước khi diễn giải. Chỉ C mới là ứng viên giảm CPU; không dùng B để tối ưu." : ""
+        publishMeasurement(title: compareLoad ? "Thử chờ thụ động · CPU main" : "Chẩn đoán CPU JAR", message:
             "Giới hạn FPS Treo: \(fpsLimit) · JIT tắt trong phép đo.\n\n" + summary +
             rows.joined(separator: "\n\n") +
             "\n\nCả ba lượt chặn khung native, không đổi độ sáng. CPU quy về một lõi. game là luồng gọi helper mỗi vòng; paint* là luồng paint gần nhất, có thể trùng game, không cộng hai số này. Không đo GPU." + uiNote)
