@@ -238,26 +238,26 @@ class GameViewController: UIViewController {
         view.bringSubviewToFront(backButton)
 
         // Fade out placeholder on first rendered frame
-        emulatorView.onFirstFrame = {
+        emulatorView.onFirstFrame = { [weak self] in
             let budgetScope = JarMainBudget.begin(.overlay)
-            defer { JarMainBudget.end(budgetScope) } [weak self] in
+            defer { JarMainBudget.end(budgetScope) }
             NSLog("[J2ME Treo] First game frame displayed")
             self?.finishStartupWatchdog()
             guard let icon = self?.placeholderIconView else { return }
             UIView.animate(withDuration: 0.2) {
                 icon.alpha = 0
-            } completion: {
+            } completion: { _ in
                 let budgetScope = JarMainBudget.begin(.overlay)
-                defer { JarMainBudget.end(budgetScope) } _ in
+                defer { JarMainBudget.end(budgetScope) }
                 icon.removeFromSuperview()
                 self?.placeholderIconView = nil
             }
         }
 
         if layoutMode == .ngage {
-            emulatorView.onFrame = {
+            emulatorView.onFrame = { [weak self] cgImage in
                 let budgetScope = JarMainBudget.begin(.overlay)
-                defer { JarMainBudget.end(budgetScope) } [weak self] cgImage in
+                defer { JarMainBudget.end(budgetScope) }
                 self?.glowContentView.layer.contents = cgImage
             }
         }
@@ -1616,9 +1616,9 @@ class GameViewController: UIViewController {
 
         let timeout = j2me_ui_get_alert_timeout()
         if timeout > 0 {
-            let work = DispatchWorkItem {
+            let work = DispatchWorkItem { [weak alert] in
                 let budgetScope = JarMainBudget.begin(.alertTimer)
-                defer { JarMainBudget.end(budgetScope) } [weak alert] in
+                defer { JarMainBudget.end(budgetScope) }
                 alert?.dismiss(animated: true) {
                     j2me_input_post_touch(Int32(J2ME_UI_ALERT_DISMISSED), revision, 0)
                 }
