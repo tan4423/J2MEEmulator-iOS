@@ -208,6 +208,10 @@ class GameViewController: UIViewController {
     private var jarMainProfile = false
     private var jarLoadComparison = false
     private var jarBudgetAudit = false
+    private var jarDetachAudit = false
+    private var jarDetachShield: UIView?
+    private var jarDetachedViews: [UIView] = []
+    private var jarDetachedConstraints: [NSLayoutConstraint] = []
     private var afkOriginalJIT: Int32?
     private var lastAFKTrace = ""
     private var afkFrozenLayers: [CALayer] = []
@@ -652,6 +656,9 @@ class GameViewController: UIViewController {
                 self?.togglePowerRun()
             },
             UIAction(title: "Thử chờ thụ động · CPU main") { [weak self] _ in self?.confirmJarAudit(compareLoad: true) },
+            UIAction(title: "Thử tháo giao diện game · JAR") { [weak self] _ in
+                self?.confirmJarAudit(budgetMain: true, detachUI: true)
+            },
             UIAction(title: "Đo pha CPU main · JAR") { [weak self] _ in self?.confirmJarAudit(budgetMain: true) },
             UIAction(title: "Tìm stack sau Source · JAR") { [weak self] _ in
                 self?.confirmJarAudit(profileMain: true, budgetMain: true)
@@ -1000,14 +1007,75 @@ class GameViewController: UIViewController {
         let wakes = treo_afk_main_wakes()
     }
 
-    private func confirmJarAudit(profileMain: Bool = false, compareLoad: Bool = false, budgetMain: Bool = false) {
+    private func installJarDetachShield() {
+        // Same static cancel control in all legs; intercept touches before the game.
+        let shield = UIView(frame: view.bounds)
+        shield.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        let cancel = UIButton(type: .system)
+        cancel.setTitle("Hủy đo", for: .normal)
+        cancel.tintColor = .white
+        cancel.backgroundColor = .black
+        cancel.addTarget(self, action: #selector(stopJarAudit), for: .touchUpInside)
+        cancel.frame = CGRect(x: 12, y: view.safeAreaInsets.top + 8, width: 88, height: 44)
+        shield.addSubview(cancel)
+        view.addSubview(shield)
+        jarDetachShield = shield
+    }
+
+    private func detachJarGameViews() -> Bool {
+        guard let shield = jarDetachShield, shield.superview === view,
+              view.window != nil, jarDetachedViews.isEmpty else { return false }
+        let children = view.subviews.filter { $0 !== shield }
+        guard !children.isEmpty else { return false }
+        // Save active constraints that UIKit may remove with the views. Include
+        // installed constraints below the root (nested views/layout guides).
+        func activeConstraints(in root: UIView) -> [NSLayoutConstraint] {
+            root.constraints.filter { $0.isActive } + root.subviews.flatMap { activeConstraints(in: $0) }
+        }
+        jarDetachedViews = children
+        jarDetachedConstraints = activeConstraints(in: view)
+        UIView.performWithoutAnimation {
+            for child in children { child.removeFromSuperview() }
+        }
+        return isJarGameUIActuallyDetached()
+    }
+
+    private func isJarGameUIActuallyDetached() -> Bool {
+        guard let shield = jarDetachShield, view.window != nil,
+              view.subviews.count == 1, view.subviews.first === shield,
+              !jarDetachedViews.isEmpty else { return false }
+        return jarDetachedViews.allSatisfy {
+            $0.superview == nil && $0.window == nil && $0.layer.superlayer == nil
+        }
+    }
+
+    private func restoreJarGameViews() {
+        guard !jarDetachedViews.isEmpty else { return }
+        let children = jarDetachedViews
+        let constraints = jarDetachedConstraints
+        jarDetachedViews.removeAll()
+        jarDetachedConstraints.removeAll()
+        UIView.performWithoutAnimation {
+            for child in children { view.addSubview(child) }
+            if let shield = jarDetachShield, shield.superview === view {
+                view.bringSubviewToFront(shield)
+            }
+            NSLayoutConstraint.activate(constraints.filter { !$0.isActive })
+            view.layoutIfNeeded()
+        }
+    }
+
+    private func confirmJarAudit(profileMain: Bool = false, compareLoad: Bool = false, budgetMain: Bool = false, detachUI: Bool = false) {
         guard jarAuditID == nil, blackout == nil, powerRun == nil, cpuProfileStartedAt == nil else { return }
         let sourceProfile = budgetMain && profileMain
-        let alert = UIAlertController(title: sourceProfile ? "Tìm stack sau Source · JAR" :
+        let alert = UIAlertController(title: detachUI ? "Thử tháo giao diện game · JAR" :
+                sourceProfile ? "Tìm stack sau Source · JAR" :
                 budgetMain ? "Đo pha CPU main · JAR" :
                 (compareLoad ? "Thử chờ thụ động · CPU main" :
                  (profileMain ? "Tìm hàm ăn CPU main" : "Chẩn đoán CPU JAR")),
-            message: sourceProfile
+            message: detachUI
+                ? "Map 37, auto x1, BẬT treo trong JAR trước. Ba lượt tự động: giao diện gắn → tháo thật khỏi cửa sổ → gắn lại. Giữ treo JAR bật suốt bài. Không bật màn đen Treo. Chặn khung, tắt JIT trong bài, không lấy stack. Có nút Hủy đo."
+                : sourceProfile
                 ? "Map 37, auto x1, treo trong JAR đang TẮT. Ba lượt × 60 giây: tắt → bật → tắt theo lời nhắc. Không bật màn đen Treo. App chặn khung, tạm tắt JIT, và chỉ lấy stack trong khoảng sau mốc Source."
                 : budgetMain
                 ? "Map 37, auto x1, treo trong JAR đang TẮT. Ba lượt × 60 giây: tắt → bật → tắt theo lời nhắc. Không bật màn đen Treo. Cả ba lượt chặn khung và tạm tắt JIT. Không lấy stack hay tạo tải giả."
@@ -1019,16 +1087,17 @@ class GameViewController: UIViewController {
             preferredStyle: .alert)
         alert.addAction(UIAlertAction(title: "Hủy", style: .cancel))
         alert.addAction(UIAlertAction(title: profileMain ? "Lấy mẫu" : "Đo", style: .default) { [weak self] _ in
-            self?.startJarAudit(profileMain: profileMain, compareLoad: compareLoad, budgetMain: budgetMain)
+            self?.startJarAudit(profileMain: profileMain, compareLoad: compareLoad, budgetMain: budgetMain, detachUI: detachUI)
         })
         present(alert, animated: true)
     }
 
-    private func startJarAudit(profileMain: Bool, compareLoad: Bool, budgetMain: Bool) {
+    private func startJarAudit(profileMain: Bool, compareLoad: Bool, budgetMain: Bool, detachUI: Bool) {
         guard jarAuditID == nil, blackout == nil, powerRun == nil, cpuProfileStartedAt == nil else { return }
         jarMainProfile = profileMain
         jarLoadComparison = compareLoad
         jarBudgetAudit = budgetMain
+        jarDetachAudit = detachUI
         let id = UUID()
         jarAuditID = id
         jarAuditJIT = treo_game_jit_is_enabled()
@@ -1038,6 +1107,7 @@ class GameViewController: UIViewController {
         NotificationCenter.default.addObserver(self, selector: #selector(stopJarAudit),
             name: UIApplication.willResignActiveNotification, object: nil)
         applyPadMode()
+        if detachUI { installJarDetachShield() }
         runJarAudit(id: id, leg: 0, rows: [], results: [])
     }
 
@@ -1050,6 +1120,12 @@ class GameViewController: UIViewController {
         jarMainProfile = false
         if jarBudgetAudit { JarMainBudget.stop() }
         jarBudgetAudit = false
+        if jarDetachAudit {
+            restoreJarGameViews()
+            jarDetachShield?.removeFromSuperview()
+            jarDetachShield = nil
+            jarDetachAudit = false
+        }
         treo_jar_load_set(0)
         jarLoadComparison = false
         treo_jar_audit_set(0)
@@ -1081,8 +1157,24 @@ class GameViewController: UIViewController {
         // Same native mode throughout each CPU window; restore frames only for user input.
         treo_render_set_afk_mode(1)
         treo_jar_load_set(jarLoadComparison && (leg == 1 || leg == 2) ? Int32(leg) : 0)
+        let detachUI = jarDetachAudit
+        if detachUI {
+            if leg == 1 {
+                guard detachJarGameViews() else {
+                    finishJarAudit(rows: rows + ["Không hợp lệ: không tháo được cây view game."], results: [])
+                    return
+                }
+            } else if leg == 2 {
+                restoreJarGameViews()
+            }
+        }
         scheduleJarAudit(id: id, after: 3) { [weak self] in
             guard let self else { return }
+            if detachUI && leg == 1 && !self.isJarGameUIActuallyDetached() {
+                self.finishJarAudit(rows: rows + ["Không hợp lệ: cây view không còn tách ở đầu lượt B."], results: [])
+                return
+            }
+            let detachedCount = self.jarDetachedViews.count
             treo_afk_threads_begin()
             let start = JarAuditSample()
             let profileMain = self.jarMainProfile
@@ -1097,7 +1189,9 @@ class GameViewController: UIViewController {
                 let dt = max(0.001, end.base.time - start.base.time)
                 let on = end.on &- start.on, off = end.off &- start.off
                 let compareLoad = self.jarLoadComparison
-                let names = compareLoad
+                let names = detachUI
+                    ? ["A1 · Gắn UI", "B · Tháo UI", "A2 · Gắn lại UI"]
+                    : compareLoad
                     ? ["A1 · Mốc đầu", "B · Xung tính toán", "C · Chờ thụ động", "A2 · Mốc cuối"]
                     : ["A1 · JAR tắt", "B · JAR bật", "A2 · JAR tắt"]
                 let total = end.base.cpuPercent(since: start.base)
@@ -1115,7 +1209,12 @@ class GameViewController: UIViewController {
                     dt, paint, paints, Double(end.wakes &- start.wakes) / dt)
                 row += String(format: "\n%.2f vòng game/s", ticks)
                 row += " · \(off) tick tắt / \(on) tick bật · \(frames) khung lên layer"
-                let validState = (compareLoad || leg == 1) ? (on > 0 && off == 0) : (off > 0 && on == 0)
+                let validState = (detachUI || compareLoad || leg == 1) ? (on > 0 && off == 0) : (off > 0 && on == 0)
+                let validUI = !detachUI || leg != 1 || self.isJarGameUIActuallyDetached()
+                if detachUI {
+                    row += "\n\(detachedCount) view gốc đã tháo · \(self.view.subviews.count) view con, \(self.view.layer.sublayers?.count ?? 0) layer con còn ở view game"
+                    if !validUI { row += "\nKhông hợp lệ: cây view không còn tách ở cuối lượt B." }
+                }
                 if !validState { row += "\nKhông hợp lệ: tick không đúng trạng thái trong lượt." }
                 if frames != 0 { row += "\nKhông hợp lệ: vẫn có khung lên layer." }
                 if let raw = treo_afk_threads_report(dt) {
@@ -1140,14 +1239,14 @@ class GameViewController: UIViewController {
                         Double(end.loadNS &- start.loadNS) / dt / 10_000_000, wall, calls)
                 }
                 let all = rows + [row]
-                guard validState && frames == 0 else {
+                guard validState && validUI && frames == 0 else {
                     self.finishJarAudit(rows: all, results: [])
                     return
                 }
                 let measured = results + [JarAuditResult(total: total, main: main, ticks: ticks, paint: paint, budget: budget)]
                 if leg == (compareLoad ? 3 : 2) || (profileMain && !sourceProfile && leg == 1) {
                     self.finishJarAudit(rows: all, results: measured)
-                } else if compareLoad {
+                } else if compareLoad || detachUI {
                     self.runJarAudit(id: id, leg: leg + 1, rows: all, results: measured)
                 } else {
                     self.promptJarAudit(id: id, nextLeg: leg + 1, rows: all, results: measured)
@@ -1193,6 +1292,7 @@ class GameViewController: UIViewController {
         let profileMain = jarMainProfile
         let compareLoad = jarLoadComparison
         let budgetMain = jarBudgetAudit
+        let detachUI = jarDetachAudit
         stopJarAudit()
         if profileMain && !budgetMain {
             publishMeasurement(title: "Tìm hàm ăn CPU main", message:
@@ -1223,10 +1323,11 @@ class GameViewController: UIViewController {
                 summary += "Chênh CPU main theo pha (ms/s): "
                     + (measured + ["Ngoài mốc \(residual)"]).joined(separator: " · ") + "\n\n"
             }
-            let title = profileMain ? "Tìm stack sau Source · JAR" : "Đo pha CPU main · JAR"
+            let title = detachUI ? "Thử tháo giao diện game · JAR" :
+                (profileMain ? "Tìm stack sau Source · JAR" : "Đo pha CPU main · JAR")
             let sampling = profileMain
                 ? "Lấy mẫu sau Source. Kiểm tra chênh pha so với bài không lấy stack (~+253 ms/s); nếu lệch rõ thì không quy nguyên nhân từ mẫu. Số mẫu không phải CPU time."
-                : "Không lấy stack."
+                : (detachUI ? "JAR bật cả ba lượt. Tháo view con ở B; giữ controller, cửa sổ và VM. Không lấy stack." : "Không lấy stack.")
             publishMeasurement(title: title, message:
                 "JIT tắt · FPS cap: \(fpsLimit) · \(sampling)\n\n" + summary +
                 rows.joined(separator: "\n\n") +
