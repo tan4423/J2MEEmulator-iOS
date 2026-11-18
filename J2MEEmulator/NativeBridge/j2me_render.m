@@ -95,6 +95,7 @@ typedef struct RenderImage {
     struct RenderImage *next_dead;
 } RenderImage;
 
+static atomic_int treo_replay_state; // 0 idle/done, 1 capture, 2 benchmark
 static int treo_sw_draw(RenderContext *, RenderImage *, int64_t, int64_t, int, int, int, int, int, int);
 static void treo_cpu_batch_drain(RenderContext *rc);
 static void treo_cpu_batch_free(RenderContext *rc);
@@ -1763,7 +1764,6 @@ typedef struct {
 } TreoSprite;
 typedef struct { float x, y, u, v, l, t, r, b; } TreoVertex;
 static os_unfair_lock treo_replay_lock = OS_UNFAIR_LOCK_INIT;
-static atomic_int treo_replay_state; // 0 idle/done, 1 capture, 2 benchmark
 static TreoSprite treo_replay_sprites[TreoReplayCount];
 static unsigned treo_replay_count, treo_replay_width, treo_replay_height;
 static uintptr_t treo_replay_context;
