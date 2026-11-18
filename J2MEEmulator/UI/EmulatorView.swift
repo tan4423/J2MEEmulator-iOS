@@ -18,6 +18,7 @@ nonisolated private final class LatestGameFrame: @unchecked Sendable {
     func submit(_ frame: CGImage) -> Bool {
         lock.lock()
         defer { lock.unlock() }
+        if pending != nil { treo_render_profile_replaced() }
         pending = frame
         if scheduled { return false }
         scheduled = true
@@ -73,6 +74,7 @@ class EmulatorView: UIView {
             guard let self, let cgImage = self.latestFrame.take() else { return }
             guard j2me_render_is_afk_suspended() == 0 else { return }
             self.layer.contents = cgImage
+            treo_render_profile_submitted()
             self.onFrame?(cgImage)
             if let cb = self.onFirstFrame {
                 self.onFirstFrame = nil

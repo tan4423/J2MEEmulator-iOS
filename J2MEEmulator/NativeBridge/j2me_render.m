@@ -16,6 +16,7 @@
 #include "jvm_util.h"
 #include <stdio.h>
 #include <stdatomic.h>
+#include <time.h>
 #include <os/lock.h>
 
 // ============================================================
@@ -84,6 +85,78 @@ static s32 n_afkSuspended(Runtime *runtime, JClass *clazz) {
 
 static s32 n_takeAfkRefresh(Runtime *runtime, JClass *clazz) {
     push_int(runtime->stack, atomic_load(&g_afk_refresh) ? atomic_exchange(&g_afk_refresh, 0) : 0);
+    return RUNTIME_STATUS_NORMAL;
+}
+
+// Per-thread CPU time excludes sleeps and time waiting to be scheduled.
+static atomic_bool treo_profile_enabled;
+static _Atomic uint64_t treo_prof_paints;
+static _Atomic uint64_t treo_prof_paint_ns;
+static _Atomic uint64_t treo_prof_flushes;
+static _Atomic uint64_t treo_prof_snapshots;
+static _Atomic uint64_t treo_prof_snapshot_ns;
+static _Atomic uint64_t treo_prof_replaced;
+static _Atomic uint64_t treo_prof_submitted;
+static _Atomic uint64_t treo_prof_region_calls;
+static _Atomic uint64_t treo_prof_region_samples;
+static _Atomic uint64_t treo_prof_region_sample_ns;
+#define TREO_PROF_ADD(field, amount) atomic_fetch_add_explicit(&treo_prof_##field, (amount), memory_order_relaxed)
+static int treo_profile_active(void) {
+    return atomic_load_explicit(&treo_profile_enabled, memory_order_acquire)
+        && !j2me_render_is_afk_suspended();
+}
+static uint64_t treo_thread_cpu_ns(void) {
+    struct timespec ts;
+    if (clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts) != 0) return 0;
+    return (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
+}
+void treo_render_profile_start(void) {
+    atomic_store_explicit(&treo_prof_paints, 0, memory_order_relaxed);
+    atomic_store_explicit(&treo_prof_paint_ns, 0, memory_order_relaxed);
+    atomic_store_explicit(&treo_prof_flushes, 0, memory_order_relaxed);
+    atomic_store_explicit(&treo_prof_snapshots, 0, memory_order_relaxed);
+    atomic_store_explicit(&treo_prof_snapshot_ns, 0, memory_order_relaxed);
+    atomic_store_explicit(&treo_prof_replaced, 0, memory_order_relaxed);
+    atomic_store_explicit(&treo_prof_submitted, 0, memory_order_relaxed);
+    atomic_store_explicit(&treo_prof_region_calls, 0, memory_order_relaxed);
+    atomic_store_explicit(&treo_prof_region_samples, 0, memory_order_relaxed);
+    atomic_store_explicit(&treo_prof_region_sample_ns, 0, memory_order_relaxed);
+    atomic_store_explicit(&treo_profile_enabled, 1, memory_order_release);
+}
+TreoRenderProfile treo_render_profile_stop(void) {
+    atomic_store_explicit(&treo_profile_enabled, 0, memory_order_release);
+    return (TreoRenderProfile){
+        .paints = atomic_load_explicit(&treo_prof_paints, memory_order_relaxed),
+        .paint_ns = atomic_load_explicit(&treo_prof_paint_ns, memory_order_relaxed),
+        .flushes = atomic_load_explicit(&treo_prof_flushes, memory_order_relaxed),
+        .snapshots = atomic_load_explicit(&treo_prof_snapshots, memory_order_relaxed),
+        .snapshot_ns = atomic_load_explicit(&treo_prof_snapshot_ns, memory_order_relaxed),
+        .replaced = atomic_load_explicit(&treo_prof_replaced, memory_order_relaxed),
+        .submitted = atomic_load_explicit(&treo_prof_submitted, memory_order_relaxed),
+        .region_calls = atomic_load_explicit(&treo_prof_region_calls, memory_order_relaxed),
+        .region_samples = atomic_load_explicit(&treo_prof_region_samples, memory_order_relaxed),
+        .region_sample_ns = atomic_load_explicit(&treo_prof_region_sample_ns, memory_order_relaxed),
+    };
+}
+void treo_render_profile_replaced(void) {
+    if (treo_profile_active()) TREO_PROF_ADD(replaced, 1);
+}
+void treo_render_profile_submitted(void) {
+    if (treo_profile_active()) TREO_PROF_ADD(submitted, 1);
+}
+static s32 n_profilePaintBegin(Runtime *runtime, JClass *clazz) {
+    runtime->jnienv->push_long(runtime->stack,
+        (s64)(treo_profile_active() ? treo_thread_cpu_ns() : 0));
+    return RUNTIME_STATUS_NORMAL;
+}
+static s32 n_profilePaintEnd(Runtime *runtime, JClass *clazz) {
+    if (!treo_profile_active()) return RUNTIME_STATUS_NORMAL;
+    uint64_t begin = (uint64_t)runtime->jnienv->localvar_getLong_2slot(runtime->localvar, 0);
+    uint64_t end = treo_thread_cpu_ns();
+    if (begin && end >= begin) {
+        TREO_PROF_ADD(paints, 1);
+        TREO_PROF_ADD(paint_ns, end - begin);
+    }
     return RUNTIME_STATUS_NORMAL;
 }
 
@@ -427,8 +500,16 @@ static s32 n_flushToScreen(Runtime *runtime, JClass *clazz) {
     JniEnv *env = runtime->jnienv;
     s64 handle = env->localvar_getLong_2slot(runtime->localvar, 0);
     RenderContext *rc = rc_acquire(handle);
+    const int profiling = treo_profile_active();
+    if (profiling) TREO_PROF_ADD(flushes, 1);
     if (rc && g_flush_callback) {
+        const uint64_t begin = profiling ? treo_thread_cpu_ns() : 0;
         CGImageRef image = CGBitmapContextCreateImage(rc->ctx);
+        if (profiling && treo_profile_active()) {
+            const uint64_t end = treo_thread_cpu_ns();
+            if (begin && end >= begin) TREO_PROF_ADD(snapshot_ns, end - begin);
+            if (image) TREO_PROF_ADD(snapshots, 1);
+        }
         if (image) g_flush_callback(image, rc->width, rc->height);
     }
     rc_release(rc);
@@ -978,6 +1059,22 @@ static s32 n_drawRegion(Runtime *runtime, JClass *clazz) {
     return RUNTIME_STATUS_NORMAL;
 }
 
+// Time one call in 64 per render thread; no clock read for each sprite.
+static s32 n_profiledDrawRegion(Runtime *runtime, JClass *clazz) {
+    static _Thread_local unsigned sequence;
+    if (!treo_profile_active()) return n_drawRegion(runtime, clazz);
+    TREO_PROF_ADD(region_calls, 1);
+    if ((++sequence & 63u) != 0) return n_drawRegion(runtime, clazz);
+    uint64_t begin = treo_thread_cpu_ns();
+    s32 result = n_drawRegion(runtime, clazz);
+    uint64_t end = treo_thread_cpu_ns();
+    if (begin && end >= begin && treo_profile_active()) {
+        TREO_PROF_ADD(region_samples, 1);
+        TREO_PROF_ADD(region_sample_ns, end - begin);
+    }
+    return result;
+}
+
 // --- drawRGB ---
 
 static s32 n_drawRGB(Runtime *runtime, JClass *clazz) {
@@ -1234,6 +1331,8 @@ static s32 n_vibrate(Runtime *runtime, JClass *clazz) {
 #define CLS "javax/microedition/lcdui/NativeBridge"
 
 static java_native_method j2me_render_methods[] = {
+    {CLS, "profilePaintBegin", "()J", n_profilePaintBegin},
+    {CLS, "profilePaintEnd", "(J)V", n_profilePaintEnd},
     {CLS, "afkSuspended",     "()Z", n_afkSuspended},
     {CLS, "takeAfkRefresh",   "()Z", n_takeAfkRefresh},
     // Context
@@ -1270,7 +1369,7 @@ static java_native_method j2me_render_methods[] = {
     {CLS, "getImageHeight",      "(J)I",                                 n_getImageHeight},
     {CLS, "getImageContext",     "(J)J",                                 n_getImageContext},
     {CLS, "drawImage",           "(JJIII)V",                             n_drawImage},
-    {CLS, "drawRegion",          "(JJIIIIIIII)V",                        n_drawRegion},
+    {CLS, "drawRegion",          "(JJIIIIIIII)V",                        n_profiledDrawRegion},
     {CLS, "drawRGB",             "(J[IIIIIIII)V",                        n_drawRGB},
     {CLS, "getImageRGB",         "(J[IIIIIII)V",                         n_getImageRGB},
     {CLS, "fillPolygon",         "(J[I[II)V",                            n_fillPolygon},

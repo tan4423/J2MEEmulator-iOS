@@ -14,6 +14,8 @@ public class NativeBridge {
     public static native long createContext(int w, int h);
     public static native void destroyContext(long ctx);
     public static native void flushToScreen(long ctx);
+    static native long profilePaintBegin();
+    static native void profilePaintEnd(long cpuStart);
     static native boolean afkSuspended();
     static native boolean takeAfkRefresh();
 

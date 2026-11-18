@@ -83,6 +83,7 @@ class GameViewController: UIViewController {
 
     private var alertTimeoutWork: DispatchWorkItem?
     private var didStartGame = false
+    private var cpuProfileStartedAt: TimeInterval?
     private var startupWatchdog: DispatchWorkItem?
 
     override var prefersStatusBarHidden: Bool { true }
@@ -504,6 +505,9 @@ class GameViewController: UIViewController {
                 })
                 self.present(prompt, animated: true)
             },
+            UIAction(title: cpuProfileStartedAt == nil ? "Bắt đầu đo CPU" : "Dừng và xem số liệu CPU") { [weak self] _ in
+                self?.toggleCPUProfile()
+            },
             UIAction(title: "Thống kê JIT Java") { [weak self] _ in
                 let compiled = treo_game_jit_compiled_count()
                 let calls = treo_game_jit_call_count()
@@ -516,12 +520,51 @@ class GameViewController: UIViewController {
         ])
     }
 
+    private func toggleCPUProfile() {
+        guard let start = cpuProfileStartedAt else {
+            treo_render_profile_start()
+            cpuProfileStartedAt = ProcessInfo.processInfo.systemUptime
+            applyPadMode()
+            return
+        }
+        let result = treo_render_profile_stop()
+        let seconds = ProcessInfo.processInfo.systemUptime - start
+        cpuProfileStartedAt = nil
+        applyPadMode()
+        let paint = Double(result.paint_ns) / 1_000_000
+        let snapshot = Double(result.snapshot_ns) / 1_000_000
+        let region = Double(result.region_sample_ns) / 1_000_000
+        let report = """
+        Thời gian đo: \(String(format: "%.1f", seconds)) s
+        paint(): \(result.paints) lần · \(String(format: "%.1f", paint)) ms CPU
+        Flush: \(result.flushes) · Ảnh tạo: \(result.snapshots)
+        Tạo ảnh: \(String(format: "%.1f", snapshot)) ms CPU
+        Gửi lên layer: \(result.submitted) · Bị thay trong hàng đợi: \(result.replaced)
+        drawRegion: \(result.region_calls) lượt · \(result.region_samples) mẫu, \(String(format: "%.1f", region)) ms CPU trong mẫu
+        """
+        NSLog("[TREO-CPU] %@", report)
+        let alert = UIAlertController(title: "CPU khi hiện game", message: report, preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "Sao chép", style: .default) { _ in
+            UIPasteboard.general.string = report
+        })
+        alert.addAction(UIAlertAction(title: "Đóng", style: .cancel))
+        present(alert, animated: true)
+    }
+
+    private func discardCPUProfile() {
+        guard cpuProfileStartedAt != nil else { return }
+        _ = treo_render_profile_stop()
+        cpuProfileStartedAt = nil
+        applyPadMode()
+    }
+
     fileprivate func keepBlackoutOnTop() {
         if let blackout { view.bringSubviewToFront(blackout) }
     }
 
     private func showBlackout() {
         guard blackout == nil else { return }
+        discardCPUProfile()
         for code in Array(heldDirections) { releaseDirection(code) }
         let cover = UIButton(type: .custom)
         cover.backgroundColor = .black
@@ -606,6 +649,7 @@ class GameViewController: UIViewController {
             DispatchQueue.main.async { [weak self] in
                 if let self {
                     self.finishStartupWatchdog()
+                    self.discardCPUProfile()
                     self.hideBlackout()
                     for code in Array(self.heldDirections) { self.releaseDirection(code) }
                 }
@@ -670,6 +714,7 @@ class GameViewController: UIViewController {
 
     @objc private func backTapped() {
         backButton.isEnabled = false
+        discardCPUProfile()
         finishStartupWatchdog()
         for code in Array(heldDirections) { releaseDirection(code) }
         jvm_bridge_request_stop()

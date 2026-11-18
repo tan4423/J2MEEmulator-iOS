@@ -22,6 +22,24 @@ void j2me_render_set_flush_callback(j2me_flush_callback callback);
 void j2me_render_set_afk_suspended(int enabled);
 int j2me_render_is_afk_suspended(void);
 
+// Foreground CPU diagnostics; only the UI controls the measurement window.
+typedef struct {
+    uint64_t paints;
+    uint64_t paint_ns;
+    uint64_t flushes;
+    uint64_t snapshots;
+    uint64_t snapshot_ns;
+    uint64_t replaced;
+    uint64_t submitted;
+    uint64_t region_calls;
+    uint64_t region_samples;
+    uint64_t region_sample_ns;
+} TreoRenderProfile;
+void treo_render_profile_start(void);
+TreoRenderProfile treo_render_profile_stop(void);
+void treo_render_profile_replaced(void);
+void treo_render_profile_submitted(void);
+
 CGImageRef _Nullable j2me_render_copy_image(int64_t handle) CF_RETURNS_RETAINED;
 
 /// Signal render subsystem to stop (all acquire calls return NULL).

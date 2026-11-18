@@ -191,7 +191,12 @@ public abstract class Canvas extends Displayable {
             repaintPending = false;
             if (fullRepaint) graphics.reset(0, 0, width, height);
             else graphics.reset(clipX, clipY, clipW, clipH);
-            paint(graphics);
+            long profileStart = NativeBridge.profilePaintBegin();
+            try {
+                paint(graphics);
+            } finally {
+                if (profileStart != 0) NativeBridge.profilePaintEnd(profileStart);
+            }
             if (Display.isCurrentCanvas(this)) NativeBridge.flushToScreen(nativeContext);
             // Reset for next frame
             fullRepaint = true;
