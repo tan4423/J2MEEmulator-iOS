@@ -27,6 +27,8 @@ void treo_render_set_afk_mode(int mode);
 uint64_t treo_afk_skipped_draws(void);
 uint64_t treo_afk_skipped_paints(void);
 void treo_jar_audit_set(int enabled);
+void treo_jar_load_set(int enabled);
+uint64_t treo_jar_load_cpu_ns(void);
 uint64_t treo_jar_audit_ticks(int active);
 uint64_t treo_afk_paint_count(void);
 uint64_t treo_afk_guarded_paints(void);
