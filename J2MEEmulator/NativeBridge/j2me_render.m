@@ -28,6 +28,8 @@
 #include <os/lock.h>
 #include <mach/mach.h>
 #include <mach/thread_info.h>
+#include <mach/arm/thread_status.h>
+#include <dlfcn.h>
 #include <pthread.h>
 
 // ============================================================
@@ -300,6 +302,87 @@ static NSDictionary<NSNumber *, NSArray<NSNumber *> *> *treo_afk_read_threads(vo
     vm_deallocate(mach_task_self(), (vm_address_t)threads, (vm_size_t)count * sizeof(*threads));
     return out;
 }
+double treo_afk_current_thread_cpu(void) {
+    struct timespec ts;
+    if (clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts) != 0) return -1;
+    return ts.tv_sec + ts.tv_nsec / 1e9;
+}
+
+// Read only registers of our own main thread; no explicit suspension or
+// dereferencing another thread's stack. Resolve symbols after the timed leg.
+static dispatch_queue_t treo_trace_queue;
+static dispatch_source_t treo_trace_timer;
+static thread_t treo_trace_thread;
+enum { TreoTraceMax = 2048 };
+static struct { uintptr_t pc, lr; } treo_trace_points[TreoTraceMax];
+static unsigned treo_trace_count, treo_trace_ticks, treo_trace_errors;
+void treo_afk_main_trace_begin(void) {
+    treo_afk_main_trace_cancel();
+#if defined(__arm64__)
+    if (!treo_trace_queue) treo_trace_queue = dispatch_queue_create("treo.afk.main.trace", DISPATCH_QUEUE_SERIAL);
+    treo_trace_thread = mach_thread_self();
+    treo_trace_count = treo_trace_ticks = treo_trace_errors = 0;
+    const thread_t target = treo_trace_thread;
+    treo_trace_timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, treo_trace_queue);
+    dispatch_source_set_timer(treo_trace_timer, dispatch_time(DISPATCH_TIME_NOW, 43000000), 43000000, 9000000);
+    dispatch_source_set_event_handler(treo_trace_timer, ^{
+        ++treo_trace_ticks;
+        thread_basic_info_data_t info;
+        mach_msg_type_number_t n = THREAD_BASIC_INFO_COUNT;
+        if (thread_info(target, THREAD_BASIC_INFO, (thread_info_t)&info, &n) != KERN_SUCCESS) {
+            ++treo_trace_errors; return;
+        }
+        if (info.run_state != TH_STATE_RUNNING || treo_trace_count == TreoTraceMax) return;
+        arm_thread_state64_t state;
+        n = ARM_THREAD_STATE64_COUNT;
+        if (thread_get_state(target, ARM_THREAD_STATE64, (thread_state_t)&state, &n) != KERN_SUCCESS) {
+            ++treo_trace_errors; return;
+        }
+        treo_trace_points[treo_trace_count].pc = (uintptr_t)arm_thread_state64_get_pc(state);
+        treo_trace_points[treo_trace_count++].lr = (uintptr_t)arm_thread_state64_get_lr(state);
+    });
+    dispatch_resume(treo_trace_timer);
+#endif
+}
+void treo_afk_main_trace_cancel(void) {
+    if (!treo_trace_timer) return;
+    dispatch_source_cancel(treo_trace_timer);
+    dispatch_sync(treo_trace_queue, ^{});
+    treo_trace_timer = nil;
+    mach_port_deallocate(mach_task_self(), treo_trace_thread);
+    treo_trace_thread = MACH_PORT_NULL;
+}
+static NSString *treo_trace_symbol(uintptr_t address) {
+    if (!address) return @"?";
+    Dl_info info = {0};
+    if (!dladdr((const void *)address, &info)) return [NSString stringWithFormat:@"0x%llx", (unsigned long long)address];
+    NSString *image = info.dli_fname ? [NSString stringWithUTF8String:info.dli_fname].lastPathComponent : @"?";
+    if (info.dli_sname) return [NSString stringWithFormat:@"%@:%s", image, info.dli_sname];
+    return [NSString stringWithFormat:@"%@+0x%llx", image, (unsigned long long)(address - (uintptr_t)info.dli_fbase)];
+}
+char *treo_afk_main_trace_end(void) {
+    treo_afk_main_trace_cancel();
+    NSMutableDictionary<NSString *, NSNumber *> *hist = [NSMutableDictionary new];
+    NSMutableDictionary<NSNumber *, NSString *> *symbols = [NSMutableDictionary new];
+    for (unsigned i = 0; i < treo_trace_count; ++i) {
+        NSNumber *pc = @(treo_trace_points[i].pc), *lr = @(treo_trace_points[i].lr);
+        NSString *leaf = symbols[pc];
+        if (!leaf) { leaf = treo_trace_symbol(treo_trace_points[i].pc); symbols[pc] = leaf; }
+        NSString *link = symbols[lr];
+        if (!link) { link = treo_trace_symbol(treo_trace_points[i].lr); symbols[lr] = link; }
+        NSString *key = [NSString stringWithFormat:@"%@ | LR %@", leaf, link];
+        hist[key] = @(hist[key].unsignedIntValue + 1);
+    }
+    NSMutableString *result = [NSMutableString stringWithFormat:@"Main PC/LR: %u mẫu runnable / %u lần lấy; %u lỗi",
+                               treo_trace_count, treo_trace_ticks, treo_trace_errors];
+    NSArray<NSString *> *keys = [hist keysSortedByValueUsingSelector:@selector(compare:)];
+    for (NSUInteger k = keys.count, shown = 0; k && shown < 6; --k, ++shown) {
+        NSString *key = keys[k-1];
+        [result appendFormat:@"\n%@ × %@", hist[key], key];
+    }
+    return strdup(result.UTF8String);
+}
+
 void treo_afk_threads_begin(void) {
     treo_afk_thread_start = treo_afk_read_threads();
     treo_afk_rusage_valid = getrusage(RUSAGE_SELF, &treo_afk_rusage_start) == 0;

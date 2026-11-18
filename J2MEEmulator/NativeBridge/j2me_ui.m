@@ -320,10 +320,31 @@ static s32 n_formShow(Runtime *runtime, JClass *clazz) {
     return RUNTIME_STATUS_NORMAL;
 }
 
+// Only deduplicate Canvas notices already applied by UIKit at this exact
+// revision. Never suppress alerts, forms, new revisions, or game input.
+static atomic_bool treo_ui_cut_enabled;
+static _Atomic uint64_t treo_ui_canvas_applied_token, treo_ui_saved_notices;
+void treo_afk_ui_cut_set(int enabled) {
+    atomic_store(&treo_ui_cut_enabled, false);
+    atomic_store(&treo_ui_canvas_applied_token, 0);
+    if (enabled) atomic_store(&treo_ui_cut_enabled, true);
+}
+void treo_afk_ui_canvas_applied(int revision) {
+    if (atomic_load(&treo_ui_cut_enabled))
+        atomic_store(&treo_ui_canvas_applied_token, 1ULL + (uint32_t)revision);
+}
+uint64_t treo_afk_ui_notices_saved(void) { return atomic_load(&treo_ui_saved_notices); }
+
 static s32 n_showCanvas(Runtime *runtime, JClass *clazz) {
+    const int revision = j2me_ui_revision();
+    if (atomic_load(&treo_ui_cut_enabled) &&
+        atomic_load(&treo_ui_canvas_applied_token) == 1ULL + (uint32_t)revision) {
+        atomic_fetch_add(&treo_ui_saved_notices, 1);
+        return RUNTIME_STATUS_NORMAL;
+    }
     printf("[J2ME UI] showCanvas\n");
     if (g_ui_callback) {
-        g_ui_callback(J2ME_UI_ACTION_SHOW_CANVAS, j2me_ui_revision());
+        g_ui_callback(J2ME_UI_ACTION_SHOW_CANVAS, revision);
     }
     return RUNTIME_STATUS_NORMAL;
 }

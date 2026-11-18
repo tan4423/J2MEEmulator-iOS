@@ -30,6 +30,13 @@ uint64_t treo_afk_paint_count(void);
 uint64_t treo_afk_bypassed_paints(void);
 uint64_t treo_afk_elided_calls(void);
 void treo_afk_threads_begin(void);
+double treo_afk_current_thread_cpu(void);
+void treo_afk_main_trace_begin(void);
+void treo_afk_main_trace_cancel(void);
+char * _Nullable treo_afk_main_trace_end(void); // caller frees
+void treo_afk_ui_cut_set(int enabled);
+void treo_afk_ui_canvas_applied(int revision);
+uint64_t treo_afk_ui_notices_saved(void);
 char * _Nullable treo_afk_threads_report(double seconds); // caller frees
 uint64_t treo_afk_paint_cpu_ns(void);
 
