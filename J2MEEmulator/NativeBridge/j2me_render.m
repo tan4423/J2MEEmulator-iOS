@@ -1068,6 +1068,7 @@ static TreoSprite treo_replay_sprites[TreoReplayCount];
 static unsigned treo_replay_count, treo_replay_width, treo_replay_height;
 static uintptr_t treo_replay_context;
 static size_t treo_replay_bytes;
+static uint64_t treo_replay_generation;
 static char treo_replay_report[1024];
 
 static CGContextRef treo_replay_bitmap(size_t w, size_t h) {
@@ -1181,18 +1182,22 @@ static NSString *treo_run_metal_replay(void) {
         @autoreleasepool {
             uint64_t start = treo_thread_cpu_ns();
             CGContextClearRect(cg, CGRectMake(0, 0, w, h));
+            CGRect clip = CGRectMake(0, 0, w, h);
+            CGContextSaveGState(cg);
             for (unsigned i = 0; i < TreoReplayCount; i++) {
                 const TreoSprite *s = &treo_replay_sprites[i];
+                if (!CGRectEqualToRect(s->clip, clip)) {
+                    CGContextRestoreGState(cg);
+                    CGContextSaveGState(cg);
+                    clip = s->clip;
+                    CGContextClipToRect(cg, clip);
+                }
                 CGImageRef crop = CGImageCreateWithImageInRect(s->image, CGRectMake(s->sx, s->sy, s->w, s->h));
                 if (!crop) { CGContextRelease(cg); return @"Core Graphics không tạo được ảnh con."; }
-                if (!CGRectIsEmpty(s->clip)) {
-                    CGContextSaveGState(cg);
-                    CGContextClipToRect(cg, s->clip);
-                    treo_draw_region_cg(cg, crop, s->x, s->y, s->w, s->h, s->transform);
-                    CGContextRestoreGState(cg);
-                }
+                treo_draw_region_cg(cg, crop, s->x, s->y, s->w, s->h, s->transform);
                 CGImageRelease(crop);
             }
+            CGContextRestoreGState(cg);
             CGContextFlush(cg);
             uint64_t end = treo_thread_cpu_ns();
             if (run && start && end >= start) cgNS += end - start;
@@ -1283,13 +1288,15 @@ int treo_metal_replay_start(void) {
     }
     treo_replay_context = 0;
     treo_replay_bytes = 0;
+    const uint64_t generation = ++treo_replay_generation;
     treo_replay_report[0] = '\0';
     atomic_store_explicit(&treo_replay_state, 1, memory_order_release);
     os_unfair_lock_unlock(&treo_replay_lock);
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 8 * NSEC_PER_SEC),
                    dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
         os_unfair_lock_lock(&treo_replay_lock);
-        if (atomic_load_explicit(&treo_replay_state, memory_order_relaxed) == 1) {
+        if (generation == treo_replay_generation &&
+            atomic_load_explicit(&treo_replay_state, memory_order_relaxed) == 1) {
             treo_replay_complete(@"Không thu đủ lệnh. Thử khi đang ở map và game đang hiện.");
         }
         os_unfair_lock_unlock(&treo_replay_lock);
