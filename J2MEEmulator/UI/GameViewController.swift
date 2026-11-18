@@ -96,9 +96,7 @@ class GameViewController: UIViewController {
     private var jarAuditWork: DispatchWorkItem?
     private var jarAuditJIT: Int32 = 0
     private var jarMainProfile = false
-    private var jarUIComparison = false
-    private var jarUIHiddenLayers: [CALayer] = []
-    private var jarUIProbeCover: UIView?
+    private var jarLoadComparison = false
     private var afkOriginalJIT: Int32?
     private var lastAFKTrace = ""
     private var afkFrozenLayers: [CALayer] = []
@@ -542,7 +540,7 @@ class GameViewController: UIViewController {
                      attributes: cpuProfileStartedAt == nil ? [] : .disabled) { [weak self] _ in
                 self?.togglePowerRun()
             },
-            UIAction(title: "So CPU main · cắt giao diện JAR") { [weak self] _ in self?.confirmJarAudit(compareUI: true) },
+            UIAction(title: "Thử tải giả · CPU main") { [weak self] _ in self?.confirmJarAudit(compareLoad: true) },
             UIAction(title: "Tìm hàm ăn CPU main · JAR") { [weak self] _ in self?.confirmJarAudit(profileMain: true) },
             UIAction(title: "Chẩn đoán CPU JAR · tắt → bật → tắt") { [weak self] _ in self?.confirmJarAudit() },
             UIAction(title: "Treo tối đa · màn hình đen") { [weak self] _ in self?.showBlackout() },
@@ -879,33 +877,34 @@ class GameViewController: UIViewController {
 
     private struct JarAuditSample {
         let base = AfkSample()
+        let loadNS = treo_jar_load_cpu_ns()
         let on = treo_jar_audit_ticks(1)
         let off = treo_jar_audit_ticks(0)
         let frames = treo_afk_layer_frames()
         let wakes = treo_afk_main_wakes()
     }
 
-    private func confirmJarAudit(profileMain: Bool = false, compareUI: Bool = false) {
+    private func confirmJarAudit(profileMain: Bool = false, compareLoad: Bool = false) {
         guard jarAuditID == nil, blackout == nil, powerRun == nil, cpuProfileStartedAt == nil else { return }
-        let alert = UIAlertController(title: compareUI ? "So CPU main · cắt giao diện" :
+        let alert = UIAlertController(title: compareLoad ? "Thử tải giả · CPU main" :
                 (profileMain ? "Tìm hàm ăn CPU main" : "Chẩn đoán CPU JAR"),
-            message: compareUI
-                ? "Trong map 37, để auto chạy và BẬT Treo tối ưu CPU trong game trước. Không bật màn đen Treo. App tự đo 3 lượt × 60 giây: UI thường → cắt lớp giao diện → UI thường, giữ treo JAR bật. Không lấy stack. Không chạm vào vùng game trong lúc đo."
+            message: compareLoad
+                ? "Trong map 37, để auto chạy và BẬT Treo tối ưu CPU trong game trước. Không bật màn đen Treo. App tự đo 3 lượt × 30 giây: không tải giả → có tải giả trên luồng game → không tải giả. Giữ treo JAR bật, không vẽ, không lấy stack. Hình đứng yên do chặn khung. Không chạm vào vùng game trong lúc đo."
                 : profileMain
                 ? "Dùng Farm-Clean-CPU.jar trong map 37, auto đang chạy, treo trong game đang TẮT. App lấy stack main ở hai lượt tắt/bật, mỗi lượt 20 giây. Hình đứng yên khi lấy mẫu vì app chặn khung game. Bật treo khi được nhắc. Đây không phải bài chấm CPU. Không bật màn đen Treo."
                 : "Dùng Farm-Clean-CPU.jar trong map 37, auto đang chạy, mục treo trong game đang TẮT. App đo 3 lượt × 60 giây, cùng chặn khung game. Chỉ thao tác bật treo và chạm để thoát khi app nhắc. Không bật màn đen Treo. JIT tạm tắt trong bài đo.",
             preferredStyle: .alert)
         alert.addAction(UIAlertAction(title: "Hủy", style: .cancel))
         alert.addAction(UIAlertAction(title: profileMain ? "Lấy mẫu" : "Đo", style: .default) { [weak self] _ in
-            self?.startJarAudit(profileMain: profileMain, compareUI: compareUI)
+            self?.startJarAudit(profileMain: profileMain, compareLoad: compareLoad)
         })
         present(alert, animated: true)
     }
 
-    private func startJarAudit(profileMain: Bool, compareUI: Bool) {
+    private func startJarAudit(profileMain: Bool, compareLoad: Bool) {
         guard jarAuditID == nil, blackout == nil, powerRun == nil, cpuProfileStartedAt == nil else { return }
         jarMainProfile = profileMain
-        jarUIComparison = compareUI
+        jarLoadComparison = compareLoad
         let id = UUID()
         jarAuditID = id
         jarAuditJIT = treo_game_jit_is_enabled()
@@ -925,8 +924,8 @@ class GameViewController: UIViewController {
         jarAuditWork = nil
         if jarMainProfile { treo_afk_main_trace_cancel() }
         jarMainProfile = false
-        if jarUIComparison { setJarUIProbeCut(false) }
-        jarUIComparison = false
+        treo_jar_load_set(0)
+        jarLoadComparison = false
         treo_jar_audit_set(0)
         treo_afk_wakes_set(0)
         treo_render_set_afk_mode(0)
@@ -944,41 +943,6 @@ class GameViewController: UIViewController {
         DispatchQueue.main.asyncAfter(deadline: .now() + seconds, execute: work)
     }
 
-    private func setJarUIProbeCut(_ enabled: Bool) {
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        if enabled {
-            guard jarUIProbeCover == nil else {
-                CATransaction.commit()
-                return
-            }
-            // Keep the existing cancellation menu reachable. Don't change
-            // the controller, window, JAR displayable, or native callbacks.
-            for child in view.subviews where child !== screenMenu && !screenMenu.isDescendant(of: child) {
-                if !child.layer.isHidden {
-                    child.layer.isHidden = true
-                    jarUIHiddenLayers.append(child.layer)
-                }
-            }
-            let cover = UIView(frame: view.bounds)
-            cover.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-            cover.backgroundColor = .black
-            // Swallow touches so the JAR cannot wake accidentally.
-            if screenMenu.superview === view {
-                view.insertSubview(cover, belowSubview: screenMenu)
-            } else {
-                view.addSubview(cover)
-            }
-            jarUIProbeCover = cover
-        } else {
-            jarUIProbeCover?.removeFromSuperview()
-            jarUIProbeCover = nil
-            for layer in jarUIHiddenLayers { layer.isHidden = false }
-            jarUIHiddenLayers.removeAll()
-        }
-        CATransaction.commit()
-    }
-
     private struct JarAuditResult {
         let total: Double?
         let main: Double?
@@ -989,21 +953,21 @@ class GameViewController: UIViewController {
     private func runJarAudit(id: UUID, leg: Int, rows: [String], results: [JarAuditResult]) {
         // Same native mode throughout each CPU window; restore frames only for user input.
         treo_render_set_afk_mode(1)
-        if jarUIComparison { setJarUIProbeCut(leg == 1) }
+        treo_jar_load_set(jarLoadComparison && leg == 1 ? 1 : 0)
         scheduleJarAudit(id: id, after: 3) { [weak self] in
             guard let self else { return }
             treo_afk_threads_begin()
             let start = JarAuditSample()
             let profileMain = self.jarMainProfile
             if profileMain { treo_afk_main_stack_begin() }
-            self.scheduleJarAudit(id: id, after: profileMain ? 20 : 60) { [weak self] in
+            self.scheduleJarAudit(id: id, after: profileMain ? 20 : (self.jarLoadComparison ? 30 : 60)) { [weak self] in
                 guard let self else { return }
                 let end = JarAuditSample()
                 let dt = max(0.001, end.base.time - start.base.time)
                 let on = end.on &- start.on, off = end.off &- start.off
-                let compareUI = self.jarUIComparison
-                let names = compareUI
-                    ? ["A1 · UI thường", "B · Cắt lớp UI", "A2 · UI thường"]
+                let compareLoad = self.jarLoadComparison
+                let names = compareLoad
+                    ? ["A1 · Không tải giả", "B · Có tải giả", "A2 · Không tải giả"]
                     : ["A1 · JAR tắt", "B · JAR bật", "A2 · JAR tắt"]
                 let total = end.base.cpuPercent(since: start.base)
                 let paint = Double(end.base.paintNS &- start.base.paintNS) / dt / 10_000_000
@@ -1019,7 +983,7 @@ class GameViewController: UIViewController {
                     dt, paint, paints, Double(end.wakes &- start.wakes) / dt)
                 row += String(format: "\n%.2f vòng game/s", ticks)
                 row += " · \(off) tick tắt / \(on) tick bật · \(frames) khung lên layer"
-                let validState = (compareUI || leg == 1) ? (on > 0 && off == 0) : (off > 0 && on == 0)
+                let validState = (compareLoad || leg == 1) ? (on > 0 && off == 0) : (off > 0 && on == 0)
                 if !validState { row += "\nKhông hợp lệ: tick không đúng trạng thái trong lượt." }
                 if frames != 0 { row += "\nKhông hợp lệ: vẫn có khung lên layer." }
                 if let raw = treo_afk_threads_report(dt) {
@@ -1030,6 +994,9 @@ class GameViewController: UIViewController {
                     row += "\n" + String(cString: raw)
                     free(raw)
                 }
+                if compareLoad {
+                    row += String(format: "\nCPU tải giả: %.1f điểm", Double(end.loadNS &- start.loadNS) / dt / 10_000_000)
+                }
                 let all = rows + [row]
                 guard validState && frames == 0 else {
                     self.finishJarAudit(rows: all, results: [])
@@ -1038,7 +1005,7 @@ class GameViewController: UIViewController {
                 let measured = results + [JarAuditResult(total: total, main: main, ticks: ticks, paint: paint)]
                 if leg == 2 || (profileMain && leg == 1) {
                     self.finishJarAudit(rows: all, results: measured)
-                } else if compareUI {
+                } else if compareLoad {
                     self.runJarAudit(id: id, leg: leg + 1, rows: all, results: measured)
                 } else {
                     self.promptJarAudit(id: id, nextLeg: leg + 1, rows: all, results: measured)
@@ -1082,7 +1049,7 @@ class GameViewController: UIViewController {
 
     private func finishJarAudit(rows: [String], results: [JarAuditResult]) {
         let profileMain = jarMainProfile
-        let compareUI = jarUIComparison
+        let compareLoad = jarLoadComparison
         stopJarAudit()
         if profileMain {
             publishMeasurement(title: "Tìm hàm ăn CPU main", message:
@@ -1101,8 +1068,8 @@ class GameViewController: UIViewController {
                 + "\(delta(a.main, b.main, c.main)) điểm main; \(delta(a.paint, b.paint, c.paint)) điểm trong paint; "
                 + "\(delta(a.ticks, b.ticks, c.ticks)) vòng/s.\nĐối chiếu B với từng mốc A bên dưới.\n\n"
         }
-        let uiNote = compareUI ? "\n\nTreo JAR bật suốt bài. B che input và ẩn các lớp con trực tiếp của màn game trừ menu chẩn đoán; không cắt toàn bộ UIKit hoặc QuartzCore." : ""
-        publishMeasurement(title: compareUI ? "So CPU main · cắt giao diện" : "Chẩn đoán CPU JAR", message:
+        let uiNote = compareLoad ? "\n\nTreo JAR bật suốt bài. B chỉ thêm phép tính trên luồng game, không vẽ hoặc đổi UI. CPU tổng của B đã gồm tải giả; đây là phép thử nguyên nhân, không phải bản tối ưu." : ""
+        publishMeasurement(title: compareLoad ? "Thử tải giả · CPU main" : "Chẩn đoán CPU JAR", message:
             "Giới hạn FPS Treo: \(fpsLimit) · JIT tắt trong phép đo.\n\n" + summary +
             rows.joined(separator: "\n\n") +
             "\n\nCả ba lượt chặn khung native, không đổi độ sáng. CPU quy về một lõi. game là luồng gọi helper mỗi vòng; paint* là luồng paint gần nhất, có thể trùng game, không cộng hai số này. Không đo GPU." + uiNote)
