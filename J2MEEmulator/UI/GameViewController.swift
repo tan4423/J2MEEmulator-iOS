@@ -52,6 +52,10 @@ class GameViewController: UIViewController {
     private var portraitPadBottomPins: [NSLayoutConstraint] = []
     private let screenMenu = UIButton(type: .system)
     private var blackout: UIButton?
+    private var quietLayers: [(CALayer, Bool)] = []
+    private var quietCanvasRefresh = false
+    private var quietCanvasRequests: UInt64 = 0
+    private var quietUIActive = false
     private var blackoutScreen: UIScreen?
     private var previousBrightness: CGFloat?
     private var heldDirections: Set<Int32> = []
@@ -497,7 +501,7 @@ class GameViewController: UIViewController {
                 self?.togglePowerRun()
             },
             UIAction(title: "Treo tối đa · màn hình đen") { [weak self] _ in self?.showBlackout() },
-            UIAction(title: "Treo · không dựng hình (thử nghiệm)") { [weak self] _ in self?.showBlackout(skipRaster: true) },
+            UIAction(title: "Treo · bỏ vẽ + UI tĩnh (thử nghiệm)") { [weak self] _ in self?.showBlackout(skipRaster: true) },
             UIAction(title: "So CPU treo · 3 lượt tự động") { [weak self] _ in self?.startAfkComparison() },
             UIAction(title: treo_game_jit_is_enabled() != 0 ? "Tắt JIT Java (thử nghiệm)" : "Bật JIT Java (thử nghiệm)", attributes: powerRun == nil ? [] : .disabled) { [weak self] _ in
                 guard let self else { return }
@@ -764,6 +768,44 @@ class GameViewController: UIViewController {
         if let blackout { view.bringSubviewToFront(blackout) }
     }
 
+    // Keep the wake control live, but remove the covered game layers from
+    // composition without changing UIKit's layout or Canvas visibility state.
+    private func setQuietBlackoutUI(_ enabled: Bool) {
+        guard quietUIActive != enabled else { return }
+        quietUIActive = enabled
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        if enabled {
+            quietLayers = view.subviews.filter { $0 !== blackout }.map { ($0.layer, $0.layer.isHidden) }
+            for (layer, _) in quietLayers { layer.isHidden = true }
+            emulatorView.clearPendingGameFrame()
+        } else {
+            for (layer, hidden) in quietLayers { layer.isHidden = hidden }
+            quietLayers.removeAll()
+        }
+        CATransaction.commit()
+        if !enabled && quietCanvasRefresh {
+            quietCanvasRefresh = false
+            showCanvasView()
+        }
+    }
+
+    fileprivate func handleQuietGameUI(_ action: Int32) -> Bool {
+        guard quietUIActive else { return false }
+        switch action {
+        case Int32(J2ME_UI_ACTION_SHOW_CANVAS):
+            quietCanvasRequests &+= 1
+            quietCanvasRefresh = true
+            return true
+        case Int32(J2ME_UI_ACTION_SHOW_FORM), Int32(J2ME_UI_ACTION_SHOW_TEXTBOX),
+             Int32(J2ME_UI_ACTION_SHOW_LIST), Int32(J2ME_UI_ACTION_SHOW_ALERT):
+            // Never hide a prompt or leave the user unable to interact with it.
+            hideBlackout(offerReport: false)
+            return false
+        default: return false
+        }
+    }
+
     private func showBlackout(skipRaster: Bool = false) {
         guard blackout == nil else { return }
         discardCPUProfile()
@@ -785,6 +827,7 @@ class GameViewController: UIViewController {
         ])
         blackout = cover
         treo_render_set_afk_mode(skipRaster ? 4 : 1)
+        setQuietBlackoutUI(skipRaster)
         if let screen = view.window?.windowScene?.screen {
             blackoutScreen = screen
             previousBrightness = screen.brightness
@@ -793,8 +836,12 @@ class GameViewController: UIViewController {
         NotificationCenter.default.addObserver(self, selector: #selector(hideBlackout), name: UIApplication.willResignActiveNotification, object: nil)
     }
 
-    @objc private func hideBlackout() {
+    @objc private func hideBlackout() { hideBlackout(offerReport: true) }
+
+    private func hideBlackout(offerReport: Bool) {
         guard blackout != nil else { return }
+        if !offerReport { quietCanvasRefresh = false }
+        setQuietBlackoutUI(false)
         afkMeasure?.cancel()
         afkMeasure = nil
         afkMeasureID = nil
@@ -809,7 +856,7 @@ class GameViewController: UIViewController {
         previousBrightness = nil
         blackout?.removeFromSuperview()
         blackout = nil
-        if showComparison { showLastMeasurement() }
+        if showComparison && offerReport { showLastMeasurement() }
     }
 
     private struct AfkSample {
@@ -840,11 +887,14 @@ class GameViewController: UIViewController {
         let paintRate: Double
         let elided: UInt64
         let threads: String
+        let deferredCanvas: UInt64
     }
 
     private func runAfkLeg(id: UUID, index: Int, results: [AfkLeg]) {
         let optimized = index == 1
         treo_render_set_afk_mode(optimized ? 4 : 1)
+        setQuietBlackoutUI(optimized)
+        let requestsStart = quietCanvasRequests
         blackout?.setTitle("Đang đo \(index + 1)/3 · Chạm để hủy", for: .normal)
         treo_afk_threads_begin()
         let start = AfkSample()
@@ -858,7 +908,8 @@ class GameViewController: UIViewController {
             let leg = AfkLeg(cpu: end.cpuPercent(since: start),
                              paintCPU: Double(end.paintNS &- start.paintNS) / seconds / 10_000_000,
                              paintRate: Double(end.paints &- start.paints) / seconds,
-                             elided: end.elided &- start.elided, threads: threads)
+                             elided: end.elided &- start.elided, threads: threads,
+                             deferredCanvas: self.quietCanvasRequests &- requestsStart)
             let all = results + [leg]
             if index < 2 {
                 self.runAfkLeg(id: id, index: index + 1, results: all)
@@ -876,10 +927,10 @@ class GameViewController: UIViewController {
             }
             let report = """
             \(row("Cũ 1", all[0]))
-            \(row("Không dựng hình", all[1]))
+            \(row("VM + UI tĩnh", all[1]))
             \(row("Cũ 2", all[2]))
             \(delta)
-            Bỏ \(all[1].elided) lời gọi vẽ ở VM.
+            Bỏ \(all[1].elided) lời gọi vẽ ở VM · hoãn \(all[1].deferredCanvas) cập nhật Canvas UI.
             *Luồng paint gần nhất; số luồng chỉ tính luồng còn sống ở hai mốc. Không đo GPU %.
             """
             self.afkMeasure = nil
@@ -1101,6 +1152,7 @@ let gameUICallback: @convention(c) (Int32, Int32) -> Void = { action, revision i
         j2me_ui_lock_screen()
         defer { j2me_ui_unlock_screen() }
         guard revision == j2me_ui_revision(), let vc = activeGameViewController else { return }
+        if vc.handleQuietGameUI(action) { return }
         switch action {
         case Int32(J2ME_UI_ACTION_SHOW_CANVAS):  vc.showCanvasView()
         case Int32(J2ME_UI_ACTION_SHOW_FORM), Int32(J2ME_UI_ACTION_SHOW_TEXTBOX): vc.showFormView()

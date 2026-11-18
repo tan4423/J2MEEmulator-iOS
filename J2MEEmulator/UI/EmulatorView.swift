@@ -25,6 +25,13 @@ nonisolated private final class LatestGameFrame: @unchecked Sendable {
         return true
     }
 
+    func clearPending() {
+        lock.lock()
+        pending = nil
+        // Keep the scheduled flag: an already queued drain still owns it.
+        lock.unlock()
+    }
+
     func take() -> CGImage? {
         lock.lock()
         defer { lock.unlock() }
@@ -68,8 +75,11 @@ class EmulatorView: UIView {
     var onFrame: ((CGImage) -> Void)?
 
     /// Update the displayed image from a CGImage.
+    func clearPendingGameFrame() { latestFrame.clearPending() }
+
     nonisolated func displayImage(_ cgImage: CGImage) {
-        guard latestFrame.submit(cgImage) else { return }
+        guard j2me_render_is_afk_suspended() == 0,
+              latestFrame.submit(cgImage) else { return }
         DispatchQueue.main.async { [weak self] in
             guard let self, let cgImage = self.latestFrame.take() else { return }
             guard j2me_render_is_afk_suspended() == 0 else { return }
