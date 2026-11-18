@@ -385,15 +385,15 @@ double treo_afk_current_thread_cpu(void) {
     return ts.tv_sec + ts.tv_nsec / 1e9;
 }
 
-// Diagnostic only. Never suspend main; use kernel-mediated bounded reads and
-// discard a chain if the live register snapshot changed. Symbolize after sampling.
+// Legacy trace reads main live. The explicit JAR profile can briefly suspend
+// it for a bounded stack snapshot. Symbolization always happens afterward.
 static dispatch_queue_t treo_trace_queue;
 static dispatch_source_t treo_trace_timer;
 static thread_t treo_trace_thread;
 enum { TreoTraceMax = 2048, TreoTraceDepth = 16 };
 static struct { uintptr_t pc, lr, frames[TreoTraceDepth]; unsigned depth; } treo_trace_points[TreoTraceMax];
 static unsigned treo_trace_count, treo_trace_ticks, treo_trace_errors, treo_trace_chains, treo_trace_unstable;
-static bool treo_trace_has_stack;
+static bool treo_trace_has_stack, treo_trace_snapshot_mode;
 
 #if defined(__arm64__)
 static unsigned treo_trace_walk(uintptr_t fp, uintptr_t low, uintptr_t high,
@@ -418,6 +418,51 @@ static unsigned treo_trace_walk(uintptr_t fp, uintptr_t low, uintptr_t high,
 }
 #endif
 
+#if defined(__arm64__)
+// Single bounded copy; no allocation, ObjC, unwinding, or symbolization while
+// main is suspended. The buffer is private to the serial sampler queue.
+static bool treo_trace_snapshot(thread_t target, uintptr_t low, uintptr_t high, unsigned slot) {
+    static uintptr_t words[8192 / sizeof(uintptr_t)];
+    arm_thread_state64_t state;
+    mach_msg_type_number_t n = ARM_THREAD_STATE64_COUNT;
+    vm_size_t copied = 0;
+    uintptr_t sp = 0, fp = 0;
+    if (thread_suspend(target) != KERN_SUCCESS) return false;
+    kern_return_t status = thread_get_state(target, ARM_THREAD_STATE64, (thread_state_t)&state, &n);
+    if (status == KERN_SUCCESS) {
+        sp = (uintptr_t)arm_thread_state64_get_sp(state);
+        fp = (uintptr_t)arm_thread_state64_get_fp(state);
+        if (sp >= low && sp < high && fp >= sp && !(sp & 15)) {
+            const size_t size = MIN(high - sp, sizeof(words));
+            if (vm_read_overwrite(mach_task_self(), (vm_address_t)sp, size,
+                                  (vm_address_t)(uintptr_t)words, &copied) != KERN_SUCCESS)
+                copied = 0;
+        }
+    }
+    const kern_return_t resumed = thread_resume(target);
+    if (status != KERN_SUCCESS || resumed != KERN_SUCCESS) return false;
+
+    treo_trace_points[slot].pc = (uintptr_t)arm_thread_state64_get_pc(state);
+    treo_trace_points[slot].lr = (uintptr_t)arm_thread_state64_get_lr(state);
+    unsigned depth = 0;
+    while (depth < TreoTraceDepth && copied >= 16 && fp >= sp &&
+           fp - sp <= copied - 16 && !(fp & 15)) {
+        const size_t idx = (fp - sp) / sizeof(uintptr_t);
+        uintptr_t ret = words[idx + 1];
+#if __has_feature(ptrauth_calls)
+        ret = (uintptr_t)ptrauth_strip((void *)ret, ptrauth_key_return_address);
+#endif
+        if (ret < 4 || (ret & 3)) break;
+        treo_trace_points[slot].frames[depth++] = ret - 4;
+        if (words[idx] <= fp) break;
+        fp = words[idx];
+    }
+    treo_trace_points[slot].depth = depth;
+    if (depth) ++treo_trace_chains;
+    return true;
+}
+#endif
+
 static void treo_afk_trace_begin(bool stack) {
     treo_afk_main_trace_cancel();
 #if defined(__arm64__)
@@ -425,13 +470,14 @@ static void treo_afk_trace_begin(bool stack) {
     treo_trace_thread = mach_thread_self();
     treo_trace_count = treo_trace_ticks = treo_trace_errors = treo_trace_chains = treo_trace_unstable = 0;
     treo_trace_has_stack = stack;
+    treo_trace_snapshot_mode = stack && atomic_load_explicit(&treo_jar_auditing, memory_order_relaxed);
     const pthread_t main = pthread_self();
     const uintptr_t high = (uintptr_t)pthread_get_stackaddr_np(main);
     const size_t stack_size = pthread_get_stacksize_np(main);
     const uintptr_t low = stack_size <= high ? high - stack_size : high;
     const thread_t target = treo_trace_thread;
     treo_trace_timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, treo_trace_queue);
-    const uint64_t interval = stack ? 53000000 : 43000000;
+    const uint64_t interval = treo_trace_snapshot_mode ? 47000000 : (stack ? 53000000 : 43000000);
     dispatch_source_set_timer(treo_trace_timer, dispatch_time(DISPATCH_TIME_NOW, (int64_t)interval), interval, 9000000);
     dispatch_source_set_event_handler(treo_trace_timer, ^{
         ++treo_trace_ticks;
@@ -441,6 +487,11 @@ static void treo_afk_trace_begin(bool stack) {
             ++treo_trace_errors; return;
         }
         if (info.run_state != TH_STATE_RUNNING || treo_trace_count == TreoTraceMax) return;
+        if (treo_trace_snapshot_mode) {
+            if (treo_trace_snapshot(target, low, high, treo_trace_count)) ++treo_trace_count;
+            else ++treo_trace_errors;
+            return;
+        }
         arm_thread_state64_t state;
         n = ARM_THREAD_STATE64_COUNT;
         if (thread_get_state(target, ARM_THREAD_STATE64, (thread_state_t)&state, &n) != KERN_SUCCESS) {
@@ -521,7 +572,9 @@ char *treo_afk_main_trace_end(void) {
     }
     NSMutableString *result = [NSMutableString stringWithFormat:@"Main PC/LR: %u mẫu runnable / %u lần lấy; %u lỗi",
                                treo_trace_count, treo_trace_ticks, treo_trace_errors];
-    if (treo_trace_has_stack)
+    if (treo_trace_snapshot_mode)
+        [result appendFormat:@"\n%u chuỗi FP từ ảnh chụp stack (tối đa 8 KiB/mẫu)", treo_trace_chains];
+    else if (treo_trace_has_stack)
         [result appendFormat:@"\n%u chuỗi FP giữ lại · %u mẫu đổi trong lúc đọc (chỉ giữ PC/LR)",
             treo_trace_chains, treo_trace_unstable];
     NSArray<NSString *> *keys = [hist keysSortedByValueUsingSelector:@selector(compare:)];
