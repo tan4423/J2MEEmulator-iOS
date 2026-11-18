@@ -52,12 +52,6 @@ class GameViewController: UIViewController {
     private var portraitPadBottomPins: [NSLayoutConstraint] = []
     private let screenMenu = UIButton(type: .system)
     private var blackout: UIButton?
-    private var afkSurface: TreoAFKSurface?
-    private var afkSurfaceTransition = false
-    private var afkSurfaceAfterTransition: (() -> Void)?
-    private var quietCanvasRefresh = false
-    private var quietCanvasRequests: UInt64 = 0
-    private var quietUIActive = false
     private var blackoutScreen: UIScreen?
     private var previousBrightness: CGFloat?
     private var heldDirections: Set<Int32> = []
@@ -503,8 +497,8 @@ class GameViewController: UIViewController {
                 self?.togglePowerRun()
             },
             UIAction(title: "Treo tối đa · màn hình đen") { [weak self] _ in self?.showBlackout() },
-            UIAction(title: "Treo · màn đen riêng (thử nghiệm)") { [weak self] _ in self?.showBlackout(skipRaster: true) },
-            UIAction(title: "So CPU treo · 3 lượt tự động") { [weak self] _ in self?.startAfkComparison() },
+            UIAction(title: "Treo · vẽ SIMD ngầm (thử nghiệm)") { [weak self] _ in self?.showBlackout(mode: 5) },
+            UIAction(title: "So CPU treo · 4 lượt tự động") { [weak self] _ in self?.startAfkComparison() },
             UIAction(title: treo_game_jit_is_enabled() != 0 ? "Tắt JIT Java (thử nghiệm)" : "Bật JIT Java (thử nghiệm)", attributes: powerRun == nil ? [] : .disabled) { [weak self] _ in
                 guard let self else { return }
                 if treo_game_jit_is_enabled() != 0 {
@@ -770,84 +764,7 @@ class GameViewController: UIViewController {
         if let blackout { view.bringSubviewToFront(blackout) }
     }
 
-    // Full-screen presentation, not overFullScreen: UIKit takes the game's
-    // entire view tree out of the window. The running VM is not tied to it.
-    private func setQuietBlackoutUI(_ enabled: Bool, completion: @escaping () -> Void = {}) {
-        if afkSurfaceTransition {
-            afkSurfaceAfterTransition = { [weak self] in
-                self?.setQuietBlackoutUI(enabled, completion: completion)
-            }
-            return
-        }
-        if enabled {
-            guard afkSurface == nil, presentedViewController == nil, viewIfLoaded?.window != nil else {
-                completion()
-                return
-            }
-            let surface = TreoAFKSurface()
-            surface.orientation = supportedInterfaceOrientations
-            surface.modalPresentationStyle = .fullScreen
-            surface.wake = { [weak self] in self?.hideBlackout() }
-            afkSurface = surface
-            afkSurfaceTransition = true
-            quietUIActive = true
-            emulatorView.clearPendingGameFrame()
-            present(surface, animated: false) { [weak self] in
-                self?.finishAFKSurfaceTransition(completion)
-            }
-        } else {
-            quietUIActive = false
-            let restoreCanvas = quietCanvasRefresh
-            quietCanvasRefresh = false
-            guard let surface = afkSurface else {
-                if restoreCanvas { showCanvasView() }
-                completion()
-                return
-            }
-            afkSurface = nil
-            afkSurfaceTransition = true
-            surface.dismiss(animated: false) { [weak self] in
-                guard let self else { return }
-                if restoreCanvas { self.showCanvasView() }
-                self.finishAFKSurfaceTransition(completion)
-            }
-        }
-    }
-
-    private func finishAFKSurfaceTransition(_ completion: () -> Void) {
-        afkSurfaceTransition = false
-        if let next = afkSurfaceAfterTransition {
-            afkSurfaceAfterTransition = nil
-            next()
-        } else {
-            completion()
-        }
-    }
-
-    private func setAFKTitle(_ title: String) {
-        blackout?.setTitle(title, for: .normal)
-        afkSurface?.button.setTitle(title, for: .normal)
-    }
-
-    fileprivate func handleQuietGameUI(_ action: Int32, revision: Int32) -> Bool {
-        guard quietUIActive else { return false }
-        switch action {
-        case Int32(J2ME_UI_ACTION_SHOW_CANVAS):
-            quietCanvasRequests &+= 1
-            quietCanvasRefresh = true
-            return true
-        case Int32(J2ME_UI_ACTION_SHOW_FORM), Int32(J2ME_UI_ACTION_SHOW_TEXTBOX),
-             Int32(J2ME_UI_ACTION_SHOW_LIST), Int32(J2ME_UI_ACTION_SHOW_ALERT):
-            // Never hide a prompt or leave the user unable to interact with it.
-            finishBlackout(offerReport: false) {
-                gameUICallback(action, revision)
-            }
-            return true
-        default: return false
-        }
-    }
-
-    private func showBlackout(skipRaster: Bool = false) {
+    private func showBlackout(mode: Int32 = 1) {
         guard blackout == nil else { return }
         discardCPUProfile()
         for code in Array(heldDirections) { releaseDirection(code) }
@@ -867,8 +784,7 @@ class GameViewController: UIViewController {
             cover.trailingAnchor.constraint(equalTo: view.trailingAnchor)
         ])
         blackout = cover
-        treo_render_set_afk_mode(skipRaster ? 4 : 1)
-        setQuietBlackoutUI(skipRaster)
+        treo_render_set_afk_mode(mode)
         if let screen = view.window?.windowScene?.screen {
             blackoutScreen = screen
             previousBrightness = screen.brightness
@@ -877,11 +793,8 @@ class GameViewController: UIViewController {
         NotificationCenter.default.addObserver(self, selector: #selector(hideBlackout), name: UIApplication.willResignActiveNotification, object: nil)
     }
 
-    @objc private func hideBlackout() { finishBlackout(offerReport: true) }
-
-    private func finishBlackout(offerReport: Bool, completion: @escaping () -> Void = {}) {
+    @objc private func hideBlackout() {
         guard blackout != nil else { return }
-        if !offerReport { quietCanvasRefresh = false }
         afkMeasure?.cancel()
         afkMeasure = nil
         afkMeasureID = nil
@@ -896,10 +809,7 @@ class GameViewController: UIViewController {
         previousBrightness = nil
         blackout?.removeFromSuperview()
         blackout = nil
-        setQuietBlackoutUI(false) { [weak self] in
-            if showComparison && offerReport { self?.showLastMeasurement() }
-            completion()
-        }
+        if showComparison { showLastMeasurement() }
     }
 
     private struct AfkSample {
@@ -908,6 +818,7 @@ class GameViewController: UIViewController {
         let paints = treo_afk_paint_count()
         let paintNS = treo_afk_paint_cpu_ns()
         let elided = treo_afk_elided_calls()
+        let raster = treo_software_stats()
 
         func cpuPercent(since start: AfkSample) -> Double? {
             let seconds = time - start.time
@@ -929,24 +840,17 @@ class GameViewController: UIViewController {
         let paintCPU: Double
         let paintRate: Double
         let elided: UInt64
+        let fast: UInt64
+        let regions: UInt64
+        let mismatch: UInt64
         let threads: String
-        let deferredCanvas: UInt64
-        let detached: Bool
     }
 
     private func runAfkLeg(id: UUID, index: Int, results: [AfkLeg]) {
-        let optimized = index == 1
-        setQuietBlackoutUI(optimized) { [weak self] in
-            guard let self, self.afkMeasureID == id, self.blackout != nil else { return }
-            self.measureAFKLeg(id: id, index: index, results: results)
-        }
-    }
-
-    private func measureAFKLeg(id: UUID, index: Int, results: [AfkLeg]) {
-        treo_render_set_afk_mode(index == 1 ? 4 : 1)
-        let detached = afkSurface != nil && viewIfLoaded?.window == nil
-        let requestsStart = quietCanvasRequests
-        setAFKTitle("Đang đo \(index + 1)/3 · Chạm để hủy")
+        // Every leg uses the same overlay and brightness; no modal transitions.
+        let modes: [Int32] = [1, 5, 4, 1]
+        treo_render_set_afk_mode(modes[index])
+        blackout?.setTitle("Đang đo \(index + 1)/\(modes.count) · Chạm để hủy", for: .normal)
         treo_afk_threads_begin()
         let start = AfkSample()
         let work = DispatchWorkItem { [weak self] in
@@ -959,11 +863,13 @@ class GameViewController: UIViewController {
             let leg = AfkLeg(cpu: end.cpuPercent(since: start),
                              paintCPU: Double(end.paintNS &- start.paintNS) / seconds / 10_000_000,
                              paintRate: Double(end.paints &- start.paints) / seconds,
-                             elided: end.elided &- start.elided, threads: threads,
-                             deferredCanvas: self.quietCanvasRequests &- requestsStart,
-                             detached: detached && self.viewIfLoaded?.window == nil)
+                             elided: end.elided &- start.elided,
+                             fast: end.raster.fast &- start.raster.fast,
+                             regions: end.raster.regions &- start.raster.regions,
+                             mismatch: end.raster.mismatch &- start.raster.mismatch,
+                             threads: threads)
             let all = results + [leg]
-            if index < 2 {
+            if index + 1 < modes.count {
                 self.runAfkLeg(id: id, index: index + 1, results: all)
                 return
             }
@@ -971,20 +877,19 @@ class GameViewController: UIViewController {
                 let total = sample.cpu.map { String(format: "%.1f%%", $0) } ?? "?"
                 return "\(name): \(total) tổng · \(String(format: "%.1f%%", sample.paintCPU)) paint · \(String(format: "%.1f", sample.paintRate)) paint/s\n\(sample.threads)"
             }
-            let delta: String
-            if let a = all[0].cpu, let b = all[1].cpu, let c = all[2].cpu {
-                delta = String(format: "Mới − trung bình hai lượt cũ: %+.1f điểm %% CPU", b - (a + c) / 2)
-            } else {
-                delta = "Không tính được chênh lệch"
+            func difference(_ i: Int) -> String {
+                guard let a = all[0].cpu, let b = all[i].cpu, let c = all[3].cpu else { return "?" }
+                return String(format: "%+.1f", b - (a + c) / 2)
             }
             let report = """
             \(row("Cũ 1", all[0]))
-            \(row("VM + màn đen riêng", all[1]))
-            \(row("Cũ 2", all[2]))
-            \(delta)
-            View game rời cửa sổ: \(all[1].detached ? "Có" : "Không xác nhận").
-            Bỏ \(all[1].elided) lời gọi vẽ ở VM · hoãn \(all[1].deferredCanvas) cập nhật Canvas UI.
-            *Luồng paint gần nhất; số luồng chỉ tính luồng còn sống ở hai mốc. Không đo GPU %.
+            \(row("SIMD ngầm", all[1]))
+            \(row("Bỏ vẽ VM", all[2]))
+            \(row("Cũ 2", all[3]))
+            So mốc cũ: SIMD \(difference(1)) · VM \(difference(2)) điểm CPU.
+            SIMD nhanh \(all[1].fast)/\(all[1].regions) · lệch mẫu \(all[1].mismatch).
+            VM bỏ \(all[2].elided) lời gọi.
+            Cùng màn đen. *Luồng paint gần nhất. Không đo GPU %.
             """
             self.afkMeasure = nil
             self.afkMeasureID = nil
@@ -1196,28 +1101,6 @@ class GameViewController: UIViewController {
     }
 }
 
-// Minimal screen for headless foreground AFK; no game views or layout work.
-private final class TreoAFKSurface: UIViewController {
-    var orientation: UIInterfaceOrientationMask = .portrait
-    var wake: (() -> Void)?
-    let button = UIButton(type: .custom)
-
-    override var supportedInterfaceOrientations: UIInterfaceOrientationMask { orientation }
-    override var prefersStatusBarHidden: Bool { true }
-    override var prefersHomeIndicatorAutoHidden: Bool { true }
-
-    override func loadView() {
-        button.backgroundColor = .black
-        button.setTitle("Chạm để hiện game", for: .normal)
-        button.setTitleColor(UIColor(white: 0.36, alpha: 1), for: .normal)
-        button.titleLabel?.font = .systemFont(ofSize: 14)
-        button.addTarget(self, action: #selector(wakeTapped), for: .touchUpInside)
-        view = button
-    }
-
-    @objc private func wakeTapped() { wake?() }
-}
-
 // MARK: - Game UI callback (global)
 
 private(set) weak var activeGameViewController: GameViewController?
@@ -1227,7 +1110,6 @@ let gameUICallback: @convention(c) (Int32, Int32) -> Void = { action, revision i
         j2me_ui_lock_screen()
         defer { j2me_ui_unlock_screen() }
         guard revision == j2me_ui_revision(), let vc = activeGameViewController else { return }
-        if vc.handleQuietGameUI(action, revision: revision) { return }
         switch action {
         case Int32(J2ME_UI_ACTION_SHOW_CANVAS):  vc.showCanvasView()
         case Int32(J2ME_UI_ACTION_SHOW_FORM), Int32(J2ME_UI_ACTION_SHOW_TEXTBOX): vc.showFormView()

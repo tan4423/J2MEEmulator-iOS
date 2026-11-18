@@ -108,7 +108,8 @@ uint64_t treo_afk_paint_count(void) { return atomic_load_explicit(&g_afk_paint_c
 uint64_t treo_afk_paint_cpu_ns(void) { return atomic_load_explicit(&g_afk_paint_cpu_ns, memory_order_relaxed); }
 
 static s32 n_afkHeadless(Runtime *runtime, JClass *clazz) {
-    push_int(runtime->stack, atomic_load_explicit(&treo_afk_mode, memory_order_acquire) >= 3);
+    const int mode = atomic_load_explicit(&treo_afk_mode, memory_order_acquire);
+    push_int(runtime->stack, mode == 3 || mode == 4);
     return RUNTIME_STATUS_NORMAL;
 }
 static _Thread_local s64 g_afk_canvas;
@@ -162,7 +163,7 @@ int j2me_render_is_afk_suspended(void) {
 }
 
 void treo_render_set_afk_mode(int mode) {
-    if (mode >= 2) atomic_store(&g_afk_needs_redraw, 1);
+    if (mode >= 2 && mode <= 4) atomic_store(&g_afk_needs_redraw, 1);
     int previous = atomic_exchange(&treo_afk_mode, mode);
     if (mode) {
         atomic_store(&g_afk_refresh, 0);
@@ -2425,14 +2426,19 @@ static s32 treo_draw_region(const TreoRegionArgs *p, int direct) {
 
     RenderImage *img = img_acquire(imgHandle);
     if (!img) { rc_release(rc); return RUNTIME_STATUS_NORMAL; }
-    if (rc->softwarePixels && treo_software_enabled() && !j2me_render_is_afk_suspended() &&
-        !treo_metal_live_enabled() && !treo_cpu_batch_enabled() &&
+    // AFK SIMD keeps producing canvas pixels, but never presents them.
+    // Use the same verified raster and CG fallback as the visible backend.
+    const int afkMode = atomic_load_explicit(&treo_afk_mode, memory_order_relaxed);
+    const int afkSIMD = afkMode == 5;
+    if (rc->softwarePixels &&
+        (afkSIMD || (afkMode == 0 && treo_software_enabled() &&
+                    !treo_metal_live_enabled() && !treo_cpu_batch_enabled())) &&
         !atomic_load_explicit(&treo_replay_state, memory_order_relaxed)) {
         rc->swRegions++;
         // Finish any commands queued before changing mode, preserving draw order.
         if (rc->cpuCache) treo_cpu_batch_drain(rc);
         if (rc->liveRun && rc->liveRun->count) treo_live_drain(rc, 0);
-        if (treo_sw_draw(rc, img, xDst, yDst, xSrc, ySrc, wSrc, hSrc, transform, direct)) {
+        if (treo_sw_draw(rc, img, xDst, yDst, xSrc, ySrc, wSrc, hSrc, transform, direct || afkSIMD)) {
             img_release(img);
             rc_release(rc);
             return RUNTIME_STATUS_NORMAL;
