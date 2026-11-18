@@ -729,7 +729,34 @@ void treo_jar_audit_set(int enabled) {
     atomic_store_explicit(&treo_jar_auditing, enabled != 0, memory_order_relaxed);
 }
 int treo_jar_audit_enabled(void) { return atomic_load_explicit(&treo_jar_auditing, memory_order_relaxed); }
+// Opt-in causal probe: restore CPU work at the old paint call site without
+// touching pixels, allocating objects, scheduling UI, or changing Java state.
+static atomic_bool treo_jar_load_enabled;
+static _Atomic uint64_t treo_jar_load_ns;
+void treo_jar_load_set(int enabled) {
+    atomic_store_explicit(&treo_jar_load_enabled, enabled != 0, memory_order_relaxed);
+}
+uint64_t treo_jar_load_cpu_ns(void) {
+    return atomic_load_explicit(&treo_jar_load_ns, memory_order_relaxed);
+}
+static void treo_jar_load_pulse(void) {
+    const uint64_t wallStart = treo_afk_now_ns(), cpuStart = treo_thread_cpu_ns();
+    if (!wallStart || !cpuStart) return;
+    uint64_t cpu = cpuStart;
+    volatile uint64_t value = cpuStart;
+    do {
+        for (unsigned i = 0; i < 512; ++i)
+            value = value * UINT64_C(6364136223846793005) + UINT64_C(1);
+        cpu = treo_thread_cpu_ns();
+        const uint64_t wall = treo_afk_now_ns();
+        if (cpu < cpuStart || wall < wallStart || wall - wallStart >= UINT64_C(12000000)) break;
+    } while (cpu - cpuStart < UINT64_C(10000000) &&
+             atomic_load_explicit(&treo_jar_load_enabled, memory_order_relaxed));
+    if (cpu >= cpuStart) atomic_fetch_add_explicit(&treo_jar_load_ns, cpu - cpuStart, memory_order_relaxed);
+}
 void treo_jar_audit_tick(int active) {
+    if (active && atomic_load_explicit(&treo_jar_load_enabled, memory_order_relaxed))
+        treo_jar_load_pulse();
     if (!g_afk_thread_id) pthread_threadid_np(NULL, &g_afk_thread_id);
     atomic_store_explicit(&treo_jar_game_tid, g_afk_thread_id, memory_order_relaxed);
     atomic_fetch_add_explicit(active ? &treo_jar_ticks_on : &treo_jar_ticks_off, 1, memory_order_relaxed);
