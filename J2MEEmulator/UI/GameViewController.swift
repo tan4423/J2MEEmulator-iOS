@@ -91,9 +91,6 @@ class GameViewController: UIViewController {
     private var afkMeasureID: UUID?
     private var afkComparisonDone = false
     private var guardedBlackout = false
-    private var canTestGuardedCanvas: Bool {
-        URL(fileURLWithPath: jarPath).lastPathComponent.lowercased() == "nicknsonet_t5.jar"
-    }
     private var afkOriginalJIT: Int32?
     private var lastAFKTrace = ""
     private var afkFrozenLayers: [CALayer] = []
@@ -534,7 +531,7 @@ class GameViewController: UIViewController {
             UIAction(title: "Treo tối đa · màn hình đen") { [weak self] _ in self?.showBlackout() },
             UIAction(title: "Treo · vẽ SIMD ngầm (thử nghiệm)") { [weak self] _ in self?.showBlackout(mode: 5) },
             UIAction(title: "So CPU treo · Canvas không dựng hình",
-                     attributes: canTestGuardedCanvas ? [] : .disabled) { [weak self] _ in self?.startGuardedComparison() },
+                     attributes: powerRun == nil ? [] : .disabled) { [weak self] _ in self?.confirmGuardedComparison() },
             UIAction(title: "So CPU treo · paint 5 Hz / JIT") { [weak self] _ in self?.confirmAfkPaintTest() },
             UIAction(title: treo_game_jit_is_enabled() != 0 ? "Tắt JIT Java (thử nghiệm)" : "Bật JIT Java (thử nghiệm)", attributes: powerRun == nil ? [] : .disabled) { [weak self] _ in
                 guard let self else { return }
@@ -871,8 +868,21 @@ class GameViewController: UIViewController {
         let wakes = treo_afk_main_wakes()
     }
 
+    private func confirmGuardedComparison() {
+        guard blackout == nil, powerRun == nil else { return }
+        let file = URL(fileURLWithPath: jarPath).lastPathComponent
+        let alert = UIAlertController(title: "Thử treo không dựng hình",
+            message: "JAR đang chạy: \(file)\nPhép thử dành cho x1. Chỉ tiếp tục nếu đây là x1, kể cả khi đã đổi tên tệp. Có thể chạm màn đen để dừng và kiểm tra lại game. Màn đen thường không thay đổi.",
+            preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "Hủy", style: .cancel))
+        alert.addAction(UIAlertAction(title: "Đo x1", style: .default) { [weak self] _ in
+            self?.startGuardedComparison()
+        })
+        present(alert, animated: true)
+    }
+
     private func startGuardedComparison() {
-        guard canTestGuardedCanvas, blackout == nil, powerRun == nil else { return }
+        guard blackout == nil, powerRun == nil else { return }
         showBlackout()
         let id = UUID()
         afkMeasureID = id
