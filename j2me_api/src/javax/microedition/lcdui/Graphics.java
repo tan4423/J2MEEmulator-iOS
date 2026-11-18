@@ -6,7 +6,7 @@ package javax.microedition.lcdui;
  */
 public class Graphics {
     // The interpreter can recognize this exact bundled drawRegion ABI.
-    private static final int TREO_DRAW_REGION_ABI_V1 = 1;
+    private static final int TREO_DRAW_REGION_ABI_V2 = 1;
     // Anchor constants
     public static final int HCENTER = 1;
     public static final int VCENTER = 2;
@@ -21,6 +21,7 @@ public class Graphics {
     public static final int DOTTED = 1;
 
     long nativeContext;
+    boolean headless; // scoped to Canvas.paint; Image Graphics never enter this mode
     boolean ownsContext; // true for Image graphics (released in finalize), false for Canvas graphics
     private int canvasWidth, canvasHeight;
     private int color = 0;
@@ -51,17 +52,17 @@ public class Graphics {
         this.clipY = clipY;
         this.clipW = clipW;
         this.clipH = clipH;
-        NativeBridge.setClip(nativeContext, clipX, clipY, clipW, clipH);
+        if (!headless) NativeBridge.setClip(nativeContext, clipX, clipY, clipW, clipH);
         setColor(0x000000);
         setFont(Font.getDefaultFont());
-        NativeBridge.setStrokeStyle(nativeContext, SOLID);
+        if (!headless) NativeBridge.setStrokeStyle(nativeContext, SOLID);
     }
 
     // --- Color ---
 
     public void setColor(int RGB) {
         this.color = RGB & 0x00FFFFFF;
-        NativeBridge.setColor(nativeContext, 0xFF000000 | this.color);
+        if (!headless) NativeBridge.setColor(nativeContext, 0xFF000000 | this.color);
     }
 
     public void setColor(int red, int green, int blue) {
@@ -85,7 +86,7 @@ public class Graphics {
 
     public void setStrokeStyle(int style) {
         this.strokeStyle = style;
-        NativeBridge.setStrokeStyle(nativeContext, style);
+        if (!headless) NativeBridge.setStrokeStyle(nativeContext, style);
     }
 
     public int getStrokeStyle() { return strokeStyle; }
@@ -95,7 +96,7 @@ public class Graphics {
     public void setFont(Font f) {
         if (f == null) f = Font.getDefaultFont();
         this.font = f;
-        f.applyToContext(nativeContext);
+        if (!headless) f.applyToContext(nativeContext);
     }
 
     public Font getFont() { return font; }
@@ -107,7 +108,7 @@ public class Graphics {
         clipY = y;
         clipW = w;
         clipH = h;
-        NativeBridge.setClip(nativeContext, x + translateX, y + translateY, w, h);
+        if (!headless) NativeBridge.setClip(nativeContext, x + translateX, y + translateY, w, h);
     }
 
     public void clipRect(int x, int y, int w, int h) {
@@ -139,37 +140,44 @@ public class Graphics {
     // --- Drawing ---
 
     public void drawLine(int x1, int y1, int x2, int y2) {
+        if (headless) return;
         NativeBridge.drawLine(nativeContext,
                 x1 + translateX, y1 + translateY,
                 x2 + translateX, y2 + translateY);
     }
 
     public void fillRect(int x, int y, int w, int h) {
+        if (headless) return;
         NativeBridge.fillRect(nativeContext,
                 x + translateX, y + translateY, w, h);
     }
 
     public void drawRect(int x, int y, int w, int h) {
+        if (headless) return;
         NativeBridge.drawRect(nativeContext,
                 x + translateX, y + translateY, w, h);
     }
 
     public void fillArc(int x, int y, int w, int h, int startAngle, int arcAngle) {
+        if (headless) return;
         NativeBridge.fillArc(nativeContext,
                 x + translateX, y + translateY, w, h, startAngle, arcAngle);
     }
 
     public void drawArc(int x, int y, int w, int h, int startAngle, int arcAngle) {
+        if (headless) return;
         NativeBridge.drawArc(nativeContext,
                 x + translateX, y + translateY, w, h, startAngle, arcAngle);
     }
 
     public void fillRoundRect(int x, int y, int w, int h, int arcWidth, int arcHeight) {
+        if (headless) return;
         NativeBridge.fillRoundRect(nativeContext,
                 x + translateX, y + translateY, w, h, arcWidth, arcHeight);
     }
 
     public void drawRoundRect(int x, int y, int w, int h, int arcWidth, int arcHeight) {
+        if (headless) return;
         NativeBridge.drawRoundRect(nativeContext,
                 x + translateX, y + translateY, w, h, arcWidth, arcHeight);
     }
@@ -177,6 +185,7 @@ public class Graphics {
     // --- Text ---
 
     public void drawString(String str, int x, int y, int anchor) {
+        if (headless) return;
         if (str == null || str.isEmpty()) return;
         NativeBridge.drawString(nativeContext, str,
                 x + translateX, y + translateY, anchor);
@@ -187,6 +196,7 @@ public class Graphics {
     }
 
     public void drawChar(char character, int x, int y, int anchor) {
+        if (headless) return;
         drawString(String.valueOf(character), x, y, anchor);
     }
 
@@ -197,6 +207,7 @@ public class Graphics {
     // --- Image ---
 
     public void drawImage(Image img, int x, int y, int anchor) {
+        if (headless) return;
         if (img == null) return;
         NativeBridge.drawImage(nativeContext, img.nativeHandle,
                 x + translateX, y + translateY, anchor);
@@ -204,6 +215,7 @@ public class Graphics {
 
     public void drawRegion(Image src, int xSrc, int ySrc, int wSrc, int hSrc,
                            int transform, int xDst, int yDst, int anchor) {
+        if (headless) return;
         if (src == null) return;
         NativeBridge.drawRegion(nativeContext, src.nativeHandle,
                 xSrc, ySrc, wSrc, hSrc, transform,
@@ -212,12 +224,14 @@ public class Graphics {
 
     public void drawRGB(int[] rgbData, int offset, int scanlength,
                         int x, int y, int width, int height, boolean processAlpha) {
+        if (headless) return;
         NativeBridge.drawRGB(nativeContext, rgbData, offset, scanlength,
                 x + translateX, y + translateY, width, height, processAlpha ? 1 : 0);
     }
 
     public void fillPolygon(int[] xPoints, int[] yPoints, int nPoints) {
         if (xPoints == null || yPoints == null) return;
+        if (headless && nPoints >= 0 && nPoints <= xPoints.length && nPoints <= yPoints.length) return;
         int[] tx = new int[nPoints];
         int[] ty = new int[nPoints];
         for (int i = 0; i < nPoints; i++) { tx[i] = xPoints[i] + translateX; ty[i] = yPoints[i] + translateY; }
@@ -226,6 +240,7 @@ public class Graphics {
 
     public void drawPolygon(int[] xPoints, int[] yPoints, int nPoints) {
         if (xPoints == null || yPoints == null) return;
+        if (headless && nPoints >= 0 && nPoints <= xPoints.length && nPoints <= yPoints.length) return;
         int[] tx = new int[nPoints];
         int[] ty = new int[nPoints];
         for (int i = 0; i < nPoints; i++) { tx[i] = xPoints[i] + translateX; ty[i] = yPoints[i] + translateY; }
@@ -233,6 +248,7 @@ public class Graphics {
     }
 
     public void fillTriangle(int x1, int y1, int x2, int y2, int x3, int y3) {
+        if (headless) return;
         fillPolygon(new int[]{x1, x2, x3}, new int[]{y1, y2, y3}, 3);
     }
 
@@ -260,6 +276,7 @@ public class Graphics {
 
     public void copyArea(int xSrc, int ySrc, int width, int height,
                          int xDest, int yDest, int anchor) {
+        if (headless && width >= 0 && height >= 0 && (long) width * height <= Integer.MAX_VALUE) return;
         // Apply anchor to destination
         if ((anchor & HCENTER) != 0) xDest -= width / 2;
         if ((anchor & RIGHT) != 0) xDest -= width;

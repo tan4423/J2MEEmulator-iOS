@@ -100,6 +100,14 @@ static atomic_int g_afk_suspended = 0;
 static atomic_int g_afk_refresh = 0;
 static atomic_bool g_afk_needs_redraw;
 static _Atomic uint64_t g_afk_skipped_draws, g_afk_skipped_paints;
+static _Atomic uint64_t g_afk_paint_count, g_afk_paint_cpu_ns;
+uint64_t treo_afk_paint_count(void) { return atomic_load_explicit(&g_afk_paint_count, memory_order_relaxed); }
+uint64_t treo_afk_paint_cpu_ns(void) { return atomic_load_explicit(&g_afk_paint_cpu_ns, memory_order_relaxed); }
+
+static s32 n_afkHeadless(Runtime *runtime, JClass *clazz) {
+    push_int(runtime->stack, atomic_load_explicit(&g_afk_suspended, memory_order_acquire) == 3);
+    return RUNTIME_STATUS_NORMAL;
+}
 static _Thread_local s64 g_afk_canvas;
 static _Thread_local uint64_t g_afk_draw_count;
 uint64_t treo_afk_skipped_draws(void) { return atomic_load_explicit(&g_afk_skipped_draws, memory_order_relaxed); }
@@ -113,7 +121,8 @@ static int treo_afk_skip_draw(RenderContext *rc) {
 
 static s32 n_beginAfkPaint(Runtime *runtime, JClass *clazz) {
     s64 previous = g_afk_canvas;
-    if (atomic_load_explicit(&g_afk_suspended, memory_order_acquire) == 2) {
+    const int headless = runtime->jnienv->localvar_getInt(runtime->localvar, 2);
+    if (headless || atomic_load_explicit(&g_afk_suspended, memory_order_acquire) == 2) {
         s64 canvas = runtime->jnienv->localvar_getLong_2slot(runtime->localvar, 0);
         if (canvas) {
             g_afk_canvas = canvas;
@@ -138,7 +147,7 @@ int j2me_render_is_afk_suspended(void) {
 }
 
 void treo_render_set_afk_mode(int mode) {
-    if (mode == 2) atomic_store(&g_afk_needs_redraw, 1);
+    if (mode >= 2) atomic_store(&g_afk_needs_redraw, 1);
     int previous = atomic_exchange(&g_afk_suspended, mode);
     if (mode) {
         atomic_store(&g_afk_refresh, 0);
@@ -269,13 +278,24 @@ void treo_render_profile_submitted(void) {
     if (treo_profile_active()) TREO_PROF_ADD(submitted, 1);
 }
 static s32 n_profilePaintBegin(Runtime *runtime, JClass *clazz) {
-    runtime->jnienv->push_long(runtime->stack,
-        (s64)(treo_profile_active() ? treo_thread_cpu_ns() : 0));
+    s64 start = 0;
+    if (j2me_render_is_afk_suspended()) start = -(s64)treo_thread_cpu_ns();
+    else if (treo_profile_active()) start = (s64)treo_thread_cpu_ns();
+    runtime->jnienv->push_long(runtime->stack, start);
     return RUNTIME_STATUS_NORMAL;
 }
 static s32 n_profilePaintEnd(Runtime *runtime, JClass *clazz) {
+    const s64 stamp = runtime->jnienv->localvar_getLong_2slot(runtime->localvar, 0);
+    if (stamp < 0) {
+        const uint64_t end = treo_thread_cpu_ns(), begin = (uint64_t)(-stamp);
+        if (end >= begin) {
+            atomic_fetch_add_explicit(&g_afk_paint_cpu_ns, end - begin, memory_order_relaxed);
+            atomic_fetch_add_explicit(&g_afk_paint_count, 1, memory_order_relaxed);
+        }
+        return RUNTIME_STATUS_NORMAL;
+    }
     if (!treo_profile_active()) return RUNTIME_STATUS_NORMAL;
-    uint64_t begin = (uint64_t)runtime->jnienv->localvar_getLong_2slot(runtime->localvar, 0);
+    uint64_t begin = (uint64_t)stamp;
     uint64_t end = treo_thread_cpu_ns();
     if (begin && end >= begin) {
         TREO_PROF_ADD(paints, 1);
@@ -2433,7 +2453,7 @@ int treo_try_graphics_draw_region(Runtime *runtime, JClass *clazz) {
     }
     if ((io >> 48) != 2) return 0;
     u64 go = treo_graphics_offsets(clazz, 0);
-    if (!go || !io) return 0;
+    if (!go || !io || g_afk_canvas) return 0;
     s64 ctx, img;
     s32 tx, ty;
     memcpy(&ctx, graphics->obj_fields + (u16)go, sizeof(ctx));
@@ -2759,7 +2779,8 @@ static java_native_method j2me_render_methods[] = {
     {CLS, "profilePaintEnd", "(J)V", n_profilePaintEnd},
     {CLS, "afkSuspended",     "()Z", n_afkSuspended},
     {CLS, "takeAfkRefresh",   "()I", n_takeAfkRefresh},
-    {CLS, "beginAfkPaint", "(J)J", n_beginAfkPaint},
+    {CLS, "afkHeadless", "()Z", n_afkHeadless},
+    {CLS, "beginAfkPaint", "(JZ)J", n_beginAfkPaint},
     {CLS, "endAfkPaint", "(J)V", n_endAfkPaint},
     // Context
     {CLS, "createContext",    "(II)J",                                   n_createContext},

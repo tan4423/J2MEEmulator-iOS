@@ -189,18 +189,24 @@ public abstract class Canvas extends Displayable {
             if (!Display.isCurrentCanvas(this)) return;
             if (nativeContext == 0) initContext();
             repaintPending = false;
-            if (fullRepaint) graphics.reset(0, 0, width, height);
-            else graphics.reset(clipX, clipY, clipW, clipH);
-            long previousAfkCanvas = NativeBridge.beginAfkPaint(nativeContext);
+            // Use the same Graphics object, but switch its output for this paint only.
+            final Graphics target = graphics;
+            final boolean headless = NativeBridge.afkHeadless();
+            final boolean previousHeadless = target.headless;
+            final long previousAfkCanvas = NativeBridge.beginAfkPaint(nativeContext, headless);
+            target.headless = headless;
             try {
+                if (fullRepaint) target.reset(0, 0, width, height);
+                else target.reset(clipX, clipY, clipW, clipH);
                 long profileStart = NativeBridge.profilePaintBegin();
                 try {
-                    paint(graphics);
+                    paint(target);
                 } finally {
                     if (profileStart != 0) NativeBridge.profilePaintEnd(profileStart);
                 }
                 if (Display.isCurrentCanvas(this)) NativeBridge.flushToScreen(nativeContext);
             } finally {
+                target.headless = previousHeadless;
                 NativeBridge.endAfkPaint(previousAfkCanvas);
             }
             // Reset for next frame

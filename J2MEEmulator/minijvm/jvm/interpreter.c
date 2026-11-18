@@ -15,7 +15,7 @@ static int treo_is_bundled_draw_region(MethodInfo *method, JClass *clazz) {
         utf8_equals_c(method->descriptor, "(Ljavax/microedition/lcdui/Image;IIIIIIII)V")) {
         for (s32 n = 0; n < clazz->fieldPool.field_used; n++) {
             FieldInfo *f = &clazz->fieldPool.field[n];
-            if ((f->access_flags & 0x0008) && utf8_equals_c(f->name, "TREO_DRAW_REGION_ABI_V1") &&
+            if ((f->access_flags & 0x0008) && utf8_equals_c(f->name, "TREO_DRAW_REGION_ABI_V2") &&
                 utf8_equals_c(f->descriptor, "I")) { tag = 2; break; }
         }
     }
