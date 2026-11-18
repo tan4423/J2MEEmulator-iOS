@@ -784,7 +784,7 @@ class GameViewController: UIViewController {
             cover.trailingAnchor.constraint(equalTo: view.trailingAnchor)
         ])
         blackout = cover
-        treo_render_set_afk_mode(skipRaster ? 3 : 1)
+        treo_render_set_afk_mode(skipRaster ? 4 : 1)
         if let screen = view.window?.windowScene?.screen {
             blackoutScreen = screen
             previousBrightness = screen.brightness
@@ -817,6 +817,7 @@ class GameViewController: UIViewController {
         let cpu = treo_process_cpu_seconds()
         let paints = treo_afk_paint_count()
         let paintNS = treo_afk_paint_cpu_ns()
+        let elided = treo_afk_elided_calls()
 
         func cpuPercent(since start: AfkSample) -> Double? {
             let seconds = time - start.time
@@ -837,20 +838,27 @@ class GameViewController: UIViewController {
         let cpu: Double?
         let paintCPU: Double
         let paintRate: Double
+        let elided: UInt64
+        let threads: String
     }
 
     private func runAfkLeg(id: UUID, index: Int, results: [AfkLeg]) {
         let optimized = index == 1
-        treo_render_set_afk_mode(optimized ? 3 : 1)
+        treo_render_set_afk_mode(optimized ? 4 : 1)
         blackout?.setTitle("Đang đo \(index + 1)/3 · Chạm để hủy", for: .normal)
+        treo_afk_threads_begin()
         let start = AfkSample()
         let work = DispatchWorkItem { [weak self] in
             guard let self, self.afkMeasureID == id, self.blackout != nil else { return }
             let end = AfkSample()
             let seconds = max(0.001, end.time - start.time)
+            let raw = treo_afk_threads_report(seconds)
+            let threads = raw.map { String(cString: $0) } ?? "Không đọc được luồng"
+            if let raw { free(raw) }
             let leg = AfkLeg(cpu: end.cpuPercent(since: start),
                              paintCPU: Double(end.paintNS &- start.paintNS) / seconds / 10_000_000,
-                             paintRate: Double(end.paints &- start.paints) / seconds)
+                             paintRate: Double(end.paints &- start.paints) / seconds,
+                             elided: end.elided &- start.elided, threads: threads)
             let all = results + [leg]
             if index < 2 {
                 self.runAfkLeg(id: id, index: index + 1, results: all)
@@ -858,7 +866,7 @@ class GameViewController: UIViewController {
             }
             func row(_ name: String, _ sample: AfkLeg) -> String {
                 let total = sample.cpu.map { String(format: "%.1f%%", $0) } ?? "?"
-                return "\(name): \(total) tổng · \(String(format: "%.1f%%", sample.paintCPU)) paint · \(String(format: "%.1f", sample.paintRate)) paint/s"
+                return "\(name): \(total) tổng · \(String(format: "%.1f%%", sample.paintCPU)) paint · \(String(format: "%.1f", sample.paintRate)) paint/s\n\(sample.threads)"
             }
             let delta: String
             if let a = all[0].cpu, let b = all[1].cpu, let c = all[2].cpu {
@@ -871,7 +879,8 @@ class GameViewController: UIViewController {
             \(row("Không dựng hình", all[1]))
             \(row("Cũ 2", all[2]))
             \(delta)
-            CPU quy về một lõi; paint nằm trong CPU tổng. Không đo GPU %.
+            Bỏ \(all[1].elided) lời gọi vẽ ở VM.
+            *Luồng paint gần nhất; số luồng chỉ tính luồng còn sống ở hai mốc. Không đo GPU %.
             """
             self.afkMeasure = nil
             self.afkMeasureID = nil

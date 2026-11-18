@@ -345,6 +345,10 @@ s64 gc_sum_heap(GcCollector *collector) {
  */
 
 s32 _gc_thread_run(void *para) {
+#if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__
+    extern void treo_afk_mark_gc_thread(void);
+    treo_afk_mark_gc_thread();
+#endif
     GcCollector *collector = (GcCollector *) para;
     MiniJVM *jvm = collector->jvm;
 

@@ -1060,6 +1060,7 @@ struct _MethodInfo {
     u8 is_static;
     u8 is_getter;
     u8 is_setter;
+    u8 treo_afk_kind; // cached eligibility for headless void calls
     u8 treo_graphics_kind; // 0 unclassified, 1 ordinary, 2 bundled drawRegion
 };
 //============================================
@@ -1089,6 +1090,7 @@ struct _ClassType {
     s32 constant_item_count;//总数
 
     //类变量及实例变量的参数
+    u64 treo_afk_layout;
     u64 treo_graphics_layout; // packed field offsets, local to the loaded class
     s32 field_instance_start;//实例变量模板起始起址，继承自父类的变量放在前面
     s32 field_instance_len; //非静态变量长度

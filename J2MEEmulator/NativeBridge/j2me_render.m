@@ -26,6 +26,9 @@
 #include <time.h>
 #include <sys/resource.h>
 #include <os/lock.h>
+#include <mach/mach.h>
+#include <mach/thread_info.h>
+#include <pthread.h>
 
 // ============================================================
 // Internal structures
@@ -96,7 +99,7 @@ static int treo_live_image(RenderContext *rc, CGImageRef image, int64_t x, int64
 static int treo_live_enqueue(RenderContext *rc, RenderImage *img, int64_t x, int64_t y,
                              int sx, int sy, int w, int h, int transform);
 static j2me_flush_callback g_flush_callback = NULL;
-static atomic_int g_afk_suspended = 0;
+_Atomic int treo_afk_mode = 0;
 static atomic_int g_afk_refresh = 0;
 static atomic_bool g_afk_needs_redraw;
 static _Atomic uint64_t g_afk_skipped_draws, g_afk_skipped_paints;
@@ -105,10 +108,18 @@ uint64_t treo_afk_paint_count(void) { return atomic_load_explicit(&g_afk_paint_c
 uint64_t treo_afk_paint_cpu_ns(void) { return atomic_load_explicit(&g_afk_paint_cpu_ns, memory_order_relaxed); }
 
 static s32 n_afkHeadless(Runtime *runtime, JClass *clazz) {
-    push_int(runtime->stack, atomic_load_explicit(&g_afk_suspended, memory_order_acquire) == 3);
+    push_int(runtime->stack, atomic_load_explicit(&treo_afk_mode, memory_order_acquire) >= 3);
     return RUNTIME_STATUS_NORMAL;
 }
 static _Thread_local s64 g_afk_canvas;
+static _Thread_local uint64_t g_afk_elided_local, g_afk_thread_id;
+static _Atomic uint64_t g_afk_elided, g_afk_paint_tid, g_afk_gc_tid;
+uint64_t treo_afk_elided_calls(void) { return atomic_load_explicit(&g_afk_elided, memory_order_relaxed); }
+void treo_afk_mark_gc_thread(void) {
+    uint64_t tid = 0;
+    pthread_threadid_np(NULL, &tid);
+    atomic_store_explicit(&g_afk_gc_tid, tid, memory_order_relaxed);
+}
 static _Thread_local uint64_t g_afk_draw_count;
 uint64_t treo_afk_skipped_draws(void) { return atomic_load_explicit(&g_afk_skipped_draws, memory_order_relaxed); }
 uint64_t treo_afk_skipped_paints(void) { return atomic_load_explicit(&g_afk_skipped_paints, memory_order_relaxed); }
@@ -122,7 +133,7 @@ static int treo_afk_skip_draw(RenderContext *rc) {
 static s32 n_beginAfkPaint(Runtime *runtime, JClass *clazz) {
     s64 previous = g_afk_canvas;
     const int headless = runtime->jnienv->localvar_getInt(runtime->localvar, 2);
-    if (headless || atomic_load_explicit(&g_afk_suspended, memory_order_acquire) == 2) {
+    if (headless || atomic_load_explicit(&treo_afk_mode, memory_order_acquire) == 2) {
         s64 canvas = runtime->jnienv->localvar_getLong_2slot(runtime->localvar, 0);
         if (canvas) {
             g_afk_canvas = canvas;
@@ -134,6 +145,10 @@ static s32 n_beginAfkPaint(Runtime *runtime, JClass *clazz) {
 }
 static s32 n_endAfkPaint(Runtime *runtime, JClass *clazz) {
     g_afk_canvas = runtime->jnienv->localvar_getLong_2slot(runtime->localvar, 0);
+    if (!g_afk_canvas && g_afk_elided_local) {
+        atomic_fetch_add_explicit(&g_afk_elided, g_afk_elided_local, memory_order_relaxed);
+        g_afk_elided_local = 0;
+    }
     if (!g_afk_canvas && g_afk_draw_count) {
         atomic_fetch_add_explicit(&g_afk_skipped_draws, g_afk_draw_count, memory_order_relaxed);
         g_afk_draw_count = 0;
@@ -143,12 +158,12 @@ static s32 n_endAfkPaint(Runtime *runtime, JClass *clazz) {
 static void stop_afk_haptics(void);
 
 int j2me_render_is_afk_suspended(void) {
-    return atomic_load_explicit(&g_afk_suspended, memory_order_relaxed) != 0;
+    return atomic_load_explicit(&treo_afk_mode, memory_order_relaxed) != 0;
 }
 
 void treo_render_set_afk_mode(int mode) {
     if (mode >= 2) atomic_store(&g_afk_needs_redraw, 1);
-    int previous = atomic_exchange(&g_afk_suspended, mode);
+    int previous = atomic_exchange(&treo_afk_mode, mode);
     if (mode) {
         atomic_store(&g_afk_refresh, 0);
         if (!previous) stop_afk_haptics();
@@ -232,6 +247,73 @@ static uint64_t treo_thread_cpu_ns(void) {
     if (clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts) != 0) return 0;
     return (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
 }
+// Main-thread-only diagnostic snapshots, taken at leg boundaries, not per frame.
+static NSDictionary<NSNumber *, NSArray<NSNumber *> *> *treo_afk_thread_start;
+static struct rusage treo_afk_rusage_start;
+static int treo_afk_rusage_valid;
+static double treo_mach_time(time_value_t t) { return t.seconds + t.microseconds / 1e6; }
+static NSDictionary<NSNumber *, NSArray<NSNumber *> *> *treo_afk_read_threads(void) {
+    thread_act_array_t threads = NULL;
+    mach_msg_type_number_t count = 0;
+    if (task_threads(mach_task_self(), &threads, &count) != KERN_SUCCESS) return nil;
+    NSMutableDictionary<NSNumber *, NSArray<NSNumber *> *> *out = [NSMutableDictionary new];
+    for (mach_msg_type_number_t i = 0; i < count; ++i) {
+        thread_identifier_info_data_t ident;
+        thread_basic_info_data_t info;
+        mach_msg_type_number_t ic = THREAD_IDENTIFIER_INFO_COUNT, bc = THREAD_BASIC_INFO_COUNT;
+        if (thread_info(threads[i], THREAD_IDENTIFIER_INFO, (thread_info_t)&ident, &ic) == KERN_SUCCESS &&
+            thread_info(threads[i], THREAD_BASIC_INFO, (thread_info_t)&info, &bc) == KERN_SUCCESS) {
+            out[@(ident.thread_id)] = @[@(treo_mach_time(info.user_time)), @(treo_mach_time(info.system_time))];
+        }
+        mach_port_deallocate(mach_task_self(), threads[i]);
+    }
+    vm_deallocate(mach_task_self(), (vm_address_t)threads, (vm_size_t)count * sizeof(*threads));
+    return out;
+}
+void treo_afk_threads_begin(void) {
+    treo_afk_thread_start = treo_afk_read_threads();
+    treo_afk_rusage_valid = getrusage(RUSAGE_SELF, &treo_afk_rusage_start) == 0;
+}
+static double treo_afk_timeval(struct timeval t) { return t.tv_sec + t.tv_usec / 1e6; }
+char *treo_afk_threads_report(double seconds) {
+    if (seconds <= 0) return NULL;
+    struct rusage end;
+    NSMutableString *out = [NSMutableString string];
+    if (treo_afk_rusage_valid && getrusage(RUSAGE_SELF, &end) == 0) {
+        double u = treo_afk_timeval(end.ru_utime) - treo_afk_timeval(treo_afk_rusage_start.ru_utime);
+        double k = treo_afk_timeval(end.ru_stime) - treo_afk_timeval(treo_afk_rusage_start.ru_stime);
+        [out appendFormat:@"User %.1f%% · kernel %.1f%%", 100*u/seconds, 100*k/seconds];
+    }
+    NSDictionary<NSNumber *, NSArray<NSNumber *> *> *after = treo_afk_read_threads();
+    if (!after || !treo_afk_thread_start) return strdup(out.length ? out.UTF8String : "Không đọc được CPU từng luồng");
+    uint64_t mainID = 0;
+    pthread_threadid_np(NULL, &mainID);
+    uint64_t paintID = atomic_load_explicit(&g_afk_paint_tid, memory_order_relaxed);
+    uint64_t gcID = atomic_load_explicit(&g_afk_gc_tid, memory_order_relaxed);
+    NSMutableDictionary<NSNumber *, NSNumber *> *delta = [NSMutableDictionary new];
+    for (NSNumber *tid in after) {
+        NSArray<NSNumber *> *a = treo_afk_thread_start[tid], *b = after[tid];
+        if (!a) continue;
+        double d = b[0].doubleValue + b[1].doubleValue - a[0].doubleValue - a[1].doubleValue;
+        delta[tid] = @(MAX(0.0, 100*d/seconds));
+    }
+    [out appendString:@"\nLuồng:"];
+    uint64_t roles[] = {paintID, gcID, mainID};
+    NSArray<NSString *> *labels = @[@"paint*", @"GC", @"UI"];
+    for (int n = 0; n < 3; ++n) {
+        NSNumber *tid = @(roles[n]), *value = delta[tid];
+        [out appendFormat:@" %@ %@", labels[n], value ? [NSString stringWithFormat:@"%.1f%%", value.doubleValue] : @"–"];
+        [delta removeObjectForKey:tid];
+    }
+    NSArray<NSNumber *> *others = [delta keysSortedByValueUsingSelector:@selector(compare:)];
+    for (NSUInteger n = others.count, shown = 0; n > 0 && shown < 2; --n, ++shown) {
+        NSNumber *tid = others[n-1];
+        [out appendFormat:@" · #%@ %.1f%%", tid, delta[tid].doubleValue];
+    }
+    treo_afk_thread_start = nil;
+    return strdup(out.UTF8String);
+}
+
 double treo_process_cpu_seconds(void) {
     struct rusage usage;
     if (getrusage(RUSAGE_SELF, &usage) != 0) return -1.0;
@@ -279,7 +361,11 @@ void treo_render_profile_submitted(void) {
 }
 static s32 n_profilePaintBegin(Runtime *runtime, JClass *clazz) {
     s64 start = 0;
-    if (j2me_render_is_afk_suspended()) start = -(s64)treo_thread_cpu_ns();
+    if (j2me_render_is_afk_suspended()) {
+        if (!g_afk_thread_id) pthread_threadid_np(NULL, &g_afk_thread_id);
+        atomic_store_explicit(&g_afk_paint_tid, g_afk_thread_id, memory_order_relaxed);
+        start = -(s64)treo_thread_cpu_ns();
+    }
     else if (treo_profile_active()) start = (s64)treo_thread_cpu_ns();
     runtime->jnienv->push_long(runtime->stack, start);
     return RUNTIME_STATUS_NORMAL;
@@ -2421,6 +2507,23 @@ static int treo_instance_offset(JClass *clazz, const char *name, const char *typ
             clazz->field_instance_len >= (s32)((size_t)f->offset_instance + size)) return f->offset_instance;
     }
     return -1;
+}
+
+int treo_afk_elide_graphics(JClass *clazz, Instance *receiver) {
+    if (!g_afk_canvas || !receiver || receiver->mb.clazz != clazz) return 0;
+    u64 layout = __atomic_load_n(&clazz->treo_afk_layout, __ATOMIC_RELAXED);
+    if (!layout) {
+        int ctx = treo_instance_offset(clazz, "nativeContext", "J", 8);
+        int flag = treo_instance_offset(clazz, "headless", "Z", 1);
+        if (ctx < 0 || flag < 0) return 0;
+        layout = (1ULL << 32) | (u64)ctx | ((u64)flag << 16);
+        __atomic_store_n(&clazz->treo_afk_layout, layout, __ATOMIC_RELAXED);
+    }
+    s64 ctx;
+    memcpy(&ctx, receiver->obj_fields + (u16)layout, sizeof(ctx));
+    if (ctx != g_afk_canvas || !receiver->obj_fields[(u16)(layout >> 16)]) return 0;
+    ++g_afk_elided_local;
+    return 1;
 }
 
 static u64 treo_graphics_offsets(JClass *clazz, int image) {

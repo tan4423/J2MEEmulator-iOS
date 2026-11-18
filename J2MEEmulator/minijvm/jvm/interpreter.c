@@ -2,9 +2,44 @@
 #include "jvm_util.h"
 #include "jit.h"
 #include "garbage.h"
+#include <stdatomic.h>
 
 #if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__
+extern _Atomic int treo_afk_mode;
+extern int treo_afk_elide_graphics(JClass *clazz, Instance *receiver);
 extern int treo_direct_graphics_enabled(void);
+
+static int treo_headless_eligible(MethodInfo *m) {
+    u8 tag = __atomic_load_n(&m->treo_afk_kind, __ATOMIC_RELAXED);
+    if (tag) return tag == 2;
+    tag = 1;
+    JClass *clazz = m->_this_class;
+    static const char *const allowed[][2] = {
+        {"drawRegion", "(Ljavax/microedition/lcdui/Image;IIIIIIII)V"},
+        {"drawImage", "(Ljavax/microedition/lcdui/Image;III)V"},
+        {"drawString", "(Ljava/lang/String;III)V"},
+        {"drawChar", "(CIII)V"},
+        {"drawLine", "(IIII)V"}, {"fillRect", "(IIII)V"}, {"drawRect", "(IIII)V"},
+        {"fillArc", "(IIIIII)V"}, {"drawArc", "(IIIIII)V"},
+        {"fillRoundRect", "(IIIIII)V"}, {"drawRoundRect", "(IIIIII)V"},
+        {"fillTriangle", "(IIIIII)V"}, {"drawRGB", "([IIIIIIIZ)V"}
+    };
+    if (utf8_equals_c(clazz->name, "javax/microedition/lcdui/Graphics")) {
+        for (s32 n = 0; n < clazz->fieldPool.field_used; ++n) {
+            FieldInfo *f = &clazz->fieldPool.field[n];
+            if (!(f->access_flags & 8) || !utf8_equals_c(f->name, "TREO_HEADLESS_ELISION_ABI_V1") ||
+                !utf8_equals_c(f->descriptor, "I")) continue;
+            for (size_t k = 0; k < sizeof(allowed)/sizeof(allowed[0]); ++k) {
+                if (utf8_equals_c(m->name, allowed[k][0]) && utf8_equals_c(m->descriptor, allowed[k][1])) {
+                    tag = 2; break;
+                }
+            }
+            break;
+        }
+    }
+    __atomic_store_n(&m->treo_afk_kind, tag, __ATOMIC_RELAXED);
+    return tag == 2;
+}
 extern int treo_try_graphics_draw_region(Runtime *runtime, JClass *clazz);
 static int treo_is_bundled_draw_region(MethodInfo *method, JClass *clazz) {
     u8 tag = __atomic_load_n(&method->treo_graphics_kind, __ATOMIC_RELAXED);
@@ -538,6 +573,23 @@ static inline s32 _optimize_inline_setter(JClass *clazz, s32 cfrIdx, Runtime *ru
 
 
 s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
+#if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__
+    // Elide only a resolved call whose actual Java body would immediately return.
+    // Arguments were already evaluated; leave the caller's stack in the void-return state.
+    if (atomic_load_explicit(&treo_afk_mode, memory_order_relaxed) == 4 &&
+        method->para_slots >= 4 && method->return_slots == 0 &&
+        !method->is_static && !method->is_sync && !method->is_native &&
+        method->_this_class->status >= CLASS_STATUS_CLINITED &&
+        !pruntime->jvm->jdwp_enable && !pruntime->thrd_info->is_stop &&
+        !pruntime->thrd_info->suspend_count && treo_headless_eligible(method)) {
+        RuntimeStack *caller = pruntime->stack;
+        StackEntry *args = caller->sp - method->para_slots;
+        if (treo_afk_elide_graphics(method->_this_class, args->ins)) {
+            caller->sp = args;
+            return RUNTIME_STATUS_NORMAL;
+        }
+    }
+#endif
 
     //shared local var for opcode
     Instance *ins;

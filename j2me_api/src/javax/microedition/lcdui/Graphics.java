@@ -7,6 +7,7 @@ package javax.microedition.lcdui;
 public class Graphics {
     // The interpreter can recognize this exact bundled drawRegion ABI.
     private static final int TREO_DRAW_REGION_ABI_V2 = 1;
+    private static final int TREO_HEADLESS_ELISION_ABI_V1 = 1;
     // Anchor constants
     public static final int HCENTER = 1;
     public static final int VCENTER = 2;
