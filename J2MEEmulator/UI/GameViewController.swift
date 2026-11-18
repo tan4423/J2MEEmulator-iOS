@@ -530,6 +530,8 @@ class GameViewController: UIViewController {
             },
             UIAction(title: "Treo tối đa · màn hình đen") { [weak self] _ in self?.showBlackout() },
             UIAction(title: "Treo · vẽ SIMD ngầm (thử nghiệm)") { [weak self] _ in self?.showBlackout(mode: 5) },
+            UIAction(title: "So CPU treo · Canvas nhanh",
+                     attributes: powerRun == nil ? [] : .disabled) { [weak self] _ in self?.startGuardedComparison(fast: true) },
             UIAction(title: "So CPU treo · Canvas không dựng hình",
                      attributes: powerRun == nil ? [] : .disabled) { [weak self] _ in self?.confirmGuardedComparison() },
             UIAction(title: "So CPU treo · paint 5 Hz / JIT") { [weak self] _ in self?.confirmAfkPaintTest() },
@@ -866,6 +868,8 @@ class GameViewController: UIViewController {
         let native = treo_afk_skipped_draws()
         let frames = treo_afk_layer_frames()
         let wakes = treo_afk_main_wakes()
+        let software = treo_software_stats()
+        let fast = treo_fast_canvas_stats()
     }
 
     private func confirmGuardedComparison() {
@@ -881,7 +885,7 @@ class GameViewController: UIViewController {
         present(alert, animated: true)
     }
 
-    private func startGuardedComparison() {
+    private func startGuardedComparison(fast: Bool = false) {
         guard blackout == nil, powerRun == nil else { return }
         showBlackout()
         treo_afk_main_trace_cancel()
@@ -889,13 +893,13 @@ class GameViewController: UIViewController {
         afkMeasureID = id
         guardedBlackout = true
         treo_afk_wakes_set(1)
-        runGuardedLeg(id: id, index: 0, rows: [])
+        runGuardedLeg(id: id, index: 0, rows: [], fast: fast)
     }
 
-    private func runGuardedLeg(id: UUID, index: Int, rows: [String]) {
+    private func runGuardedLeg(id: UUID, index: Int, rows: [String], fast: Bool) {
         let tracing = index >= 3
-        treo_render_set_afk_mode(index == 1 || index == 4 ? 8 : 1)
-        blackout?.setTitle("Đang đo \(index + 1)/5 · Chạm để hủy", for: .normal)
+        treo_render_set_afk_mode(index == 1 || index == 4 ? (fast ? 9 : 8) : 1)
+        blackout?.setTitle("Đang đo \(index + 1)/\(fast ? 3 : 5) · Chạm để hủy", for: .normal)
         // CPU scoring and diagnostic stack sampling use disjoint windows.
         let settle = DispatchWorkItem { [weak self] in
             guard let self, self.afkMeasureID == id else { return }
@@ -912,7 +916,7 @@ class GameViewController: UIViewController {
                     let name = index == 3 ? "Main · màn đen cũ" : "Main · không dựng hình"
                     let all = rows + [name + "\n" + report]
                     if index == 3 {
-                        self.runGuardedLeg(id: id, index: 4, rows: all)
+                        self.runGuardedLeg(id: id, index: 4, rows: all, fast: false)
                     } else {
                         // Restore ordinary blackout before presenting the report.
                         treo_render_set_afk_mode(1)
@@ -932,13 +936,17 @@ class GameViewController: UIViewController {
                 }
                 let main: Double? = start.cpu.mainCPU >= 0 && end.cpu.mainCPU >= start.cpu.mainCPU
                     ? 100 * (end.cpu.mainCPU - start.cpu.mainCPU) / seconds : nil
-                let name = ["Cũ 1", "Không dựng hình", "Cũ 2"][index]
+                let name = ["Cũ 1", fast ? "Canvas nhanh" : "Không dựng hình", "Cũ 2"][index]
                 let paint = Double(end.cpu.paintNS &- start.cpu.paintNS) / seconds / 10_000_000
                 let rate = Double(end.cpu.paints &- start.cpu.paints) / seconds
                 let wakes = Double(end.wakes &- start.wakes) / seconds
                 var row = "\(name): \(percent(end.cpu.cpuPercent(since: start.cpu))) tổng · \(percent(main)) main · \(percent(paint)) paint"
                 row += String(format: "\n%.1f paint/s · %.1f wake/s · %llu khung lên layer", rate, wakes, end.frames &- start.frames)
-                if index == 1 {
+                if index == 1 && fast {
+                    row += "\nSIMD \(end.software.fast &- start.software.fast) · gọi tắt \(end.software.direct &- start.software.direct) · kiểm \(end.software.checked &- start.software.checked) · lệch \(end.software.mismatch &- start.software.mismatch)."
+                    row += "\nTô nhanh \(end.fast.fills &- start.fast.fills) · kiểm \(end.fast.checks &- start.fast.checks) · lệch \(end.fast.mismatch &- start.fast.mismatch) · trạng thái trùng \(end.fast.state &- start.fast.state)."
+                }
+                if index == 1 && !fast {
                     row += "\nCanvas: \(end.discarded &- start.discarded) lượt bỏ raster · \(end.real &- start.real) lượt vẽ thật."
                     row += "\nNative bỏ \(end.native &- start.native) lệnh (không tính lệnh trả sớm ở Java)."
                     if end.late != start.late {
@@ -949,7 +957,18 @@ class GameViewController: UIViewController {
                     row += "\n" + String(cString: raw)
                     free(raw)
                 }
-                self.runGuardedLeg(id: id, index: index + 1, rows: rows + [row])
+                let all = rows + [row]
+                if fast && index == 2 {
+                    treo_afk_wakes_set(0)
+                    self.afkMeasure = nil
+                    self.afkMeasureID = nil
+                    self.afkComparisonDone = true
+                    self.lastMeasurement = ("So CPU · Canvas nhanh", all.joined(separator: "\n\n") +
+                        "\n\nCùng màn đen, giữ nhịp paint và cấu hình JIT. CPU quy về một lõi. Không đo GPU %.")
+                    self.blackout?.setTitle("Đo xong · Chạm xem kết quả", for: .normal)
+                } else {
+                    self.runGuardedLeg(id: id, index: index + 1, rows: all, fast: fast)
+                }
             }
             self.afkMeasure = measure
             DispatchQueue.main.asyncAfter(deadline: .now() + .seconds(60), execute: measure)

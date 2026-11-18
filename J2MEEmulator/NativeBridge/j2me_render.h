@@ -79,6 +79,8 @@ double treo_process_cpu_seconds(void);
 typedef struct {
     uint64_t frames, regions, fast, checked, mismatch, direct;
 } TreoSoftwareStats;
+typedef struct { uint64_t fills, checks, mismatch, state; } TreoFastCanvasStats;
+TreoFastCanvasStats treo_fast_canvas_stats(void);
 int treo_software_enabled(void);
 int treo_direct_graphics_enabled(void);
 void treo_direct_graphics_set_enabled(int enabled);

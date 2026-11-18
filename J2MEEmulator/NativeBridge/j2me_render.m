@@ -69,6 +69,11 @@ typedef struct RenderContext {
     uint32_t *softwarePixels;
     uint64_t swRegions, swFast, swChecked, swMismatch, swDirect;
     unsigned swSequence;
+    unsigned fastFillSequence;
+    bool fastFillRejected;
+    bool fastFontValid;
+    s32 fastFontFace, fastFontStyle, fastFontSize;
+    uint64_t fastFills, fastFillChecks, fastFillMismatch, fastState;
     uint32_t liveColor, liveSavedColor;
     int liveStroke, liveSavedStroke;
     CGRect liveRawClip;
@@ -90,6 +95,7 @@ typedef struct RenderImage {
     struct RenderImage *next_dead;
 } RenderImage;
 
+static int treo_sw_draw(RenderContext *, RenderImage *, int64_t, int64_t, int, int, int, int, int, int);
 static void treo_cpu_batch_drain(RenderContext *rc);
 static void treo_cpu_batch_free(RenderContext *rc);
 static void treo_live_discard(RenderContext *rc);
@@ -270,8 +276,21 @@ static atomic_bool treo_profile_enabled;
 static atomic_bool treo_software_on;
 static atomic_bool treo_direct_graphics_on;
 static _Atomic uint64_t sw_frames, sw_regions, sw_fast, sw_checked, sw_mismatch, sw_direct;
+enum { TreoAFKFastCanvas = 9 };
+static _Atomic uint64_t treo_fast_fills, treo_fast_fill_checks, treo_fast_fill_mismatch, treo_fast_state;
+TreoFastCanvasStats treo_fast_canvas_stats(void) {
+    return (TreoFastCanvasStats){
+        atomic_load_explicit(&treo_fast_fills, memory_order_relaxed),
+        atomic_load_explicit(&treo_fast_fill_checks, memory_order_relaxed),
+        atomic_load_explicit(&treo_fast_fill_mismatch, memory_order_relaxed),
+        atomic_load_explicit(&treo_fast_state, memory_order_relaxed)
+    };
+}
+static inline int treo_afk_fast_canvas(void) {
+    return atomic_load_explicit(&treo_afk_mode, memory_order_relaxed) == TreoAFKFastCanvas;
+}
 int treo_direct_graphics_enabled(void) {
-    return atomic_load_explicit(&treo_direct_graphics_on, memory_order_relaxed);
+    return treo_afk_fast_canvas() || atomic_load_explicit(&treo_direct_graphics_on, memory_order_relaxed);
 }
 void treo_direct_graphics_set_enabled(int enabled) {
     atomic_store_explicit(&treo_direct_graphics_on, enabled != 0, memory_order_relaxed);
@@ -298,6 +317,11 @@ static void treo_software_publish(RenderContext *rc) {
     if (rc->swChecked) atomic_fetch_add_explicit(&sw_checked, rc->swChecked, memory_order_relaxed);
     if (rc->swMismatch) atomic_fetch_add_explicit(&sw_mismatch, rc->swMismatch, memory_order_relaxed);
     if (rc->swDirect) atomic_fetch_add_explicit(&sw_direct, rc->swDirect, memory_order_relaxed);
+    if (rc->fastFills) atomic_fetch_add_explicit(&treo_fast_fills, rc->fastFills, memory_order_relaxed);
+    if (rc->fastFillChecks) atomic_fetch_add_explicit(&treo_fast_fill_checks, rc->fastFillChecks, memory_order_relaxed);
+    if (rc->fastFillMismatch) atomic_fetch_add_explicit(&treo_fast_fill_mismatch, rc->fastFillMismatch, memory_order_relaxed);
+    if (rc->fastState) atomic_fetch_add_explicit(&treo_fast_state, rc->fastState, memory_order_relaxed);
+    rc->fastFills = rc->fastFillChecks = rc->fastFillMismatch = rc->fastState = 0;
     rc->swRegions = rc->swFast = rc->swChecked = rc->swMismatch = rc->swDirect = 0;
 }
 static atomic_bool treo_region_cull_enabled;
@@ -1040,7 +1064,12 @@ static s32 n_setColor(Runtime *runtime, JClass *clazz) {
     s64 handle = env->localvar_getLong_2slot(runtime->localvar, 0);
     s32 argb = env->localvar_getInt(runtime->localvar, 2);
     RenderContext *rc = rc_acquire(handle);
-    if (rc) { setColorFromARGB(rc->ctx, argb); rc->liveColor = (uint32_t)argb; }
+    if (rc) {
+        if (rc->ownsPixels && rc->clipSaved && treo_afk_fast_canvas() && rc->liveColor == (uint32_t)argb)
+            ++rc->fastState;
+        else setColorFromARGB(rc->ctx, argb);
+        rc->liveColor = (uint32_t)argb;
+    }
     rc_release(rc);
     return RUNTIME_STATUS_NORMAL;
 }
@@ -1058,6 +1087,13 @@ static s32 n_setClip(Runtime *runtime, JClass *clazz) {
                                              CGRectStandardize(CGRectMake(x, y, w, h)));
         if (rc->cpuCache) treo_cpu_batch_drain(rc);
         if (w < 0 || h < 0) treo_live_barrier(rc);
+        if (rc->ownsPixels && rc->clipSaved && treo_afk_fast_canvas() &&
+            w >= 0 && h >= 0 && CGRectEqualToRect(rc->liveRawClip, CGRectMake(x, y, w, h)) &&
+            rc->liveColor == rc->liveSavedColor && rc->liveStroke == rc->liveSavedStroke) {
+            ++rc->fastState;
+            rc_release(rc);
+            return RUNTIME_STATUS_NORMAL;
+        }
         if (rc->clipSaved) {
             CGContextRestoreGState(rc->ctx);
             rc->liveColor = rc->liveSavedColor;
@@ -1106,8 +1142,10 @@ static s32 n_setStrokeStyle(Runtime *runtime, JClass *clazz) {
     s32 style = env->localvar_getInt(runtime->localvar, 2);
     RenderContext *rc = rc_acquire(handle);
     if (rc) {
+        if (rc->ownsPixels && rc->clipSaved && treo_afk_fast_canvas() && rc->liveStroke == style)
+            ++rc->fastState;
+        else treo_apply_stroke(rc->ctx, style);
         rc->liveStroke = style;
-        treo_apply_stroke(rc->ctx, style);
     }
     rc_release(rc);
     return RUNTIME_STATUS_NORMAL;
@@ -1141,6 +1179,52 @@ static s32 n_drawLine(Runtime *runtime, JClass *clazz) {
     return RUNTIME_STATUS_NORMAL;
 }
 
+// Opaque integer fills can write straight into the Canvas bitmap. Periodic
+// reference draws leave CG's pixels in place and permanently disable the fast
+// path for this context on mismatch. No assumptions about image/offscreen GCs.
+static int treo_fast_opaque_rect(RenderContext *rc, int x, int y, int w, int h) {
+    if (!rc->softwarePixels || !treo_afk_fast_canvas() || rc->fastFillRejected ||
+        !rc->clipSaved || (rc->liveColor >> 24) != 255 || w <= 0 || h <= 0 ||
+        rc->liveRawClip.size.width < 0 || rc->liveRawClip.size.height < 0) return 0;
+    CGRect raw = CGRectMake(x, y, w, h);
+    CGRect rect = CGRectIntersection(rc->regionClipBounds, raw);
+    if (CGRectIsNull(rect) || CGRectIsEmpty(rect)) return 0;
+    treo_live_barrier(rc);
+    const uint32_t color = rc->liveColor;
+    const int left = (int)CGRectGetMinX(rect), right = (int)CGRectGetMaxX(rect);
+    const int top = (int)CGRectGetMinY(rect), bottom = (int)CGRectGetMaxY(rect);
+    if (left < 0 || top < 0 || right > rc->width || bottom > rc->height) return 0;
+    unsigned seq = ++rc->fastFillSequence;
+    if (seq <= 8 || (seq & 1023u) == 0) {
+        CGContextFillRect(rc->ctx, raw);
+        ++rc->fastFillChecks;
+        for (int yy = top; yy < bottom; ++yy) {
+            const uint32_t *row = rc->softwarePixels + yy * rc->width;
+            for (int xx = left; xx < right; ++xx) {
+                if (row[xx] != color) {
+                    rc->fastFillRejected = true;
+                    ++rc->fastFillMismatch;
+                    return 1;
+                }
+            }
+        }
+    } else {
+#if defined(__ARM_NEON)
+        const uint32x4_t v = vdupq_n_u32(color);
+#endif
+        for (int yy = top; yy < bottom; ++yy) {
+            uint32_t *row = rc->softwarePixels + yy * rc->width;
+            int xx = left;
+#if defined(__ARM_NEON)
+            for (; xx + 4 <= right; xx += 4) vst1q_u32(row + xx, v);
+#endif
+            for (; xx < right; ++xx) row[xx] = color;
+        }
+        ++rc->fastFills;
+    }
+    return 1;
+}
+
 static s32 n_fillRect(Runtime *runtime, JClass *clazz) {
     JniEnv *env = runtime->jnienv;
     s64 handle = env->localvar_getLong_2slot(runtime->localvar, 0);
@@ -1150,7 +1234,7 @@ static s32 n_fillRect(Runtime *runtime, JClass *clazz) {
     s32 h = env->localvar_getInt(runtime->localvar, 5);
     RenderContext *rc = rc_acquire(handle);
     if (rc && treo_afk_skip_draw(rc)) { rc_release(rc); return RUNTIME_STATUS_NORMAL; }
-    if (rc && !treo_live_rect(rc, x, y, w, h)) {
+    if (rc && !treo_fast_opaque_rect(rc, x, y, w, h) && !treo_live_rect(rc, x, y, w, h)) {
         treo_live_barrier(rc);
         CGContextFillRect(rc->ctx, CGRectMake(x, y, w, h));
     }
@@ -1321,6 +1405,12 @@ static s32 n_setFont(Runtime *runtime, JClass *clazz) {
     s32 size = env->localvar_getInt(runtime->localvar, 4);
     RenderContext *rc = rc_acquire(handle);
     if (rc) {
+        if (rc->ownsPixels && treo_afk_fast_canvas() && rc->font && rc->fastFontValid &&
+            rc->fastFontFace == face && rc->fastFontStyle == style && rc->fastFontSize == size) {
+            ++rc->fastState;
+            rc_release(rc);
+            return RUNTIME_STATUS_NORMAL;
+        }
         CGFloat ptSize;
         switch (size) {
             case 8:  ptSize = 10.0; break;
@@ -1341,6 +1431,10 @@ static s32 n_setFont(Runtime *runtime, JClass *clazz) {
         }
 
         CTFontRef newFont = CTFontCreateWithName(fontName, ptSize, NULL);
+        rc->fastFontValid = newFont != NULL;
+        rc->fastFontFace = face;
+        rc->fastFontStyle = style;
+        rc->fastFontSize = size;
         CTFontRef oldFont = __atomic_exchange_n(&rc->font, newFont, __ATOMIC_ACQ_REL);
         rc->fontSize = ptSize;
         rc->fontStyle = style;
@@ -1547,6 +1641,16 @@ static s32 n_drawImage(Runtime *runtime, JClass *clazz) {
     if (anchor & 32) y -= imgH;
 
     if (rc->cpuCache) treo_cpu_batch_drain(rc);
+    if (rc->softwarePixels && treo_afk_fast_canvas() &&
+        !atomic_load_explicit(&treo_replay_state, memory_order_relaxed)) {
+        treo_live_barrier(rc);
+        ++rc->swRegions;
+        if (treo_sw_draw(rc, img, x, y, 0, 0, imgW, imgH, 0, 1)) {
+            img_release(img);
+            rc_release(rc);
+            return RUNTIME_STATUS_NORMAL;
+        }
+    }
     if (treo_live_enqueue(rc, img, x, y, 0, 0, imgW, imgH, 0)) {
         img_release(img);
         rc_release(rc);
@@ -2664,7 +2768,7 @@ static s32 treo_draw_region(const TreoRegionArgs *p, int direct) {
     // AFK SIMD keeps producing canvas pixels, but never presents them.
     // Use the same verified raster and CG fallback as the visible backend.
     const int afkMode = atomic_load_explicit(&treo_afk_mode, memory_order_relaxed);
-    const int afkSIMD = afkMode == 5;
+    const int afkSIMD = afkMode == 5 || afkMode == TreoAFKFastCanvas;
     if (rc->softwarePixels &&
         (afkSIMD || (afkMode == 0 && treo_software_enabled() &&
                     !treo_metal_live_enabled() && !treo_cpu_batch_enabled())) &&
@@ -2782,7 +2886,8 @@ static u64 treo_graphics_offsets(JClass *clazz, int image) {
 // The original Java bytecode stays available for the A/B baseline and any
 // incompatible layout. Only replace the tiny bundled Graphics API wrapper.
 int treo_try_graphics_draw_region(Runtime *runtime, JClass *clazz) {
-    if (!treo_software_enabled() || j2me_render_is_afk_suspended()) return 0;
+    const int fastCanvas = treo_afk_fast_canvas();
+    if (!fastCanvas && (!treo_software_enabled() || j2me_render_is_afk_suspended())) return 0;
     LocalVarItem *locals = runtime->localvar;
     Instance *graphics = localvar_getRefer(locals, 0);
     Instance *image = localvar_getRefer(locals, 1);
@@ -2808,6 +2913,13 @@ int treo_try_graphics_draw_region(Runtime *runtime, JClass *clazz) {
         localvar_getInt(locals, 4), localvar_getInt(locals, 5), localvar_getInt(locals, 6),
         (s32)((u32)localvar_getInt(locals, 7) + (u32)tx),
         (s32)((u32)localvar_getInt(locals, 8) + (u32)ty), localvar_getInt(locals, 9)};
+    // The AFK shortcut stays on screen Canvas only; Image Graphics uses Java.
+    if (fastCanvas) {
+        RenderContext *target = rc_acquire(ctx);
+        int canvas = target && target->ownsPixels;
+        rc_release(target);
+        if (!canvas) return 0;
+    }
     treo_profiled_region(&p, 1);
     return 1;
 }
