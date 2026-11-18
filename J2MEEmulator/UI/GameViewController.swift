@@ -95,6 +95,7 @@ class GameViewController: UIViewController {
     private var jarAuditID: UUID?
     private var jarAuditWork: DispatchWorkItem?
     private var jarAuditJIT: Int32 = 0
+    private var jarMainProfile = false
     private var afkOriginalJIT: Int32?
     private var lastAFKTrace = ""
     private var afkFrozenLayers: [CALayer] = []
@@ -538,6 +539,7 @@ class GameViewController: UIViewController {
                      attributes: cpuProfileStartedAt == nil ? [] : .disabled) { [weak self] _ in
                 self?.togglePowerRun()
             },
+            UIAction(title: "Tìm hàm ăn CPU main · JAR") { [weak self] _ in self?.confirmJarAudit(profileMain: true) },
             UIAction(title: "Chẩn đoán CPU JAR · tắt → bật → tắt") { [weak self] _ in self?.confirmJarAudit() },
             UIAction(title: "Treo tối đa · màn hình đen") { [weak self] _ in self?.showBlackout() },
             UIAction(title: "Treo · vẽ SIMD ngầm (thử nghiệm)") { [weak self] _ in self?.showBlackout(mode: 5) },
@@ -879,18 +881,23 @@ class GameViewController: UIViewController {
         let wakes = treo_afk_main_wakes()
     }
 
-    private func confirmJarAudit() {
+    private func confirmJarAudit(profileMain: Bool = false) {
         guard jarAuditID == nil, blackout == nil, powerRun == nil, cpuProfileStartedAt == nil else { return }
-        let alert = UIAlertController(title: "Chẩn đoán CPU JAR",
-            message: "Dùng Farm-Clean-CPU.jar trong map 37, auto đang chạy, mục treo trong game đang TẮT. App đo 3 lượt × 60 giây, cùng chặn khung game. Chỉ thao tác bật treo và chạm để thoát khi app nhắc. Không bật màn đen Treo. JIT tạm tắt trong bài đo.",
+        let alert = UIAlertController(title: profileMain ? "Tìm hàm ăn CPU main" : "Chẩn đoán CPU JAR",
+            message: profileMain
+                ? "Dùng Farm-Clean-CPU.jar trong map 37, auto đang chạy, treo trong game đang TẮT. App lấy stack main ở hai lượt tắt/bật, mỗi lượt 20 giây. Hình đứng yên khi lấy mẫu vì app chặn khung game. Bật treo khi được nhắc. Đây không phải bài chấm CPU. Không bật màn đen Treo."
+                : "Dùng Farm-Clean-CPU.jar trong map 37, auto đang chạy, mục treo trong game đang TẮT. App đo 3 lượt × 60 giây, cùng chặn khung game. Chỉ thao tác bật treo và chạm để thoát khi app nhắc. Không bật màn đen Treo. JIT tạm tắt trong bài đo.",
             preferredStyle: .alert)
         alert.addAction(UIAlertAction(title: "Hủy", style: .cancel))
-        alert.addAction(UIAlertAction(title: "Đo", style: .default) { [weak self] _ in self?.startJarAudit() })
+        alert.addAction(UIAlertAction(title: profileMain ? "Lấy mẫu" : "Đo", style: .default) { [weak self] _ in
+            self?.startJarAudit(profileMain: profileMain)
+        })
         present(alert, animated: true)
     }
 
-    private func startJarAudit() {
-        guard jarAuditID == nil, blackout == nil else { return }
+    private func startJarAudit(profileMain: Bool) {
+        guard jarAuditID == nil, blackout == nil, powerRun == nil, cpuProfileStartedAt == nil else { return }
+        jarMainProfile = profileMain
         let id = UUID()
         jarAuditID = id
         jarAuditJIT = treo_game_jit_is_enabled()
@@ -908,6 +915,8 @@ class GameViewController: UIViewController {
         jarAuditID = nil
         jarAuditWork?.cancel()
         jarAuditWork = nil
+        if jarMainProfile { treo_afk_main_trace_cancel() }
+        jarMainProfile = false
         treo_jar_audit_set(0)
         treo_afk_wakes_set(0)
         treo_render_set_afk_mode(0)
@@ -939,7 +948,9 @@ class GameViewController: UIViewController {
             guard let self else { return }
             treo_afk_threads_begin()
             let start = JarAuditSample()
-            self.scheduleJarAudit(id: id, after: 60) { [weak self] in
+            let profileMain = self.jarMainProfile
+            if profileMain { treo_afk_main_stack_begin() }
+            self.scheduleJarAudit(id: id, after: profileMain ? 20 : 60) { [weak self] in
                 guard let self else { return }
                 let end = JarAuditSample()
                 let dt = max(0.001, end.base.time - start.base.time)
@@ -966,13 +977,17 @@ class GameViewController: UIViewController {
                     row += "\n" + String(cString: raw)
                     free(raw)
                 }
+                if profileMain, let raw = treo_afk_main_trace_end() {
+                    row += "\n" + String(cString: raw)
+                    free(raw)
+                }
                 let all = rows + [row]
                 guard validState && frames == 0 else {
                     self.finishJarAudit(rows: all, results: [])
                     return
                 }
                 let measured = results + [JarAuditResult(total: total, main: main, ticks: ticks, paint: paint)]
-                if leg == 2 {
+                if leg == 2 || (profileMain && leg == 1) {
                     self.finishJarAudit(rows: all, results: measured)
                 } else {
                     self.promptJarAudit(id: id, nextLeg: leg + 1, rows: all, results: measured)
@@ -1015,7 +1030,14 @@ class GameViewController: UIViewController {
     }
 
     private func finishJarAudit(rows: [String], results: [JarAuditResult]) {
+        let profileMain = jarMainProfile
         stopJarAudit()
+        if profileMain {
+            publishMeasurement(title: "Tìm hàm ăn CPU main", message:
+                "JIT tắt · cùng chặn khung game ở hai lượt. CPU chỉ để tham khảo vì có sampler; dùng chuỗi gọi để đối chiếu. Mẫu runnable không đồng nghĩa thời gian CPU.\n\n"
+                + rows.joined(separator: "\n\n"))
+            return
+        }
         var summary = ""
         if results.count == 3 {
             let a = results[0], b = results[1], c = results[2]
