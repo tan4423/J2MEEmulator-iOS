@@ -31,6 +31,9 @@
 #include <mach/arm/thread_status.h>
 #include <dlfcn.h>
 #include <pthread.h>
+#if __has_feature(ptrauth_calls)
+#include <ptrauth.h>
+#endif
 
 // ============================================================
 // Internal structures
@@ -355,23 +358,54 @@ double treo_afk_current_thread_cpu(void) {
     return ts.tv_sec + ts.tv_nsec / 1e9;
 }
 
-// Read only registers of our own main thread; no explicit suspension or
-// dereferencing another thread's stack. Resolve symbols after the timed leg.
+// Diagnostic only. Never suspend main; use kernel-mediated bounded reads and
+// discard a chain if the live register snapshot changed. Symbolize after sampling.
 static dispatch_queue_t treo_trace_queue;
 static dispatch_source_t treo_trace_timer;
 static thread_t treo_trace_thread;
-enum { TreoTraceMax = 2048 };
-static struct { uintptr_t pc, lr; } treo_trace_points[TreoTraceMax];
-static unsigned treo_trace_count, treo_trace_ticks, treo_trace_errors;
-void treo_afk_main_trace_begin(void) {
+enum { TreoTraceMax = 2048, TreoTraceDepth = 16 };
+static struct { uintptr_t pc, lr, frames[TreoTraceDepth]; unsigned depth; } treo_trace_points[TreoTraceMax];
+static unsigned treo_trace_count, treo_trace_ticks, treo_trace_errors, treo_trace_chains, treo_trace_unstable;
+static bool treo_trace_has_stack;
+
+#if defined(__arm64__)
+static unsigned treo_trace_walk(uintptr_t fp, uintptr_t low, uintptr_t high,
+                                uintptr_t frames[TreoTraceDepth]) {
+    unsigned depth = 0;
+    while (depth < TreoTraceDepth && fp >= low && high >= 16 && fp <= high - 16 && !(fp & 15)) {
+        uintptr_t pair[2];
+        vm_size_t copied = 0;
+        if (vm_read_overwrite(mach_task_self(), (vm_address_t)fp, sizeof(pair),
+                              (vm_address_t)(uintptr_t)pair, &copied) != KERN_SUCCESS ||
+            copied != sizeof(pair)) break;
+        uintptr_t ret = pair[1];
+#if __has_feature(ptrauth_calls)
+        ret = (uintptr_t)ptrauth_strip((void *)ret, ptrauth_key_return_address);
+#endif
+        if (!ret || (ret & 3)) break;
+        frames[depth++] = ret - 4; // call site, not the next instruction
+        if (pair[0] <= fp) break;
+        fp = pair[0];
+    }
+    return depth;
+}
+#endif
+
+static void treo_afk_trace_begin(bool stack) {
     treo_afk_main_trace_cancel();
 #if defined(__arm64__)
     if (!treo_trace_queue) treo_trace_queue = dispatch_queue_create("treo.afk.main.trace", DISPATCH_QUEUE_SERIAL);
     treo_trace_thread = mach_thread_self();
-    treo_trace_count = treo_trace_ticks = treo_trace_errors = 0;
+    treo_trace_count = treo_trace_ticks = treo_trace_errors = treo_trace_chains = treo_trace_unstable = 0;
+    treo_trace_has_stack = stack;
+    const pthread_t main = pthread_self();
+    const uintptr_t high = (uintptr_t)pthread_get_stackaddr_np(main);
+    const size_t stack_size = pthread_get_stacksize_np(main);
+    const uintptr_t low = stack_size <= high ? high - stack_size : high;
     const thread_t target = treo_trace_thread;
     treo_trace_timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, treo_trace_queue);
-    dispatch_source_set_timer(treo_trace_timer, dispatch_time(DISPATCH_TIME_NOW, 43000000), 43000000, 9000000);
+    const uint64_t interval = stack ? 53000000 : 43000000;
+    dispatch_source_set_timer(treo_trace_timer, dispatch_time(DISPATCH_TIME_NOW, (int64_t)interval), interval, 9000000);
     dispatch_source_set_event_handler(treo_trace_timer, ^{
         ++treo_trace_ticks;
         thread_basic_info_data_t info;
@@ -385,12 +419,36 @@ void treo_afk_main_trace_begin(void) {
         if (thread_get_state(target, ARM_THREAD_STATE64, (thread_state_t)&state, &n) != KERN_SUCCESS) {
             ++treo_trace_errors; return;
         }
-        treo_trace_points[treo_trace_count].pc = (uintptr_t)arm_thread_state64_get_pc(state);
-        treo_trace_points[treo_trace_count++].lr = (uintptr_t)arm_thread_state64_get_lr(state);
+        const unsigned slot = treo_trace_count++;
+        const uintptr_t pc = (uintptr_t)arm_thread_state64_get_pc(state);
+        treo_trace_points[slot].pc = pc;
+        treo_trace_points[slot].lr = (uintptr_t)arm_thread_state64_get_lr(state);
+        treo_trace_points[slot].depth = 0;
+        if (!stack) return;
+        const uintptr_t fp = (uintptr_t)arm_thread_state64_get_fp(state);
+        const uintptr_t sp = (uintptr_t)arm_thread_state64_get_sp(state);
+        if (sp < low || sp >= high || fp < sp) return;
+        unsigned depth = treo_trace_walk(fp, sp, high, treo_trace_points[slot].frames);
+        if (!depth) return;
+        arm_thread_state64_t after;
+        n = ARM_THREAD_STATE64_COUNT;
+        if (thread_get_state(target, ARM_THREAD_STATE64, (thread_state_t)&after, &n) != KERN_SUCCESS ||
+            pc != (uintptr_t)arm_thread_state64_get_pc(after) ||
+            fp != (uintptr_t)arm_thread_state64_get_fp(after) ||
+            sp != (uintptr_t)arm_thread_state64_get_sp(after) ||
+            treo_trace_points[slot].lr != (uintptr_t)arm_thread_state64_get_lr(after)) {
+            ++treo_trace_unstable;
+            return;
+        }
+        treo_trace_points[slot].depth = depth;
+        ++treo_trace_chains;
     });
     dispatch_resume(treo_trace_timer);
 #endif
 }
+void treo_afk_main_trace_begin(void) { treo_afk_trace_begin(false); }
+void treo_afk_main_stack_begin(void) { treo_afk_trace_begin(true); }
+
 void treo_afk_main_trace_cancel(void) {
     if (!treo_trace_timer) return;
     dispatch_source_cancel(treo_trace_timer);
@@ -417,11 +475,28 @@ char *treo_afk_main_trace_end(void) {
         if (!leaf) { leaf = treo_trace_symbol(treo_trace_points[i].pc); symbols[pc] = leaf; }
         NSString *link = symbols[lr];
         if (!link) { link = treo_trace_symbol(treo_trace_points[i].lr); symbols[lr] = link; }
-        NSString *key = [NSString stringWithFormat:@"%@ | LR %@", leaf, link];
+        NSMutableString *key = [NSMutableString stringWithString:leaf];
+        if (treo_trace_points[i].depth) {
+            unsigned depth = treo_trace_points[i].depth;
+            for (unsigned j = 0; j < depth; ++j) {
+                // Keep the near callers and the outermost frames in a compact report.
+                if (j == 5 && depth > 8) { [key appendString:@" ← …"]; j = depth - 2; }
+                uintptr_t addr = treo_trace_points[i].frames[j];
+                NSNumber *idKey = @(addr);
+                NSString *frame = symbols[idKey];
+                if (!frame) { frame = treo_trace_symbol(addr); symbols[idKey] = frame; }
+                [key appendFormat:@" ← %@", frame];
+            }
+        } else {
+            [key appendFormat:@" | LR %@", link];
+        }
         hist[key] = @(hist[key].unsignedIntValue + 1);
     }
     NSMutableString *result = [NSMutableString stringWithFormat:@"Main PC/LR: %u mẫu runnable / %u lần lấy; %u lỗi",
                                treo_trace_count, treo_trace_ticks, treo_trace_errors];
+    if (treo_trace_has_stack)
+        [result appendFormat:@"\n%u chuỗi FP giữ lại · %u mẫu đổi trong lúc đọc (chỉ giữ PC/LR)",
+            treo_trace_chains, treo_trace_unstable];
     NSArray<NSString *> *keys = [hist keysSortedByValueUsingSelector:@selector(compare:)];
     for (NSUInteger k = keys.count, shown = 0; k && shown < 6; --k, ++shown) {
         NSString *key = keys[k-1];
@@ -466,7 +541,7 @@ char *treo_afk_threads_report(double seconds) {
         [delta removeObjectForKey:tid];
     }
     NSArray<NSNumber *> *others = [delta keysSortedByValueUsingSelector:@selector(compare:)];
-    for (NSUInteger n = others.count, shown = 0; n > 0 && shown < 2; --n, ++shown) {
+    for (NSUInteger n = others.count, shown = 0; n > 0 && shown < 5; --n, ++shown) {
         NSNumber *tid = others[n-1];
         [out appendFormat:@" · #%@ %.1f%%", tid, delta[tid].doubleValue];
     }

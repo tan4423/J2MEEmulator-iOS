@@ -872,7 +872,7 @@ class GameViewController: UIViewController {
         guard blackout == nil, powerRun == nil else { return }
         let file = URL(fileURLWithPath: jarPath).lastPathComponent
         let alert = UIAlertController(title: "Thử treo không dựng hình",
-            message: "JAR đang chạy: \(file)\nPhép thử dành cho x1. Chỉ tiếp tục nếu đây là x1, kể cả khi đã đổi tên tệp. Có thể chạm màn đen để dừng và kiểm tra lại game. Màn đen thường không thay đổi.",
+            message: "JAR đang chạy: \(file)\nChỉ thử trên x1. App đo CPU từng luồng trong 3 lượt, rồi lấy mẫu chuỗi gọi main trong 2 lượt riêng. Mỗi lượt 60 giây. Có thể chạm màn đen để dừng và kiểm tra lại game. Màn đen thường không thay đổi.",
             preferredStyle: .alert)
         alert.addAction(UIAlertAction(title: "Hủy", style: .cancel))
         alert.addAction(UIAlertAction(title: "Đo x1", style: .default) { [weak self] _ in
@@ -884,6 +884,7 @@ class GameViewController: UIViewController {
     private func startGuardedComparison() {
         guard blackout == nil, powerRun == nil else { return }
         showBlackout()
+        treo_afk_main_trace_cancel()
         let id = UUID()
         afkMeasureID = id
         guardedBlackout = true
@@ -892,15 +893,39 @@ class GameViewController: UIViewController {
     }
 
     private func runGuardedLeg(id: UUID, index: Int, rows: [String]) {
-        treo_render_set_afk_mode(index == 1 ? 8 : 1)
-        blackout?.setTitle("Đang đo \(index + 1)/3 · Chạm để hủy", for: .normal)
-        // Exclude transitions from the 60-second sample; no stack sampler.
+        let tracing = index >= 3
+        treo_render_set_afk_mode(index == 1 || index == 4 ? 8 : 1)
+        blackout?.setTitle("Đang đo \(index + 1)/5 · Chạm để hủy", for: .normal)
+        // CPU scoring and diagnostic stack sampling use disjoint windows.
         let settle = DispatchWorkItem { [weak self] in
             guard let self, self.afkMeasureID == id else { return }
+            if tracing { treo_afk_main_stack_begin() }
+            else { treo_afk_threads_begin() }
             let start = GuardedSample()
             let measure = DispatchWorkItem { [weak self] in
                 guard let self, self.afkMeasureID == id else { return }
                 let end = GuardedSample()
+                if tracing {
+                    let raw = treo_afk_main_trace_end()
+                    let report = raw.map { String(cString: $0) } ?? "Không đọc được chuỗi gọi."
+                    if let raw { free(raw) }
+                    let name = index == 3 ? "Main · màn đen cũ" : "Main · không dựng hình"
+                    let all = rows + [name + "\n" + report]
+                    if index == 3 {
+                        self.runGuardedLeg(id: id, index: 4, rows: all)
+                    } else {
+                        // Restore ordinary blackout before presenting the report.
+                        treo_render_set_afk_mode(1)
+                        treo_afk_wakes_set(0)
+                        self.afkMeasure = nil
+                        self.afkMeasureID = nil
+                        self.afkComparisonDone = true
+                        self.lastMeasurement = ("Chẩn đoán CPU treo", all.joined(separator: "\n\n") +
+                            "\n\nCPU quy về một lõi. Chuỗi FP lấy ở lượt riêng, có thể thiếu frame; số mẫu không phải CPU %. Không đo GPU %.")
+                        self.blackout?.setTitle("Đo xong · Chạm xem kết quả", for: .normal)
+                    }
+                    return
+                }
                 let seconds = max(0.001, end.cpu.time - start.cpu.time)
                 func percent(_ value: Double?) -> String {
                     value.map { String(format: "%.1f%%", $0) } ?? "?"
@@ -920,19 +945,11 @@ class GameViewController: UIViewController {
                         row += "\nCó truy cập pixel/handle phát hiện muộn: không xác nhận tương thích."
                     }
                 }
-                let all = rows + [row]
-                if index < 2 {
-                    self.runGuardedLeg(id: id, index: index + 1, rows: all)
-                } else {
-                    treo_afk_wakes_set(0)
-                    self.afkMeasure = nil
-                    self.afkMeasureID = nil
-                    self.afkComparisonDone = true
-                    self.lastMeasurement = ("So CPU treo Canvas", all.joined(separator: "\n\n") +
-                        "\n\nCùng màn đen, giữ cấu hình JIT. CPU quy về một lõi. Không đo GPU %.")
-                    self.applyPadMode()
-                    self.blackout?.setTitle("Đo xong · Chạm xem kết quả", for: .normal)
+                if let raw = treo_afk_threads_report(seconds) {
+                    row += "\n" + String(cString: raw)
+                    free(raw)
                 }
+                self.runGuardedLeg(id: id, index: index + 1, rows: rows + [row])
             }
             self.afkMeasure = measure
             DispatchQueue.main.asyncAfter(deadline: .now() + .seconds(60), execute: measure)
