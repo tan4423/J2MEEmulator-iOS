@@ -41,6 +41,11 @@ int treo_render_region_cull_enabled(void);
 void treo_render_set_region_cull_enabled(int enabled);
 // Offscreen A/B of captured drawRegion commands; never replaces live rendering.
 int treo_metal_replay_start(void);
+int treo_metal_live_enabled(void);
+void treo_metal_live_set_enabled(int enabled);
+uint64_t treo_metal_live_frames(void);
+uint64_t treo_metal_live_sprites(void);
+uint64_t treo_metal_live_fallback_sprites(void);
 char * _Nullable treo_metal_replay_copy_report(void); // caller frees
 void treo_render_profile_start(void);
 TreoRenderProfile treo_render_profile_stop(void);

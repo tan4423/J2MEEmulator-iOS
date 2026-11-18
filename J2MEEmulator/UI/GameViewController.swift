@@ -84,6 +84,7 @@ class GameViewController: UIViewController {
     private var alertTimeoutWork: DispatchWorkItem?
     private var didStartGame = false
     private var cpuProfileStartedAt: TimeInterval?
+    private var cpuMetalBaseline: (UInt64, UInt64, UInt64) = (0, 0, 0)
     private var startupWatchdog: DispatchWorkItem?
 
     override var prefersStatusBarHidden: Bool { true }
@@ -515,6 +516,12 @@ class GameViewController: UIViewController {
             UIAction(title: cpuProfileStartedAt == nil ? "Bắt đầu đo CPU" : "Dừng và xem số liệu CPU") { [weak self] _ in
                 self?.toggleCPUProfile()
             },
+            UIAction(title: "Metal vẽ game (thử nghiệm)",
+                     attributes: cpuProfileStartedAt == nil ? [] : .disabled,
+                     state: treo_metal_live_enabled() != 0 ? .on : .off) { [weak self] _ in
+                treo_metal_live_set_enabled(treo_metal_live_enabled() == 0 ? 1 : 0)
+                self?.applyPadMode()
+            },
             UIAction(title: "Đo thử Metal · drawRegion") { [weak self] _ in
                 self?.showMetalReplay()
             },
@@ -539,7 +546,7 @@ class GameViewController: UIViewController {
         alert.addAction(UIAlertAction(title: "Sao chép", style: .default) { _ in
             UIPasteboard.general.string = report
         })
-        if cpuProfileStartedAt == nil && treo_render_region_cull_enabled() == 0 {
+        if cpuProfileStartedAt == nil && treo_render_region_cull_enabled() == 0 && treo_metal_live_enabled() == 0 {
             alert.addAction(UIAlertAction(title: "Thu và đo", style: .default) { _ in
                 _ = treo_metal_replay_start()
             })
@@ -549,6 +556,7 @@ class GameViewController: UIViewController {
 
     private func toggleCPUProfile() {
         guard let start = cpuProfileStartedAt else {
+            cpuMetalBaseline = (treo_metal_live_frames(), treo_metal_live_sprites(), treo_metal_live_fallback_sprites())
             treo_render_profile_start()
             cpuProfileStartedAt = ProcessInfo.processInfo.systemUptime
             applyPadMode()
@@ -563,7 +571,13 @@ class GameViewController: UIViewController {
         let region = Double(result.region_sample_ns) / 1_000_000
         let cullMode = treo_render_region_cull_enabled() != 0 ? "Bật" : "Tắt"
         let cullPercent = 100.0 * Double(result.region_culled) / max(1.0, Double(result.region_calls))
+        let metalMode = treo_metal_live_enabled() != 0 ? "Bật" : "Tắt"
+        let metalFrames = treo_metal_live_frames() &- cpuMetalBaseline.0
+        let metalSprites = treo_metal_live_sprites() &- cpuMetalBaseline.1
+        let metalFallback = treo_metal_live_fallback_sprites() &- cpuMetalBaseline.2
         let report = """
+        Metal live: \(metalMode) · \(metalFrames) khung · \(metalSprites) sprite GPU
+        Sprite đã xếp hàng nhưng vẽ lại bằng CG: \(metalFallback)
         Bỏ sprite ngoài vùng vẽ: \(cullMode)
         Bỏ sớm: \(result.region_culled)/\(result.region_calls) · \(String(format: "%.1f", cullPercent))%
         Thời gian đo: \(String(format: "%.1f", seconds)) s

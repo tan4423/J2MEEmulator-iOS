@@ -39,6 +39,7 @@
 //    When refcount reaches 0, CF resources are released immediately but
 //    the struct shell is kept for one frame to prevent ABA in acquire.
 
+typedef struct TreoLiveRun TreoLiveRun;
 typedef struct RenderContext {
     CGContextRef ctx;
     int width;
@@ -49,6 +50,7 @@ typedef struct RenderContext {
     int clipSaved;
     int ownsPixels;
     CGRect regionClipBounds;
+    TreoLiveRun *liveRun;
     _Atomic int32_t refcount;
     struct RenderContext *next_dead;
 } RenderContext;
@@ -63,6 +65,8 @@ typedef struct RenderImage {
     struct RenderImage *next_dead;
 } RenderImage;
 
+static void treo_live_discard(RenderContext *rc);
+static void treo_live_drain(RenderContext *rc, int allowMetal);
 static j2me_flush_callback g_flush_callback = NULL;
 static atomic_int g_afk_suspended = 0;
 static atomic_int g_afk_refresh = 0;
@@ -305,6 +309,7 @@ static inline void rc_release(RenderContext *rc) {
     if (atomic_fetch_sub_explicit(&rc->refcount, 1, memory_order_release) == 1) {
         atomic_thread_fence(memory_order_acquire);
         untrack_rc(rc); // remove from live tracking before freeing resources
+        treo_live_discard(rc);
         int pixels = rc->ownsPixels ? rc->width * rc->height * 4 : 0;
         CGContextRef ctx = rc->ctx;
         CTFontRef font = __atomic_exchange_n(&rc->font, NULL, __ATOMIC_ACQ_REL);
@@ -510,11 +515,12 @@ CGImageRef j2me_render_copy_image(int64_t handle) {
 
 static s32 n_flushToScreen(Runtime *runtime, JClass *clazz) {
     process_dead_shells();
-    if (j2me_render_is_afk_suspended()) return RUNTIME_STATUS_NORMAL;
-
+    const int afk = j2me_render_is_afk_suspended();
     JniEnv *env = runtime->jnienv;
     s64 handle = env->localvar_getLong_2slot(runtime->localvar, 0);
     RenderContext *rc = rc_acquire(handle);
+    if (rc && rc->liveRun) treo_live_drain(rc, !afk);
+    if (afk) { rc_release(rc); return RUNTIME_STATUS_NORMAL; }
     const int profiling = treo_profile_active();
     if (profiling) TREO_PROF_ADD(flushes, 1);
     if (rc && g_flush_callback) {
@@ -551,6 +557,7 @@ static s32 n_setClip(Runtime *runtime, JClass *clazz) {
     s32 w = env->localvar_getInt(runtime->localvar, 4);
     s32 h = env->localvar_getInt(runtime->localvar, 5);
     RenderContext *rc = rc_acquire(handle);
+    if (rc && rc->liveRun) treo_live_drain(rc, 0);
     if (rc) {
         if (rc->clipSaved) {
             CGContextRestoreGState(rc->ctx);
@@ -595,6 +602,7 @@ static s32 n_drawLine(Runtime *runtime, JClass *clazz) {
     s32 x2 = env->localvar_getInt(runtime->localvar, 4);
     s32 y2 = env->localvar_getInt(runtime->localvar, 5);
     RenderContext *rc = rc_acquire(handle);
+    if (rc && rc->liveRun) treo_live_drain(rc, 0);
     if (rc) {
         CGContextBeginPath(rc->ctx);
         CGContextMoveToPoint(rc->ctx, x1 + 0.5, y1 + 0.5);
@@ -613,6 +621,7 @@ static s32 n_fillRect(Runtime *runtime, JClass *clazz) {
     s32 w = env->localvar_getInt(runtime->localvar, 4);
     s32 h = env->localvar_getInt(runtime->localvar, 5);
     RenderContext *rc = rc_acquire(handle);
+    if (rc && rc->liveRun) treo_live_drain(rc, 0);
     if (rc) {
         CGContextFillRect(rc->ctx, CGRectMake(x, y, w, h));
     }
@@ -628,6 +637,7 @@ static s32 n_drawRect(Runtime *runtime, JClass *clazz) {
     s32 w = env->localvar_getInt(runtime->localvar, 4);
     s32 h = env->localvar_getInt(runtime->localvar, 5);
     RenderContext *rc = rc_acquire(handle);
+    if (rc && rc->liveRun) treo_live_drain(rc, 0);
     if (rc) {
         CGContextStrokeRect(rc->ctx, CGRectMake(x + 0.5, y + 0.5, w, h));
     }
@@ -645,6 +655,7 @@ static s32 n_fillArc(Runtime *runtime, JClass *clazz) {
     s32 startAngle = env->localvar_getInt(runtime->localvar, 6);
     s32 arcAngle = env->localvar_getInt(runtime->localvar, 7);
     RenderContext *rc = rc_acquire(handle);
+    if (rc && rc->liveRun) treo_live_drain(rc, 0);
     if (rc) {
         CGFloat cx = x + w / 2.0, cy = y + h / 2.0;
         CGFloat rx = w / 2.0, ry = h / 2.0;
@@ -674,6 +685,7 @@ static s32 n_drawArc(Runtime *runtime, JClass *clazz) {
     s32 startAngle = env->localvar_getInt(runtime->localvar, 6);
     s32 arcAngle = env->localvar_getInt(runtime->localvar, 7);
     RenderContext *rc = rc_acquire(handle);
+    if (rc && rc->liveRun) treo_live_drain(rc, 0);
     if (rc) {
         CGFloat cx = x + w / 2.0, cy = y + h / 2.0;
         CGFloat rx = w / 2.0, ry = h / 2.0;
@@ -701,6 +713,7 @@ static s32 n_fillRoundRect(Runtime *runtime, JClass *clazz) {
     s32 aw = env->localvar_getInt(runtime->localvar, 6);
     s32 ah = env->localvar_getInt(runtime->localvar, 7);
     RenderContext *rc = rc_acquire(handle);
+    if (rc && rc->liveRun) treo_live_drain(rc, 0);
     if (rc) {
         CGFloat radius = fmin(aw, ah) / 2.0;
         CGPathRef path = CGPathCreateWithRoundedRect(CGRectMake(x, y, w, h), radius, radius, NULL);
@@ -722,6 +735,7 @@ static s32 n_drawRoundRect(Runtime *runtime, JClass *clazz) {
     s32 aw = env->localvar_getInt(runtime->localvar, 6);
     s32 ah = env->localvar_getInt(runtime->localvar, 7);
     RenderContext *rc = rc_acquire(handle);
+    if (rc && rc->liveRun) treo_live_drain(rc, 0);
     if (rc) {
         CGFloat radius = fmin(aw, ah) / 2.0;
         CGPathRef path = CGPathCreateWithRoundedRect(CGRectMake(x + 0.5, y + 0.5, w, h), radius, radius, NULL);
@@ -780,6 +794,7 @@ static s32 n_drawString(Runtime *runtime, JClass *clazz) {
     s32 y = env->localvar_getInt(runtime->localvar, 4);
     s32 anchor = env->localvar_getInt(runtime->localvar, 5);
     RenderContext *rc = rc_acquire(handle);
+    if (rc && rc->liveRun) treo_live_drain(rc, 0);
 
     if (!rc || !jstr) { rc_release(rc); return RUNTIME_STATUS_NORMAL; }
 
@@ -954,6 +969,7 @@ static s32 n_drawImage(Runtime *runtime, JClass *clazz) {
     s32 anchor = env->localvar_getInt(runtime->localvar, 6);
 
     RenderContext *rc = rc_acquire(ctxHandle);
+    if (rc && rc->liveRun) treo_live_drain(rc, 0);
     RenderImage *img = img_acquire(imgHandle);
     if (!rc || !img) { img_release(img); rc_release(rc); return RUNTIME_STATUS_NORMAL; }
 
@@ -1097,11 +1113,7 @@ static void treo_replay_vertex(TreoVertex *v, const TreoSprite *s, int right, in
     };
 }
 
-static NSString *treo_run_metal_replay(void) {
-    const size_t w = treo_replay_width, h = treo_replay_height;
-    id<MTLDevice> device = MTLCreateSystemDefaultDevice();
-    id<MTLCommandQueue> queue = [device newCommandQueue];
-    if (!queue) return @"Không tạo được Metal command queue.";
+static id<MTLRenderPipelineState> treo_sprite_pipeline(id<MTLDevice> device, NSError **error) {
     NSString *shader = @
         "#include <metal_stdlib>\n"
         "using namespace metal;\n"
@@ -1115,9 +1127,8 @@ static NSString *treo_run_metal_replay(void) {
         "  constexpr sampler smp(coord::normalized,address::clamp_to_edge,filter::nearest);\n"
         "  return tex.sample(smp,i.uv);\n"
         "}\n";
-    NSError *error = nil;
-    id<MTLLibrary> library = [device newLibraryWithSource:shader options:nil error:&error];
-    if (!library) return [NSString stringWithFormat:@"Shader Metal lỗi: %@", error.localizedDescription];
+    id<MTLLibrary> library = [device newLibraryWithSource:shader options:nil error:error];
+    if (!library) return nil;
     MTLRenderPipelineDescriptor *p = [MTLRenderPipelineDescriptor new];
     p.vertexFunction = [library newFunctionWithName:@"treo_v"];
     p.fragmentFunction = [library newFunctionWithName:@"treo_f"];
@@ -1127,7 +1138,16 @@ static NSString *treo_run_metal_replay(void) {
     p.colorAttachments[0].sourceAlphaBlendFactor = MTLBlendFactorOne;
     p.colorAttachments[0].destinationRGBBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
     p.colorAttachments[0].destinationAlphaBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
-    id<MTLRenderPipelineState> pipeline = [device newRenderPipelineStateWithDescriptor:p error:&error];
+    return [device newRenderPipelineStateWithDescriptor:p error:error];
+}
+
+static NSString *treo_run_metal_replay(void) {
+    const size_t w = treo_replay_width, h = treo_replay_height;
+    id<MTLDevice> device = MTLCreateSystemDefaultDevice();
+    id<MTLCommandQueue> queue = [device newCommandQueue];
+    if (!queue) return @"Không tạo được Metal command queue.";
+    NSError *error = nil;
+    id<MTLRenderPipelineState> pipeline = treo_sprite_pipeline(device, &error);
     if (!pipeline) return [NSString stringWithFormat:@"Pipeline Metal lỗi: %@", error.localizedDescription];
 
     NSMutableDictionary<NSValue *, id<MTLTexture>> *textures = [NSMutableDictionary new];
@@ -1369,6 +1389,200 @@ static void treo_replay_capture(RenderContext *rc, CGImageRef image, int64_t x, 
     os_unfair_lock_unlock(&treo_replay_lock);
 }
 
+// First live backend: only a sufficiently long final sprite run goes to Metal.
+// A mixed run is replayed in order on CG before any incompatible draw/clip.
+// No GPU waits or pixel transfers between LCDUI commands.
+enum { TreoLiveCapacity = 2048, TreoLiveMinimum = 24 };
+struct TreoLiveRun { unsigned count; TreoSprite sprites[TreoLiveCapacity]; };
+static atomic_bool treo_live_enabled;
+static _Atomic uint64_t treo_live_frames, treo_live_sprites, treo_live_fallback;
+int treo_metal_live_enabled(void) { return atomic_load(&treo_live_enabled); }
+void treo_metal_live_set_enabled(int enabled) { atomic_store(&treo_live_enabled, enabled != 0); }
+uint64_t treo_metal_live_frames(void) { return atomic_load(&treo_live_frames); }
+uint64_t treo_metal_live_sprites(void) { return atomic_load(&treo_live_sprites); }
+uint64_t treo_metal_live_fallback_sprites(void) { return atomic_load(&treo_live_fallback); }
+
+static void treo_live_clear(TreoLiveRun *run) {
+    for (unsigned i = 0; i < run->count; i++) CGImageRelease(run->sprites[i].image);
+    run->count = 0;
+}
+
+static void treo_live_discard(RenderContext *rc) {
+    if (!rc->liveRun) return;
+    treo_live_clear(rc->liveRun);
+    free(rc->liveRun);
+    rc->liveRun = NULL;
+}
+
+// Serialized GPU workspace. Cache keys retain immutable CGImage identities
+// so released source images cannot alias a previously cached texture.
+static os_unfair_lock treo_live_gpu_lock = OS_UNFAIR_LOCK_INIT;
+static id<MTLDevice> treo_live_device;
+static id<MTLCommandQueue> treo_live_queue;
+static id<MTLRenderPipelineState> treo_live_pipeline;
+static id<MTLBuffer> treo_live_vertices;
+static id<MTLTexture> treo_live_target;
+static NSMutableDictionary *treo_live_textures;
+static size_t treo_live_texture_bytes;
+
+static id<MTLTexture> treo_live_texture(CGImageRef image) {
+    // NSDictionary retains its CF object key through an NSValue/array entry.
+    NSValue *key = [NSValue valueWithPointer:image];
+    NSArray *entry = treo_live_textures[key];
+    if (entry) return entry[1];
+    size_t w = CGImageGetWidth(image), h = CGImageGetHeight(image);
+    size_t bytes = w * h * 4;
+    if (treo_live_texture_bytes + bytes > 16u * 1024u * 1024u) {
+        [treo_live_textures removeAllObjects];
+        treo_live_texture_bytes = 0;
+    }
+    MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:
+        MTLPixelFormatBGRA8Unorm width:w height:h mipmapped:NO];
+    td.storageMode = MTLStorageModeShared;
+    td.usage = MTLTextureUsageShaderRead;
+    id<MTLTexture> tex = [treo_live_device newTextureWithDescriptor:td];
+    if (!tex) return nil;
+    CGContextRef bitmap = treo_replay_bitmap(w, h);
+    if (!bitmap) return nil;
+    CGContextSetBlendMode(bitmap, kCGBlendModeCopy);
+    CGContextDrawImage(bitmap, CGRectMake(0, 0, w, h), image);
+    CGContextFlush(bitmap);
+    [tex replaceRegion:MTLRegionMake2D(0, 0, w, h) mipmapLevel:0
+             withBytes:CGBitmapContextGetData(bitmap) bytesPerRow:w * 4];
+    CGContextRelease(bitmap);
+    treo_live_textures[key] = @[(__bridge id)image, tex];
+    treo_live_texture_bytes += bytes;
+    return tex;
+}
+
+static int treo_live_render(RenderContext *rc, TreoLiveRun *run) {
+    if (!treo_live_pipeline) {
+        treo_live_device = MTLCreateSystemDefaultDevice();
+        treo_live_queue = [treo_live_device newCommandQueue];
+        treo_live_pipeline = treo_sprite_pipeline(treo_live_device, NULL);
+        treo_live_vertices = [treo_live_device newBufferWithLength:TreoLiveCapacity * 6 * sizeof(TreoVertex)
+                                                           options:MTLResourceStorageModeShared];
+        treo_live_textures = [NSMutableDictionary new];
+        treo_live_texture_bytes = 0;
+    }
+    if (!treo_live_pipeline || !treo_live_queue || !treo_live_vertices) return 0;
+    size_t w = rc->width, h = rc->height;
+    if (!treo_live_target || treo_live_target.width != w || treo_live_target.height != h) {
+        MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:
+            MTLPixelFormatBGRA8Unorm width:w height:h mipmapped:NO];
+        td.storageMode = MTLStorageModeShared;
+        td.usage = MTLTextureUsageRenderTarget;
+        treo_live_target = [treo_live_device newTextureWithDescriptor:td];
+    }
+    if (!treo_live_target) return 0;
+    NSMutableArray<id<MTLTexture>> *sources = [NSMutableArray arrayWithCapacity:run->count];
+    for (unsigned i = 0; i < run->count; i++) {
+        id<MTLTexture> tex = i && run->sprites[i].image == run->sprites[i - 1].image
+            ? sources.lastObject : treo_live_texture(run->sprites[i].image);
+        if (!tex) return 0;
+        [sources addObject:tex];
+    }
+
+    CGContextFlush(rc->ctx);
+    const void *base = CGBitmapContextGetData(rc->ctx);
+    if (!base) return 0;
+    MTLRegion rect = MTLRegionMake2D(0, 0, w, h);
+    [treo_live_target replaceRegion:rect mipmapLevel:0 withBytes:base
+                        bytesPerRow:CGBitmapContextGetBytesPerRow(rc->ctx)];
+    MTLRenderPassDescriptor *pass = [MTLRenderPassDescriptor renderPassDescriptor];
+    pass.colorAttachments[0].texture = treo_live_target;
+    pass.colorAttachments[0].loadAction = MTLLoadActionLoad;
+    pass.colorAttachments[0].storeAction = MTLStoreActionStore;
+    id<MTLCommandBuffer> command = [treo_live_queue commandBuffer];
+    id<MTLRenderCommandEncoder> enc = [command renderCommandEncoderWithDescriptor:pass];
+    if (!enc) return 0;
+    [enc setRenderPipelineState:treo_live_pipeline];
+    [enc setVertexBuffer:treo_live_vertices offset:0 atIndex:0];
+    TreoVertex *vertices = treo_live_vertices.contents;
+    const unsigned corners[6] = {0, 1, 2, 2, 1, 3};
+    for (unsigned i = 0; i < run->count;) {
+        unsigned start = i;
+        id<MTLTexture> tex = sources[i];
+        do {
+            for (unsigned k = 0; k < 6; k++)
+                treo_replay_vertex(&vertices[i * 6 + k], &run->sprites[i], corners[k] & 1,
+                                   corners[k] >> 1, tex.width, tex.height, w, h);
+            i++;
+        } while (i < run->count && sources[i] == tex);
+        [enc setFragmentTexture:tex atIndex:0];
+        [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:start * 6 vertexCount:(i - start) * 6];
+    }
+    [enc endEncoding];
+    [command commit];
+    [command waitUntilCompleted];
+    if (command.status != MTLCommandBufferStatusCompleted) return 0;
+
+    // Only at frame boundary. Keep the CG backing authoritative for later
+    // partial repaints, copyArea and switching the backend without a restart.
+    NSMutableData *bytes = [NSMutableData dataWithLength:w * h * 4];
+    if (!bytes) return 0;
+    [treo_live_target getBytes:bytes.mutableBytes bytesPerRow:w * 4 fromRegion:rect mipmapLevel:0];
+    CGDataProviderRef provider = CGDataProviderCreateWithCFData((__bridge CFDataRef)bytes);
+    if (!provider) return 0;
+    CGImageRef image = CGImageCreate(w, h, 8, 32, w * 4, getColorSpace(),
+        kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Little, provider, NULL, false,
+        kCGRenderingIntentDefault);
+    CGDataProviderRelease(provider);
+    if (!image) return 0;
+    CGContextSaveGState(rc->ctx);
+    CGContextSetBlendMode(rc->ctx, kCGBlendModeCopy);
+    CGContextSetInterpolationQuality(rc->ctx, kCGInterpolationNone);
+    treo_draw_region_cg(rc->ctx, image, 0, 0, (int)w, (int)h, 0);
+    CGContextRestoreGState(rc->ctx);
+    CGImageRelease(image);
+    return 1;
+}
+
+static void treo_live_drain(RenderContext *rc, int allowMetal) {
+    TreoLiveRun *run = rc->liveRun;
+    if (!run || !run->count) return;
+    int usedMetal = 0;
+    if (allowMetal && run->count >= TreoLiveMinimum && treo_metal_live_enabled() &&
+        os_unfair_lock_trylock(&treo_live_gpu_lock)) {
+        @autoreleasepool { usedMetal = treo_live_render(rc, run); }
+        os_unfair_lock_unlock(&treo_live_gpu_lock);
+    }
+    if (usedMetal) {
+        atomic_fetch_add_explicit(&treo_live_frames, 1, memory_order_relaxed);
+        atomic_fetch_add_explicit(&treo_live_sprites, run->count, memory_order_relaxed);
+    } else {
+        atomic_fetch_add_explicit(&treo_live_fallback, run->count, memory_order_relaxed);
+        for (unsigned i = 0; i < run->count; i++) {
+            TreoSprite *s = &run->sprites[i];
+            CGImageRef sub = CGImageCreateWithImageInRect(s->image, CGRectMake(s->sx, s->sy, s->w, s->h));
+            if (!sub) continue;
+            treo_draw_region_cg(rc->ctx, sub, s->x, s->y, s->w, s->h, s->transform);
+            CGImageRelease(sub);
+        }
+    }
+    treo_live_clear(run);
+}
+
+static int treo_live_enqueue(RenderContext *rc, RenderImage *img, int64_t x, int64_t y,
+                             int sx, int sy, int w, int h, int transform) {
+    if (!rc->ownsPixels || !img->immutableSnapshot || !treo_metal_live_enabled() ||
+        j2me_render_is_afk_suspended() || atomic_load_explicit(&treo_replay_state, memory_order_relaxed) ||
+        rc->width <= 0 || rc->height <= 0 || rc->width > 1024 || rc->height > 1024 ||
+        img->width > 2048 || img->height > 2048 || sx < 0 || sy < 0 || w <= 0 || h <= 0 ||
+        (int64_t)sx + w > img->width || (int64_t)sy + h > img->height ||
+        transform < 0 || transform > 7 || x < -32768 || x > 32768 || y < -32768 || y > 32768)
+        return 0;
+    if (!rc->liveRun) rc->liveRun = calloc(1, sizeof(TreoLiveRun));
+    TreoLiveRun *run = rc->liveRun;
+    if (!run || run->count == TreoLiveCapacity) return 0;
+    CGRect clip = rc->regionClipBounds;
+    if (CGRectIsNull(clip)) clip = CGRectZero;
+    run->sprites[run->count++] = (TreoSprite){
+        CGImageRetain(img->immutableSnapshot), clip, x, y, sx, sy, w, h, transform
+    };
+    return 1;
+}
+
 static s32 n_drawRegion(Runtime *runtime, JClass *clazz) {
     JniEnv *env = runtime->jnienv;
     s64 ctxHandle = env->localvar_getLong_2slot(runtime->localvar, 0);
@@ -1407,6 +1621,12 @@ static s32 n_drawRegion(Runtime *runtime, JClass *clazz) {
 
     RenderImage *img = img_acquire(imgHandle);
     if (!img) { rc_release(rc); return RUNTIME_STATUS_NORMAL; }
+    if (treo_live_enqueue(rc, img, xDst, yDst, xSrc, ySrc, wSrc, hSrc, transform)) {
+        img_release(img);
+        rc_release(rc);
+        return RUNTIME_STATUS_NORMAL;
+    }
+    if (rc->liveRun) treo_live_drain(rc, 0);
     CGContextRef rctx = rc->ctx;
     CGImageRef fullImage = copyImageSnapshot(img);
     if (!fullImage) { img_release(img); rc_release(rc); return RUNTIME_STATUS_NORMAL; }
@@ -1453,6 +1673,7 @@ static s32 n_drawRGB(Runtime *runtime, JClass *clazz) {
     s32 processAlpha = env->localvar_getInt(runtime->localvar, 9);
 
     RenderContext *rc = rc_acquire(ctxHandle);
+    if (rc && rc->liveRun) treo_live_drain(rc, 0);
     if (!rc || !arr || w <= 0 || h <= 0) { rc_release(rc); return RUNTIME_STATUS_NORMAL; }
 
     s32 arrLen = arr->arr_length;
@@ -1546,6 +1767,7 @@ static s32 n_fillPolygon(Runtime *runtime, JClass *clazz) {
     Instance *yArr = env->localvar_getRefer(runtime->localvar, 3);
     s32 nPoints = env->localvar_getInt(runtime->localvar, 4);
     RenderContext *rc = rc_acquire(handle);
+    if (rc && rc->liveRun) treo_live_drain(rc, 0);
     if (!rc || !xArr || !yArr || nPoints < 3) { rc_release(rc); return RUNTIME_STATUS_NORMAL; }
     s32 *xPts = (s32 *)xArr->arr_body;
     s32 *yPts = (s32 *)yArr->arr_body;
@@ -1567,6 +1789,7 @@ static s32 n_drawPolygon(Runtime *runtime, JClass *clazz) {
     Instance *yArr = env->localvar_getRefer(runtime->localvar, 3);
     s32 nPoints = env->localvar_getInt(runtime->localvar, 4);
     RenderContext *rc = rc_acquire(handle);
+    if (rc && rc->liveRun) treo_live_drain(rc, 0);
     if (!rc || !xArr || !yArr || nPoints < 3) { rc_release(rc); return RUNTIME_STATUS_NORMAL; }
     s32 *xPts = (s32 *)xArr->arr_body;
     s32 *yPts = (s32 *)yArr->arr_body;
@@ -1593,6 +1816,7 @@ static s32 n_copyArea(Runtime *runtime, JClass *clazz) {
     s32 xDst = env->localvar_getInt(runtime->localvar, 6);
     s32 yDst = env->localvar_getInt(runtime->localvar, 7);
     RenderContext *rc = rc_acquire(handle);
+    if (rc && rc->liveRun) treo_live_drain(rc, 0);
     if (!rc || w <= 0 || h <= 0) { rc_release(rc); return RUNTIME_STATUS_NORMAL; }
     CGImageRef fullImg = CGBitmapContextCreateImage(rc->ctx);
     if (!fullImg) { rc_release(rc); return RUNTIME_STATUS_NORMAL; }
@@ -1769,6 +1993,7 @@ void j2me_render_cleanup(void) {
     int rc_count = g_live_rc_count;
     for (int i = 0; i < g_live_rc_count; i++) {
         RenderContext *rc = g_live_rc[i];
+        treo_live_discard(rc);
         if (rc->ctx) { CGContextRelease(rc->ctx); rc->ctx = NULL; }
         CTFontRef font = rc->font;
         rc->font = NULL;
