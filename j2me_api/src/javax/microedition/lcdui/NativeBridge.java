@@ -19,6 +19,7 @@ public class NativeBridge {
     static native boolean afkSuspended();
     static native int takeAfkRefresh();
     static native boolean afkHeadless();
+    static native boolean afkBypassPaint();
     static native long beginAfkPaint(long canvas, boolean headless);
     static native void endAfkPaint(long previous);
 

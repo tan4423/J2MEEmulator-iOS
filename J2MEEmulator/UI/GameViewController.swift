@@ -498,7 +498,7 @@ class GameViewController: UIViewController {
             },
             UIAction(title: "Treo tối đa · màn hình đen") { [weak self] _ in self?.showBlackout() },
             UIAction(title: "Treo · vẽ SIMD ngầm (thử nghiệm)") { [weak self] _ in self?.showBlackout(mode: 5) },
-            UIAction(title: "So CPU treo · 4 lượt tự động") { [weak self] _ in self?.startAfkComparison() },
+            UIAction(title: "Thử cắt paint · chỉ ở màn hình chờ") { [weak self] _ in self?.confirmAfkPaintTest() },
             UIAction(title: treo_game_jit_is_enabled() != 0 ? "Tắt JIT Java (thử nghiệm)" : "Bật JIT Java (thử nghiệm)", attributes: powerRun == nil ? [] : .disabled) { [weak self] _ in
                 guard let self else { return }
                 if treo_game_jit_is_enabled() != 0 {
@@ -817,14 +817,28 @@ class GameViewController: UIViewController {
         let cpu = treo_process_cpu_seconds()
         let paints = treo_afk_paint_count()
         let paintNS = treo_afk_paint_cpu_ns()
-        let elided = treo_afk_elided_calls()
-        let raster = treo_software_stats()
+        let bypassed = treo_afk_bypassed_paints()
 
         func cpuPercent(since start: AfkSample) -> Double? {
             let seconds = time - start.time
             guard seconds > 0, start.cpu >= 0, cpu >= start.cpu else { return nil }
             return 100 * (cpu - start.cpu) / seconds
         }
+    }
+
+    private func confirmAfkPaintTest() {
+        let alert = UIAlertController(title: "Thử ở màn hình chờ",
+            message: "Lượt giữa bỏ toàn bộ callback paint tối đa 60 giây. Có thể làm thay đổi trạng thái game nếu callback có logic. Chỉ thử trước khi đăng nhập, không dùng để treo auto.",
+            preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "Hủy", style: .cancel))
+        alert.addAction(UIAlertAction(title: "Bắt đầu", style: .default) { [weak self] _ in
+            self?.startAfkComparison()
+        })
+        present(alert, animated: true)
+    }
+
+    fileprivate func stopAfkPaintTestForPrompt() {
+        if afkMeasureID != nil { hideBlackout() }
     }
 
     private func startAfkComparison() {
@@ -839,16 +853,13 @@ class GameViewController: UIViewController {
         let cpu: Double?
         let paintCPU: Double
         let paintRate: Double
-        let elided: UInt64
-        let fast: UInt64
-        let regions: UInt64
-        let mismatch: UInt64
+        let bypassed: UInt64
         let threads: String
     }
 
     private func runAfkLeg(id: UUID, index: Int, results: [AfkLeg]) {
         // Every leg uses the same overlay and brightness; no modal transitions.
-        let modes: [Int32] = [1, 5, 4, 1]
+        let modes: [Int32] = [1, 6, 1]
         treo_render_set_afk_mode(modes[index])
         blackout?.setTitle("Đang đo \(index + 1)/\(modes.count) · Chạm để hủy", for: .normal)
         treo_afk_threads_begin()
@@ -863,10 +874,7 @@ class GameViewController: UIViewController {
             let leg = AfkLeg(cpu: end.cpuPercent(since: start),
                              paintCPU: Double(end.paintNS &- start.paintNS) / seconds / 10_000_000,
                              paintRate: Double(end.paints &- start.paints) / seconds,
-                             elided: end.elided &- start.elided,
-                             fast: end.raster.fast &- start.raster.fast,
-                             regions: end.raster.regions &- start.raster.regions,
-                             mismatch: end.raster.mismatch &- start.raster.mismatch,
+                             bypassed: end.bypassed &- start.bypassed,
                              threads: threads)
             let all = results + [leg]
             if index + 1 < modes.count {
@@ -877,19 +885,17 @@ class GameViewController: UIViewController {
                 let total = sample.cpu.map { String(format: "%.1f%%", $0) } ?? "?"
                 return "\(name): \(total) tổng · \(String(format: "%.1f%%", sample.paintCPU)) paint · \(String(format: "%.1f", sample.paintRate)) paint/s\n\(sample.threads)"
             }
-            func difference(_ i: Int) -> String {
-                guard let a = all[0].cpu, let b = all[i].cpu, let c = all[3].cpu else { return "?" }
-                return String(format: "%+.1f", b - (a + c) / 2)
-            }
+            let delta: String
+            if let a = all[0].cpu, let b = all[1].cpu, let c = all[2].cpu {
+                delta = String(format: "%+.1f", b - (a + c) / 2)
+            } else { delta = "?" }
             let report = """
             \(row("Cũ 1", all[0]))
-            \(row("SIMD ngầm", all[1]))
-            \(row("Bỏ vẽ VM", all[2]))
-            \(row("Cũ 2", all[3]))
-            So mốc cũ: SIMD \(difference(1)) · VM \(difference(2)) điểm CPU.
-            SIMD nhanh \(all[1].fast)/\(all[1].regions) · lệch mẫu \(all[1].mismatch).
-            VM bỏ \(all[2].elided) lời gọi.
-            Cùng màn đen. *Luồng paint gần nhất. Không đo GPU %.
+            \(row("Không gọi paint", all[1]))
+            \(row("Cũ 2", all[2]))
+            Chênh so mốc cũ: \(delta) điểm CPU.
+            Lượt giữa bỏ \(all[1].bypassed) yêu cầu paint.
+            *Luồng paint gần nhất; ở lượt giữa có thể là ID từ lượt trước. Không đo GPU %.
             """
             self.afkMeasure = nil
             self.afkMeasureID = nil
@@ -1110,6 +1116,12 @@ let gameUICallback: @convention(c) (Int32, Int32) -> Void = { action, revision i
         j2me_ui_lock_screen()
         defer { j2me_ui_unlock_screen() }
         guard revision == j2me_ui_revision(), let vc = activeGameViewController else { return }
+        switch action {
+        case Int32(J2ME_UI_ACTION_SHOW_FORM), Int32(J2ME_UI_ACTION_SHOW_TEXTBOX),
+             Int32(J2ME_UI_ACTION_SHOW_LIST), Int32(J2ME_UI_ACTION_SHOW_ALERT):
+            vc.stopAfkPaintTestForPrompt()
+        default: break
+        }
         switch action {
         case Int32(J2ME_UI_ACTION_SHOW_CANVAS):  vc.showCanvasView()
         case Int32(J2ME_UI_ACTION_SHOW_FORM), Int32(J2ME_UI_ACTION_SHOW_TEXTBOX): vc.showFormView()

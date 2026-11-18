@@ -27,6 +27,7 @@ void treo_render_set_afk_mode(int mode);
 uint64_t treo_afk_skipped_draws(void);
 uint64_t treo_afk_skipped_paints(void);
 uint64_t treo_afk_paint_count(void);
+uint64_t treo_afk_bypassed_paints(void);
 uint64_t treo_afk_elided_calls(void);
 void treo_afk_threads_begin(void);
 char * _Nullable treo_afk_threads_report(double seconds); // caller frees

@@ -100,6 +100,30 @@ static int treo_live_enqueue(RenderContext *rc, RenderImage *img, int64_t x, int
                              int sx, int sy, int w, int h, int transform);
 static j2me_flush_callback g_flush_callback = NULL;
 _Atomic int treo_afk_mode = 0;
+static _Atomic uint64_t treo_afk_bypass_deadline, treo_afk_bypassed;
+static void process_dead_shells(void);
+static uint64_t treo_afk_now_ns(void) {
+    struct timespec ts;
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) return 0;
+    return (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
+}
+uint64_t treo_afk_bypassed_paints(void) {
+    return atomic_load_explicit(&treo_afk_bypassed, memory_order_relaxed);
+}
+static s32 n_afkBypassPaint(Runtime *runtime, JClass *clazz) {
+    int bypass = 0;
+    if (atomic_load_explicit(&treo_afk_mode, memory_order_acquire) == 6) {
+        uint64_t now = treo_afk_now_ns();
+        bypass = now && now < atomic_load_explicit(&treo_afk_bypass_deadline, memory_order_relaxed);
+        if (bypass) {
+            // Preserve the native resource housekeeping normally done by flush.
+            process_dead_shells();
+            atomic_fetch_add_explicit(&treo_afk_bypassed, 1, memory_order_relaxed);
+        }
+    }
+    push_int(runtime->stack, bypass);
+    return RUNTIME_STATUS_NORMAL;
+}
 static atomic_int g_afk_refresh = 0;
 static atomic_bool g_afk_needs_redraw;
 static _Atomic uint64_t g_afk_skipped_draws, g_afk_skipped_paints;
@@ -163,7 +187,12 @@ int j2me_render_is_afk_suspended(void) {
 }
 
 void treo_render_set_afk_mode(int mode) {
-    if (mode >= 2 && mode <= 4) atomic_store(&g_afk_needs_redraw, 1);
+    if (mode == 6) {
+        const uint64_t now = treo_afk_now_ns();
+        atomic_store_explicit(&treo_afk_bypass_deadline, now ? now + 60000000000ULL : 0,
+                              memory_order_relaxed);
+    }
+    if ((mode >= 2 && mode <= 4) || mode == 6) atomic_store(&g_afk_needs_redraw, 1);
     int previous = atomic_exchange(&treo_afk_mode, mode);
     if (mode) {
         atomic_store(&g_afk_refresh, 0);
@@ -2889,6 +2918,7 @@ static java_native_method j2me_render_methods[] = {
     {CLS, "afkSuspended",     "()Z", n_afkSuspended},
     {CLS, "takeAfkRefresh",   "()I", n_takeAfkRefresh},
     {CLS, "afkHeadless", "()Z", n_afkHeadless},
+    {CLS, "afkBypassPaint", "()Z", n_afkBypassPaint},
     {CLS, "beginAfkPaint", "(JZ)J", n_beginAfkPaint},
     {CLS, "endAfkPaint", "(J)V", n_endAfkPaint},
     // Context

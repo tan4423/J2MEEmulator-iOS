@@ -187,6 +187,13 @@ public abstract class Canvas extends Displayable {
         synchronized (paintLock) {
             // Hidden Canvas instances must not run paint or present their buffer.
             if (!Display.isCurrentCanvas(this)) return;
+            // Diagnostic only: consume the repaint without running game paint code.
+            if (NativeBridge.afkBypassPaint()) {
+                repaintPending = false;
+                fullRepaint = true;
+                clipX = 0; clipY = 0; clipW = width; clipH = height;
+                return;
+            }
             if (nativeContext == 0) initContext();
             repaintPending = false;
             // Use the same Graphics object, but switch its output for this paint only.
