@@ -145,11 +145,42 @@ static _Atomic uint64_t g_afk_paint_count, g_afk_paint_cpu_ns;
 uint64_t treo_afk_paint_count(void) { return atomic_load_explicit(&g_afk_paint_count, memory_order_relaxed); }
 uint64_t treo_afk_paint_cpu_ns(void) { return atomic_load_explicit(&g_afk_paint_cpu_ns, memory_order_relaxed); }
 
-static s32 n_afkHeadless(Runtime *runtime, JClass *clazz) {
-    const int mode = atomic_load_explicit(&treo_afk_mode, memory_order_acquire);
-    push_int(runtime->stack, mode == 3 || mode == 4);
+static _Atomic uint64_t treo_guarded_paints, treo_guarded_real, treo_guarded_late, treo_layer_frames;
+uint64_t treo_afk_guarded_paints(void) { return atomic_load_explicit(&treo_guarded_paints, memory_order_relaxed); }
+uint64_t treo_afk_guarded_real(void) { return atomic_load_explicit(&treo_guarded_real, memory_order_relaxed); }
+uint64_t treo_afk_guarded_late(void) { return atomic_load_explicit(&treo_guarded_late, memory_order_relaxed); }
+uint64_t treo_afk_layer_frames(void) { return atomic_load_explicit(&treo_layer_frames, memory_order_relaxed); }
+
+static s32 n_afkPaintPolicy(Runtime *runtime, JClass *clazz) {
+    push_int(runtime->stack, atomic_load_explicit(&treo_afk_mode, memory_order_acquire));
     return RUNTIME_STATUS_NORMAL;
 }
+static s32 n_afkCanvasResult(Runtime *runtime, JClass *clazz) {
+    const int outcome = runtime->jnienv->localvar_getInt(runtime->localvar, 0);
+    atomic_fetch_add_explicit(outcome ? &treo_guarded_paints : &treo_guarded_real, 1, memory_order_relaxed);
+    if (outcome == 2) atomic_fetch_add_explicit(&treo_guarded_late, 1, memory_order_relaxed);
+    return RUNTIME_STATUS_NORMAL;
+}
+
+static uint64_t treo_main_wake_count;
+static CFRunLoopObserverRef treo_main_wake_observer;
+static void treo_main_woke(CFRunLoopObserverRef observer, CFRunLoopActivity activity, void *context) {
+    ++treo_main_wake_count;
+}
+void treo_afk_wakes_set(int enabled) {
+    if (enabled && !treo_main_wake_observer) {
+        treo_main_wake_count = 0;
+        treo_main_wake_observer = CFRunLoopObserverCreate(kCFAllocatorDefault, kCFRunLoopAfterWaiting,
+                                                        true, 0, treo_main_woke, NULL);
+        if (treo_main_wake_observer)
+            CFRunLoopAddObserver(CFRunLoopGetMain(), treo_main_wake_observer, kCFRunLoopCommonModes);
+    } else if (!enabled && treo_main_wake_observer) {
+        CFRunLoopObserverInvalidate(treo_main_wake_observer);
+        CFRelease(treo_main_wake_observer);
+        treo_main_wake_observer = NULL;
+    }
+}
+uint64_t treo_afk_main_wakes(void) { return treo_main_wake_count; }
 static _Thread_local s64 g_afk_canvas;
 static _Thread_local uint64_t g_afk_elided_local, g_afk_thread_id;
 static _Atomic uint64_t g_afk_elided, g_afk_paint_tid, g_afk_gc_tid;
@@ -209,7 +240,8 @@ void treo_render_set_afk_mode(int mode) {
                               now ? now + (mode == 7 ? 65000000000ULL : 60000000000ULL) : 0,
                               memory_order_relaxed);
     }
-    if ((mode >= 2 && mode <= 4) || mode == 6 || mode == 7) atomic_store(&g_afk_needs_redraw, 1);
+    if ((mode >= 2 && mode <= 4) || mode == 6 || mode == 7 || mode == 8)
+        atomic_store(&g_afk_needs_redraw, 1);
     int previous = atomic_exchange(&treo_afk_mode, mode);
     if (mode) {
         atomic_store(&g_afk_refresh, 0);
@@ -485,6 +517,7 @@ void treo_render_profile_replaced(void) {
     if (treo_profile_active()) TREO_PROF_ADD(replaced, 1);
 }
 void treo_render_profile_submitted(void) {
+    atomic_fetch_add_explicit(&treo_layer_frames, 1, memory_order_relaxed);
     if (treo_profile_active()) TREO_PROF_ADD(submitted, 1);
 }
 static s32 n_profilePaintBegin(Runtime *runtime, JClass *clazz) {
@@ -3015,7 +3048,8 @@ static java_native_method j2me_render_methods[] = {
     {CLS, "profilePaintEnd", "(J)V", n_profilePaintEnd},
     {CLS, "afkSuspended",     "()Z", n_afkSuspended},
     {CLS, "takeAfkRefresh",   "()I", n_takeAfkRefresh},
-    {CLS, "afkHeadless", "()Z", n_afkHeadless},
+    {CLS, "afkPaintPolicy", "()I", n_afkPaintPolicy},
+    {CLS, "afkCanvasResult", "(I)V", n_afkCanvasResult},
     {CLS, "afkBypassPaint", "()Z", n_afkBypassPaint},
     {CLS, "beginAfkPaint", "(JZ)J", n_beginAfkPaint},
     {CLS, "endAfkPaint", "(J)V", n_endAfkPaint},

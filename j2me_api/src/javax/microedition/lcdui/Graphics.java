@@ -22,6 +22,7 @@ public class Graphics {
     public static final int DOTTED = 1;
 
     long nativeContext;
+    boolean treoPixelDependent;
     boolean headless; // scoped to Canvas.paint; Image Graphics never enter this mode
     boolean ownsContext; // true for Image graphics (released in finalize), false for Canvas graphics
     private int canvasWidth, canvasHeight;
@@ -260,6 +261,7 @@ public class Graphics {
 
     /** Returns the native CGContext handle — used by micro3D Render for GL-to-canvas blit */
     public long getNativeContext() {
+        treoPixelDependent = true;
         return nativeContext;
     }
 
@@ -271,12 +273,14 @@ public class Graphics {
 
     /** Read pixel data from canvas — used by Nokia DirectGraphics */
     public void getPixels(int[] pixels, int offset, int scanlength, int x, int y, int w, int h) {
+        treoPixelDependent = true;
         // TODO: read from canvas context — for now stub with zeros
         // This requires reading from the RenderContext's bitmap, not from an Image
     }
 
     public void copyArea(int xSrc, int ySrc, int width, int height,
                          int xDest, int yDest, int anchor) {
+        treoPixelDependent = true;
         if (headless && width >= 0 && height >= 0 && (long) width * height <= Integer.MAX_VALUE) return;
         // Apply anchor to destination
         if ((anchor & HCENTER) != 0) xDest -= width / 2;

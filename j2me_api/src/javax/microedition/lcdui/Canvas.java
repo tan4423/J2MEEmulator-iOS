@@ -45,6 +45,8 @@ public abstract class Canvas extends Displayable {
     protected Canvas(boolean fullScreen) { this.fullScreen = fullScreen; }
 
     private long nativeContext;
+    private boolean treoSkippedCanvasPixels;
+    private boolean treoUsesExplicitBuffer;
     private Graphics graphics;
     public volatile boolean repaintPending = true;
     private boolean fullScreen = false;
@@ -159,6 +161,7 @@ public abstract class Canvas extends Displayable {
             // Hidden Canvas instances must not run paint or present their buffer.
             if (!Display.isCurrentCanvas(this)) return;
             if (nativeContext == 0) initContext();
+            treoUsesExplicitBuffer = true;
             graphics.reset(0, 0, this.width, this.height);
             graphics.drawImage(image, 0, 0, Graphics.LEFT | Graphics.TOP);
             if (Display.isCurrentCanvas(this)) NativeBridge.flushToScreen(nativeContext);
@@ -172,6 +175,7 @@ public abstract class Canvas extends Displayable {
             // Hidden Canvas instances must not run paint or present their buffer.
             if (!Display.isCurrentCanvas(this)) return;
             if (nativeContext == 0) initContext();
+            treoUsesExplicitBuffer = true;
             graphics.reset(0, 0, this.width, this.height);
             graphics.drawImage(image, x, y, Graphics.LEFT | Graphics.TOP);
             if (Display.isCurrentCanvas(this)) NativeBridge.flushToScreen(nativeContext);
@@ -198,12 +202,18 @@ public abstract class Canvas extends Displayable {
             repaintPending = false;
             // Use the same Graphics object, but switch its output for this paint only.
             final Graphics target = graphics;
-            final boolean headless = NativeBridge.afkHeadless();
+            final int policy = NativeBridge.afkPaintPolicy();
+            final boolean guarded = policy == 8;
+            final boolean discard = guarded && !treoUsesExplicitBuffer && !target.treoPixelDependent &&
+                    fullRepaint && !(this instanceof javax.microedition.lcdui.game.GameCanvas);
+            final boolean headless = policy == 3 || policy == 4 || discard;
+            final boolean rebuild = treoSkippedCanvasPixels && !headless;
+            treoSkippedCanvasPixels = discard;
             final boolean previousHeadless = target.headless;
             final long previousAfkCanvas = NativeBridge.beginAfkPaint(nativeContext, headless);
             target.headless = headless;
             try {
-                if (fullRepaint) target.reset(0, 0, width, height);
+                if (fullRepaint || rebuild) target.reset(0, 0, width, height);
                 else target.reset(clipX, clipY, clipW, clipH);
                 long profileStart = NativeBridge.profilePaintBegin();
                 try {
@@ -215,6 +225,7 @@ public abstract class Canvas extends Displayable {
             } finally {
                 target.headless = previousHeadless;
                 NativeBridge.endAfkPaint(previousAfkCanvas);
+                if (guarded) NativeBridge.afkCanvasResult(discard ? (target.treoPixelDependent ? 2 : 1) : 0);
             }
             // Reset for next frame
             fullRepaint = true;
