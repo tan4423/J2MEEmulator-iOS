@@ -13,6 +13,7 @@
 #import <Metal/Metal.h>
 #include <string.h>
 #include <stdlib.h>
+#include <stddef.h>
 #if defined(__ARM_NEON)
 #include <arm_neon.h>
 #endif
@@ -377,6 +378,8 @@ static inline void rc_release(RenderContext *rc) {
         rc->ctx = NULL;
         rc->ownsPixels = 0;
         if (ctx) CGContextRelease(ctx);
+        free(rc->softwarePixels);
+        rc->softwarePixels = NULL;
         if (font) CFRelease(font);
         if (pixels > 0) native_heap_sub(pixels);
         enqueue_dead_rc(rc);
@@ -440,11 +443,6 @@ static inline void setColorFromARGB(CGContextRef ctx, int argb) {
 // Context management
 // ============================================================
 
-static void treo_free_canvas_pixels(void *info, void *data) {
-    (void)info;
-    free(data);
-}
-
 static RenderContext *createRenderContext(int width, int height) {
     if (width <= 0 || height <= 0 || (uint64_t)width * height > INT32_MAX / 4) return NULL;
     RenderContext *rc = (RenderContext *)calloc(1, sizeof(RenderContext));
@@ -460,8 +458,7 @@ static RenderContext *createRenderContext(int width, int height) {
     if (width <= 1024 && height <= 1024) {
         uint32_t *pixels = calloc((size_t)width * height, sizeof(uint32_t));
         if (pixels) {
-            rc->ctx = CGBitmapContextCreateWithData(pixels, width, height, 8, stride, cs,
-                                                    format, treo_free_canvas_pixels, NULL);
+            rc->ctx = CGBitmapContextCreate(pixels, width, height, 8, stride, cs, format);
             if (rc->ctx) rc->softwarePixels = pixels;
             else free(pixels);
         }
@@ -2191,7 +2188,7 @@ static int treo_sw_draw(RenderContext *rc, RenderImage *img, int64_t x, int64_t 
     int verified = (atomic_load_explicit(&img->softwareVerified, memory_order_relaxed) & bit) != 0;
     // Validate first use of each image/transform and periodically thereafter.
     // Compare on real background pixels, and always keep the CG result on checks.
-    if (!verified || (rc->swRegions && ((++rc->swSequence & 1023u) == 0))) {
+    if (!verified || ((++rc->swSequence & 1023u) == 0)) {
         size_t row = (size_t)(r - l), n = row * (size_t)(b - top);
         uint32_t *scratch = malloc(n * 2 * sizeof(*scratch));
         if (!scratch) return 0;
@@ -2697,6 +2694,8 @@ void j2me_render_cleanup(void) {
         RenderContext *rc = g_live_rc[i];
         treo_live_discard(rc);
         if (rc->ctx) { CGContextRelease(rc->ctx); rc->ctx = NULL; }
+        free(rc->softwarePixels);
+        rc->softwarePixels = NULL;
         CTFontRef font = rc->font;
         rc->font = NULL;
         if (font) CFRelease(font);
