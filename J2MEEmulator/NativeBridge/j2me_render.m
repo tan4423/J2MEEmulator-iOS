@@ -13,6 +13,9 @@
 #import <Metal/Metal.h>
 #include <string.h>
 #include <stdlib.h>
+#if defined(__ARM_NEON)
+#include <arm_neon.h>
+#endif
 #import <CoreHaptics/CoreHaptics.h>
 #include "j2me_render.h"
 #include "jvm.h"
@@ -54,6 +57,9 @@ typedef struct RenderContext {
     CGRect regionClipBounds;
     TreoLiveRun *liveRun;
     TreoCPUCache *cpuCache;
+    uint32_t *softwarePixels;
+    uint64_t swRegions, swFast, swChecked, swMismatch;
+    unsigned swSequence;
     uint32_t liveColor, liveSavedColor;
     int liveStroke, liveSavedStroke;
     CGRect liveRawClip;
@@ -68,6 +74,9 @@ typedef struct RenderImage {
     int width;
     int height;
     int isMutable;
+    const uint32_t *softwareSource;
+    size_t softwareStride;
+    atomic_uint softwareVerified, softwareRejected;
     _Atomic int32_t refcount;
     struct RenderImage *next_dead;
 } RenderImage;
@@ -116,6 +125,30 @@ static s32 n_takeAfkRefresh(Runtime *runtime, JClass *clazz) {
 
 // Per-thread CPU time excludes sleeps and time waiting to be scheduled.
 static atomic_bool treo_profile_enabled;
+static atomic_bool treo_software_on;
+static _Atomic uint64_t sw_frames, sw_regions, sw_fast, sw_checked, sw_mismatch;
+int treo_software_enabled(void) {
+    return atomic_load_explicit(&treo_software_on, memory_order_relaxed);
+}
+void treo_software_set_enabled(int enabled) {
+    atomic_store_explicit(&treo_software_on, enabled != 0, memory_order_relaxed);
+}
+TreoSoftwareStats treo_software_stats(void) {
+    return (TreoSoftwareStats){
+        atomic_load_explicit(&sw_frames, memory_order_relaxed),
+        atomic_load_explicit(&sw_regions, memory_order_relaxed),
+        atomic_load_explicit(&sw_fast, memory_order_relaxed),
+        atomic_load_explicit(&sw_checked, memory_order_relaxed),
+        atomic_load_explicit(&sw_mismatch, memory_order_relaxed),
+    };
+}
+static void treo_software_publish(RenderContext *rc) {
+    if (rc->swRegions) atomic_fetch_add_explicit(&sw_regions, rc->swRegions, memory_order_relaxed);
+    if (rc->swFast) atomic_fetch_add_explicit(&sw_fast, rc->swFast, memory_order_relaxed);
+    if (rc->swChecked) atomic_fetch_add_explicit(&sw_checked, rc->swChecked, memory_order_relaxed);
+    if (rc->swMismatch) atomic_fetch_add_explicit(&sw_mismatch, rc->swMismatch, memory_order_relaxed);
+    rc->swRegions = rc->swFast = rc->swChecked = rc->swMismatch = 0;
+}
 static atomic_bool treo_region_cull_enabled;
 int treo_render_region_cull_enabled(void) {
     return atomic_load_explicit(&treo_region_cull_enabled, memory_order_relaxed);
@@ -407,15 +440,34 @@ static inline void setColorFromARGB(CGContextRef ctx, int argb) {
 // Context management
 // ============================================================
 
+static void treo_free_canvas_pixels(void *info, void *data) {
+    (void)info;
+    free(data);
+}
+
 static RenderContext *createRenderContext(int width, int height) {
+    if (width <= 0 || height <= 0 || (uint64_t)width * height > INT32_MAX / 4) return NULL;
     RenderContext *rc = (RenderContext *)calloc(1, sizeof(RenderContext));
+    if (!rc) return NULL;
     atomic_init(&rc->refcount, 1);
     rc->width = width;
     rc->height = height;
 
     CGColorSpaceRef cs = getColorSpace();
-    rc->ctx = CGBitmapContextCreate(NULL, width, height, 8, width * 4,
-                                     cs, kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Little);
+    const size_t stride = (size_t)width * 4;
+    const CGBitmapInfo format = kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Little;
+    // CPU/CG share stable storage. Published images must never alias it.
+    if (width <= 1024 && height <= 1024) {
+        uint32_t *pixels = calloc((size_t)width * height, sizeof(uint32_t));
+        if (pixels) {
+            rc->ctx = CGBitmapContextCreateWithData(pixels, width, height, 8, stride, cs,
+                                                    format, treo_free_canvas_pixels, NULL);
+            if (rc->ctx) rc->softwarePixels = pixels;
+            else free(pixels);
+        }
+    }
+    if (!rc->ctx) rc->ctx = CGBitmapContextCreate(NULL, width, height, 8, stride, cs, format);
+    if (!rc->ctx) { free(rc); return NULL; }
     CGContextTranslateCTM(rc->ctx, 0, height);
     CGContextScaleCTM(rc->ctx, 1.0, -1.0);
 
@@ -496,6 +548,10 @@ static RenderImage *createImageFromData(const uint8_t *data, int length) {
     // Decoded images cannot be drawing targets. Reuse the same normalized
     // bitmap snapshot for every draw; publish it before handing out the handle.
     img->immutableSnapshot = CGBitmapContextCreateImage(img->ctx);
+    img->softwareSource = CGBitmapContextGetData(img->ctx);
+    img->softwareStride = CGBitmapContextGetBytesPerRow(img->ctx) / 4;
+    atomic_init(&img->softwareVerified, 0);
+    atomic_init(&img->softwareRejected, 0);
 
     track_img(img);
     native_heap_add(img->width * img->height * 4);
@@ -542,6 +598,22 @@ CGImageRef j2me_render_copy_image(int64_t handle) {
     return image;
 }
 
+static CGImageRef treo_canvas_snapshot(RenderContext *rc) {
+    if (!rc->softwarePixels) return CGBitmapContextCreateImage(rc->ctx);
+    const size_t stride = (size_t)rc->width * 4;
+    CFDataRef pixels = CFDataCreate(NULL, (const UInt8 *)rc->softwarePixels,
+                                    (CFIndex)(stride * rc->height));
+    if (!pixels) return NULL;
+    CGDataProviderRef provider = CGDataProviderCreateWithCFData(pixels);
+    CFRelease(pixels);
+    if (!provider) return NULL;
+    CGImageRef snapshot = CGImageCreate(rc->width, rc->height, 8, 32, stride,
+        getColorSpace(), kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Little,
+        provider, NULL, false, kCGRenderingIntentDefault);
+    CGDataProviderRelease(provider);
+    return snapshot;
+}
+
 static s32 n_flushToScreen(Runtime *runtime, JClass *clazz) {
     process_dead_shells();
     const int afk = j2me_render_is_afk_suspended();
@@ -557,19 +629,22 @@ static s32 n_flushToScreen(Runtime *runtime, JClass *clazz) {
             if (end >= start) TREO_PROF_ADD(live_boundary_ns, end - start);
         }
     }
-    if (rc) rc->liveBlocked = 0;
+    if (rc) { rc->liveBlocked = 0; treo_software_publish(rc); }
     if (afk) { rc_release(rc); return RUNTIME_STATUS_NORMAL; }
     const int profiling = treo_profile_active();
     if (profiling) TREO_PROF_ADD(flushes, 1);
     if (rc && g_flush_callback) {
         const uint64_t begin = profiling ? treo_thread_cpu_ns() : 0;
-        CGImageRef image = CGBitmapContextCreateImage(rc->ctx);
+        CGImageRef image = treo_canvas_snapshot(rc);
         if (profiling && treo_profile_active()) {
             const uint64_t end = treo_thread_cpu_ns();
             if (begin && end >= begin) TREO_PROF_ADD(snapshot_ns, end - begin);
             if (image) TREO_PROF_ADD(snapshots, 1);
         }
-        if (image) g_flush_callback(image, rc->width, rc->height);
+        if (image) {
+            atomic_fetch_add_explicit(&sw_frames, 1, memory_order_relaxed);
+            g_flush_callback(image, rc->width, rc->height);
+        }
     }
     rc_release(rc);
     return RUNTIME_STATUS_NORMAL;
@@ -2037,6 +2112,117 @@ static int treo_cpu_batch_enqueue(RenderContext *rc, RenderImage *img, int64_t x
     return 1;
 }
 
+// Ordered software compositor: no crop objects, transforms or per-sprite CG calls
+// on the accepted path. Keep mutable images and unusual contexts on the reference path.
+static inline uint32_t treo_sw_over(uint32_t s, uint32_t d) {
+    unsigned alpha = s >> 24;
+    if (alpha == 255) return s;
+    if (!alpha) return d;
+    unsigned f = 255 - alpha;
+    uint32_t result = 0;
+    for (unsigned k = 0; k < 32; k += 8) {
+        unsigned q = ((d >> k) & 255) * f + 128;
+        unsigned v = ((s >> k) & 255) + ((q + (q >> 8)) >> 8);
+        result |= (v < 255 ? v : 255) << k;
+    }
+    return result;
+}
+
+static inline void treo_sw_row(uint32_t *d, const uint32_t *s, int n) {
+#if defined(__ARM_NEON)
+    for (; n >= 8; n -= 8, s += 8, d += 8) {
+        uint8x8x4_t src = vld4_u8((const uint8_t *)s);
+        if (vminv_u8(src.val[3]) == 255) { vst4_u8((uint8_t *)d, src); continue; }
+        if (vmaxv_u8(src.val[3]) == 0) continue;
+        uint8x8x4_t dst = vld4_u8((const uint8_t *)d);
+        uint8x8_t f = vmvn_u8(src.val[3]);
+        for (int k = 0; k < 4; k++) {
+            uint16x8_t q = vaddq_u16(vmull_u8(dst.val[k], f), vdupq_n_u16(128));
+            dst.val[k] = vqadd_u8(src.val[k], vshrn_n_u16(vaddq_u16(q, vshrq_n_u16(q, 8)), 8));
+        }
+        vst4_u8((uint8_t *)d, dst);
+    }
+#endif
+    for (int i = 0; i < n; i++) d[i] = treo_sw_over(s[i], d[i]);
+}
+
+static void treo_sw_raster(RenderContext *rc, RenderImage *img, int x, int y,
+                            int sx, int sy, int w, int h, int t,
+                            int l, int top, int right, int bottom) {
+    const ptrdiff_t stride = (ptrdiff_t)img->softwareStride;
+    const uint32_t *origin = img->softwareSource + sy * stride + sx;
+    for (int dy = top; dy < bottom; dy++) {
+        uint32_t *d = rc->softwarePixels + dy * rc->width + l;
+        int u = l - x, v = dy - y;
+        if (t == 0 || t == 1) {
+            int row = t == 0 ? v : h - 1 - v;
+            treo_sw_row(d, origin + row * stride + u, right - l);
+            continue;
+        }
+        ptrdiff_t index, step;
+        switch (t) {
+            case 2: index = v * stride + w - 1 - u; step = -1; break;
+            case 3: index = (h - 1 - v) * stride + w - 1 - u; step = -1; break;
+            case 4: index = u * stride + v; step = stride; break;
+            case 5: index = (h - 1 - u) * stride + v; step = -stride; break;
+            case 6: index = u * stride + w - 1 - v; step = stride; break;
+            default: index = (h - 1 - u) * stride + w - 1 - v; step = -stride; break;
+        }
+        for (int dx = l; dx < right; dx++, index += step, d++) *d = treo_sw_over(origin[index], *d);
+    }
+}
+
+static int treo_sw_draw(RenderContext *rc, RenderImage *img, int64_t x, int64_t y,
+                        int sx, int sy, int w, int h, int t) {
+    if (!rc->softwarePixels || !img->immutableSnapshot || !img->softwareSource ||
+        t < 0 || t > 7 || x < -32768 || x > 32768 || y < -32768 || y > 32768 ||
+        sx < 0 || sy < 0 || w <= 0 || h <= 0 ||
+        (int64_t)sx + w > img->width || (int64_t)sy + h > img->height ||
+        rc->liveRawClip.size.width < 0 || rc->liveRawClip.size.height < 0) return 0;
+    unsigned bit = 1u << t;
+    if (atomic_load_explicit(&img->softwareRejected, memory_order_relaxed) & bit) return 0;
+    CGRect clip = rc->regionClipBounds;
+    if (CGRectIsNull(clip) || CGRectIsEmpty(clip)) { rc->swFast++; return 1; }
+    int l = MAX((int)x, (int)CGRectGetMinX(clip));
+    int top = MAX((int)y, (int)CGRectGetMinY(clip));
+    int r = MIN((int)x + (t >= 4 ? h : w), (int)CGRectGetMaxX(clip));
+    int b = MIN((int)y + (t >= 4 ? w : h), (int)CGRectGetMaxY(clip));
+    if (r <= l || b <= top) { rc->swFast++; return 1; }
+    int verified = (atomic_load_explicit(&img->softwareVerified, memory_order_relaxed) & bit) != 0;
+    // Validate first use of each image/transform and periodically thereafter.
+    // Compare on real background pixels, and always keep the CG result on checks.
+    if (!verified || (rc->swRegions && ((++rc->swSequence & 1023u) == 0))) {
+        size_t row = (size_t)(r - l), n = row * (size_t)(b - top);
+        uint32_t *scratch = malloc(n * 2 * sizeof(*scratch));
+        if (!scratch) return 0;
+        CGImageRef crop = CGImageCreateWithImageInRect(img->immutableSnapshot, CGRectMake(sx, sy, w, h));
+        if (!crop) { free(scratch); return 0; }
+        uint32_t *base = rc->softwarePixels + top * rc->width + l;
+        for (int i = 0; i < b - top; i++) memcpy(scratch + i * row, base + i * rc->width, row * 4);
+        treo_sw_raster(rc, img, (int)x, (int)y, sx, sy, w, h, t, l, top, r, b);
+        for (int i = 0; i < b - top; i++) {
+            memcpy(scratch + n + i * row, base + i * rc->width, row * 4);
+            memcpy(base + i * rc->width, scratch + i * row, row * 4);
+        }
+        treo_draw_region_cg(rc->ctx, crop, x, y, w, h, t);
+        CGImageRelease(crop);
+        int equal = 1;
+        for (int i = 0; i < b - top; i++)
+            if (memcmp(scratch + n + i * row, base + i * rc->width, row * 4)) { equal = 0; break; }
+        free(scratch);
+        rc->swChecked++;
+        if (equal) atomic_fetch_or_explicit(&img->softwareVerified, bit, memory_order_relaxed);
+        else {
+            rc->swMismatch++;
+            atomic_fetch_or_explicit(&img->softwareRejected, bit, memory_order_relaxed);
+        }
+        return 1;
+    }
+    treo_sw_raster(rc, img, (int)x, (int)y, sx, sy, w, h, t, l, top, r, b);
+    rc->swFast++;
+    return 1;
+}
+
 static s32 n_drawRegion(Runtime *runtime, JClass *clazz) {
     JniEnv *env = runtime->jnienv;
     s64 ctxHandle = env->localvar_getLong_2slot(runtime->localvar, 0);
@@ -2075,6 +2261,19 @@ static s32 n_drawRegion(Runtime *runtime, JClass *clazz) {
 
     RenderImage *img = img_acquire(imgHandle);
     if (!img) { rc_release(rc); return RUNTIME_STATUS_NORMAL; }
+    if (rc->softwarePixels && treo_software_enabled() && !j2me_render_is_afk_suspended() &&
+        !treo_metal_live_enabled() && !treo_cpu_batch_enabled() &&
+        !atomic_load_explicit(&treo_replay_state, memory_order_relaxed)) {
+        rc->swRegions++;
+        // Finish any commands queued before changing mode, preserving draw order.
+        if (rc->cpuCache) treo_cpu_batch_drain(rc);
+        if (rc->liveRun && rc->liveRun->count) treo_live_drain(rc, 0);
+        if (treo_sw_draw(rc, img, xDst, yDst, xSrc, ySrc, wSrc, hSrc, transform)) {
+            img_release(img);
+            rc_release(rc);
+            return RUNTIME_STATUS_NORMAL;
+        }
+    }
     if (treo_cpu_batch_enqueue(rc, img, xDst, yDst, xSrc, ySrc, wSrc, hSrc, transform)) {
         img_release(img);
         rc_release(rc);
@@ -2321,7 +2520,7 @@ static s32 n_copyArea(Runtime *runtime, JClass *clazz) {
     RenderContext *rc = rc_acquire(handle);
     if (!rc || w <= 0 || h <= 0) { rc_release(rc); return RUNTIME_STATUS_NORMAL; }
     treo_live_barrier(rc);
-    CGImageRef fullImg = CGBitmapContextCreateImage(rc->ctx);
+    CGImageRef fullImg = treo_canvas_snapshot(rc);
     if (!fullImg) { rc_release(rc); return RUNTIME_STATUS_NORMAL; }
     CGImageRef subImg = CGImageCreateWithImageInRect(fullImg, CGRectMake(xSrc, ySrc, w, h));
     CGImageRelease(fullImg);
