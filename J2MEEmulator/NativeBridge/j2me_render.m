@@ -52,6 +52,8 @@ typedef struct RenderContext {
     CGRect regionClipBounds;
     TreoLiveRun *liveRun;
     uint32_t liveColor, liveSavedColor;
+    int liveStroke, liveSavedStroke;
+    CGRect liveRawClip;
     int liveBlocked;
     _Atomic int32_t refcount;
     struct RenderContext *next_dead;
@@ -70,6 +72,8 @@ typedef struct RenderImage {
 static void treo_live_discard(RenderContext *rc);
 static void treo_live_drain(RenderContext *rc, int allowMetal);
 static void treo_live_barrier(RenderContext *rc);
+typedef void (^TreoShapeDraw)(CGContextRef);
+static int treo_live_shape(RenderContext *rc, CGRect bounds, TreoShapeDraw draw);
 static int treo_live_rect(RenderContext *rc, int x, int y, int w, int h);
 static int treo_live_text(RenderContext *rc, CTLineRef line, CGFloat x, CGFloat baseline);
 static int treo_live_image(RenderContext *rc, CGImageRef image, int64_t x, int64_t y,
@@ -585,12 +589,15 @@ static s32 n_setClip(Runtime *runtime, JClass *clazz) {
         if (rc->clipSaved) {
             CGContextRestoreGState(rc->ctx);
             rc->liveColor = rc->liveSavedColor;
+            rc->liveStroke = rc->liveSavedStroke;
         } else {
             rc->liveSavedColor = rc->liveColor;
+            rc->liveSavedStroke = rc->liveStroke;
         }
         CGContextSaveGState(rc->ctx);
         rc->clipSaved = 1;
-        CGContextClipToRect(rc->ctx, CGRectMake(x, y, w, h));
+        rc->liveRawClip = CGRectMake(x, y, w, h);
+        CGContextClipToRect(rc->ctx, rc->liveRawClip);
         // Canvas CTM is restored after each draw; clip and draw share its user space.
         if (rc->ownsPixels) {
             rc->regionClipBounds = nextClip;
@@ -600,18 +607,35 @@ static s32 n_setClip(Runtime *runtime, JClass *clazz) {
     return RUNTIME_STATUS_NORMAL;
 }
 
+static void treo_apply_stroke(CGContextRef ctx, int style) {
+    const CGFloat dash[] = {2.0, 2.0};
+    CGContextSetLineDash(ctx, 0, style == 1 ? dash : NULL, style == 1 ? 2 : 0);
+}
+
+// The only persistent canvas state modified after saving its base clip is
+// fill/stroke color and dash. Temporarily pop that clip for full-frame writes.
+static void treo_unclip_canvas(RenderContext *rc) {
+    if (rc->clipSaved) CGContextRestoreGState(rc->ctx);
+    CGContextSaveGState(rc->ctx);
+}
+static void treo_restore_canvas(RenderContext *rc) {
+    CGContextRestoreGState(rc->ctx);
+    if (rc->clipSaved) {
+        CGContextSaveGState(rc->ctx);
+        CGContextClipToRect(rc->ctx, rc->liveRawClip);
+        setColorFromARGB(rc->ctx, (int)rc->liveColor);
+        treo_apply_stroke(rc->ctx, rc->liveStroke);
+    }
+}
+
 static s32 n_setStrokeStyle(Runtime *runtime, JClass *clazz) {
     JniEnv *env = runtime->jnienv;
     s64 handle = env->localvar_getLong_2slot(runtime->localvar, 0);
     s32 style = env->localvar_getInt(runtime->localvar, 2);
     RenderContext *rc = rc_acquire(handle);
     if (rc) {
-        if (style == 1) {
-            CGFloat dash[] = {2.0, 2.0};
-            CGContextSetLineDash(rc->ctx, 0, dash, 2);
-        } else {
-            CGContextSetLineDash(rc->ctx, 0, NULL, 0);
-        }
+        rc->liveStroke = style;
+        treo_apply_stroke(rc->ctx, style);
     }
     rc_release(rc);
     return RUNTIME_STATUS_NORMAL;
@@ -627,12 +651,18 @@ static s32 n_drawLine(Runtime *runtime, JClass *clazz) {
     s32 x2 = env->localvar_getInt(runtime->localvar, 4);
     s32 y2 = env->localvar_getInt(runtime->localvar, 5);
     RenderContext *rc = rc_acquire(handle);
-    treo_live_barrier(rc);
     if (rc) {
-        CGContextBeginPath(rc->ctx);
-        CGContextMoveToPoint(rc->ctx, x1 + 0.5, y1 + 0.5);
-        CGContextAddLineToPoint(rc->ctx, x2 + 0.5, y2 + 0.5);
-        CGContextStrokePath(rc->ctx);
+        TreoShapeDraw draw = ^(CGContextRef target) {
+            CGContextBeginPath(target);
+            CGContextMoveToPoint(target, x1 + 0.5, y1 + 0.5);
+            CGContextAddLineToPoint(target, x2 + 0.5, y2 + 0.5);
+            CGContextStrokePath(target);
+        };
+        CGRect bounds = CGRectInset(CGRectMake(MIN(x1, x2), MIN(y1, y2), fabs((double)x2 - x1), fabs((double)y2 - y1)), -4, -4);
+        if (!(treo_live_shape(rc, bounds, draw))) {
+            treo_live_barrier(rc);
+            draw(rc->ctx);
+        }
     }
     rc_release(rc);
     return RUNTIME_STATUS_NORMAL;
@@ -662,9 +692,15 @@ static s32 n_drawRect(Runtime *runtime, JClass *clazz) {
     s32 w = env->localvar_getInt(runtime->localvar, 4);
     s32 h = env->localvar_getInt(runtime->localvar, 5);
     RenderContext *rc = rc_acquire(handle);
-    treo_live_barrier(rc);
     if (rc) {
-        CGContextStrokeRect(rc->ctx, CGRectMake(x + 0.5, y + 0.5, w, h));
+        TreoShapeDraw draw = ^(CGContextRef target) {
+            CGContextStrokeRect(target, CGRectMake(x + 0.5, y + 0.5, w, h));
+        };
+        CGRect bounds = CGRectInset(CGRectStandardize(CGRectMake(x, y, w, h)), -4, -4);
+        if (!(treo_live_shape(rc, bounds, draw))) {
+            treo_live_barrier(rc);
+            draw(rc->ctx);
+        }
     }
     rc_release(rc);
     return RUNTIME_STATUS_NORMAL;
@@ -680,21 +716,27 @@ static s32 n_fillArc(Runtime *runtime, JClass *clazz) {
     s32 startAngle = env->localvar_getInt(runtime->localvar, 6);
     s32 arcAngle = env->localvar_getInt(runtime->localvar, 7);
     RenderContext *rc = rc_acquire(handle);
-    treo_live_barrier(rc);
     if (rc) {
-        CGFloat cx = x + w / 2.0, cy = y + h / 2.0;
-        CGFloat rx = w / 2.0, ry = h / 2.0;
-        CGContextSaveGState(rc->ctx);
-        CGContextTranslateCTM(rc->ctx, cx, cy);
-        CGContextScaleCTM(rc->ctx, 1.0, ry / rx);
-        CGContextBeginPath(rc->ctx);
-        CGContextMoveToPoint(rc->ctx, 0, 0);
-        CGFloat sa = -startAngle * M_PI / 180.0;
-        CGFloat ea = -(startAngle + arcAngle) * M_PI / 180.0;
-        CGContextAddArc(rc->ctx, 0, 0, rx, sa, ea, arcAngle > 0 ? 1 : 0);
-        CGContextClosePath(rc->ctx);
-        CGContextFillPath(rc->ctx);
-        CGContextRestoreGState(rc->ctx);
+        TreoShapeDraw draw = ^(CGContextRef target) {
+            CGFloat cx = x + w / 2.0, cy = y + h / 2.0;
+            CGFloat rx = w / 2.0, ry = h / 2.0;
+            CGContextSaveGState(target);
+            CGContextTranslateCTM(target, cx, cy);
+            CGContextScaleCTM(target, 1.0, ry / rx);
+            CGContextBeginPath(target);
+            CGContextMoveToPoint(target, 0, 0);
+            CGFloat sa = -startAngle * M_PI / 180.0;
+            CGFloat ea = -(startAngle + arcAngle) * M_PI / 180.0;
+            CGContextAddArc(target, 0, 0, rx, sa, ea, arcAngle > 0 ? 1 : 0);
+            CGContextClosePath(target);
+            CGContextFillPath(target);
+            CGContextRestoreGState(target);
+        };
+        CGRect bounds = CGRectInset(CGRectStandardize(CGRectMake(x, y, w, h)), -4, -4);
+        if (!(w > 0 && h > 0 && treo_live_shape(rc, bounds, draw))) {
+            treo_live_barrier(rc);
+            draw(rc->ctx);
+        }
     }
     rc_release(rc);
     return RUNTIME_STATUS_NORMAL;
@@ -710,19 +752,25 @@ static s32 n_drawArc(Runtime *runtime, JClass *clazz) {
     s32 startAngle = env->localvar_getInt(runtime->localvar, 6);
     s32 arcAngle = env->localvar_getInt(runtime->localvar, 7);
     RenderContext *rc = rc_acquire(handle);
-    treo_live_barrier(rc);
     if (rc) {
-        CGFloat cx = x + w / 2.0, cy = y + h / 2.0;
-        CGFloat rx = w / 2.0, ry = h / 2.0;
-        CGContextSaveGState(rc->ctx);
-        CGContextTranslateCTM(rc->ctx, cx, cy);
-        CGContextScaleCTM(rc->ctx, 1.0, ry / rx);
-        CGContextBeginPath(rc->ctx);
-        CGFloat sa = -startAngle * M_PI / 180.0;
-        CGFloat ea = -(startAngle + arcAngle) * M_PI / 180.0;
-        CGContextAddArc(rc->ctx, 0, 0, rx, sa, ea, arcAngle > 0 ? 1 : 0);
-        CGContextStrokePath(rc->ctx);
-        CGContextRestoreGState(rc->ctx);
+        TreoShapeDraw draw = ^(CGContextRef target) {
+            CGFloat cx = x + w / 2.0, cy = y + h / 2.0;
+            CGFloat rx = w / 2.0, ry = h / 2.0;
+            CGContextSaveGState(target);
+            CGContextTranslateCTM(target, cx, cy);
+            CGContextScaleCTM(target, 1.0, ry / rx);
+            CGContextBeginPath(target);
+            CGFloat sa = -startAngle * M_PI / 180.0;
+            CGFloat ea = -(startAngle + arcAngle) * M_PI / 180.0;
+            CGContextAddArc(target, 0, 0, rx, sa, ea, arcAngle > 0 ? 1 : 0);
+            CGContextStrokePath(target);
+            CGContextRestoreGState(target);
+        };
+        CGRect bounds = CGRectInset(CGRectStandardize(CGRectMake(x, y, w, h)), -4, -4);
+        if (!(w > 0 && h > 0 && treo_live_shape(rc, bounds, draw))) {
+            treo_live_barrier(rc);
+            draw(rc->ctx);
+        }
     }
     rc_release(rc);
     return RUNTIME_STATUS_NORMAL;
@@ -738,13 +786,19 @@ static s32 n_fillRoundRect(Runtime *runtime, JClass *clazz) {
     s32 aw = env->localvar_getInt(runtime->localvar, 6);
     s32 ah = env->localvar_getInt(runtime->localvar, 7);
     RenderContext *rc = rc_acquire(handle);
-    treo_live_barrier(rc);
     if (rc) {
-        CGFloat radius = fmin(aw, ah) / 2.0;
-        CGPathRef path = CGPathCreateWithRoundedRect(CGRectMake(x, y, w, h), radius, radius, NULL);
-        CGContextAddPath(rc->ctx, path);
-        CGContextFillPath(rc->ctx);
-        CGPathRelease(path);
+        TreoShapeDraw draw = ^(CGContextRef target) {
+            CGFloat radius = fmin(aw, ah) / 2.0;
+            CGPathRef path = CGPathCreateWithRoundedRect(CGRectMake(x, y, w, h), radius, radius, NULL);
+            CGContextAddPath(target, path);
+            CGContextFillPath(target);
+            CGPathRelease(path);
+        };
+        CGRect bounds = CGRectInset(CGRectStandardize(CGRectMake(x, y, w, h)), -4, -4);
+        if (!(treo_live_shape(rc, bounds, draw))) {
+            treo_live_barrier(rc);
+            draw(rc->ctx);
+        }
     }
     rc_release(rc);
     return RUNTIME_STATUS_NORMAL;
@@ -760,13 +814,19 @@ static s32 n_drawRoundRect(Runtime *runtime, JClass *clazz) {
     s32 aw = env->localvar_getInt(runtime->localvar, 6);
     s32 ah = env->localvar_getInt(runtime->localvar, 7);
     RenderContext *rc = rc_acquire(handle);
-    treo_live_barrier(rc);
     if (rc) {
-        CGFloat radius = fmin(aw, ah) / 2.0;
-        CGPathRef path = CGPathCreateWithRoundedRect(CGRectMake(x + 0.5, y + 0.5, w, h), radius, radius, NULL);
-        CGContextAddPath(rc->ctx, path);
-        CGContextStrokePath(rc->ctx);
-        CGPathRelease(path);
+        TreoShapeDraw draw = ^(CGContextRef target) {
+            CGFloat radius = fmin(aw, ah) / 2.0;
+            CGPathRef path = CGPathCreateWithRoundedRect(CGRectMake(x + 0.5, y + 0.5, w, h), radius, radius, NULL);
+            CGContextAddPath(target, path);
+            CGContextStrokePath(target);
+            CGPathRelease(path);
+        };
+        CGRect bounds = CGRectInset(CGRectStandardize(CGRectMake(x, y, w, h)), -4, -4);
+        if (!(treo_live_shape(rc, bounds, draw))) {
+            treo_live_barrier(rc);
+            draw(rc->ctx);
+        }
     }
     rc_release(rc);
     return RUNTIME_STATUS_NORMAL;
@@ -1112,6 +1172,8 @@ typedef struct {
     int kind, cacheable;
     CTLineRef line;
     CGFloat textX, textY;
+    void *shape;
+    int stroke;
 } TreoSprite;
 typedef struct { float x, y, u, v, l, t, r, b; } TreoVertex;
 static os_unfair_lock treo_replay_lock = OS_UNFAIR_LOCK_INIT;
@@ -1428,7 +1490,7 @@ static void treo_replay_capture(RenderContext *rc, CGImageRef image, int64_t x, 
 // Record the ordered canvas stream until flush, not just the last sprite run.
 // A non-recordable draw commits the recorded prefix to CG and pins the
 // remainder of that frame to CG. GPU submission occurs only at flush.
-enum { TreoLiveCapacity = 4096, TreoImage = 0, TreoRect = 1, TreoText = 2 };
+enum { TreoLiveCapacity = 4096, TreoImage = 0, TreoRect = 1, TreoText = 2, TreoShape = 3 };
 struct TreoLiveRun { unsigned count; size_t transientBytes; TreoSprite sprites[TreoLiveCapacity]; };
 static atomic_bool treo_live_enabled;
 static _Atomic uint64_t treo_live_frames, treo_live_sprites, treo_live_fallback;
@@ -1442,6 +1504,7 @@ static void treo_live_clear(TreoLiveRun *run) {
     for (unsigned i = 0; i < run->count; i++) {
         if (run->sprites[i].image) CGImageRelease(run->sprites[i].image);
         if (run->sprites[i].line) CFRelease(run->sprites[i].line);
+        if (run->sprites[i].shape) { id released = (__bridge_transfer id)run->sprites[i].shape; (void)released; }
     }
     run->count = 0;
     run->transientBytes = 0;
@@ -1597,12 +1660,11 @@ static int treo_live_render(RenderContext *rc, TreoLiveRun *run) {
         kCGRenderingIntentDefault);
     CGDataProviderRelease(provider);
     if (!image) return 0;
-    CGContextSaveGState(rc->ctx);
-    CGContextResetClip(rc->ctx);
+    treo_unclip_canvas(rc);
     CGContextSetBlendMode(rc->ctx, kCGBlendModeCopy);
     CGContextSetInterpolationQuality(rc->ctx, kCGInterpolationNone);
     treo_draw_region_cg(rc->ctx, image, 0, 0, (int)w, (int)h, 0);
-    CGContextRestoreGState(rc->ctx);
+    treo_restore_canvas(rc);
     CGImageRelease(image);
     return 1;
 }
@@ -1621,8 +1683,7 @@ static void treo_live_drain(RenderContext *rc, int allowMetal) {
         atomic_fetch_add_explicit(&treo_live_sprites, run->count, memory_order_relaxed);
     } else {
         atomic_fetch_add_explicit(&treo_live_fallback, run->count, memory_order_relaxed);
-        CGContextSaveGState(rc->ctx);
-        CGContextResetClip(rc->ctx);
+        treo_unclip_canvas(rc);
         CGRect clip = CGRectMake(0, 0, rc->width, rc->height);
         CGContextSaveGState(rc->ctx);
         for (unsigned i = 0; i < run->count; i++) {
@@ -1636,6 +1697,13 @@ static void treo_live_drain(RenderContext *rc, int allowMetal) {
             if (s->kind == TreoRect) {
                 setColorFromARGB(rc->ctx, (int)s->color);
                 CGContextFillRect(rc->ctx, CGRectMake(s->x, s->y, s->w, s->h));
+            } else if (s->kind == TreoShape) {
+                CGContextSaveGState(rc->ctx);
+                setColorFromARGB(rc->ctx, (int)s->color);
+                treo_apply_stroke(rc->ctx, s->stroke);
+                TreoShapeDraw draw = (__bridge TreoShapeDraw)s->shape;
+                draw(rc->ctx);
+                CGContextRestoreGState(rc->ctx);
             } else if (s->kind == TreoText) {
                 CGContextSaveGState(rc->ctx);
                 setColorFromARGB(rc->ctx, (int)s->color);
@@ -1655,7 +1723,7 @@ static void treo_live_drain(RenderContext *rc, int allowMetal) {
             }
         }
         CGContextRestoreGState(rc->ctx);
-        CGContextRestoreGState(rc->ctx);
+        treo_restore_canvas(rc);
     }
     treo_live_clear(run);
 }
@@ -1726,6 +1794,34 @@ static int treo_live_rect(RenderContext *rc, int x, int y, int w, int h) {
     s->x = (int64_t)rect.origin.x; s->y = (int64_t)rect.origin.y;
     s->w = (int)rect.size.width; s->h = (int)rect.size.height;
     return 1;
+}
+
+static int treo_live_shape(RenderContext *rc, CGRect bounds, TreoShapeDraw draw) {
+    if (!treo_live_recording(rc)) return 0;
+    bounds = CGRectIntersection(CGRectIntegral(bounds), rc->regionClipBounds);
+    if (CGRectIsNull(bounds) || CGRectIsEmpty(bounds)) return 1;
+    size_t w = (size_t)bounds.size.width, h = (size_t)bounds.size.height;
+    CGContextRef bitmap = treo_replay_bitmap(w, h);
+    if (!bitmap) return 0;
+    CGContextTranslateCTM(bitmap, -bounds.origin.x, h + bounds.origin.y);
+    CGContextScaleCTM(bitmap, 1, -1);
+    CGContextSetLineWidth(bitmap, 1);
+    CGContextSetLineCap(bitmap, kCGLineCapSquare);
+    CGContextSetLineJoin(bitmap, kCGLineJoinMiter);
+    setColorFromARGB(bitmap, (int)rc->liveColor);
+    treo_apply_stroke(bitmap, rc->liveStroke);
+    draw(bitmap);
+    CGImageRef image = CGBitmapContextCreateImage(bitmap);
+    CGContextRelease(bitmap);
+    if (!image) return 0;
+    int ok = treo_live_image(rc, image, (int64_t)bounds.origin.x, (int64_t)bounds.origin.y, 0, 0, (int)w, (int)h, 0, 0);
+    CGImageRelease(image);
+    if (ok) {
+        TreoSprite *s = &rc->liveRun->sprites[rc->liveRun->count - 1];
+        s->kind = TreoShape; s->color = rc->liveColor; s->stroke = rc->liveStroke;
+        s->shape = (__bridge_retained void *)[draw copy];
+    }
+    return ok;
 }
 
 static int treo_live_text(RenderContext *rc, CTLineRef line, CGFloat x, CGFloat baseline) {
