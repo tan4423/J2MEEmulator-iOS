@@ -1271,6 +1271,7 @@ class GameViewController: UIViewController {
             )
             DispatchQueue.main.async { [weak self] in
                 if let self {
+                    self.stopJarAudit()
                     self.finishStartupWatchdog()
                     self.discardCPUProfile()
                     self.hideBlackout()
