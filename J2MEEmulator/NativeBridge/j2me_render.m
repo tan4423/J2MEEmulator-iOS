@@ -390,7 +390,7 @@ double treo_afk_current_thread_cpu(void) {
 static dispatch_queue_t treo_trace_queue;
 static dispatch_source_t treo_trace_timer;
 static thread_t treo_trace_thread;
-enum { TreoTraceMax = 2048, TreoTraceDepth = 16 };
+enum { TreoTraceMax = 2048, TreoTraceDepth = 64 };
 static struct { uintptr_t pc, lr, frames[TreoTraceDepth]; unsigned depth; } treo_trace_points[TreoTraceMax];
 static unsigned treo_trace_count, treo_trace_ticks, treo_trace_errors, treo_trace_chains, treo_trace_unstable;
 static bool treo_trace_has_stack, treo_trace_snapshot_mode;
@@ -422,7 +422,7 @@ static unsigned treo_trace_walk(uintptr_t fp, uintptr_t low, uintptr_t high,
 // Single bounded copy; no allocation, ObjC, unwinding, or symbolization while
 // main is suspended. The buffer is private to the serial sampler queue.
 static bool treo_trace_snapshot(thread_t target, uintptr_t low, uintptr_t high, unsigned slot) {
-    static uintptr_t words[8192 / sizeof(uintptr_t)];
+    static uintptr_t words[16384 / sizeof(uintptr_t)];
     arm_thread_state64_t state;
     mach_msg_type_number_t n = ARM_THREAD_STATE64_COUNT;
     vm_size_t copied = 0;
@@ -540,19 +540,48 @@ static NSString *treo_trace_symbol(uintptr_t address) {
     Dl_info info = {0};
     if (!dladdr((const void *)address, &info)) return [NSString stringWithFormat:@"0x%llx", (unsigned long long)address];
     NSString *image = info.dli_fname ? [NSString stringWithUTF8String:info.dli_fname].lastPathComponent : @"?";
-    if (info.dli_sname) return [NSString stringWithFormat:@"%@:%s", image, info.dli_sname];
+    // dyld can supply the literal name "<redacted>" for many unrelated PCs.
+    // Keep the exact image-relative address instead of collapsing those PCs.
+    if (info.dli_sname && strcmp(info.dli_sname, "<redacted>") != 0)
+        return [NSString stringWithFormat:@"%@:%s", image, info.dli_sname];
     return [NSString stringWithFormat:@"%@+0x%llx", image, (unsigned long long)(address - (uintptr_t)info.dli_fbase)];
 }
 char *treo_afk_main_trace_end(void) {
     treo_afk_main_trace_cancel();
     NSMutableDictionary<NSString *, NSNumber *> *hist = [NSMutableDictionary new];
     NSMutableDictionary<NSNumber *, NSString *> *symbols = [NSMutableDictionary new];
+    NSMutableDictionary<NSString *, NSNumber *> *caEntry = [NSMutableDictionary new];
+    unsigned deep = 0, maxDepth = 0, caSamples = 0;
     for (unsigned i = 0; i < treo_trace_count; ++i) {
         NSNumber *pc = @(treo_trace_points[i].pc), *lr = @(treo_trace_points[i].lr);
         NSString *leaf = symbols[pc];
         if (!leaf) { leaf = treo_trace_symbol(treo_trace_points[i].pc); symbols[pc] = leaf; }
         NSString *link = symbols[lr];
         if (!link) { link = treo_trace_symbol(treo_trace_points[i].lr); symbols[lr] = link; }
+        if (treo_trace_snapshot_mode) {
+            const unsigned depth = treo_trace_points[i].depth;
+            if (depth == TreoTraceDepth) ++deep;
+            if (depth > maxDepth) maxDepth = depth;
+            NSString *entry = ([leaf hasPrefix:@"QuartzCore+"] || [leaf hasPrefix:@"QuartzCore:"]) ? leaf : nil;
+            NSString *boundary = nil;
+            for (unsigned j = 0; j < depth; ++j) {
+                const uintptr_t addr = treo_trace_points[i].frames[j];
+                NSNumber *idKey = @(addr);
+                NSString *frame = symbols[idKey];
+                if (!frame) { frame = treo_trace_symbol(addr); symbols[idKey] = frame; }
+                if ([frame hasPrefix:@"QuartzCore+"] || [frame hasPrefix:@"QuartzCore:"]) {
+                    entry = frame;
+                    boundary = nil;
+                } else if (entry && !boundary) {
+                    boundary = frame;
+                }
+            }
+            if (entry) {
+                ++caSamples;
+                NSString *key = [NSString stringWithFormat:@"%@ ← %@", entry, boundary ?: @"(chưa tới caller ngoài QuartzCore)"];
+                caEntry[key] = @(caEntry[key].unsignedIntValue + 1);
+            }
+        }
         NSMutableString *key = [NSMutableString stringWithString:leaf];
         if (treo_trace_points[i].depth) {
             unsigned depth = treo_trace_points[i].depth;
@@ -572,9 +601,17 @@ char *treo_afk_main_trace_end(void) {
     }
     NSMutableString *result = [NSMutableString stringWithFormat:@"Main PC/LR: %u mẫu runnable / %u lần lấy; %u lỗi",
                                treo_trace_count, treo_trace_ticks, treo_trace_errors];
-    if (treo_trace_snapshot_mode)
-        [result appendFormat:@"\n%u chuỗi FP từ ảnh chụp stack (tối đa 8 KiB/mẫu)", treo_trace_chains];
-    else if (treo_trace_has_stack)
+    if (treo_trace_snapshot_mode) {
+        [result appendFormat:@"\n%u chuỗi FP · sâu nhất %u · %u chạm giới hạn %u frame (16 KiB/mẫu)",
+            treo_trace_chains, maxDepth, deep, TreoTraceDepth];
+        [result appendFormat:@"\nBiên QuartzCore trong %u mẫu (frame QuartzCore ngoài cùng đã thấy ← caller):", caSamples];
+        NSArray<NSString *> *entries = [caEntry keysSortedByValueUsingSelector:@selector(compare:)];
+        for (NSUInteger k = entries.count, shown = 0; k && shown < 8; --k, ++shown) {
+            NSString *key = entries[k-1];
+            [result appendFormat:@"\n%@ × %@", caEntry[key], key];
+        }
+        [result appendString:@"\nChuỗi gọi hay gặp:"];
+    } else if (treo_trace_has_stack)
         [result appendFormat:@"\n%u chuỗi FP giữ lại · %u mẫu đổi trong lúc đọc (chỉ giữ PC/LR)",
             treo_trace_chains, treo_trace_unstable];
     NSArray<NSString *> *keys = [hist keysSortedByValueUsingSelector:@selector(compare:)];
