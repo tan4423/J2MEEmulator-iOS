@@ -17,6 +17,75 @@ enum GameLayoutMode {
     // Future: .fullscreen — Landscape: screen fills, overlay controls
 }
 
+// Main actor only; nested callbacks are charged to the outermost scope.
+@MainActor private enum JarMainBudget {
+    enum Group: Int, CaseIterable {
+        case displayable, overlay, keyRepeat, alertTimer, pad
+        var label: String {
+            switch self {
+            case .displayable: return "Java → UI"
+            case .overlay: return "Overlay"
+            case .keyRepeat: return "Timer phím"
+            case .alertTimer: return "Timer alert"
+            case .pad: return "Cập nhật phím"
+            }
+        }
+    }
+    struct Scope {
+        let group: Group
+        let epoch: UInt64
+        let cpu: Double
+    }
+    private static var epoch: UInt64 = 0
+    private static var enabled = false
+    private static var inside = false
+    private static var failed = false
+    private static var cpu = Array(repeating: 0.0, count: Group.allCases.count)
+    private static var calls = Array(repeating: 0, count: Group.allCases.count)
+
+    static func start() {
+        stop()
+        cpu = Array(repeating: 0, count: Group.allCases.count)
+        calls = Array(repeating: 0, count: Group.allCases.count)
+        failed = false
+        enabled = true
+    }
+    static func stop() {
+        enabled = false
+        inside = false
+        epoch &+= 1
+    }
+    static func begin(_ group: Group) -> Scope? {
+        guard enabled, !inside else { return nil }
+        let start = treo_afk_current_thread_cpu()
+        guard start >= 0 else { failed = true; return nil }
+        inside = true
+        return Scope(group: group, epoch: epoch, cpu: start)
+    }
+    static func end(_ scope: Scope?) {
+        guard let scope, enabled, scope.epoch == epoch else { return }
+        let end = treo_afk_current_thread_cpu()
+        inside = false
+        guard end >= scope.cpu else { failed = true; return }
+        cpu[scope.group.rawValue] += end - scope.cpu
+        calls[scope.group.rawValue] += 1
+    }
+    static func finish(wall: Double, mainPercent: Double?) -> [Double]? {
+        let valid = enabled && !inside && !failed
+        stop()
+        guard valid, wall > 0, let mainPercent else { return nil }
+        let measured = cpu.map { $0 * 1000 / wall }
+        return measured + [mainPercent * 10 - measured.reduce(0, +)]
+    }
+    static func detail(_ values: [Double]) -> String {
+        let groups = Group.allCases.map { group in
+            let i = group.rawValue
+            return "\(group.label) \(String(format: "%.1f", values[i])) [\(calls[i]) lần]"
+        }
+        return (groups + [String(format: "Chưa quy %.1f", values[Group.allCases.count])]).joined(separator: " · ")
+    }
+}
+
 // MARK: - GameViewController
 
 class GameViewController: UIViewController {
@@ -97,6 +166,7 @@ class GameViewController: UIViewController {
     private var jarAuditJIT: Int32 = 0
     private var jarMainProfile = false
     private var jarLoadComparison = false
+    private var jarBudgetAudit = false
     private var afkOriginalJIT: Int32?
     private var lastAFKTrace = ""
     private var afkFrozenLayers: [CALayer] = []
@@ -168,20 +238,26 @@ class GameViewController: UIViewController {
         view.bringSubviewToFront(backButton)
 
         // Fade out placeholder on first rendered frame
-        emulatorView.onFirstFrame = { [weak self] in
+        emulatorView.onFirstFrame = {
+            let budgetScope = JarMainBudget.begin(.overlay)
+            defer { JarMainBudget.end(budgetScope) } [weak self] in
             NSLog("[J2ME Treo] First game frame displayed")
             self?.finishStartupWatchdog()
             guard let icon = self?.placeholderIconView else { return }
             UIView.animate(withDuration: 0.2) {
                 icon.alpha = 0
-            } completion: { _ in
+            } completion: {
+                let budgetScope = JarMainBudget.begin(.overlay)
+                defer { JarMainBudget.end(budgetScope) } _ in
                 icon.removeFromSuperview()
                 self?.placeholderIconView = nil
             }
         }
 
         if layoutMode == .ngage {
-            emulatorView.onFrame = { [weak self] cgImage in
+            emulatorView.onFrame = {
+                let budgetScope = JarMainBudget.begin(.overlay)
+                defer { JarMainBudget.end(budgetScope) } [weak self] cgImage in
                 self?.glowContentView.layer.contents = cgImage
             }
         }
@@ -491,6 +567,8 @@ class GameViewController: UIViewController {
     }
 
     @objc private func repeatDirection(_ timer: Timer) {
+        let budgetScope = JarMainBudget.begin(.keyRepeat)
+        defer { JarMainBudget.end(budgetScope) }
         guard let code = timer.userInfo as? Int32, heldDirections.contains(code) else { return }
         j2me_input_post_key(Int32(J2ME_INPUT_KEY_REPEATED), code)
     }
@@ -513,6 +591,8 @@ class GameViewController: UIViewController {
     }
 
     private func applyPadMode() {
+        let budgetScope = JarMainBudget.begin(.pad)
+        defer { JarMainBudget.end(budgetScope) }
         guard let panel = portraitPanel else { return }
         let canvasIsVisible = !emulatorView.isHidden
         let padIsVisible = canvasIsVisible && padMode != .hidden
@@ -541,7 +621,7 @@ class GameViewController: UIViewController {
                 self?.togglePowerRun()
             },
             UIAction(title: "Thử chờ thụ động · CPU main") { [weak self] _ in self?.confirmJarAudit(compareLoad: true) },
-            UIAction(title: "Tìm hàm ăn CPU main · JAR") { [weak self] _ in self?.confirmJarAudit(profileMain: true) },
+            UIAction(title: "Đo CPU callback main · JAR") { [weak self] _ in self?.confirmJarAudit(budgetMain: true) },
             UIAction(title: "Chẩn đoán CPU JAR · tắt → bật → tắt") { [weak self] _ in self?.confirmJarAudit() },
             UIAction(title: "Treo tối đa · màn hình đen") { [weak self] _ in self?.showBlackout() },
             UIAction(title: "Treo · vẽ SIMD ngầm (thử nghiệm)") { [weak self] _ in self?.showBlackout(mode: 5) },
@@ -886,11 +966,14 @@ class GameViewController: UIViewController {
         let wakes = treo_afk_main_wakes()
     }
 
-    private func confirmJarAudit(profileMain: Bool = false, compareLoad: Bool = false) {
+    private func confirmJarAudit(profileMain: Bool = false, compareLoad: Bool = false, budgetMain: Bool = false) {
         guard jarAuditID == nil, blackout == nil, powerRun == nil, cpuProfileStartedAt == nil else { return }
-        let alert = UIAlertController(title: compareLoad ? "Thử chờ thụ động · CPU main" :
-                (profileMain ? "Tìm hàm ăn CPU main" : "Chẩn đoán CPU JAR"),
-            message: compareLoad
+        let alert = UIAlertController(title: budgetMain ? "Đo CPU callback main · JAR" :
+                (compareLoad ? "Thử chờ thụ động · CPU main" :
+                 (profileMain ? "Tìm hàm ăn CPU main" : "Chẩn đoán CPU JAR")),
+            message: budgetMain
+                ? "Map 37, auto x1, treo trong JAR đang TẮT. Ba lượt × 60 giây: tắt → bật → tắt theo lời nhắc. Không bật màn đen Treo. Cả ba lượt chặn khung và tạm tắt JIT. Không lấy stack hay tạo tải giả."
+                : compareLoad
                 ? "Trong map 37, để auto chạy và BẬT Treo tối ưu CPU trong game trước. Không bật màn đen Treo. App tự đo 4 lượt × 25 giây: mốc đầu → xung tính toán → chờ thụ động cùng vị trí → mốc cuối. Giữ treo JAR bật, không vẽ, không lấy stack. Hình đứng yên do chặn khung. Không chạm vào vùng game trong lúc đo."
                 : profileMain
                 ? "Dùng Farm-Clean-CPU.jar trong map 37, auto đang chạy, treo trong game đang TẮT. App lấy stack main ở hai lượt tắt/bật, mỗi lượt 20 giây. Hình đứng yên khi lấy mẫu vì app chặn khung game. Bật treo khi được nhắc. Đây không phải bài chấm CPU. Không bật màn đen Treo."
@@ -898,15 +981,16 @@ class GameViewController: UIViewController {
             preferredStyle: .alert)
         alert.addAction(UIAlertAction(title: "Hủy", style: .cancel))
         alert.addAction(UIAlertAction(title: profileMain ? "Lấy mẫu" : "Đo", style: .default) { [weak self] _ in
-            self?.startJarAudit(profileMain: profileMain, compareLoad: compareLoad)
+            self?.startJarAudit(profileMain: profileMain, compareLoad: compareLoad, budgetMain: budgetMain)
         })
         present(alert, animated: true)
     }
 
-    private func startJarAudit(profileMain: Bool, compareLoad: Bool) {
+    private func startJarAudit(profileMain: Bool, compareLoad: Bool, budgetMain: Bool) {
         guard jarAuditID == nil, blackout == nil, powerRun == nil, cpuProfileStartedAt == nil else { return }
         jarMainProfile = profileMain
         jarLoadComparison = compareLoad
+        jarBudgetAudit = budgetMain
         let id = UUID()
         jarAuditID = id
         jarAuditJIT = treo_game_jit_is_enabled()
@@ -926,6 +1010,8 @@ class GameViewController: UIViewController {
         jarAuditWork = nil
         if jarMainProfile { treo_afk_main_trace_cancel() }
         jarMainProfile = false
+        if jarBudgetAudit { JarMainBudget.stop() }
+        jarBudgetAudit = false
         treo_jar_load_set(0)
         jarLoadComparison = false
         treo_jar_audit_set(0)
@@ -950,6 +1036,7 @@ class GameViewController: UIViewController {
         let main: Double?
         let ticks: Double
         let paint: Double
+        let budget: [Double]?
     }
 
     private func runJarAudit(id: UUID, leg: Int, rows: [String], results: [JarAuditResult]) {
@@ -961,6 +1048,8 @@ class GameViewController: UIViewController {
             treo_afk_threads_begin()
             let start = JarAuditSample()
             let profileMain = self.jarMainProfile
+            let budgetMain = self.jarBudgetAudit
+            if budgetMain { JarMainBudget.start() }
             if profileMain { treo_afk_main_stack_begin() }
             self.scheduleJarAudit(id: id, after: profileMain ? 20 : (self.jarLoadComparison ? 25 : 60)) { [weak self] in
                 guard let self else { return }
@@ -976,6 +1065,7 @@ class GameViewController: UIViewController {
                 let paints = Double(end.base.paints &- start.base.paints) / dt
                 let main: Double? = start.base.mainCPU >= 0 && end.base.mainCPU >= start.base.mainCPU
                     ? 100 * (end.base.mainCPU - start.base.mainCPU) / dt : nil
+                let budget = budgetMain ? JarMainBudget.finish(wall: dt, mainPercent: main) : nil
                 let ticks = Double(on + off) / dt
                 let frames = end.frames &- start.frames
                 let cpuText = total.map { String(format: "%.1f%%", $0) } ?? "?"
@@ -996,6 +1086,13 @@ class GameViewController: UIViewController {
                     row += "\n" + String(cString: raw)
                     free(raw)
                 }
+                if budgetMain {
+                    if let budget {
+                        row += "\nCPU main (ms/s): " + JarMainBudget.detail(budget)
+                    } else {
+                        row += "\nKhông đọc được CPU callback."
+                    }
+                }
                 if compareLoad {
                     let calls = end.loadCalls &- start.loadCalls
                     let wall = Double(end.loadWall &- start.loadWall) / Double(max(1, calls)) / 1_000_000
@@ -1007,7 +1104,7 @@ class GameViewController: UIViewController {
                     self.finishJarAudit(rows: all, results: [])
                     return
                 }
-                let measured = results + [JarAuditResult(total: total, main: main, ticks: ticks, paint: paint)]
+                let measured = results + [JarAuditResult(total: total, main: main, ticks: ticks, paint: paint, budget: budget)]
                 if leg == (compareLoad ? 3 : 2) || (profileMain && leg == 1) {
                     self.finishJarAudit(rows: all, results: measured)
                 } else if compareLoad {
@@ -1055,6 +1152,7 @@ class GameViewController: UIViewController {
     private func finishJarAudit(rows: [String], results: [JarAuditResult]) {
         let profileMain = jarMainProfile
         let compareLoad = jarLoadComparison
+        let budgetMain = jarBudgetAudit
         stopJarAudit()
         if profileMain {
             publishMeasurement(title: "Tìm hàm ăn CPU main", message:
@@ -1072,6 +1170,24 @@ class GameViewController: UIViewController {
             summary = "B − trung bình A1/A2: \(delta(a.total, b.total, c.total)) điểm tổng; "
                 + "\(delta(a.main, b.main, c.main)) điểm main; \(delta(a.paint, b.paint, c.paint)) điểm trong paint; "
                 + "\(delta(a.ticks, b.ticks, c.ticks)) vòng/s.\nĐối chiếu B với từng mốc A bên dưới.\n\n"
+        }
+        if budgetMain {
+            if results.count == 3, let a = results[0].budget, let b = results[1].budget, let c = results[2].budget {
+                let indices = JarMainBudget.Group.allCases
+                let measured = indices.map { group in
+                    let i = group.rawValue
+                    return "\(group.label) \(String(format: "%+.1f", b[i] - (a[i] + c[i]) / 2))"
+                }
+                let i = indices.count
+                let residual = String(format: "%+.1f", b[i] - (a[i] + c[i]) / 2)
+                summary += "Chênh CPU main theo nhóm (ms/s): "
+                    + (measured + ["Chưa quy \(residual)"]).joined(separator: " · ") + "\n\n"
+            }
+            publishMeasurement(title: "Đo CPU callback main · JAR", message:
+                "JIT tắt · FPS cap: \(fpsLimit) · Không lấy stack.\n\n" + summary +
+                rows.joined(separator: "\n\n") +
+                "\n\n[ ]: số callback ngoài cùng. Chưa quy = CPU main tổng trừ các nhóm đo; gồm cả code app ngoài phạm vi và công việc iOS chạy sau callback. Không suy ra tên framework từ phần này.")
+            return
         }
         let uiNote = compareLoad ? "\n\nTreo JAR bật suốt bài. B thêm tính toán, C ngủ bằng nanosleep tại cùng chỗ trên luồng game. C lấy thời lượng mục tiêu từ B; đối chiếu thời gian thực/xung và vòng game/s trước khi diễn giải. Chỉ C mới là ứng viên giảm CPU; không dùng B để tối ưu." : ""
         publishMeasurement(title: compareLoad ? "Thử chờ thụ động · CPU main" : "Chẩn đoán CPU JAR", message:
@@ -1500,7 +1616,9 @@ class GameViewController: UIViewController {
 
         let timeout = j2me_ui_get_alert_timeout()
         if timeout > 0 {
-            let work = DispatchWorkItem { [weak alert] in
+            let work = DispatchWorkItem {
+                let budgetScope = JarMainBudget.begin(.alertTimer)
+                defer { JarMainBudget.end(budgetScope) } [weak alert] in
                 alert?.dismiss(animated: true) {
                     j2me_input_post_touch(Int32(J2ME_UI_ALERT_DISMISSED), revision, 0)
                 }
@@ -1517,6 +1635,8 @@ private(set) weak var activeGameViewController: GameViewController?
 
 let gameUICallback: @convention(c) (Int32, Int32) -> Void = { action, revision in
     DispatchQueue.main.async {
+        let budgetScope = JarMainBudget.begin(.displayable)
+        defer { JarMainBudget.end(budgetScope) }
         j2me_ui_lock_screen()
         defer { j2me_ui_unlock_screen() }
         guard revision == j2me_ui_revision(), let vc = activeGameViewController else { return }
