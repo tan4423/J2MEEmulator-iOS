@@ -538,7 +538,7 @@ class GameViewController: UIViewController {
                      attributes: cpuProfileStartedAt == nil ? [] : .disabled) { [weak self] _ in
                 self?.togglePowerRun()
             },
-            UIAction(title: "Chẩn đoán CPU JAR · 4 lượt") { [weak self] _ in self?.confirmJarAudit() },
+            UIAction(title: "Chẩn đoán CPU JAR · tắt → bật → tắt") { [weak self] _ in self?.confirmJarAudit() },
             UIAction(title: "Treo tối đa · màn hình đen") { [weak self] _ in self?.showBlackout() },
             UIAction(title: "Treo · vẽ SIMD ngầm (thử nghiệm)") { [weak self] _ in self?.showBlackout(mode: 5) },
             UIAction(title: "So CPU treo · Canvas nhanh",
@@ -882,7 +882,7 @@ class GameViewController: UIViewController {
     private func confirmJarAudit() {
         guard jarAuditID == nil, blackout == nil, powerRun == nil, cpuProfileStartedAt == nil else { return }
         let alert = UIAlertController(title: "Chẩn đoán CPU JAR",
-            message: "Dùng Farm-Clean-CPU.jar trong map 37, auto đang chạy, mục treo trong game đang TẮT. App tự đo 4 lượt × 60 giây. Chỉ cần bật treo trong game khi được nhắc. Không bật màn đen Treo. JIT tạm tắt trong bài đo.",
+            message: "Dùng Farm-Clean-CPU.jar trong map 37, auto đang chạy, mục treo trong game đang TẮT. App đo 3 lượt × 60 giây, cùng chặn khung game. Chỉ thao tác bật treo và chạm để thoát khi app nhắc. Không bật màn đen Treo. JIT tạm tắt trong bài đo.",
             preferredStyle: .alert)
         alert.addAction(UIAlertAction(title: "Hủy", style: .cancel))
         alert.addAction(UIAlertAction(title: "Đo", style: .default) { [weak self] _ in self?.startJarAudit() })
@@ -900,7 +900,7 @@ class GameViewController: UIViewController {
         NotificationCenter.default.addObserver(self, selector: #selector(stopJarAudit),
             name: UIApplication.willResignActiveNotification, object: nil)
         applyPadMode()
-        runJarAudit(id: id, leg: 0, rows: [])
+        runJarAudit(id: id, leg: 0, rows: [], results: [])
     }
 
     @objc private func stopJarAudit() {
@@ -925,11 +925,17 @@ class GameViewController: UIViewController {
         DispatchQueue.main.asyncAfter(deadline: .now() + seconds, execute: work)
     }
 
-    private func runJarAudit(id: UUID, leg: Int, rows: [String]) {
-        // Only change the native AFK switch. No overlay/brightness or pad changes.
-        let blocked = leg == 1 || leg == 3
-        treo_render_set_afk_mode(blocked ? 1 : 0)
-        scheduleJarAudit(id: id, after: 2) { [weak self] in
+    private struct JarAuditResult {
+        let total: Double?
+        let main: Double?
+        let ticks: Double
+        let paint: Double
+    }
+
+    private func runJarAudit(id: UUID, leg: Int, rows: [String], results: [JarAuditResult]) {
+        // Same native mode throughout each CPU window; restore frames only for user input.
+        treo_render_set_afk_mode(1)
+        scheduleJarAudit(id: id, after: 3) { [weak self] in
             guard let self else { return }
             treo_afk_threads_begin()
             let start = JarAuditSample()
@@ -938,63 +944,93 @@ class GameViewController: UIViewController {
                 let end = JarAuditSample()
                 let dt = max(0.001, end.base.time - start.base.time)
                 let on = end.on &- start.on, off = end.off &- start.off
-                let names = ["JAR tắt · hiện", "JAR tắt · chặn khung", "JAR bật · hiện", "JAR bật · chặn khung"]
-                let total = end.base.cpuPercent(since: start.base).map { String(format: "%.1f%%", $0) } ?? "?"
+                let names = ["A1 · JAR tắt", "B · JAR bật", "A2 · JAR tắt"]
+                let total = end.base.cpuPercent(since: start.base)
                 let paint = Double(end.base.paintNS &- start.base.paintNS) / dt / 10_000_000
                 let paints = Double(end.base.paints &- start.base.paints) / dt
-                let main = start.base.mainCPU >= 0 && end.base.mainCPU >= start.base.mainCPU
-                    ? String(format: "%.1f%%", 100 * (end.base.mainCPU - start.base.mainCPU) / dt) : "?"
-                var row = "\(names[leg]): \(total) tổng · \(main) main"
-                row += String(format: "\n%.1f s · %.1f%% paint · %.2f paint/s · %.1f wake/s",
+                let main: Double? = start.base.mainCPU >= 0 && end.base.mainCPU >= start.base.mainCPU
+                    ? 100 * (end.base.mainCPU - start.base.mainCPU) / dt : nil
+                let ticks = Double(on + off) / dt
+                let frames = end.frames &- start.frames
+                let cpuText = total.map { String(format: "%.1f%%", $0) } ?? "?"
+                let mainText = main.map { String(format: "%.1f%%", $0) } ?? "?"
+                var row = "\(names[leg]): \(cpuText) tổng · \(mainText) main"
+                row += String(format: "\n%.1f s · %.1f%% trong paint · %.2f paint/s · %.1f wake/s",
                     dt, paint, paints, Double(end.wakes &- start.wakes) / dt)
-                row += String(format: "\n%.2f vòng game/s", Double(on + off) / dt)
-                row += " · \(off) tick tắt / \(on) tick bật · \(end.frames &- start.frames) khung lên layer"
-                if (leg < 2 && (off == 0 || on != 0)) || (leg >= 2 && (on == 0 || off != 0)) {
-                    row += "\nKhông hợp lệ: không thấy helper đúng trạng thái suốt lượt."
-                }
+                row += String(format: "\n%.2f vòng game/s", ticks)
+                row += " · \(off) tick tắt / \(on) tick bật · \(frames) khung lên layer"
+                let validState = leg == 1 ? (on > 0 && off == 0) : (off > 0 && on == 0)
+                if !validState { row += "\nKhông hợp lệ: tick không đúng trạng thái trong lượt." }
+                if frames != 0 { row += "\nKhông hợp lệ: vẫn có khung lên layer." }
                 if let raw = treo_afk_threads_report(dt) {
                     row += "\n" + String(cString: raw)
                     free(raw)
                 }
                 let all = rows + [row]
-                if leg == 1 && off != 0 && on == 0 {
-                    treo_render_set_afk_mode(0)
-                    let alert = UIAlertController(title: "Bật treo trong game",
-                        message: "Bấm OK rồi vào menu trong game và bật Treo tối ưu CPU. App sẽ nhận biết và đo tiếp tự động. Không chạm game sau khi bật.",
-                        preferredStyle: .alert)
-                    alert.addAction(UIAlertAction(title: "Hủy", style: .cancel) { [weak self] _ in self?.stopJarAudit() })
-                    alert.addAction(UIAlertAction(title: "OK", style: .default) { [weak self] _ in
-                        self?.waitForJarAudit(id: id, previous: treo_jar_audit_ticks(1), tries: 240, rows: all)
-                    })
-                    self.present(alert, animated: true)
-                } else if leg == 3 || (leg < 2 && (off == 0 || on != 0)) {
-                    self.finishJarAudit(rows: all)
+                guard validState && frames == 0 else {
+                    self.finishJarAudit(rows: all, results: [])
+                    return
+                }
+                let measured = results + [JarAuditResult(total: total, main: main, ticks: ticks, paint: paint)]
+                if leg == 2 {
+                    self.finishJarAudit(rows: all, results: measured)
                 } else {
-                    self.runJarAudit(id: id, leg: leg + 1, rows: all)
+                    self.promptJarAudit(id: id, nextLeg: leg + 1, rows: all, results: measured)
                 }
             }
         }
     }
 
-    private func waitForJarAudit(id: UUID, previous: UInt64, tries: Int, rows: [String]) {
+    private func promptJarAudit(id: UUID, nextLeg: Int, rows: [String], results: [JarAuditResult]) {
+        treo_render_set_afk_mode(0)
+        let turnOn = nextLeg == 1
+        let target: Int32 = turnOn ? 1 : 0
+        let previous = treo_jar_audit_ticks(target)
+        let alert = UIAlertController(title: turnOn ? "Bật treo trong game" : "Thoát treo trong game",
+            message: turnOn
+                ? "Bấm OK, vào menu game và bật Treo tối ưu CPU. Sau đó không chạm game."
+                : "Bấm OK, rồi chạm một lần vào vùng game để thoát treo. Sau đó không chạm game.",
+            preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "Hủy", style: .cancel) { [weak self] _ in self?.stopJarAudit() })
+        alert.addAction(UIAlertAction(title: "OK", style: .default) { [weak self] _ in
+            self?.waitForJarAudit(id: id, nextLeg: nextLeg, target: target, previous: previous,
+                                 tries: 240, rows: rows, results: results)
+        })
+        present(alert, animated: true)
+    }
+
+    private func waitForJarAudit(id: UUID, nextLeg: Int, target: Int32, previous: UInt64,
+                                 tries: Int, rows: [String], results: [JarAuditResult]) {
         guard jarAuditID == id else { return }
-        if treo_jar_audit_ticks(1) != previous {
-            runJarAudit(id: id, leg: 2, rows: rows)
+        if treo_jar_audit_ticks(target) != previous {
+            runJarAudit(id: id, leg: nextLeg, rows: rows, results: results)
         } else if tries == 0 {
-            finishJarAudit(rows: rows + ["Không nhận được tick bật treo từ JAR."])
+            finishJarAudit(rows: rows + ["Không nhận được tick ở trạng thái mới."], results: [])
         } else {
             scheduleJarAudit(id: id, after: 0.25) { [weak self] in
-                self?.waitForJarAudit(id: id, previous: previous, tries: tries - 1, rows: rows)
+                self?.waitForJarAudit(id: id, nextLeg: nextLeg, target: target, previous: previous,
+                                      tries: tries - 1, rows: rows, results: results)
             }
         }
     }
 
-    private func finishJarAudit(rows: [String]) {
+    private func finishJarAudit(rows: [String], results: [JarAuditResult]) {
         stopJarAudit()
+        var summary = ""
+        if results.count == 3 {
+            let a = results[0], b = results[1], c = results[2]
+            func delta(_ x: Double?, _ y: Double?, _ z: Double?) -> String {
+                guard let x, let y, let z else { return "?" }
+                return String(format: "%+.1f", y - (x + z) / 2)
+            }
+            summary = "B − trung bình A1/A2: \(delta(a.total, b.total, c.total)) điểm tổng; "
+                + "\(delta(a.main, b.main, c.main)) điểm main; \(delta(a.paint, b.paint, c.paint)) điểm trong paint; "
+                + "\(delta(a.ticks, b.ticks, c.ticks)) vòng/s.\nĐối chiếu B với từng mốc A bên dưới.\n\n"
+        }
         publishMeasurement(title: "Chẩn đoán CPU JAR", message:
-            "Giới hạn FPS Treo: \(fpsLimit) · JIT tắt trong phép đo.\n\n" +
+            "Giới hạn FPS Treo: \(fpsLimit) · JIT tắt trong phép đo.\n\n" + summary +
             rows.joined(separator: "\n\n") +
-            "\n\nCPU quy về một lõi. Chặn khung dùng công tắc AFK native, không đổi độ sáng. paint* trong báo cáo luồng là luồng paint gần nhất, không phải thời gian callback. Không đo GPU.")
+            "\n\nCả ba lượt chặn khung native, không đổi độ sáng. CPU quy về một lõi. game là luồng gọi helper mỗi vòng; paint* là luồng paint gần nhất, có thể trùng game, không cộng hai số này. Không đo GPU.")
     }
 
     private struct GuardedSample {
