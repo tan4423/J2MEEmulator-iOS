@@ -194,6 +194,8 @@ uint64_t treo_afk_main_wakes(void) { return treo_main_wake_count; }
 static _Thread_local s64 g_afk_canvas;
 static _Thread_local uint64_t g_afk_elided_local, g_afk_thread_id;
 static _Atomic uint64_t g_afk_elided, g_afk_paint_tid, g_afk_gc_tid;
+static atomic_bool treo_jar_auditing;
+static _Atomic uint64_t treo_jar_game_tid;
 uint64_t treo_afk_elided_calls(void) { return atomic_load_explicit(&g_afk_elided, memory_order_relaxed); }
 void treo_afk_mark_gc_thread(void) {
     uint64_t tid = 0;
@@ -558,6 +560,13 @@ char *treo_afk_threads_report(double seconds) {
         delta[tid] = @(MAX(0.0, 100*d/seconds));
     }
     [out appendString:@"\nLuồng:"];
+    const bool jarAudit = atomic_load_explicit(&treo_jar_auditing, memory_order_relaxed);
+    const uint64_t gameID = atomic_load_explicit(&treo_jar_game_tid, memory_order_relaxed);
+    if (jarAudit) {
+        NSNumber *value = gameID ? delta[@(gameID)] : nil;
+        [out appendFormat:@" game %@%@", value ? [NSString stringWithFormat:@"%.1f%%", value.doubleValue] : @"–",
+            value && gameID == paintID ? @" (cùng luồng paint*)" : @""];
+    }
     uint64_t roles[] = {paintID, gcID, mainID};
     NSArray<NSString *> *labels = @[@"paint*", @"GC", @"UI"];
     for (int n = 0; n < 3; ++n) {
@@ -565,6 +574,7 @@ char *treo_afk_threads_report(double seconds) {
         [out appendFormat:@" %@ %@", labels[n], value ? [NSString stringWithFormat:@"%.1f%%", value.doubleValue] : @"–"];
         [delta removeObjectForKey:tid];
     }
+    if (jarAudit && gameID) [delta removeObjectForKey:@(gameID)];
     NSArray<NSNumber *> *others = [delta keysSortedByValueUsingSelector:@selector(compare:)];
     for (NSUInteger n = others.count, shown = 0; n > 0 && shown < 5; --n, ++shown) {
         NSNumber *tid = others[n-1];
@@ -620,11 +630,18 @@ void treo_render_profile_submitted(void) {
     atomic_fetch_add_explicit(&treo_layer_frames, 1, memory_order_relaxed);
     if (treo_profile_active()) TREO_PROF_ADD(submitted, 1);
 }
-static atomic_bool treo_jar_auditing;
 static _Atomic uint64_t treo_jar_ticks_on, treo_jar_ticks_off;
-void treo_jar_audit_set(int enabled) { atomic_store_explicit(&treo_jar_auditing, enabled != 0, memory_order_relaxed); }
+void treo_jar_audit_set(int enabled) {
+    if (enabled) {
+        atomic_store_explicit(&treo_jar_game_tid, 0, memory_order_relaxed);
+        atomic_store_explicit(&g_afk_paint_tid, 0, memory_order_relaxed);
+    }
+    atomic_store_explicit(&treo_jar_auditing, enabled != 0, memory_order_relaxed);
+}
 int treo_jar_audit_enabled(void) { return atomic_load_explicit(&treo_jar_auditing, memory_order_relaxed); }
 void treo_jar_audit_tick(int active) {
+    if (!g_afk_thread_id) pthread_threadid_np(NULL, &g_afk_thread_id);
+    atomic_store_explicit(&treo_jar_game_tid, g_afk_thread_id, memory_order_relaxed);
     atomic_fetch_add_explicit(active ? &treo_jar_ticks_on : &treo_jar_ticks_off, 1, memory_order_relaxed);
 }
 uint64_t treo_jar_audit_ticks(int active) {
