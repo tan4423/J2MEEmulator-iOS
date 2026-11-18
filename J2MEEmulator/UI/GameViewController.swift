@@ -516,7 +516,7 @@ class GameViewController: UIViewController {
             UIAction(title: cpuProfileStartedAt == nil ? "Bắt đầu đo CPU" : "Dừng và xem số liệu CPU") { [weak self] _ in
                 self?.toggleCPUProfile()
             },
-            UIAction(title: "Metal vẽ game (thử nghiệm)",
+            UIAction(title: "Metal toàn khung (thử nghiệm)",
                      attributes: cpuProfileStartedAt == nil ? [] : .disabled,
                      state: treo_metal_live_enabled() != 0 ? .on : .off) { [weak self] _ in
                 treo_metal_live_set_enabled(treo_metal_live_enabled() == 0 ? 1 : 0)
@@ -576,8 +576,8 @@ class GameViewController: UIViewController {
         let metalSprites = treo_metal_live_sprites() &- cpuMetalBaseline.1
         let metalFallback = treo_metal_live_fallback_sprites() &- cpuMetalBaseline.2
         let report = """
-        Metal live: \(metalMode) · \(metalFrames) khung · \(metalSprites) sprite GPU
-        Sprite đã xếp hàng nhưng vẽ lại bằng CG: \(metalFallback)
+        Metal live: \(metalMode) · \(metalFrames) khung · \(metalSprites) lệnh GPU
+        Lệnh đã xếp hàng nhưng vẽ lại bằng CG: \(metalFallback)
         Xử lý sprite cuối khung (ngoài paint): \(String(format: "%.1f", Double(result.live_boundary_ns) / 1_000_000)) ms CPU
         Bỏ sprite ngoài vùng vẽ: \(cullMode)
         Bỏ sớm: \(result.region_culled)/\(result.region_calls) · \(String(format: "%.1f", cullPercent))%
