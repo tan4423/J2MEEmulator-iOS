@@ -1429,6 +1429,9 @@ class GameViewController: UIViewController {
         let fallback = treo_vm_switch_method_calls()
         let contended = treo_vm_monitor_contentions()
         let retries = treo_vm_monitor_retries()
+        let paints = treo_afk_paint_count()
+        let layerFrames = treo_afk_layer_frames()
+        let gcCycles = treo_gc_smart_count()
     }
 
     private func showBlackout(mode: Int32 = 1, smartGC: Bool = false,
@@ -1487,10 +1490,14 @@ class GameViewController: UIViewController {
             let monitors = end.contended &- start.contended
             let retries = end.retries &- start.retries
             let backend = treo_vm_direct_dispatch_build() != 0 ? "computed-goto" : "switch"
+            let paintsHz = Double(end.paints &- start.paints) / dt
+            let frames = end.layerFrames &- start.layerFrames
+            let gc = end.gcCycles &- start.gcCycles
             return String(format:
-                "[JarBoxVM][Treo] %.1fs · dispatch=%@ · direct_methods~%llu · switch_methods~%llu · monitor_contended=%llu · monitor_failed_acquires=%llu · app_CPU=%@%% · main_CPU=%@%%. Counts batched/64; CPU is not watts.",
+                "[JarBoxVM][Treo] %.1fs · dispatch=%@ · direct_methods~%llu · switch_methods~%llu · monitor_contended=%llu · monitor_failed_acquires=%llu · app_CPU=%@%% · main_CPU=%@%% · paint=%.2f/s · layer_frames=%llu · smart_GC=%llu. Counts batched/64; paint is not game ticks; CPU is not watts.",
                 dt, backend, direct, fallback, monitors, retries,
-                percent(start.appCPU, end.appCPU), percent(start.mainCPU, end.mainCPU))
+                percent(start.appCPU, end.appCPU), percent(start.mainCPU, end.mainCPU),
+                paintsHz, frames, gc)
         }
         vmTreoProbeStart = nil
         if let vmLog { NSLog("%@", vmLog) }
