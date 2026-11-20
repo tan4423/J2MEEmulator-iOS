@@ -384,7 +384,7 @@ class GameViewController: UIViewController {
         genericTreoWork?.cancel()
         gameCanvasBlitAuditWork?.cancel()
         mainStackAuditWork?.cancel()
-        treo_afk_main_trace_cancel()
+        if mainStackAuditID != nil { treo_afk_main_trace_cancel() }
         treo_afk_buffer_audit_set(0, 0)
         if jarBoxSmartTreo { treo_gc_smart_set(0) }
         treo_afk_guard_auto_set(0)
@@ -1250,8 +1250,10 @@ class GameViewController: UIViewController {
 
             let finish = DispatchWorkItem { [weak self] in
                 guard let self, self.mainStackAuditID == id, self.blackout != nil else { return }
-                let raw = treo_afk_main_trace_end()
+                // Stop the CPU measurement clock BEFORE doing the potentially
+                // expensive symbolization/report assembly on main.
                 let end = AfkSample()
+                let raw = treo_afk_main_trace_end()
                 let dt = max(0.001, end.time - start.time)
                 let main: Double? = start.mainCPU >= 0 && end.mainCPU >= start.mainCPU
                     ? 100 * (end.mainCPU - start.mainCPU) / dt : nil
