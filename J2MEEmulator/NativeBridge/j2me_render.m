@@ -807,11 +807,31 @@ void treo_jar_audit_set(int enabled) {
 int treo_jar_audit_enabled(void) { return atomic_load_explicit(&treo_jar_auditing, memory_order_relaxed); }
 // Opt-in causal probe: restore CPU work at the old paint call site without
 // touching pixels, allocating objects, scheduling UI, or changing Java state.
+// Diagnostic-only pulse modes: 0=idle, 1=game compute, 2=game sleep, 3=worker compute.
 static atomic_int treo_jar_load_mode;
+static _Atomic uint64_t treo_jar_worker_period_ns = UINT64_C(39400000);
+static _Atomic int treo_jar_game_qos = 0, treo_jar_worker_qos = 0;
+static pthread_t treo_jar_worker;
+static bool treo_jar_worker_started;
+static void *treo_jar_worker_main(void *ignored);
+void treo_jar_load_worker_period_set(uint64_t ns) {
+    if (ns < UINT64_C(20000000)) ns = UINT64_C(20000000);
+    if (ns > UINT64_C(100000000)) ns = UINT64_C(100000000);
+    atomic_store_explicit(&treo_jar_worker_period_ns, ns, memory_order_relaxed);
+}
+int treo_jar_load_game_qos(void) { return atomic_load_explicit(&treo_jar_game_qos, memory_order_relaxed); }
+int treo_jar_load_worker_qos(void) { return atomic_load_explicit(&treo_jar_worker_qos, memory_order_relaxed); }
 static _Atomic uint64_t treo_jar_load_ns, treo_jar_wall_ns, treo_jar_calls;
 static _Atomic uint64_t treo_jar_compute_wall, treo_jar_compute_calls, treo_jar_sleep_target;
 void treo_jar_load_set(int mode) {
+    // Mode changes come from main. Join on exit outside any measured CPU window.
+    const int old = atomic_exchange_explicit(&treo_jar_load_mode, mode, memory_order_acq_rel);
+    if (old == 3 && mode != 3 && treo_jar_worker_started) {
+        pthread_join(treo_jar_worker, NULL);
+        treo_jar_worker_started = false;
+    }
     if (mode == 1) {
+        atomic_store_explicit(&treo_jar_game_qos, 0, memory_order_relaxed);
         atomic_store(&treo_jar_compute_wall, 0);
         atomic_store(&treo_jar_compute_calls, 0);
     } else if (mode == 2) {
@@ -819,14 +839,20 @@ void treo_jar_load_set(int mode) {
         uint64_t mean = count ? atomic_load(&treo_jar_compute_wall) / count : UINT64_C(10000000);
         atomic_store(&treo_jar_sleep_target, MIN(mean, UINT64_C(12000000)));
     }
-    atomic_store_explicit(&treo_jar_load_mode, mode, memory_order_release);
+    if (mode == 3 && old != 3) {
+        atomic_store_explicit(&treo_jar_worker_qos, 0, memory_order_relaxed);
+        if (pthread_create(&treo_jar_worker, NULL, treo_jar_worker_main, NULL) == 0)
+            treo_jar_worker_started = true;
+        else
+            atomic_store_explicit(&treo_jar_worker_qos, -1, memory_order_relaxed);
+    }
 }
 uint64_t treo_jar_load_wall_ns(void) { return atomic_load(&treo_jar_wall_ns); }
 uint64_t treo_jar_load_calls(void) { return atomic_load(&treo_jar_calls); }
 uint64_t treo_jar_load_cpu_ns(void) {
     return atomic_load_explicit(&treo_jar_load_ns, memory_order_relaxed);
 }
-static void treo_jar_load_pulse(void) {
+static void treo_jar_load_pulse(int expectedMode) {
     const uint64_t wallStart = treo_afk_now_ns(), cpuStart = treo_thread_cpu_ns();
     if (!wallStart || !cpuStart) return;
     uint64_t cpu = cpuStart;
@@ -838,15 +864,46 @@ static void treo_jar_load_pulse(void) {
         const uint64_t wall = treo_afk_now_ns();
         if (cpu < cpuStart || wall < wallStart || wall - wallStart >= UINT64_C(12000000)) break;
     } while (cpu - cpuStart < UINT64_C(10000000) &&
-             atomic_load_explicit(&treo_jar_load_mode, memory_order_relaxed) == 1);
+             atomic_load_explicit(&treo_jar_load_mode, memory_order_relaxed) == expectedMode);
     if (cpu >= cpuStart) atomic_fetch_add_explicit(&treo_jar_load_ns, cpu - cpuStart, memory_order_relaxed);
+}
+// Separate pthread: same arithmetic as game pulse, paced to B tick frequency.
+// Never accesses Java objects, view hierarchy, or the rendering buffer.
+static void *treo_jar_worker_main(void *ignored) {
+    (void)ignored;
+    const int gameQoS = atomic_load_explicit(&treo_jar_game_qos, memory_order_relaxed);
+    if (gameQoS > 0) (void)pthread_set_qos_class_self_np((qos_class_t)gameQoS, 0);
+    atomic_store_explicit(&treo_jar_worker_qos,
+        (int)pthread_get_qos_class_np(pthread_self(), NULL), memory_order_relaxed);
+    while (atomic_load_explicit(&treo_jar_load_mode, memory_order_acquire) == 3) {
+        const uint64_t start = treo_afk_now_ns();
+        treo_jar_load_pulse(3);
+        const uint64_t done = treo_afk_now_ns();
+        if (start && done >= start) {
+            atomic_fetch_add_explicit(&treo_jar_wall_ns, done - start, memory_order_relaxed);
+            atomic_fetch_add_explicit(&treo_jar_calls, 1, memory_order_relaxed);
+        }
+        const uint64_t period = atomic_load_explicit(&treo_jar_worker_period_ns, memory_order_relaxed);
+        const uint64_t spent = done >= start ? done - start : period;
+        if (spent < period && atomic_load_explicit(&treo_jar_load_mode, memory_order_relaxed) == 3) {
+            const uint64_t remaining = period - spent;
+            const struct timespec delay = {(time_t)(remaining / UINT64_C(1000000000)),
+                                           (long)(remaining % UINT64_C(1000000000))};
+            nanosleep(&delay, NULL);
+        }
+    }
+    return NULL;
 }
 void treo_jar_audit_tick(int active) {
     const int mode = atomic_load_explicit(&treo_jar_load_mode, memory_order_acquire);
+    if (active && mode == 1) {
+        atomic_store_explicit(&treo_jar_game_qos,
+            (int)pthread_get_qos_class_np(pthread_self(), NULL), memory_order_relaxed);
+    }
     if (active && (mode == 1 || mode == 2)) {
         const uint64_t start = treo_afk_now_ns();
         if (mode == 1) {
-            treo_jar_load_pulse();
+            treo_jar_load_pulse(1);
         } else {
             const struct timespec delay = {0, (long)atomic_load(&treo_jar_sleep_target)};
             nanosleep(&delay, NULL); // No spin and no retry; measure actual wall time.
