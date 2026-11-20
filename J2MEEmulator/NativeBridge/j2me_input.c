@@ -41,6 +41,7 @@ static pthread_cond_t g_display_wait_cond = PTHREAD_COND_INITIALIZER;
 static uint32_t g_display_wait_sequence = 1;
 static _Atomic uint64_t g_display_poll_calls;
 static _Atomic uint64_t g_display_wait_calls;
+static _Atomic uint64_t g_display_gc_safe_wait_calls;
 static _Atomic uint64_t g_display_wait_timeouts;
 static _Atomic uint64_t g_display_wake_signals;
 
@@ -63,6 +64,7 @@ void treo_display_wait_set(int enabled) {
 }
 uint64_t treo_display_poll_calls(void) { return atomic_load_explicit(&g_display_poll_calls, memory_order_relaxed); }
 uint64_t treo_display_wait_calls(void) { return atomic_load_explicit(&g_display_wait_calls, memory_order_relaxed); }
+uint64_t treo_display_gc_safe_wait_calls(void) { return atomic_load_explicit(&g_display_gc_safe_wait_calls, memory_order_relaxed); }
 uint64_t treo_display_wait_timeouts(void) { return atomic_load_explicit(&g_display_wait_timeouts, memory_order_relaxed); }
 uint64_t treo_display_wake_signals(void) { return atomic_load_explicit(&g_display_wake_signals, memory_order_relaxed); }
 
@@ -186,6 +188,7 @@ static s32 n_displayWaitIfUnchanged(Runtime *runtime, JClass *clazz) {
     if (milliseconds > 250) milliseconds = 250;
 
     int timedOut = 0;
+    int vmBlocked = 0;
     pthread_mutex_lock(&g_display_wait_lock);
     if (atomic_load_explicit(&g_display_wait_enabled, memory_order_acquire)
         && g_display_wait_sequence == seq) {
@@ -197,6 +200,16 @@ static s32 n_displayWaitIfUnchanged(Runtime *runtime, JClass *clazz) {
                 ++until.tv_sec;
                 until.tv_nsec -= 1000000000L;
             }
+            // This native call can sleep while GC runs. The miniJVM GC waits
+            // for all Java threads to be suspended OR explicitly marked
+            // is_blocking. Without this transition it can wait for a thread
+            // which is simply sleeping in pthread_cond_timedwait(), stalling
+            // VM progress and lowering the JAR's requestFrame tick rate.
+            // Match jthread_sleep/jthread_waitTime and publish the state
+            // BEFORE blocking. Do not read Java heap while marked blocked.
+            jthread_block_enter(runtime);
+            vmBlocked = 1;
+            atomic_fetch_add_explicit(&g_display_gc_safe_wait_calls, 1, memory_order_relaxed);
             atomic_fetch_add_explicit(&g_display_wait_calls, 1, memory_order_relaxed);
             if (pthread_cond_timedwait(&g_display_wait_cond, &g_display_wait_lock, &until) == ETIMEDOUT) {
                 atomic_fetch_add_explicit(&g_display_wait_timeouts, 1, memory_order_relaxed);
@@ -205,6 +218,9 @@ static s32 n_displayWaitIfUnchanged(Runtime *runtime, JClass *clazz) {
         }
     }
     pthread_mutex_unlock(&g_display_wait_lock);
+    // This can pause for an in-progress GC. Never hold the display
+    // condition mutex while returning to the miniJVM safepoint protocol.
+    if (vmBlocked) jthread_block_exit(runtime);
     push_int(runtime->stack, timedOut);
     return RUNTIME_STATUS_NORMAL;
 }

@@ -1232,6 +1232,7 @@ class GameViewController: UIViewController {
         let wakes = treo_afk_main_wakes()
         let displayPolls = treo_display_poll_calls()
         let displayWaits = treo_display_wait_calls()
+        let displayGcSafeWaits = treo_display_gc_safe_wait_calls()
         let displayTimeouts = treo_display_wait_timeouts()
         let displaySignals = treo_display_wake_signals()
         let sparseDue = treo_jar_sparse_paint_due_count()
@@ -1805,13 +1806,14 @@ class GameViewController: UIViewController {
                 }
                 let displayPolls = Double(end.displayPolls &- start.displayPolls) / dt
                 let displayWaits = Double(end.displayWaits &- start.displayWaits) / dt
+                let displayGcSafeWaits = Double(end.displayGcSafeWaits &- start.displayGcSafeWaits) / dt
                 let displayTimeouts = Double(end.displayTimeouts &- start.displayTimeouts) / dt
                 let displaySignals = Double(end.displaySignals &- start.displaySignals) / dt
                 if displayAudit {
-                    row += String(format: "\nDisplay: %.2f poll/s · %.2f native wait/s · %.2f timeout/s · %.2f tín hiệu/s",
-                                  displayPolls, displayWaits, displayTimeouts, displaySignals)
-                    if leg == 1 && displayWaits < 1 {
-                        row += "\nKHÔNG HỢP LỆ: B không vào nhánh chờ sự kiện."
+                    row += String(format: "\nDisplay: %.2f poll/s · %.2f native wait/s · %.2f GC-safe wait/s · %.2f timeout/s · %.2f tín hiệu/s",
+                                  displayPolls, displayWaits, displayGcSafeWaits, displayTimeouts, displaySignals)
+                    if leg == 1 && (displayWaits < 1 || abs(displayGcSafeWaits - displayWaits) > 0.1) {
+                        row += "\nKHÔNG HỢP LỆ: B không thực sự chờ, hoặc chưa khai báo trạng thái chờ với GC."
                     }
                 }
                 if let raw = treo_afk_threads_report(dt) {
@@ -1856,7 +1858,8 @@ class GameViewController: UIViewController {
                     }
                 }
                 let all = rows + [row]
-                let validDisplay = !displayAudit || leg != 1 || displayWaits >= 1
+                let validDisplay = !displayAudit || leg != 1 ||
+                    (displayWaits >= 1 && abs(displayGcSafeWaits - displayWaits) <= 0.1)
                 let validQoS = !qosAudit || treo_main_qos_expected(qosMode) == treo_main_qos_current()
                 let validEnergy = !self.jarEnergyAudit || energyStable
                 let targetHz = Double(sparseHz)
@@ -2152,7 +2155,7 @@ class GameViewController: UIViewController {
                 : qosAudit
                 ? "A1/A2 giữ QoS main ban đầu; B User Initiated; C Utility. Chỉ đổi QoS main (API công khai), không tạo tải giả; đọc lại QoS từng lượt, khôi phục sau bài. QoS không trực tiếp đo tần số CPU."
                 : displayAudit
-                ? "A1/A2 chờ 16ms cũ; B dùng condition variable có version chống mất tín hiệu, có watchdog 250ms. Bắt buộc kiểm tra poll/s, wait/s, timeout/s và game tick/s trước khi quy kết CPU. Không thay đổi vòng game."
+                ? "A1/A2 chờ 16ms cũ; B chờ điều kiện GC-safe 250ms, thông báo miniJVM is_blocking trước wait và safepoint khi trở lại Java. Đo GC-safe wait/s cùng poll/wait/timeout/s, CPU tổng và game tick/s; bắt buộc nhịp game không lệch >0,5/s. Không đổi vòng game."
                 : windowAudit
                 ? "A1/A2 dùng cửa sổ game; B ẩn cửa sổ gốc và hiển thị UIWindow đen tối giản. App foreground-active cả ba lượt, không giả lập inactive. Mốc UIUpdateLink đo trên cửa sổ đang hiện; không coi đó là mọi commit QuartzCore."
                 : workerCompare

@@ -40,6 +40,7 @@ void treo_display_wait_set(int enabled);
 void j2me_display_wake(void);
 uint64_t treo_display_poll_calls(void);
 uint64_t treo_display_wait_calls(void);
+uint64_t treo_display_gc_safe_wait_calls(void);
 uint64_t treo_display_wait_timeouts(void);
 uint64_t treo_display_wake_signals(void);
 
