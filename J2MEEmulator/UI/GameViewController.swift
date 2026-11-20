@@ -91,13 +91,15 @@ enum GameLayoutMode {
     }
 }
 
-// Passive, fine-grained iOS 18 UIKit update phase probe. These values are
+// Passive iOS 18 UIKit update phase probe. On this iPhone,
+// afterUpdateComplete was not observed, so a cycle ends at CA commit.
+// These values are
 // main-thread CPU between public UIKit phase boundaries, NOT individual
 // framework/function attribution. It never requests continuous updates.
 @MainActor private final class JarUIKitPhaseBudget {
     static let labels = [
         "Scheduled→Event", "Event dispatch", "Event→DisplayLink",
-        "DisplayLink callbacks", "DisplayLink→CA", "CA commit", "CA→Update complete"
+        "DisplayLink callbacks", "DisplayLink→CA", "CA commit"
     ]
 
     @MainActor struct Result {
@@ -146,7 +148,7 @@ enum GameLayoutMode {
         let boundaries: [UIUpdateActionPhase] = [
             .afterUpdateScheduled, .beforeEventDispatch, .afterEventDispatch,
             .beforeCADisplayLinkDispatch, .afterCADisplayLinkDispatch,
-            .beforeCATransactionCommit, .afterCATransactionCommit, .afterUpdateComplete
+            .beforeCATransactionCommit, .afterCATransactionCommit
         ]
         for (index, boundary) in boundaries.enumerated() {
             probe.addAction(to: boundary) { [weak self] _, info in
@@ -860,7 +862,7 @@ class GameViewController: UIViewController {
             UIAction(title: "Thử tháo giao diện game · JAR") { [weak self] _ in
                 self?.confirmJarAudit(budgetMain: true, detachUI: true)
             },
-            UIAction(title: "Đo 7 pha UIKit · tắt → bật → tắt",
+            UIAction(title: "Đo 6 pha UIKit · tắt → bật → tắt",
                      attributes: Self.jarCommitAuditSupported ? [] : .disabled) { [weak self] _ in
                 self?.confirmJarAudit(uikitPhases: true)
             },
@@ -1351,7 +1353,7 @@ class GameViewController: UIViewController {
         guard !(measureCommit || windowOcclusion || displayWaitAudit || mainQoSAudit || uikitPhases) || Self.jarCommitAuditSupported else { return }
         guard jarAuditID == nil, blackout == nil, powerRun == nil, cpuProfileStartedAt == nil else { return }
         let sourceProfile = budgetMain && profileMain
-        let alert = UIAlertController(title: uikitPhases ? "Đo 7 pha UIKit · tắt → bật → tắt" :
+        let alert = UIAlertController(title: uikitPhases ? "Đo 6 pha UIKit · tắt → bật → tắt" :
                 mainQoSAudit ? "Thử hạ QoS main · JAR" :
                 displayWaitAudit ? "Thử Display chờ sự kiện · JAR" :
                 windowOcclusion ? "Thử cửa sổ đen foreground · JAR" :
@@ -1362,7 +1364,7 @@ class GameViewController: UIViewController {
                 (compareLoad ? "Thử chờ thụ động · CPU main" :
                  (profileMain ? "Tìm hàm ăn CPU main" : "Chẩn đoán CPU JAR")),
             message: uikitPhases
-                ? "Map 37, auto x1, ban đầu TẮT treo trong JAR. Đo A1 tắt → B bật → A2 tắt, mỗi lượt 30 giây và chuyển theo hướng dẫn trên màn hình. Cả ba lượt cùng chặn khung native, tạm tắt JIT, không thêm tải giả và không sửa QoS. Đo CPU main giữa 8 mốc chuẩn UIKit để chia thành 7 khoảng. Các khoảng không nhận diện tên hàm bên trong; chỉ kết luận nếu các chu kỳ được ghép đủ và game giữ nhịp."
+                ? "Map 37, auto x1, ban đầu TẮT treo trong JAR. Đo A1 tắt → B bật → A2 tắt, mỗi lượt 30 giây và chuyển theo hướng dẫn trên màn hình. Cả ba lượt cùng chặn khung native, tạm tắt JIT, không thêm tải giả và không sửa QoS. Đo CPU main giữa 7 mốc UIKit để chia thành 6 khoảng, bỏ mốc afterUpdateComplete bị thiếu trên iPhone. Kiểm tra treo đúng trạng thái ngay trong 3 giây đầu mỗi lượt. Chỉ kết luận nếu mốc ghép đủ và game giữ nhịp."
                 : mainQoSAudit
                 ? "Map 37, auto x1, BẬT treo trong JAR trước. Không bật màn đen JarBox hay kéo Trung tâm thông báo. A1 QoS gốc → B User Initiated → C Utility → A2 QoS gốc, 4 lượt × 30 giây. Không tạo tải giả, chỉ đổi QoS main thread; VM/game giữ nguyên. Đo CPU tổng, main, tick và cập nhật UIKit. Nếu iOS từ chối đổi QoS hoặc game chậm, báo không hợp lệ. Có Hủy và tự khôi phục QoS khi kết thúc."
                 : displayWaitAudit
@@ -1530,8 +1532,22 @@ class GameViewController: UIViewController {
                 restoreJarGameViews()
             }
         }
+        let settleOn = treo_jar_audit_ticks(1)
+        let settleOff = treo_jar_audit_ticks(0)
         scheduleJarAudit(id: id, after: 3) { [weak self] in
             guard let self else { return }
+            if self.jarUIKitPhaseAudit {
+                let observedOn = treo_jar_audit_ticks(1) &- settleOn
+                let observedOff = treo_jar_audit_ticks(0) &- settleOff
+                let expectedOn = leg == 1
+                guard (expectedOn && observedOn > 0 && observedOff == 0)
+                    || (!expectedOn && observedOff > 0 && observedOn == 0) else {
+                    self.finishJarAudit(rows: rows + [
+                        "DỪNG TRƯỚC KHI ĐO: lượt \(leg == 1 ? "B" : leg == 0 ? "A1" : "A2") yêu cầu JAR \(expectedOn ? "BẬT" : "TẮT") treo; 3 giây chuẩn bị có \(observedOn) tick bật / \(observedOff) tick tắt. Chỉnh trạng thái trong game rồi chạy lại."
+                    ], results: [])
+                    return
+                }
+            }
             if detachUI && leg == 1 && !self.isJarGameUIActuallyDetached() {
                 self.finishJarAudit(rows: rows + ["Không hợp lệ: cây view không còn tách ở đầu lượt B."], results: [])
                 return
@@ -1645,7 +1661,14 @@ class GameViewController: UIViewController {
                     }
                 }
                 if let commit { row += "\n" + commit.detail }
-                if let phases { row += "\n" + phases.detail }
+                if let phases {
+                    row += "\n" + phases.detail
+                    if let main {
+                        let covered = phases.cpuMSPerSecond.reduce(0, +)
+                        row += String(format: "\nMain ngoài 6 khoảng UIKit đo được: %.1f ms CPU/s (không gán cho framework).",
+                                      main * 10 - covered)
+                    }
+                }
                 if compareLoad || workerCompare {
                     let calls = end.loadCalls &- start.loadCalls
                     let wall = Double(end.loadWall &- start.loadWall) / Double(max(1, calls)) / 1_000_000
@@ -1825,7 +1848,10 @@ class GameViewController: UIViewController {
                     deltaSum += delta
                     summary += String(format: "%@: %+.1f\n", JarUIKitPhaseBudget.labels[i], delta)
                 }
-                summary += String(format: "Tổng các khoảng đo được: %+.1f ms CPU/s.\n", deltaSum)
+                summary += String(format: "Tổng 6 khoảng đo được: %+.1f ms CPU/s.\n", deltaSum)
+                let fullMainDelta = ((b.main ?? 0) - ((a.main ?? 0) + (c.main ?? 0)) / 2) * 10
+                summary += String(format: "Chênh main ngoài 6 khoảng đo được: %+.1f ms CPU/s.\n",
+                                  fullMainDelta - deltaSum)
             } else {
                 summary += "KHÔNG KẾT LUẬN: thiếu chu kỳ UIKit ghép đủ, hãy xem mốc lỗi từng lượt.\n"
             }
@@ -1857,7 +1883,7 @@ class GameViewController: UIViewController {
                     summary += "Mốc UIKit không đủ hoặc lỗi ghép nhiều: không kết luận về commit.\n\n"
                 }
             }
-            let title = phaseAudit ? "Đo 7 pha UIKit · JAR" :
+            let title = phaseAudit ? "Đo 6 pha UIKit · JAR" :
                 qosAudit ? "Thử hạ QoS main · JAR" :
                 displayAudit ? "Thử Display chờ sự kiện · JAR" :
                 windowAudit ? "Thử cửa sổ đen foreground · JAR" :
@@ -1866,7 +1892,7 @@ class GameViewController: UIViewController {
                 detachUI ? "Thử tháo giao diện game · JAR" :
                 (profileMain ? "Tìm stack sau Source · JAR" : "Đo pha CPU main · JAR")
             let sampling = phaseAudit
-                ? "Tắt → bật → tắt Treo tối ưu CPU trong JAR. UIUpdateLink thụ động quan sát 8 mốc để phân chia 7 khoảng. Khoảng đo chỉ cho biết thời gian CPU giữa hai mốc, không định danh hàm hay toàn bộ framework. Không đổi tốc độ vòng game."
+                ? "Tắt → bật → tắt Treo tối ưu CPU trong JAR. UIUpdateLink thụ động quan sát 7 mốc, phân chia 6 khoảng. Mốc afterUpdateComplete bị thiếu trên iPhone nên không bắt buộc. Phần CPU main ngoài 6 khoảng được báo riêng; các khoảng không định danh hàm hay framework. Không đổi tốc độ vòng game."
                 : qosAudit
                 ? "A1/A2 giữ QoS main ban đầu; B User Initiated; C Utility. Chỉ đổi QoS main (API công khai), không tạo tải giả; đọc lại QoS từng lượt, khôi phục sau bài. QoS không trực tiếp đo tần số CPU."
                 : displayAudit
