@@ -32,3 +32,35 @@ A/B/A raster runs and GameCanvas runs are separate windows. Their CPU values mus
 **Do not conclude** from CPU% alone that a change reduces heat or energy. Verify real-device behavior, comparable conditions, memory pressure, gameplay, and a longer power/thermal window before enabling any new optimization by default.
 
 Status when written: source fixes pushed; iPhone build and battery impact of these two fixes still unverified. The last user-confirmed working build preceded them.
+
+## Ninja four-state Treo evidence and bytecode audit — 2026-11-21
+
+**New user observation:** At comparable stages of Ninja, CPU is ~40% normally, ~35% with JarBox Treo only, ~20% with the in-JAR Java Treo only, and fluctuates ~10–20% (~15.6% in app log) with both enabled. The main-thread CPU in the latter condition is 0.0% (rounded). Avatar separately reports ~20% normal and 1–3% with Treo **at login before signing in**; this cannot be used as an apples-to-apples active-game Ninja comparison.
+
+**Independent `pymobiledevice3` log:** 876 valid timestamped JSON CPU samples over 461.959 s, collected for one JarBox PID. Selected stable wall-clock offsets measured from the first sample (the log itself has no event-marker timestamps, so segment labels are *inferred* from the owner's account):
+
+| Offset (s) | Samples | Mean CPU | Median CPU | Observed regime |
+| --- | ---: | ---: | ---: | --- |
+| 180–250 | 132 | 40.07% | 40.60% | high |
+| 260–300 | 76 | 33.46% | 33.85% | moderate |
+| 310–330 | 38 | 40.52% | 40.65% | another high interval (mode change) |
+| 340–380 | 76 | 19.05% | 18.20% | low |
+| 392–435 | 82 | 15.27% | 14.64% | very low |
+
+There is a similar first 40% interval at offsets 30–80 s (95 samples, mean 39.64%) followed by 110–150 s at 14.83% (76 samples), plus a later return to ~40%. Do not average all 462 seconds and call it "Treo CPU": the recording contains several modes and loading/transitions.
+
+**Bytecode verified from the immutable uploaded `Nick-B25-Map37-Farm-Clean-CPU.jar`:**
+
+- `NickCpuSleep.requestFrame(Class_hef)` returns without `repaint()` if `NickCpuSleep.active`.
+- `NickCpuSleep.flushFrame(Class_hef)` returns without `serviceRepaints()` if active.
+- `Class_hef.paint(Graphics)` calls `NickCpuSleep.paint(Class_bs,Graphics)`; when active that method **does not invoke** `Class_bs.a(Graphics)`, the original game paint. Instead it draws only a simple Treo screen if called. Java Treo therefore suppresses the Java rendering *call tree*, not merely final raster.
+- `Class_hxb.run()` still runs game-update calls and checks before invoking `NickCpuSleep.requestFrame` then `flushFrame`; it retains the original `Thread.sleep` timing branch.
+- `Class_hxb.a(Graphics)` — the original paint path — invokes `Class_hlc.k()`, writes `Class_hvi.a:Graphics` (`putfield`) and calls multiple game rendering helpers. This is **not trivially a pure/side-effect-free method** that a generic emulator can skip with a local Graphics-no-op whitelist.
+
+**Mechanistic synthesis:** JarBox Treo saves about 5 CPU percentage points in both Ninja workload states, while Java Treo saves ~20 points by intentionally bypassing its original paint call graph and frame requests. The earlier JarBox Paint Bridge log reported ~155.41 ms CPU/s inside `paint()` while JarBox Treo was active, corresponding to ~15.54% of one core; this is broadly consistent with a large part of the game-specific Java Treo benefit, but the remaining CPU change, different windows and scheduling cannot be causally allocated without a controlled A/B. The combined ~15% process CPU is the *observed* load of that specific game state, **not** a guaranteed lower bound or a universally required "core engine" rate. Avatar login's 1–3% confirms there is no universal fixed 35% JarBox overhead; its pre-login workload is fundamentally different from an active Ninja game.
+
+**Engineering decision:** Do not add universal `Canvas.paint` suppression or a fixed paintHz throttle: some arbitrary JARs place game state/network activity in or behind `paint`, and Ninja's original paint contains non-Graphics calls and field writes. Retain VM-level Paint Bridge and background lifecycle correctness as already implemented. The next research must be two-pronged:
+1. On several untouched JARs, collect *per-paint CPU* and event ingress vs accepted repaint/service counts, plus a low-overhead sampled method call tree **limited to paint**, to identify where time is spent before draws.
+2. Investigate **conservative effect analysis** of Java paint helper subtrees. Skip only if virtual targets, native calls, field/array writes, synchronization, exceptions, offscreen pixel dependencies and other externally visible effects can all be proven harmless; otherwise execute normally. Because Ninja's game-specific Treo knowingly bypasses methods with state writes, a sound generic verifier may correctly refuse to skip its whole paint tree. Do not claim the same ~20-point saving is attainable automatically for arbitrary JARs.
+
+**Status:** only evidence and bytecode analysis recorded; **no new performance code was deployed** from this evidence. Preserve the currently working branch.
