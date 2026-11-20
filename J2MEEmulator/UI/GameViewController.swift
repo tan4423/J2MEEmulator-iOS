@@ -1638,6 +1638,7 @@ class GameViewController: UIViewController {
     }
 
     private struct JarAuditResult {
+        let wallDuration: Double
         let total: Double?
         let main: Double?
         let ticks: Double
@@ -1966,6 +1967,9 @@ class GameViewController: UIViewController {
                         row += "\nQoS game: \(treo_jar_load_game_qos()) · QoS pthread: \(treo_jar_load_worker_qos())"
                     }
                 }
+                if self.jarGCPeriodAudit && (gcFallbacks > 0 || gcActivePeriod != gcPeriodMs) {
+                    row += "\nKHÔNG HỢP LỆ: GC không giữ được chu kỳ yêu cầu vì áp lực bộ nhớ."
+                }
                 let all = rows + [row]
                 let validDisplay = !displayAudit || leg != 1 ||
                     (displayWaits >= 1 && abs(displayGcSafeWaits - displayWaits) <= 0.1)
@@ -1985,7 +1989,7 @@ class GameViewController: UIViewController {
                     self.finishJarAudit(rows: all, results: [])
                     return
                 }
-                let measured = results + [JarAuditResult(total: total, main: main, ticks: ticks, paint: paint,
+                let measured = results + [JarAuditResult(wallDuration: dt, total: total, main: main, ticks: ticks, paint: paint,
                     budget: budget, commit: commit, phases: phases, mainBenchNS: mainBenchNS,
                     throughput: throughput,
                     gcPeakBytes: gcPeakBytes, gcFallbacks: gcFallbacks, gcPeriodMs: gcActivePeriod,
@@ -2173,7 +2177,9 @@ class GameViewController: UIViewController {
             summary += String(format:
                 "Chu kỳ GC: A1 %llu · B %llu · A2 %llu; CPU GC %.1f · %.1f · %.1f ms/s.\n",
                 a.cycles, b.cycles, c.cycles,
-                a.cycleCPUms / 30, b.cycleCPUms / 30, c.cycleCPUms / 30)
+                a.cycleCPUms / max(0.001, results[0].wallDuration),
+                b.cycleCPUms / max(0.001, results[1].wallDuration),
+                c.cycleCPUms / max(0.001, results[2].wallDuration))
             summary += String(format: "CPU/chu kỳ GC: mốc A %.2f ms · B %.2f ms.\n",
                                       gcACPU, b.cycleCPUms / Double(max(UInt64(1), b.cycles)))
             let ra = results[0], rb = results[1], rc = results[2]
