@@ -1312,6 +1312,9 @@ class GameViewController: UIViewController {
                         v.paint, v.blitRate, v.copies, v.skipped,
                         v.copyCpuMsPerS, v.savedPixels, v.frames))
                 }
+                report.append(String(format:
+                    "B tránh chép ước tính %.2f MiB pixel RGBA8 vào Canvas ẩn (không phải số byte cấp phát hay số byte bộ nhớ đo thực tế).",
+                    Double(b.savedPixels) * 4 / 1_048_576))
                 if let x = a.total, let y = b.total, let z = c.total {
                     report.append(String(format:
                         "B − trung bình A1/A2: %+.1f điểm CPU tổng; baseline CPU bản sao %.2f ms/s.",
