@@ -36,6 +36,11 @@ uint64_t treo_jar_load_wall_ns(void);
 uint64_t treo_jar_load_calls(void);
 uint64_t treo_jar_audit_ticks(int active);
 // Explicitly enabled ONLY in cross-thread diagnostic A/B/A.
+// Opt-in GC cadence test: 0 = original 500 ms, 2000 = test mode.
+void treo_gc_probe_set_period_ms(int requested);
+int treo_gc_probe_current_period_ms(void);
+uint64_t treo_gc_probe_peak_heap_bytes(void);
+uint64_t treo_gc_probe_fallbacks(void);
 void treo_diag_set(int on);
 void treo_diag_sample(int kind); // 0=main, 1=game, 2=GC
 uint64_t treo_diag_samples(int kind);

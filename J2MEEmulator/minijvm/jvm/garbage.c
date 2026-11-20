@@ -311,6 +311,35 @@ void gc_dump_runtime(GcCollector *collector) {
 }
 
 
+// Opt-in GC period diagnostic. The normal 500 ms collector period is unchanged.
+// In B the desired period is 2000 ms, but we CHECK heap every normal 250 ms
+// and fall back to normal timing if usage nears 75% of the existing 70% GC
+// threshold (52.5% of 128MB). Never relax the heap's hard safety threshold.
+#if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__
+static int treo_gc_probe_requested_ms;
+static uint64_t treo_gc_probe_heap_peak, treo_gc_probe_fallback_count;
+void treo_gc_probe_set_period_ms(int requested) {
+    __atomic_store_n(&treo_gc_probe_requested_ms, requested == 2000 ? 2000 : 0, __ATOMIC_RELEASE);
+    __atomic_store_n(&treo_gc_probe_heap_peak, 0, __ATOMIC_RELEASE);
+    __atomic_store_n(&treo_gc_probe_fallback_count, 0, __ATOMIC_RELEASE);
+}
+int treo_gc_probe_current_period_ms(void) {
+    return __atomic_load_n(&treo_gc_probe_requested_ms, __ATOMIC_ACQUIRE);
+}
+uint64_t treo_gc_probe_peak_heap_bytes(void) {
+    return __atomic_load_n(&treo_gc_probe_heap_peak, __ATOMIC_ACQUIRE);
+}
+uint64_t treo_gc_probe_fallbacks(void) {
+    return __atomic_load_n(&treo_gc_probe_fallback_count, __ATOMIC_ACQUIRE);
+}
+static void treo_gc_probe_note_heap(uint64_t value) {
+    uint64_t current = __atomic_load_n(&treo_gc_probe_heap_peak, __ATOMIC_RELAXED);
+    while (value > current && !__atomic_compare_exchange_n(
+               &treo_gc_probe_heap_peak, &current, value, 1,
+               __ATOMIC_RELAXED, __ATOMIC_RELAXED)) {}
+}
+#endif
+
 // External native memory counter — set by j2me_render.m for CGContext allocations.
 // Allows GC to account for native memory pressure alongside Java heap.
 s64 g_native_extra_heap = 0;
@@ -377,7 +406,27 @@ s32 _gc_thread_run(void *para) {
         s64 heap = gc_sum_heap(collector);
         s64 threshold = jvm->max_heap_size * jvm->heap_overload_percent / 100;
         s64 native_extra = __atomic_load_n(&g_native_extra_heap, __ATOMIC_RELAXED);
-        if (cur_mil - collector->lastgc > jvm->garbage_collect_period_ms || heap >= threshold) {
+        s64 desired = jvm->garbage_collect_period_ms;
+#if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__
+        if (heap >= 0) treo_gc_probe_note_heap((uint64_t)heap);
+        int probe = treo_gc_probe_current_period_ms();
+        if (probe > desired) {
+            if (heap >= threshold * 3 / 4) {
+                // Conservative exit if heap reaches 52.5% of max_heap_size.
+                __atomic_store_n(&treo_gc_probe_requested_ms, 0, __ATOMIC_RELEASE);
+                __atomic_add_fetch(&treo_gc_probe_fallback_count, 1, __ATOMIC_RELAXED);
+            } else {
+                desired = probe;
+            }
+        }
+        if (desired > jvm->garbage_collect_period_ms &&
+            cur_mil - collector->lastgc < desired) {
+            // Keep the original ~250ms heap-pressure polling cadence.
+            threadSleep(jvm->garbage_collect_period_ms / 2);
+            continue;
+        }
+#endif
+        if (cur_mil - collector->lastgc >= desired || heap >= threshold) {
             s64 heap_before = heap;
 #if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__
             treo_diag_gc_cycle_begin();
