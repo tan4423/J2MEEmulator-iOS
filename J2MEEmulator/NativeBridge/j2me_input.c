@@ -11,6 +11,10 @@
 #include "jvm_util.h"
 #include <stdio.h>
 #include <stdatomic.h>
+#include <pthread.h>
+#include <time.h>
+#include <stdint.h>
+#include <errno.h>
 
 // ============================================================
 // Ring buffer
@@ -28,6 +32,40 @@ typedef struct {
 static InputEvent g_queue[INPUT_QUEUE_SIZE];
 static atomic_int g_write_pos = 0;
 static atomic_int g_read_pos = 0;
+
+// Opt-in Display idle wait. Version sampling before polling prevents lost
+// native input and repaint notifications between the Java test and sleep.
+static atomic_int g_display_wait_enabled;
+static pthread_mutex_t g_display_wait_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t g_display_wait_cond = PTHREAD_COND_INITIALIZER;
+static uint32_t g_display_wait_sequence = 1;
+static _Atomic uint64_t g_display_poll_calls;
+static _Atomic uint64_t g_display_wait_calls;
+static _Atomic uint64_t g_display_wait_timeouts;
+static _Atomic uint64_t g_display_wake_signals;
+
+static void signal_display_wait(void) {
+    pthread_mutex_lock(&g_display_wait_lock);
+    ++g_display_wait_sequence;
+    pthread_cond_broadcast(&g_display_wait_cond);
+    pthread_mutex_unlock(&g_display_wait_lock);
+}
+void j2me_display_wake(void) {
+    if (atomic_load_explicit(&g_display_wait_enabled, memory_order_acquire)) {
+        atomic_fetch_add_explicit(&g_display_wake_signals, 1, memory_order_relaxed);
+        signal_display_wait();
+    }
+}
+void treo_display_wait_set(int enabled) {
+    atomic_store_explicit(&g_display_wait_enabled, enabled != 0, memory_order_release);
+    // Also wake when disabled, so a pending native timed wait ends now.
+    signal_display_wait();
+}
+uint64_t treo_display_poll_calls(void) { return atomic_load_explicit(&g_display_poll_calls, memory_order_relaxed); }
+uint64_t treo_display_wait_calls(void) { return atomic_load_explicit(&g_display_wait_calls, memory_order_relaxed); }
+uint64_t treo_display_wait_timeouts(void) { return atomic_load_explicit(&g_display_wait_timeouts, memory_order_relaxed); }
+uint64_t treo_display_wake_signals(void) { return atomic_load_explicit(&g_display_wake_signals, memory_order_relaxed); }
+
 
 static int g_canvas_width = 240;
 static int g_canvas_height = 320;
@@ -53,6 +91,7 @@ static void enqueue_event(int type, int x, int y, int keyCode) {
     g_queue[wp].keyCode = keyCode;
 
     atomic_store_explicit(&g_write_pos, next_wp, memory_order_release);
+    j2me_display_wake();
 }
 
 static int dequeue_event(InputEvent *out) {
@@ -86,6 +125,7 @@ void j2me_input_post_key(int type, int keyCode) {
 // ============================================================
 
 static s32 n_pollInputEvent(Runtime *runtime, JClass *clazz) {
+    atomic_fetch_add_explicit(&g_display_poll_calls, 1, memory_order_relaxed);
     JniEnv *env = runtime->jnienv;
     InputEvent evt;
 
@@ -125,10 +165,60 @@ static s32 n_isStopRequested(Runtime *runtime, JClass *clazz) {
 }
 
 // ============================================================
+// Event-driven Display wait. 250ms bounded timeout catches all lifecycle
+// paths not wired to the input bridge (safe stop even if a signal is missed).
+// ============================================================
+static s32 n_displayWaitEnabled(Runtime *runtime, JClass *clazz) {
+    push_int(runtime->stack, atomic_load_explicit(&g_display_wait_enabled, memory_order_acquire) != 0);
+    return RUNTIME_STATUS_NORMAL;
+}
+static s32 n_displayWaitVersion(Runtime *runtime, JClass *clazz) {
+    pthread_mutex_lock(&g_display_wait_lock);
+    const uint32_t seq = g_display_wait_sequence;
+    pthread_mutex_unlock(&g_display_wait_lock);
+    push_int(runtime->stack, (s32)seq);
+    return RUNTIME_STATUS_NORMAL;
+}
+static s32 n_displayWaitIfUnchanged(Runtime *runtime, JClass *clazz) {
+    const uint32_t seq = (uint32_t)runtime->jnienv->localvar_getInt(runtime->localvar, 0);
+    int milliseconds = runtime->jnienv->localvar_getInt(runtime->localvar, 1);
+    if (milliseconds < 1) milliseconds = 1;
+    if (milliseconds > 250) milliseconds = 250;
+
+    int timedOut = 0;
+    pthread_mutex_lock(&g_display_wait_lock);
+    if (atomic_load_explicit(&g_display_wait_enabled, memory_order_acquire)
+        && g_display_wait_sequence == seq) {
+        struct timespec until;
+        if (clock_gettime(CLOCK_REALTIME, &until) == 0) {
+            until.tv_sec += milliseconds / 1000;
+            until.tv_nsec += (long)(milliseconds % 1000) * 1000000L;
+            if (until.tv_nsec >= 1000000000L) {
+                ++until.tv_sec;
+                until.tv_nsec -= 1000000000L;
+            }
+            atomic_fetch_add_explicit(&g_display_wait_calls, 1, memory_order_relaxed);
+            if (pthread_cond_timedwait(&g_display_wait_cond, &g_display_wait_lock, &until) == ETIMEDOUT) {
+                atomic_fetch_add_explicit(&g_display_wait_timeouts, 1, memory_order_relaxed);
+                timedOut = 1;
+            }
+        }
+    }
+    pthread_mutex_unlock(&g_display_wait_lock);
+    push_int(runtime->stack, timedOut);
+    return RUNTIME_STATUS_NORMAL;
+}
+static s32 n_displayWake(Runtime *runtime, JClass *clazz) {
+    j2me_display_wake();
+    return RUNTIME_STATUS_NORMAL;
+}
+
+// ============================================================
 // Reset (call between game sessions)
 // ============================================================
 
 void j2me_input_reset(void) {
+    treo_display_wait_set(0);
     atomic_store_explicit(&g_write_pos, 0, memory_order_relaxed);
     atomic_store_explicit(&g_read_pos, 0, memory_order_relaxed);
     printf("[J2ME Input] Ring buffer reset\n");
@@ -143,6 +233,10 @@ void j2me_input_reset(void) {
 static java_native_method j2me_input_methods[] = {
     {CLS, "pollInputEvent", "()[I", n_pollInputEvent},
     {CLS, "isStopRequested", "()Z", n_isStopRequested},
+    {CLS, "displayWaitEnabled", "()Z", n_displayWaitEnabled},
+    {CLS, "displayWaitVersion", "()I", n_displayWaitVersion},
+    {CLS, "displayWaitIfUnchanged", "(II)I", n_displayWaitIfUnchanged},
+    {CLS, "displayWake", "()V", n_displayWake},
 };
 
 #undef CLS

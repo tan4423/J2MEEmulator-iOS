@@ -164,6 +164,7 @@ void jvm_bridge_destroy(void) {
 void jvm_bridge_request_stop(void) {
     printf("[JVM Bridge] Stop requested\n");
     atomic_store(&g_jvm_stop_requested, 1);
+    j2me_display_wake();
 }
 
 int jvm_bridge_is_stop_requested(void) {

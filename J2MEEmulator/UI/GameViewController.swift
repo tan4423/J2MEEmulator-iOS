@@ -281,6 +281,7 @@ class GameViewController: UIViewController {
     private var jarMainProfile = false
     private var jarLoadComparison = false
     private var jarWorkerComparison = false
+    private var jarDisplayWaitAudit = false
     private var jarWindowAudit = false
     private weak var jarOriginalWindow: UIWindow?
     private var jarProbeWindow: UIWindow?
@@ -738,6 +739,9 @@ class GameViewController: UIViewController {
             UIAction(title: "So tải game và luồng native · JAR") { [weak self] _ in
                 self?.confirmJarAudit(workerComparison: true)
             },
+            UIAction(title: "Thử Display chờ sự kiện · JAR") { [weak self] _ in
+                self?.confirmJarAudit(displayWaitAudit: true)
+            },
             UIAction(title: "Thử cửa sổ đen foreground · JAR") { [weak self] _ in
                 self?.confirmJarAudit(windowOcclusion: true)
             },
@@ -1094,6 +1098,10 @@ class GameViewController: UIViewController {
         let off = treo_jar_audit_ticks(0)
         let frames = treo_afk_layer_frames()
         let wakes = treo_afk_main_wakes()
+        let displayPolls = treo_display_poll_calls()
+        let displayWaits = treo_display_wait_calls()
+        let displayTimeouts = treo_display_wait_timeouts()
+        let displaySignals = treo_display_wake_signals()
     }
 
     private func installJarDetachShield() {
@@ -1223,18 +1231,21 @@ class GameViewController: UIViewController {
         return false
     }
 
-    private func confirmJarAudit(profileMain: Bool = false, compareLoad: Bool = false, workerComparison: Bool = false, windowOcclusion: Bool = false, budgetMain: Bool = false, detachUI: Bool = false, measureCommit: Bool = false) {
-        guard !(measureCommit || windowOcclusion) || Self.jarCommitAuditSupported else { return }
+    private func confirmJarAudit(profileMain: Bool = false, compareLoad: Bool = false, workerComparison: Bool = false, windowOcclusion: Bool = false, displayWaitAudit: Bool = false, budgetMain: Bool = false, detachUI: Bool = false, measureCommit: Bool = false) {
+        guard !(measureCommit || windowOcclusion || displayWaitAudit) || Self.jarCommitAuditSupported else { return }
         guard jarAuditID == nil, blackout == nil, powerRun == nil, cpuProfileStartedAt == nil else { return }
         let sourceProfile = budgetMain && profileMain
-        let alert = UIAlertController(title: windowOcclusion ? "Thử cửa sổ đen foreground · JAR" :
+        let alert = UIAlertController(title: displayWaitAudit ? "Thử Display chờ sự kiện · JAR" :
+                windowOcclusion ? "Thử cửa sổ đen foreground · JAR" :
                 workerComparison ? "So tải game và luồng native · JAR" : measureCommit ? "Đo CPU quanh commit UIKit · JAR" :
                 detachUI ? "Thử tháo giao diện game · JAR" :
                 sourceProfile ? "Tìm stack sau Source · JAR" :
                 budgetMain ? "Đo pha CPU main · JAR" :
                 (compareLoad ? "Thử chờ thụ động · CPU main" :
                  (profileMain ? "Tìm hàm ăn CPU main" : "Chẩn đoán CPU JAR")),
-            message: windowOcclusion
+            message: displayWaitAudit
+                ? "Map 37, auto x1, BẬT treo trong JAR trước, không bật màn đen JarBox riêng. Đo A1 chờ 16ms cũ → B chờ tín hiệu input/repaint (tối đa 250ms) → A2 chờ cũ. Ba lượt 30 giây, tự chuyển; JIT tắt và chặn khung đều như nhau. Giữ nguyên auto, không chạm. Có nút hủy; nếu tick game lệch hoặc Display không thật sự ngủ theo tín hiệu, báo không kết luận."
+                : windowOcclusion
                 ? "Map 37, auto x1, BẬT treo trong JAR trước. Không bật màn đen JarBox. Ba lượt tự động A1 cửa sổ game → B cửa sổ đen tối giản → A2 khôi phục. Mỗi lượt 25 giây, app vẫn foreground; JIT tắt và không xuất khung game cả ba lượt. Nếu scene không active hoặc nhịp game sai, bài đo sẽ báo không hợp lệ. Có nút Hủy và tự khôi phục cửa sổ."
                 : workerComparison
                 ? "Map 37, auto x1, BẬT treo trong JAR trước. Không bật màn đen riêng. A1 → tải CPU trên game → tải trên pthread riêng → A2, mỗi lượt 30 giây. Cả bốn lượt chặn khung, tắt JIT, đo pha main và mốc UIKit; tự chuyển lượt, không cần chạm. Tải chỉ dùng chẩn đoán."
@@ -1254,19 +1265,20 @@ class GameViewController: UIViewController {
             preferredStyle: .alert)
         alert.addAction(UIAlertAction(title: "Hủy", style: .cancel))
         alert.addAction(UIAlertAction(title: profileMain ? "Lấy mẫu" : "Đo", style: .default) { [weak self] _ in
-            self?.startJarAudit(profileMain: profileMain, compareLoad: compareLoad, workerComparison: workerComparison, windowOcclusion: windowOcclusion, budgetMain: budgetMain, detachUI: detachUI, measureCommit: measureCommit)
+            self?.startJarAudit(profileMain: profileMain, compareLoad: compareLoad, workerComparison: workerComparison, windowOcclusion: windowOcclusion, displayWaitAudit: displayWaitAudit, budgetMain: budgetMain, detachUI: detachUI, measureCommit: measureCommit)
         })
         present(alert, animated: true)
     }
 
-    private func startJarAudit(profileMain: Bool, compareLoad: Bool, workerComparison: Bool, windowOcclusion: Bool, budgetMain: Bool, detachUI: Bool, measureCommit: Bool) {
+    private func startJarAudit(profileMain: Bool, compareLoad: Bool, workerComparison: Bool, windowOcclusion: Bool, displayWaitAudit: Bool, budgetMain: Bool, detachUI: Bool, measureCommit: Bool) {
         guard jarAuditID == nil, blackout == nil, powerRun == nil, cpuProfileStartedAt == nil else { return }
         jarMainProfile = profileMain
         jarLoadComparison = compareLoad
         jarWorkerComparison = workerComparison
         jarWindowAudit = windowOcclusion
-        jarBudgetAudit = budgetMain || workerComparison || windowOcclusion
-        jarCommitAudit = measureCommit || workerComparison || windowOcclusion
+        jarDisplayWaitAudit = displayWaitAudit
+        jarBudgetAudit = budgetMain || workerComparison || windowOcclusion || displayWaitAudit
+        jarCommitAudit = measureCommit || workerComparison || windowOcclusion || displayWaitAudit
         jarDetachAudit = detachUI
         let id = UUID()
         jarAuditID = id
@@ -1293,6 +1305,8 @@ class GameViewController: UIViewController {
         jarCommitBudget?.stop()
         jarCommitBudget = nil
         jarCommitAudit = false
+        treo_display_wait_set(0)
+        jarDisplayWaitAudit = false
         if jarWindowAudit { restoreJarProbeWindow() }
         jarWindowAudit = false
         if jarDetachAudit {
@@ -1335,6 +1349,8 @@ class GameViewController: UIViewController {
     private func runJarAudit(id: UUID, leg: Int, rows: [String], results: [JarAuditResult]) {
         // Same native mode throughout each CPU window; restore frames only for user input.
         treo_render_set_afk_mode(1)
+        let displayAudit = jarDisplayWaitAudit
+        treo_display_wait_set(displayAudit && leg == 1 ? 1 : 0)
         let workerCompare = jarWorkerComparison
         let loadMode: Int32 = workerCompare ? (leg == 1 ? 1 : leg == 2 ? 3 : 0)
             : (jarLoadComparison && (leg == 1 || leg == 2) ? Int32(leg) : 0)
@@ -1382,14 +1398,16 @@ class GameViewController: UIViewController {
             }
             if sourceProfile { treo_afk_main_source_trace_begin() }
             else if profileMain { treo_afk_main_stack_begin() }
-            self.scheduleJarAudit(id: id, after: profileMain && !sourceProfile ? 20 : (self.jarWindowAudit ? 25 : (self.jarWorkerComparison ? 30 : (self.jarLoadComparison ? 25 : 60)))) { [weak self] in
+            self.scheduleJarAudit(id: id, after: profileMain && !sourceProfile ? 20 : (self.jarDisplayWaitAudit ? 30 : (self.jarWindowAudit ? 25 : (self.jarWorkerComparison ? 30 : (self.jarLoadComparison ? 25 : 60))))) { [weak self] in
                 guard let self else { return }
                 let end = JarAuditSample()
                 let dt = max(0.001, end.base.time - start.base.time)
                 let on = end.on &- start.on, off = end.off &- start.off
                 let compareLoad = self.jarLoadComparison
                 let workerCompare = self.jarWorkerComparison
-                let names = windowAudit
+                let names = displayAudit
+                    ? ["A1 · Display polling", "B · Display chờ sự kiện", "A2 · Display polling"]
+                    : windowAudit
                     ? ["A1 · Cửa sổ game", "B · Chỉ cửa sổ đen", "A2 · Cửa sổ game"]
                     : workerCompare
                     ? ["A1 · Không tải", "B · Tải trên game", "C · Tải trên pthread", "A2 · Không tải"]
@@ -1415,7 +1433,7 @@ class GameViewController: UIViewController {
                     dt, paint, paints, Double(end.wakes &- start.wakes) / dt)
                 row += String(format: "\n%.2f vòng game/s", ticks)
                 row += " · \(off) tick tắt / \(on) tick bật · \(frames) khung lên layer"
-                let validState = (detachUI || compareLoad || workerCompare || windowAudit || leg == 1) ? (on > 0 && off == 0) : (off > 0 && on == 0)
+                let validState = (detachUI || compareLoad || workerCompare || windowAudit || displayAudit || leg == 1) ? (on > 0 && off == 0) : (off > 0 && on == 0)
                 let validUI = !detachUI || leg != 1 || self.isJarGameUIActuallyDetached()
                 let validWindow = !windowAudit
                     || (leg == 1 ? self.isJarProbeWindowVisible()
@@ -1432,6 +1450,17 @@ class GameViewController: UIViewController {
                 }
                 if !validState { row += "\nKhông hợp lệ: tick không đúng trạng thái trong lượt." }
                 if frames != 0 { row += "\nKhông hợp lệ: vẫn có khung lên layer." }
+                let displayPolls = Double(end.displayPolls &- start.displayPolls) / dt
+                let displayWaits = Double(end.displayWaits &- start.displayWaits) / dt
+                let displayTimeouts = Double(end.displayTimeouts &- start.displayTimeouts) / dt
+                let displaySignals = Double(end.displaySignals &- start.displaySignals) / dt
+                if displayAudit {
+                    row += String(format: "\nDisplay: %.2f poll/s · %.2f native wait/s · %.2f timeout/s · %.2f tín hiệu/s",
+                                  displayPolls, displayWaits, displayTimeouts, displaySignals)
+                    if leg == 1 && displayWaits < 1 {
+                        row += "\nKHÔNG HỢP LỆ: B không vào nhánh chờ sự kiện."
+                    }
+                }
                 if let raw = treo_afk_threads_report(dt) {
                     row += "\n" + String(cString: raw)
                     free(raw)
@@ -1458,7 +1487,8 @@ class GameViewController: UIViewController {
                     }
                 }
                 let all = rows + [row]
-                guard validState && validUI && validWindow && frames == 0 else {
+                let validDisplay = !displayAudit || leg != 1 || displayWaits >= 1
+                guard validState && validUI && validWindow && validDisplay && frames == 0 else {
                     self.finishJarAudit(rows: all, results: [])
                     return
                 }
@@ -1471,7 +1501,7 @@ class GameViewController: UIViewController {
                 }
                 if leg == (compareLoad || workerCompare ? 3 : 2) || (profileMain && !sourceProfile && leg == 1) {
                     self.finishJarAudit(rows: all, results: measured)
-                } else if compareLoad || workerCompare || detachUI || windowAudit {
+                } else if compareLoad || workerCompare || detachUI || windowAudit || displayAudit {
                     self.runJarAudit(id: id, leg: leg + 1, rows: all, results: measured)
                 } else {
                     self.promptJarAudit(id: id, nextLeg: leg + 1, rows: all, results: measured)
@@ -1518,6 +1548,7 @@ class GameViewController: UIViewController {
         let compareLoad = jarLoadComparison
         let workerCompare = jarWorkerComparison
         let windowAudit = jarWindowAudit
+        let displayAudit = jarDisplayWaitAudit
         let budgetMain = jarBudgetAudit
         let detachUI = jarDetachAudit
         let measureCommit = jarCommitAudit
@@ -1562,7 +1593,7 @@ class GameViewController: UIViewController {
             summary = "B − trung bình A1/A2: \(delta(a.total, b.total, c.total)) điểm tổng; "
                 + "\(delta(a.main, b.main, c.main)) điểm main; \(delta(a.paint, b.paint, c.paint)) điểm trong paint; "
                 + "\(delta(a.ticks, b.ticks, c.ticks)) vòng/s.\nĐối chiếu B với từng mốc A bên dưới.\n\n"
-            if windowAudit {
+            if windowAudit || displayAudit {
                 let expectedTicks = (a.ticks + c.ticks) / 2
                 if abs(b.ticks - expectedTicks) > 0.5 || abs(a.ticks - c.ticks) > 0.5 {
                     summary += "KHÔNG KẾT LUẬN: nhịp game lệch quá 0,5 vòng/s giữa các lượt.\n\n"
@@ -1599,12 +1630,15 @@ class GameViewController: UIViewController {
                     summary += "Mốc UIKit không đủ hoặc lỗi ghép nhiều: không kết luận về commit.\n\n"
                 }
             }
-            let title = windowAudit ? "Thử cửa sổ đen foreground · JAR" :
+            let title = displayAudit ? "Thử Display chờ sự kiện · JAR" :
+                windowAudit ? "Thử cửa sổ đen foreground · JAR" :
                 workerCompare ? "So tải game và luồng native · JAR" :
                 measureCommit ? "Đo CPU quanh commit UIKit · JAR" :
                 detachUI ? "Thử tháo giao diện game · JAR" :
                 (profileMain ? "Tìm stack sau Source · JAR" : "Đo pha CPU main · JAR")
-            let sampling = windowAudit
+            let sampling = displayAudit
+                ? "A1/A2 chờ 16ms cũ; B dùng condition variable có version chống mất tín hiệu, có watchdog 250ms. Bắt buộc kiểm tra poll/s, wait/s, timeout/s và game tick/s trước khi quy kết CPU. Không thay đổi vòng game."
+                : windowAudit
                 ? "A1/A2 dùng cửa sổ game; B ẩn cửa sổ gốc và hiển thị UIWindow đen tối giản. App foreground-active cả ba lượt, không giả lập inactive. Mốc UIUpdateLink đo trên cửa sổ đang hiện; không coi đó là mọi commit QuartzCore."
                 : workerCompare
                 ? "B dùng tải CPU game; C dùng pthread riêng, cố gắng khớp QoS và tải 10 ms/xung. Cả hai chỉ là tải chẩn đoán; không coi main giảm là tổng giảm. Không lấy stack."

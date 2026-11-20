@@ -93,6 +93,7 @@ public class Display {
             ((Canvas) old).hideNotify();
             ((Canvas) old).destroyContext();
         }
+        NativeBridge.displayWake();
     }
 
     public void setCurrent(Alert alert, Displayable nextDisplayable) {
@@ -155,6 +156,9 @@ public class Display {
         System.out.println("[Display] Event loop started (" + screenWidth + "x" + screenHeight + ")");
 
         while (running && !MIDlet.isDestroyRequested()) {
+            // Capture BEFORE checking input/repaint so events cannot be lost.
+            final boolean eventWait = NativeBridge.displayWaitEnabled();
+            final int wakeGeneration = eventWait ? NativeBridge.displayWaitVersion() : 0;
             // 0. Check if native side requested stop (e.g. user pressed Back)
             if (NativeBridge.isStopRequested()) {
                 System.out.println("[Display] Native stop requested, exiting event loop");
@@ -242,7 +246,12 @@ public class Display {
 
             // Sleep in short intervals so we react quickly to destroyRequested
             try {
-                if (NativeBridge.afkSuspended()) {
+                if (eventWait && NativeBridge.displayWaitEnabled()
+                        && refreshAfterAfk == 0
+                        && !(current instanceof Canvas && ((Canvas) current).repaintPending)) {
+                    // 250ms watchdog for lifecycle paths without a wake signal.
+                    NativeBridge.displayWaitIfUnchanged(wakeGeneration, 250);
+                } else if (NativeBridge.afkSuspended()) {
                     // Same nominal cadence, fewer loader thread wakeups.
                     if (!MIDlet.isDestroyRequested()) Thread.sleep(16);
                 } else {
@@ -273,5 +282,6 @@ public class Display {
      */
     public void stopEventLoop() {
         running = false;
+        NativeBridge.displayWake();
     }
 }

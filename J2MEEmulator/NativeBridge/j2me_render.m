@@ -19,6 +19,7 @@
 #endif
 #import <CoreHaptics/CoreHaptics.h>
 #include "j2me_render.h"
+#include "j2me_input.h"
 #include "jvm.h"
 #include "jvm_util.h"
 #include <stdio.h>
@@ -262,6 +263,7 @@ void treo_render_set_afk_mode(int mode) {
     } else if (previous) {
         atomic_store(&g_afk_refresh, atomic_exchange(&g_afk_needs_redraw, 0) ? 2 : 1);
     }
+    j2me_display_wake();
 }
 void j2me_render_set_afk_suspended(int enabled) { treo_render_set_afk_mode(enabled ? 1 : 0); }
 

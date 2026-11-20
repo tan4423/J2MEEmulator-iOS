@@ -69,6 +69,13 @@ public class NativeBridge {
     // Lifecycle — check if native side requested MIDlet stop
     public static native boolean isStopRequested();
 
+    // Event wake generation is taken before polling input, to avoid lost
+    // signals in the diagnostic idle Display sleep path.
+    static native boolean displayWaitEnabled();
+    static native int displayWaitVersion();
+    static native int displayWaitIfUnchanged(int generation, int maxMilliseconds);
+    static native void displayWake();
+
     // UI (Forms/Lists/Alerts)
     public static native void formBegin(String title, int type);
     public static native void formAddStringItem(String label, String text, int appearance);
