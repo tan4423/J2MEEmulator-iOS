@@ -1809,6 +1809,13 @@ class GameViewController: UIViewController {
         }
         if phaseAudit && results.count == 3 {
             let a = results[0], b = results[1], c = results[2]
+            let baselineTicks = (a.ticks + c.ticks) / 2
+            if abs(b.ticks - baselineTicks) > 0.5 || abs(a.ticks - c.ticks) > 0.5 {
+                summary += "KHÔNG KẾT LUẬN: nhịp game thay đổi hơn 0,5 vòng/s.\n"
+            }
+            if let x = a.total, let z = c.total, abs(x - z) > 4 {
+                summary += "CẢNH BÁO: CPU tổng A1/A2 trôi quá 4 điểm.\n"
+            }
             if let pa = a.phases, let pb = b.phases, let pc = c.phases,
                pa.valid && pb.valid && pc.valid {
                 summary += "Chênh CPU giữa mốc UIKit, B − trung bình A1/A2 (ms CPU/s):\n"
