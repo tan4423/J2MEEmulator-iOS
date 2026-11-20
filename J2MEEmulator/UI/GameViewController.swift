@@ -1381,7 +1381,7 @@ class GameViewController: UIViewController {
                 (compareLoad ? "Thử chờ thụ động · CPU main" :
                  (profileMain ? "Tìm hàm ăn CPU main" : "Chẩn đoán CPU JAR")),
             message: energyAudit
-                ? "Map 37, auto x1, bắt đầu với Treo trong JAR đang TẮT. Đo A1 TẮT → B BẬT → A2 TẮT, 20 phút/lượt; tự nhắc bạn đổi trạng thái giữa các lượt. GIỮ iPhone trên pin (không sạc), cùng độ sáng cố định, không đổi mạng, không khóa màn hình, không kéo Trung tâm thông báo. App chặn khung game giống nhau, tắt JIT suốt bài; ghi CPU time từ getrusage, pin, nhiệt hệ thống, độ sáng, tick và benchmark. Mức pin là ước lượng thô, không đo watt hay nhiệt độ °C. Có Hủy và tự hoàn nguyên cài đặt."
+                ? "Map 37, auto x1, bắt đầu với Treo trong JAR đang TẮT. Đo A1 TẮT → B BẬT → A2 TẮT, 20 phút/lượt; tự nhắc bạn đổi trạng thái giữa các lượt. GIỮ iPhone trên pin (không sạc), cùng độ sáng cố định, không đổi mạng, không khóa màn hình, không kéo Trung tâm thông báo. Không chặn khung native: A1/A2 là game hiển thị bình thường, B là treo JAR thực tế; tắt JIT suốt bài. Ghi CPU time từ getrusage, pin, nhiệt hệ thống, độ sáng, tick và benchmark. Mức pin là ước lượng thô, không đo watt hay nhiệt độ °C. Có Hủy và tự hoàn nguyên cài đặt."
                 : sparsePaintAudit
                 ? "Map 37, auto x1, BẬT Treo tối ưu CPU trong JAR trước. Không bật màn đen JarBox. 4 lượt × 30 giây: A1 không paint → B ép paint thật 1 lần/giây → C 3 lần/giây → A2 không paint; tự chuyển, không cần chạm. Khung game vẫn bị chặn native. Đo CPU tổng/main, tốc độ phép tính cố định, tick và số paint thực. CẢNH BÁO: paint của JAR có thể chứa logic, chỉ dùng để chẩn đoán. Có Hủy; tự tắt ép paint sau thử."
                 : uikitPhases
@@ -1594,8 +1594,9 @@ class GameViewController: UIViewController {
     }
 
     private func runJarAudit(id: UUID, leg: Int, rows: [String], results: [JarAuditResult]) {
-        // Same native mode throughout each CPU window; restore frames only for user input.
-        treo_render_set_afk_mode(1)
+        // Energy audit measures ACTUAL usage: normal game presents frames,
+        // JAR treo does not. CPU microbench audits still suppress both arms.
+        treo_render_set_afk_mode(jarEnergyAudit ? 0 : 1)
         let sparseAudit = jarSparsePaintAudit
         let sparseHz: Int32 = sparseAudit ? (leg == 1 ? 1 : leg == 2 ? 3 : 0) : 0
         treo_jar_sparse_paint_set(sparseHz)
@@ -1762,7 +1763,12 @@ class GameViewController: UIViewController {
                     if !validUI { row += "\nKhông hợp lệ: cây view không còn tách ở cuối lượt B." }
                 }
                 if !validState { row += "\nKhông hợp lệ: tick không đúng trạng thái trong lượt." }
-                if frames != 0 { row += "\nKhông hợp lệ: vẫn có khung lên layer." }
+                if !self.jarEnergyAudit && frames != 0 {
+                    row += "\nKhông hợp lệ: vẫn có khung lên layer."
+                }
+                if self.jarEnergyAudit && leg != 1 && frames == 0 {
+                    row += "\nKHÔNG HỢP LỆ: lượt game thường không xuất khung hình."
+                }
                 var batteryDropPerHour: Double?
                 var energyStable = true
                 if self.jarEnergyAudit {
@@ -1854,7 +1860,8 @@ class GameViewController: UIViewController {
                     : (abs(sparseRate - targetHz) <= 0.45
                        && abs(paints - targetHz) <= 0.45))
                 if !validSparse { row += "\nKHÔNG HỢP LỆ: paint thực tế khác tần suất yêu cầu." }
-                guard validState && validUI && validWindow && validDisplay && validQoS && validSparse && validEnergy && frames == 0 else {
+                let validFrames = self.jarEnergyAudit ? (leg == 1 || frames > 0) : frames == 0
+                guard validState && validUI && validWindow && validDisplay && validQoS && validSparse && validEnergy && validFrames else {
                     self.finishJarAudit(rows: all, results: [])
                     return
                 }
@@ -2132,7 +2139,7 @@ class GameViewController: UIViewController {
                 detachUI ? "Thử tháo giao diện game · JAR" :
                 (profileMain ? "Tìm stack sau Source · JAR" : "Đo pha CPU main · JAR")
             let sampling = energyAudit
-                ? "A1 tắt → B bật → A2 tắt, mỗi lượt 20 phút; tất cả đều chặn khung native, JIT tắt. Theo dõi getrusage CPU time, pin iOS, trạng thái nhiệt, độ sáng, Low Power Mode và tick. Hao pin là ước lượng toàn điện thoại, KHÔNG đo watt, nhiệt độ °C hoặc năng lượng riêng CPU."
+                ? "A1 tắt → B bật → A2 tắt, mỗi lượt 20 phút; không chặn khung game nên đo tình huống sử dụng thực tế (A1/A2 hiển thị game, B treo). JIT tắt suốt bài. Theo dõi getrusage CPU time, pin iOS, trạng thái nhiệt, độ sáng, Low Power Mode và tick. Hao pin là ước lượng toàn điện thoại, KHÔNG đo watt, nhiệt độ °C hoặc năng lượng riêng CPU."
                 : sparseAudit
                 ? "JAR treo BẬT suốt bốn lượt. A1/A2 không ép vẽ, B ép 1Hz, C ép 3Hz từ luồng Display; khung vẫn chặn ở native. Đo CPU tổng, main, nhịp game, paint thật và tốc độ việc cố định trên main. Không thay đổi vòng game, không sử dụng tải giả; paint có thể chứa logic và thử nghiệm tự hoàn nguyên."
                 : phaseAudit
