@@ -1,4 +1,6 @@
 #include <errno.h>
+#include <stdint.h>
+#include <time.h>
 #include "jvm.h"
 #include "garbage.h"
 #include "jvm_util.h"
