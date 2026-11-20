@@ -65,6 +65,192 @@ extern _Atomic int treo_afk_mode;
 extern int treo_afk_elide_graphics(JClass *clazz, Instance *receiver);
 extern int treo_direct_graphics_enabled(void);
 
+/* Sampled PaintHot attribution. No Java work is omitted; no bytecode hooks. */
+#if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__ && !defined(TREO_VM_PAINT_SAMPLE_DISABLED)
+#define TREO_VM_PAINT_SAMPLE 1
+#else
+#define TREO_VM_PAINT_SAMPLE 0
+#endif
+
+#if TREO_VM_PAINT_SAMPLE
+#include <pthread.h>
+#include <time.h>
+#include <stdio.h>
+#include <string.h>
+#define PAINT_RATE 32u
+#define PAINT_DEPTH 384u
+#define PAINT_LOCAL 256u
+#define PAINT_GLOBAL 512u
+typedef struct { MethodInfo *method; uint64_t self_ns, all_ns, calls; } PaintRow;
+typedef struct { MethodInfo *method; uint64_t start_ns, children_ns; } PaintFrame;
+typedef struct {
+    unsigned scope, depth, sampled;
+    uint64_t epoch, start_ns, overflow, overflow_ns, depth_errors;
+    PaintRow rows[PAINT_LOCAL];
+    PaintFrame frames[PAINT_DEPTH];
+} PaintThread;
+typedef struct {
+    MethodInfo *method;
+    uint64_t self_ns, all_ns, calls;
+    char signature[176];
+} PaintGlobal;
+static _Thread_local PaintThread paint_tls;
+static PaintGlobal paint_global[PAINT_GLOBAL];
+static pthread_mutex_t paint_lock = PTHREAD_MUTEX_INITIALIZER;
+static _Atomic uint64_t paint_epoch = 1, paint_seen;
+static uint64_t paint_samples, paint_cpu_ns, paint_overflow, paint_overflow_ns, paint_depth_errors;
+static char paint_report[4096];
+
+static inline uint64_t paint_clock_ns(void) {
+    struct timespec ts;
+    if (clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts)) return 0;
+    return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
+}
+static inline unsigned paint_hash(MethodInfo *m, unsigned mask) {
+    uintptr_t n = (uintptr_t)m;
+    return (unsigned)((n >> 4) ^ (n >> 13) ^ (n >> 23)) & mask;
+}
+void treo_vm_paint_sample_reset(void) {
+    pthread_mutex_lock(&paint_lock);
+    atomic_fetch_add_explicit(&paint_epoch, 1, memory_order_release);
+    atomic_store_explicit(&paint_seen, 0, memory_order_relaxed);
+    memset(paint_global, 0, sizeof(paint_global));
+    paint_samples = paint_cpu_ns = paint_overflow = paint_overflow_ns = paint_depth_errors = 0;
+    pthread_mutex_unlock(&paint_lock);
+}
+void treo_vm_paint_sample_begin(void) {
+    PaintThread *t = &paint_tls;
+    if (t->scope) { t->scope++; return; }
+    if (atomic_load_explicit(&treo_afk_mode, memory_order_relaxed) != 8) return;
+    t->scope = 1;
+    t->epoch = atomic_load_explicit(&paint_epoch, memory_order_acquire);
+    unsigned n = (unsigned)atomic_fetch_add_explicit(&paint_seen, 1, memory_order_relaxed);
+    t->sampled = (n % PAINT_RATE) == 0;
+    if (!t->sampled) return;
+    t->depth = 0;
+    t->overflow = t->overflow_ns = t->depth_errors = 0;
+    memset(t->rows, 0, sizeof(t->rows));
+    t->start_ns = paint_clock_ns();
+}
+static inline int treo_vm_paint_method_enter(MethodInfo *m) {
+    PaintThread *t = &paint_tls;
+    if (__builtin_expect(!t->sampled, 1)) return 0;
+    // Its native callback terminates the scope before execute_method_impl returns.
+    if (m->is_native && utf8_equals_c(m->name, "profilePaintEnd") &&
+        utf8_equals_c(m->_this_class->name, "javax/microedition/lcdui/NativeBridge")) return 0;
+    unsigned d = t->depth++;
+    if (d >= PAINT_DEPTH) { t->depth_errors++; return 2; }
+    PaintFrame *f = &t->frames[d];
+    f->method = m;
+    f->children_ns = 0;
+    f->start_ns = paint_clock_ns();
+    return 1;
+}
+static inline void treo_vm_paint_method_exit(MethodInfo *m, int token) {
+    if (!token) return;
+    PaintThread *t = &paint_tls;
+    if (!t->sampled || !t->depth) return;
+    unsigned d = --t->depth;
+    if (token == 2 || d >= PAINT_DEPTH) return;
+    PaintFrame *f = &t->frames[d];
+    uint64_t now = paint_clock_ns();
+    if (f->method != m || now < f->start_ns) { t->depth_errors++; return; }
+    uint64_t all = now - f->start_ns;
+    uint64_t self = all >= f->children_ns ? all - f->children_ns : 0;
+    if (d && d - 1 < PAINT_DEPTH) t->frames[d - 1].children_ns += all;
+    unsigned index = paint_hash(m, PAINT_LOCAL - 1);
+    for (unsigned i = 0; i < PAINT_LOCAL; i++) {
+        PaintRow *r = &t->rows[index];
+        if (!r->method || r->method == m) {
+            r->method = m; r->calls++; r->self_ns += self; r->all_ns += all; return;
+        }
+        index = (index + 1) & (PAINT_LOCAL - 1);
+    }
+    t->overflow++; t->overflow_ns += self;
+}
+void treo_vm_paint_sample_end(void) {
+    PaintThread *t = &paint_tls;
+    if (!t->scope || --t->scope) return;
+    if (!t->sampled) return;
+    uint64_t now = paint_clock_ns();
+    t->sampled = 0;
+    pthread_mutex_lock(&paint_lock);
+    if (t->epoch == atomic_load_explicit(&paint_epoch, memory_order_acquire)) {
+        paint_samples++;
+        if (now >= t->start_ns) paint_cpu_ns += now - t->start_ns;
+        paint_overflow += t->overflow;
+        paint_overflow_ns += t->overflow_ns;
+        paint_depth_errors += t->depth_errors;
+        for (unsigned i = 0; i < PAINT_LOCAL; ++i) {
+            const PaintRow *src = &t->rows[i];
+            if (!src->method) continue;
+            unsigned index = paint_hash(src->method, PAINT_GLOBAL - 1);
+            for (unsigned j = 0; j < PAINT_GLOBAL; ++j) {
+                PaintGlobal *dst = &paint_global[index];
+                if (!dst->method || dst->method == src->method) {
+                    if (!dst->method) {
+                        dst->method = src->method;
+                        snprintf(dst->signature, sizeof(dst->signature), "%s.%s%s",
+                            utf8_cstr(src->method->_this_class->name),
+                            utf8_cstr(src->method->name),
+                            utf8_cstr(src->method->descriptor));
+                    }
+                    dst->calls += src->calls;
+                    dst->self_ns += src->self_ns;
+                    dst->all_ns += src->all_ns;
+                    break;
+                }
+                index = (index + 1) & (PAINT_GLOBAL - 1);
+                if (j == PAINT_GLOBAL - 1) {
+                    paint_overflow += src->calls; paint_overflow_ns += src->self_ns;
+                }
+            }
+        }
+    }
+    pthread_mutex_unlock(&paint_lock);
+}
+const char *treo_vm_paint_sample_report(void) {
+    pthread_mutex_lock(&paint_lock);
+    int top[8];
+    for (int i = 0; i < 8; ++i) top[i] = -1;
+    uint64_t counted = 0;
+    for (unsigned i = 0; i < PAINT_GLOBAL; ++i) {
+        if (!paint_global[i].method) continue;
+        counted += paint_global[i].self_ns;
+        for (int k = 0; k < 8; ++k) {
+            if (top[k] < 0 || paint_global[i].self_ns > paint_global[top[k]].self_ns) {
+                for (int p = 7; p > k; --p) top[p] = top[p - 1];
+                top[k] = (int)i; break;
+            }
+        }
+    }
+    int used = snprintf(paint_report, sizeof(paint_report),
+        "[JarBoxVM][PaintHot] enabled=1 rate=1/32 paints=%llu sampled=%llu "
+        "sampledCPU=%.2fms selfSum=%.2fms dropped=%llu droppedSelf=%.2fms depthOverflow=%llu",
+        (unsigned long long)atomic_load_explicit(&paint_seen, memory_order_relaxed),
+        (unsigned long long)paint_samples, (double)paint_cpu_ns/1000000.,
+        (double)counted/1000000., (unsigned long long)paint_overflow,
+        (double)paint_overflow_ns/1000000., (unsigned long long)paint_depth_errors);
+    for (int k = 0; k < 8 && top[k] >= 0; ++k) {
+        if (used < 0 || (size_t)used >= sizeof(paint_report)) break;
+        const PaintGlobal *r = &paint_global[top[k]];
+        used += snprintf(paint_report+used, sizeof(paint_report)-(size_t)used,
+            "\n[JarBoxVM][PaintHot] #%d self=%.2fms inclusive=%.2fms calls=%llu %s",
+            k+1, (double)r->self_ns/1000000., (double)r->all_ns/1000000.,
+            (unsigned long long)r->calls, r->signature);
+    }
+    pthread_mutex_unlock(&paint_lock);
+    return paint_report;
+}
+#else
+void treo_vm_paint_sample_reset(void) {}
+void treo_vm_paint_sample_begin(void) {}
+void treo_vm_paint_sample_end(void) {}
+const char *treo_vm_paint_sample_report(void) {
+    return "[JarBoxVM][PaintHot] enabled=0 (same-source baseline)";
+}
+#endif
+
 static int treo_headless_eligible(MethodInfo *m) {
     u8 tag = __atomic_load_n(&m->treo_afk_kind, __ATOMIC_RELAXED);
     if (tag) return tag == 2;
@@ -683,6 +869,10 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
             return RUNTIME_STATUS_NORMAL;
         }
     }
+#endif
+
+#if TREO_VM_PAINT_SAMPLE
+    const int treo_paint_token = treo_vm_paint_method_enter(method);
 #endif
 
     //shared local var for opcode
@@ -4620,6 +4810,9 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                utf8_cstr(method->name), utf8_cstr(method->descriptor));
 #endif
 
+#if TREO_VM_PAINT_SAMPLE
+    treo_vm_paint_method_exit(method, treo_paint_token);
+#endif
     return ret;
 }
 
