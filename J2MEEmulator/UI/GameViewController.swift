@@ -117,7 +117,7 @@ enum GameLayoutMode {
             let data = cpuMSPerSecond
             var lines = [String(format: "Các pha UIKit: %.2f chu kỳ/s · %d chu kỳ đủ · %d mốc mất/khác nhịp · %@",
                                 cyclesPerSecond, completedCycles, dropped, valid ? "hợp lệ" : "KHÔNG ĐỦ MỐC")]
-            for i in 0..<Self.labels.count {
+            for i in 0..<JarUIKitPhaseBudget.labels.count {
                 lines.append(String(format: "%@: %.1f ms CPU/s [%d cặp]",
                                     Self.labels[i], data[i], pairs[i]))
             }
@@ -1785,25 +1785,6 @@ class GameViewController: UIViewController {
             }
             summary += "\n"
         }
-        if phaseAudit && results.count == 3 {
-            let a = results[0], b = results[1], c = results[2]
-            if let pa = a.phases, let pb = b.phases, let pc = c.phases,
-               pa.valid && pb.valid && pc.valid {
-                summary += "Chênh CPU giữa mốc UIKit, B − trung bình A1/A2 (ms CPU/s):\n"
-                var deltaSum = 0.0
-                for i in 0..<JarUIKitPhaseBudget.labels.count {
-                    let delta = pb.cpuMSPerSecond[i] - (pa.cpuMSPerSecond[i] + pc.cpuMSPerSecond[i]) / 2
-                    deltaSum += delta
-                    summary += String(format: "%@: %+.1f\n", JarUIKitPhaseBudget.labels[i], delta)
-                }
-                summary += String(format: "Tổng các khoảng đo được: %+.1f ms CPU/s.\n", deltaSum)
-            } else {
-                summary += "KHÔNG KẾT LUẬN: thiếu chu kỳ UIKit ghép đủ, hãy xem mốc lỗi từng lượt.\n"
-            }
-            let mainDelta = (b.main ?? 0) - ((a.main ?? 0) + (c.main ?? 0)) / 2
-            summary += String(format: "Chênh CPU main toàn bộ: %+.1f điểm (%.1f ms/s). Không đồng nhất tổng khoảng UIKit với toàn main.\n\n",
-                mainDelta, mainDelta * 10)
-        }
         if results.count == 3 {
             let a = results[0], b = results[1], c = results[2]
             func delta(_ x: Double?, _ y: Double?, _ z: Double?) -> String {
@@ -1825,6 +1806,25 @@ class GameViewController: UIViewController {
                         threeCommits[0].millisecondsPerSecond, threeCommits[1].millisecondsPerSecond, threeCommits[2].millisecondsPerSecond)
                 }
             }
+        }
+        if phaseAudit && results.count == 3 {
+            let a = results[0], b = results[1], c = results[2]
+            if let pa = a.phases, let pb = b.phases, let pc = c.phases,
+               pa.valid && pb.valid && pc.valid {
+                summary += "Chênh CPU giữa mốc UIKit, B − trung bình A1/A2 (ms CPU/s):\n"
+                var deltaSum = 0.0
+                for i in 0..<JarUIKitPhaseBudget.labels.count {
+                    let delta = pb.cpuMSPerSecond[i] - (pa.cpuMSPerSecond[i] + pc.cpuMSPerSecond[i]) / 2
+                    deltaSum += delta
+                    summary += String(format: "%@: %+.1f\n", JarUIKitPhaseBudget.labels[i], delta)
+                }
+                summary += String(format: "Tổng các khoảng đo được: %+.1f ms CPU/s.\n", deltaSum)
+            } else {
+                summary += "KHÔNG KẾT LUẬN: thiếu chu kỳ UIKit ghép đủ, hãy xem mốc lỗi từng lượt.\n"
+            }
+            let mainDelta = (b.main ?? 0) - ((a.main ?? 0) + (c.main ?? 0)) / 2
+            summary += String(format: "Chênh CPU main toàn bộ: %+.1f điểm (%.1f ms/s). Không đồng nhất tổng khoảng UIKit với toàn main.\n\n",
+                mainDelta, mainDelta * 10)
         }
         if budgetMain {
             if results.count == 3, let a = results[0].budget, let b = results[1].budget, let c = results[2].budget {
