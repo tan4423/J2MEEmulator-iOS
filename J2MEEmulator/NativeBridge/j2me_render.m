@@ -31,6 +31,7 @@
 #include <mach/arm/thread_status.h>
 #include <dlfcn.h>
 #include <pthread.h>
+#include <pthread/qos.h>
 #if __has_feature(ptrauth_calls)
 #include <ptrauth.h>
 #endif
@@ -873,8 +874,9 @@ static void *treo_jar_worker_main(void *ignored) {
     (void)ignored;
     const int gameQoS = atomic_load_explicit(&treo_jar_game_qos, memory_order_relaxed);
     if (gameQoS > 0) (void)pthread_set_qos_class_self_np((qos_class_t)gameQoS, 0);
-    atomic_store_explicit(&treo_jar_worker_qos,
-        (int)pthread_get_qos_class_np(pthread_self(), NULL), memory_order_relaxed);
+    qos_class_t workerQoS = QOS_CLASS_UNSPECIFIED;
+    (void)pthread_get_qos_class_np(pthread_self(), &workerQoS, NULL);
+    atomic_store_explicit(&treo_jar_worker_qos, (int)workerQoS, memory_order_relaxed);
     while (atomic_load_explicit(&treo_jar_load_mode, memory_order_acquire) == 3) {
         const uint64_t start = treo_afk_now_ns();
         treo_jar_load_pulse(3);
@@ -897,8 +899,9 @@ static void *treo_jar_worker_main(void *ignored) {
 void treo_jar_audit_tick(int active) {
     const int mode = atomic_load_explicit(&treo_jar_load_mode, memory_order_acquire);
     if (active && mode == 1) {
-        atomic_store_explicit(&treo_jar_game_qos,
-            (int)pthread_get_qos_class_np(pthread_self(), NULL), memory_order_relaxed);
+        qos_class_t gameQoS = QOS_CLASS_UNSPECIFIED;
+        (void)pthread_get_qos_class_np(pthread_self(), &gameQoS, NULL);
+        atomic_store_explicit(&treo_jar_game_qos, (int)gameQoS, memory_order_relaxed);
     }
     if (active && (mode == 1 || mode == 2)) {
         const uint64_t start = treo_afk_now_ns();
