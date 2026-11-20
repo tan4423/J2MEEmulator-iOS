@@ -349,10 +349,6 @@ class GameViewController: UIViewController {
     private var jarBoxDeepTreoStart: GenericTreoSnapshot?
     private var genericTreoComparisonID: UUID?
     private var genericTreoWork: DispatchWorkItem?
-    // Compare AFK backends within the live game session, without game-specific
-    // JAR handling or persistent guesses about workloads.
-    private var treoAutoCalibrating = false
-    private var treoAutoCachedDeep: Bool?
     private var gameCanvasBlitAuditID: UUID?
     private var gameCanvasBlitAuditWork: DispatchWorkItem?
     private var mainStackAuditID: UUID?
@@ -877,8 +873,8 @@ class GameViewController: UIViewController {
             UIAction(title: "Phím điều hướng", state: padMode == .directions ? .on : .off) { [weak self] _ in self?.setPadMode(.directions) },
             UIAction(title: "Phím số", state: padMode == .numbers ? .on : .off) { [weak self] _ in self?.setPadMode(.numbers) },
             UIAction(title: "Ẩn phím · màn hình lớn", state: padMode == .hidden ? .on : .off) { [weak self] _ in self?.setPadMode(.hidden) },
-            UIAction(title: "Treo tự động · GC thông minh") { [weak self] _ in
-                self?.startAdaptiveTreo()
+            UIAction(title: "Treo tiết kiệm · GC thông minh") { [weak self] _ in
+                self?.showBlackout(mode: 8, smartGC: true, deepPaint: true)
             },
             UIAction(title: "Treo tương thích · dự phòng") { [weak self] _ in
                 self?.showBlackout(mode: 1, smartGC: true)
@@ -1114,19 +1110,6 @@ class GameViewController: UIViewController {
         let duration: Double
     }
 
-    // First Treo calibrates existing AFK render paths with A/B/A. Subsequent
-    // Treo sessions reuse only this controller's conservative decision.
-    private func startAdaptiveTreo() {
-        guard blackout == nil, jarAuditID == nil, powerRun == nil else { return }
-        if let deep = treoAutoCachedDeep {
-            showBlackout(mode: deep ? 8 : 1, smartGC: true, deepPaint: deep)
-            return
-        }
-        treoAutoCalibrating = true
-        startGenericTreoComparison()
-        if genericTreoComparisonID == nil { treoAutoCalibrating = false }
-    }
-
     // Compare existing compatible presentation skip (mode 1) with guarded
     // Java raster skip (mode 8), all with adaptive GC enabled and no JAR mods.
     private func startGenericTreoComparison() {
@@ -1218,15 +1201,6 @@ class GameViewController: UIViewController {
                     abs(b.paintHz - baseHz) <= max(1, baseHz * 0.1)
                 let compatible = !b.fellBack && b.late == 0 && b.guarded > 0 &&
                     b.frames == 0 && a.frames == 0 && c.frames == 0
-                // Only select deep when the CPU saving is substantial and
-                // main CPU doesn't rise sharply. Paint rate is not game ticks.
-                let mainStable = a.main != nil && b.main != nil && c.main != nil &&
-                    abs((a.main ?? 0) - (c.main ?? 0)) <= 4 &&
-                    (b.main ?? 0) <= ((a.main ?? 0) + (c.main ?? 0)) / 2 + 3
-                let baseTotal = ((a.total ?? 0) + (c.total ?? 0)) / 2
-                let savedTotal = baseTotal - (b.total ?? 0)
-                let chooseDeep = stableCPU && stablePaint && compatible && mainStable &&
-                    savedTotal >= max(4, baseTotal * 0.08)
                 if stableCPU && stablePaint && compatible,
                    let cpuA = a.total, let cpuB = b.total, let cpuC = c.total {
                     let saved = (cpuA + cpuC)/2 - cpuB
@@ -1237,27 +1211,9 @@ class GameViewController: UIViewController {
                     lines.append("KHÔNG ĐỦ CĂN CỨ CHẤM TỐI ƯU: dữ liệu trôi, raster không được bỏ, game không paint đều hoặc xảy ra fallback.")
                 }
                 lines.append("Không đo watt/lõi CPU hay tick game dùng chung. CPU giảm chỉ là ứng viên; phải kiểm tra auto, mạng và trạng thái game sau khi thoát.")
-                if self.treoAutoCalibrating {
-                    self.treoAutoCalibrating = false
-                    self.treoAutoCachedDeep = chooseDeep
-                    treo_afk_guard_auto_set(chooseDeep ? 1 : 0)
-                    treo_render_set_afk_mode(chooseDeep ? 8 : 1)
-                    self.jarBoxDeepTreoStart = chooseDeep ? GenericTreoSnapshot() : nil
-                    let label = chooseDeep ? "bỏ raster có bảo vệ" : "tương thích"
-                    lines.append("Treo tự động chọn: \(label). " +
-                        (chooseDeep
-                            ? "Đã đo giảm CPU trong A/B/A; chưa chứng minh giảm watt."
-                            : "Không đủ căn cứ chắc chắn để bỏ raster; ưu tiên tương thích."))
-                    if !mainStable {
-                        lines.append("CPU main không đạt giới hạn ổn định của bộ chọn.")
-                    }
-                    self.lastMeasurement = ("Treo tự động · quyết định A/B/A", lines.joined(separator: "\n\n"))
-                    self.blackout?.setTitle("Treo tự động · \(label) · chạm để trở lại", for: .normal)
-                } else {
-                    self.lastMeasurement = ("So CPU Treo JarBox · A/B/A", lines.joined(separator: "\n\n"))
-                    self.blackout?.setTitle("Đo xong · chạm để xem kết quả", for: .normal)
-                }
+                self.lastMeasurement = ("So CPU Treo JarBox · A/B/A", lines.joined(separator: "\n\n"))
                 self.afkComparisonDone = true
+                self.blackout?.setTitle("Đo xong · chạm để xem kết quả", for: .normal)
             }
             self.genericTreoWork = measure
             DispatchQueue.main.asyncAfter(deadline: .now() + 20, execute: measure)
@@ -1507,7 +1463,6 @@ class GameViewController: UIViewController {
         genericTreoWork?.cancel()
         genericTreoWork = nil
         genericTreoComparisonID = nil
-        treoAutoCalibrating = false
         gameCanvasBlitAuditWork?.cancel()
         gameCanvasBlitAuditWork = nil
         gameCanvasBlitAuditID = nil
@@ -1526,11 +1481,6 @@ class GameViewController: UIViewController {
         restoreAfkJIT()
         let showComparison = afkComparisonDone
         afkComparisonDone = false
-        // A pixel-dependent Canvas can invalidate an earlier CPU choice.
-        // Automatically prefer compatible Treo for subsequent entries.
-        if treoAutoCachedDeep == true && treo_afk_guard_auto_fell_back() != 0 {
-            treoAutoCachedDeep = false
-        }
         let deepEnd = jarBoxDeepTreoStart.map { start -> String in
             let end = GenericTreoSnapshot()
             let skipped = end.guarded &- start.guarded
