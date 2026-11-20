@@ -861,7 +861,7 @@ class GameViewController: UIViewController {
             UIAction(title: "Thử hạ QoS main · JAR") { [weak self] _ in
                 self?.confirmJarAudit(mainQoSAudit: true)
             },
-            UIAction(title: "Thử Display chờ sự kiện · JAR") { [weak self] _ in
+            UIAction(title: "Thử Display GC-safe · JAR") { [weak self] _ in
                 self?.confirmJarAudit(displayWaitAudit: true)
             },
             UIAction(title: "Thử cửa sổ đen foreground · JAR") { [weak self] _ in
@@ -869,9 +869,6 @@ class GameViewController: UIViewController {
             },
             UIAction(title: "Thử tháo giao diện game · JAR") { [weak self] _ in
                 self?.confirmJarAudit(budgetMain: true, detachUI: true)
-            },
-            UIAction(title: "Đo nhanh CPU, pin & nhiệt · 6 phút") { [weak self] _ in
-                self?.confirmJarAudit(energyAudit: true)
             },
             UIAction(title: "Thử paint thưa 1/3 Hz · JAR") { [weak self] _ in
                 self?.confirmJarAudit(sparsePaintAudit: true)
@@ -1373,7 +1370,7 @@ class GameViewController: UIViewController {
                 sparsePaintAudit ? "Thử paint thưa 1/3 Hz · JAR" :
                 uikitPhases ? "Đo 6 pha UIKit · tắt → bật → tắt" :
                 mainQoSAudit ? "Thử hạ QoS main · JAR" :
-                displayWaitAudit ? "Thử Display chờ sự kiện · JAR" :
+                displayWaitAudit ? "Thử Display GC-safe · JAR" :
                 windowOcclusion ? "Thử cửa sổ đen foreground · JAR" :
                 workerComparison ? "So tải game và luồng native · JAR" : measureCommit ? "Đo CPU quanh commit UIKit · JAR" :
                 detachUI ? "Thử tháo giao diện game · JAR" :
@@ -1390,7 +1387,7 @@ class GameViewController: UIViewController {
                 : mainQoSAudit
                 ? "Map 37, auto x1, BẬT treo trong JAR trước. Không bật màn đen JarBox hay kéo Trung tâm thông báo. A1 QoS gốc → B User Initiated → C Utility → A2 QoS gốc, 4 lượt × 30 giây. Không tạo tải giả, chỉ đổi QoS main thread; VM/game giữ nguyên. Đo CPU tổng, main, tick và cập nhật UIKit. Nếu iOS từ chối đổi QoS hoặc game chậm, báo không hợp lệ. Có Hủy và tự khôi phục QoS khi kết thúc."
                 : displayWaitAudit
-                ? "Map 37, auto x1, BẬT treo trong JAR trước, không bật màn đen JarBox riêng. Đo A1 chờ 16ms cũ → B chờ tín hiệu input/repaint (tối đa 250ms) → A2 chờ cũ. Ba lượt 30 giây, tự chuyển; JIT tắt và chặn khung đều như nhau. Giữ nguyên auto, không chạm. Có nút hủy; nếu tick game lệch hoặc Display không thật sự ngủ theo tín hiệu, báo không kết luận."
+                ? "Map 37, auto x1, BẬT treo trong JAR trước, không bật màn đen JarBox riêng. A1 polling cũ → B chờ native GC-safe tối đa 250ms → A2 polling cũ, mỗi lượt 30 giây. B khai báo is_blocking cho miniJVM GC trong lúc ngủ và bắt buộc nhịp game ~25,5/s; kiểm tra poll/wait/GC-safe/timeout và CPU tổng. JIT tắt, chặn khung như nhau; giữ auto, không chạm game. Không tự bật tối ưu sau thử."
                 : windowOcclusion
                 ? "Map 37, auto x1, BẬT treo trong JAR trước. Không bật màn đen JarBox. Ba lượt tự động A1 cửa sổ game → B cửa sổ đen tối giản → A2 khôi phục. Mỗi lượt 25 giây, app vẫn foreground; JIT tắt và không xuất khung game cả ba lượt. Nếu scene không active hoặc nhịp game sai, bài đo sẽ báo không hợp lệ. Có nút Hủy và tự khôi phục cửa sổ."
                 : workerComparison
@@ -2140,7 +2137,7 @@ class GameViewController: UIViewController {
                 sparseAudit ? "Thử paint thưa 1/3 Hz · JAR" :
                 phaseAudit ? "Đo 6 pha UIKit · JAR" :
                 qosAudit ? "Thử hạ QoS main · JAR" :
-                displayAudit ? "Thử Display chờ sự kiện · JAR" :
+                displayAudit ? "Thử Display GC-safe · JAR" :
                 windowAudit ? "Thử cửa sổ đen foreground · JAR" :
                 workerCompare ? "So tải game và luồng native · JAR" :
                 measureCommit ? "Đo CPU quanh commit UIKit · JAR" :
