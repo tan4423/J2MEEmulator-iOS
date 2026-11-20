@@ -77,6 +77,9 @@ extern _Atomic int treo_afk_mode;
 #define PAINT_DEPTH 384u
 #define PAINT_LOCAL 256u
 #define PAINT_GLOBAL 512u
+#define PAINT_PATH_KINDS 3u
+#define PAINT_PATH_VARIANTS 2u
+#define PAINT_PATH_LEN 640u
 typedef struct {
     MethodInfo *method;
     uint64_t self_ns, all_ns, calls;
@@ -90,6 +93,7 @@ typedef struct {
     uint64_t epoch, start_ns, overflow, overflow_ns, depth_errors;
     PaintRow rows[PAINT_LOCAL];
     PaintFrame frames[PAINT_DEPTH];
+    char representative_path[PAINT_PATH_KINDS][PAINT_PATH_LEN];
 } PaintThread;
 typedef struct {
     MethodInfo *method;
@@ -104,7 +108,8 @@ static uint64_t paint_samples, paint_cpu_ns, paint_overflow, paint_overflow_ns, 
 // Compare measured CPU of selected and ordinary paints without any extra clock.
 static _Atomic uint64_t paint_selected_count, paint_plain_count;
 static _Atomic uint64_t paint_selected_ns, paint_plain_ns;
-static char paint_report[4096];
+static char paint_report[8192];
+static char paint_paths[PAINT_PATH_KINDS][PAINT_PATH_VARIANTS][PAINT_PATH_LEN];
 
 static inline uint64_t paint_clock_ns(void) {
     struct timespec ts;
@@ -120,6 +125,7 @@ void treo_vm_paint_sample_reset(void) {
     atomic_fetch_add_explicit(&paint_epoch, 1, memory_order_release);
     atomic_store_explicit(&paint_seen, 0, memory_order_relaxed);
     memset(paint_global, 0, sizeof(paint_global));
+    memset(paint_paths, 0, sizeof(paint_paths));
     paint_samples = paint_cpu_ns = paint_overflow = paint_overflow_ns = paint_depth_errors = 0;
     atomic_store_explicit(&paint_selected_count,0,memory_order_relaxed);
     atomic_store_explicit(&paint_plain_count,0,memory_order_relaxed);
@@ -139,14 +145,55 @@ void treo_vm_paint_sample_begin(void) {
     t->depth = 0;
     t->overflow = t->overflow_ns = t->depth_errors = 0;
     memset(t->rows, 0, sizeof(t->rows));
+    memset(t->representative_path, 0, sizeof(t->representative_path));
     t->start_ns = paint_clock_ns();
 }
+
+// Only one call-chain snapshot per target per sampled paint. Crucially this
+// uses the already-maintained method stack, not a new CPU clock or timer.
+// Representative paths are *not* an exhaustive call graph.
+static inline void paint_capture_origin(PaintThread *t, MethodInfo *method) {
+    unsigned kind = PAINT_PATH_KINDS;
+    if (!t->representative_path[0][0] &&
+        utf8_equals_c(method->_this_class->name, "java/io/ByteArrayOutputStream") &&
+        utf8_equals_c(method->name, "write") &&
+        utf8_equals_c(method->descriptor, "([BII)V")) kind = 0;
+    else if (!t->representative_path[1][0] &&
+        utf8_equals_c(method->_this_class->name, "com/sun/cldc/i18n/j2me/UTF_8_Writer") &&
+        utf8_equals_c(method->name, "write") &&
+        utf8_equals_c(method->descriptor, "([CII)V")) kind = 1;
+    else if (!t->representative_path[2][0] &&
+        utf8_equals_c(method->_this_class->name, "org/mini/fs/InnerFile") &&
+        utf8_equals_c(method->name, "loadFS") &&
+        utf8_equals_c(method->descriptor, "([BLorg/mini/fs/InnerFileStat;)I")) kind = 2;
+    if (kind == PAINT_PATH_KINDS) return;
+    char *dst = t->representative_path[kind];
+    const size_t cap = PAINT_PATH_LEN;
+    int used = snprintf(dst, cap, "%s.%s", utf8_cstr(method->_this_class->name),
+                        utf8_cstr(method->name));
+    // Show the immediate caller first and walk up toward game paint.
+    for (int depth = (int)t->depth - 1, shown = 0;
+         depth >= 0 && shown < 12 && used >= 0 && (size_t)used < cap;
+         --depth, ++shown) {
+        MethodInfo *caller = t->frames[depth].method;
+        if (!caller) break;
+        used += snprintf(dst + used, cap - (size_t)used, " <- %s.%s",
+                         utf8_cstr(caller->_this_class->name),
+                         utf8_cstr(caller->name));
+    }
+}
+
 static inline int treo_vm_paint_method_enter(MethodInfo *m) {
     PaintThread *t = &paint_tls;
     if (__builtin_expect(!t->sampled, 1)) return 0;
     // Its native callback terminates the scope before execute_method_impl returns.
     if (m->is_native && utf8_equals_c(m->name, "profilePaintEnd") &&
         utf8_equals_c(m->_this_class->name, "javax/microedition/lcdui/NativeBridge")) return 0;
+    // Do not inspect bytecode or modify calls; only snapshot ancestry for
+    // three known runtime hot methods, once each per sampled paint.
+    if (!t->representative_path[0][0] || !t->representative_path[1][0] ||
+        !t->representative_path[2][0])
+        paint_capture_origin(t, m);
     unsigned d = t->depth++;
     if (d >= PAINT_DEPTH) { t->depth_errors++; return 2; }
     PaintFrame *f = &t->frames[d];
@@ -203,6 +250,18 @@ int treo_vm_paint_sample_end(void) {
         paint_overflow += t->overflow;
         paint_overflow_ns += t->overflow_ns;
         paint_depth_errors += t->depth_errors;
+        for (unsigned kind = 0; kind < PAINT_PATH_KINDS; ++kind) {
+            const char *path = t->representative_path[kind];
+            if (!path[0]) continue;
+            for (unsigned slot = 0; slot < PAINT_PATH_VARIANTS; ++slot) {
+                char *dst = paint_paths[kind][slot];
+                if (!dst[0]) {
+                    memcpy(dst, path, PAINT_PATH_LEN);
+                    break;
+                }
+                if (strncmp(dst, path, PAINT_PATH_LEN) == 0) break;
+            }
+        }
         for (unsigned i = 0; i < PAINT_LOCAL; ++i) {
             const PaintRow *src = &t->rows[i];
             if (!src->method) continue;
@@ -272,6 +331,20 @@ const char *treo_vm_paint_sample_report(void) {
             paint_cpu_ns ? 100.0 * (double)r->self_ns / (double)paint_cpu_ns : 0.0,
             (double)r->all_ns/1000000.,
             (unsigned long long)r->calls, r->signature);
+    }
+    const char *const path_names[PAINT_PATH_KINDS] = {
+        "ByteArrayOutputStream.write([BII)",
+        "UTF_8_Writer.write([CII)",
+        "InnerFile.loadFS([B,...)"};
+    for (unsigned kind = 0; kind < PAINT_PATH_KINDS; ++kind) {
+        for (unsigned variant = 0; variant < PAINT_PATH_VARIANTS; ++variant) {
+            const char *path = paint_paths[kind][variant];
+            if (!path[0] || used < 0 || (size_t)used >= sizeof(paint_report)) continue;
+            used += snprintf(paint_report + used, sizeof(paint_report) - (size_t)used,
+                             "
+[JarBoxVM][PaintPath] %s path%u: %s",
+                             path_names[kind], variant + 1, path);
+        }
     }
     pthread_mutex_unlock(&paint_lock);
     return paint_report;
