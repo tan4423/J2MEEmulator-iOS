@@ -904,7 +904,7 @@ class GameViewController: UIViewController {
                 self?.confirmJarAudit(profileMain: true, budgetMain: true)
             },
             UIAction(title: "Chẩn đoán CPU JAR · tắt → bật → tắt") { [weak self] _ in self?.confirmJarAudit() },
-            UIAction(title: "Treo JarBox · mọi JAR (GC thông minh)") { [weak self] _ in
+            UIAction(title: "Treo JarBox · không cần mod JAR (GC thông minh)") { [weak self] _ in
                 self?.showBlackout(smartGC: true)
             },
             UIAction(title: "Treo tối đa · màn hình đen") { [weak self] _ in self?.showBlackout() },
