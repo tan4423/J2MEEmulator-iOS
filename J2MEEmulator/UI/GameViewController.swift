@@ -346,6 +346,9 @@ class GameViewController: UIViewController {
     private var previousBrightness: CGFloat?
     private var jarBoxSmartTreo = false
     private var jarBoxSmartStartedAt: TimeInterval?
+    private var jarBoxDeepTreoStart: GenericTreoSnapshot?
+    private var genericTreoComparisonID: UUID?
+    private var genericTreoWork: DispatchWorkItem?
     private var heldDirections: Set<Int32> = []
     private var directionTimers: [Int32: Timer] = [:]
 
@@ -374,7 +377,9 @@ class GameViewController: UIViewController {
         measurementDeadline?.cancel()
         afkMeasure?.cancel()
         jarAuditWork?.cancel()
+        genericTreoWork?.cancel()
         if jarBoxSmartTreo { treo_gc_smart_set(0) }
+        treo_afk_guard_auto_set(0)
     }
 
     private var alertTimeoutWork: DispatchWorkItem?
@@ -907,6 +912,12 @@ class GameViewController: UIViewController {
             UIAction(title: "Treo JarBox · không cần mod JAR (GC thông minh)") { [weak self] _ in
                 self?.showBlackout(smartGC: true)
             },
+            UIAction(title: "Treo sâu JarBox · giảm vẽ Java (thử nghiệm)") { [weak self] _ in
+                self?.confirmGenericDeepTreo()
+            },
+            UIAction(title: "So CPU Treo thường/sâu · 1 phút") { [weak self] _ in
+                self?.startGenericTreoComparison()
+            },
             UIAction(title: "Treo tối đa · màn hình đen") { [weak self] _ in self?.showBlackout() },
             UIAction(title: "Treo · vẽ SIMD ngầm (thử nghiệm)") { [weak self] _ in self?.showBlackout(mode: 5) },
             UIAction(title: "So CPU treo · Canvas nhanh",
@@ -1184,7 +1195,146 @@ class GameViewController: UIViewController {
         if let blackout { view.bringSubviewToFront(blackout) }
     }
 
-    private func showBlackout(mode: Int32 = 1, smartGC: Bool = false) {
+    // This user-facing mode preserves all Java paint() callbacks, but skips
+    // compatible raster calls inside those callbacks when output is invisible.
+    // Some games depend on the pixels, so this mode remains explicitly opt-in.
+    private func confirmGenericDeepTreo() {
+        guard blackout == nil, jarAuditID == nil else { return }
+        let alert = UIAlertController(
+            title: "Treo sâu của JarBox · thử nghiệm",
+            message: "Không cần sửa JAR. Java paint() và vòng game vẫn được gọi, nhưng JarBox thử bỏ các lệnh vẽ Canvas khi màn hình bị che. GameCanvas, đường vẽ trực tiếp và thao tác phụ thuộc pixel được giữ hoặc tự quay về chế độ tương thích khi phát hiện. Tuy nhiên không thể đảm bảo mọi game đều an toàn: hãy thử ngắn và kiểm tra mạng, auto, nhiệm vụ sau khi thoát treo.",
+            preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "Hủy", style: .cancel))
+        alert.addAction(UIAlertAction(title: "Bật Treo sâu", style: .default) { [weak self] _ in
+            self?.showBlackout(mode: 8, smartGC: true, deepPaint: true)
+        })
+        present(alert, animated: true)
+    }
+
+    // Snapshot uses only monotonic counters and CPU clocks; no new pthread.
+    private struct GenericTreoSnapshot {
+        let cpu = AfkSample()
+        let guarded = treo_afk_guarded_paints()
+        let real = treo_afk_guarded_real()
+        let late = treo_afk_guarded_late()
+        let nativeSkipped = treo_afk_skipped_draws()
+        let javaElided = treo_afk_elided_calls()
+        let submitted = treo_afk_layer_frames()
+    }
+    private struct GenericTreoLeg {
+        let total: Double?
+        let main: Double?
+        let paint: Double
+        let paintHz: Double
+        let guarded: UInt64
+        let real: UInt64
+        let late: UInt64
+        let nativeSkipped: UInt64
+        let javaElided: UInt64
+        let frames: UInt64
+        let fellBack: Bool
+        let duration: Double
+    }
+
+    // Compare existing compatible presentation skip (mode 1) with guarded
+    // Java raster skip (mode 8), all with adaptive GC enabled and no JAR mods.
+    private func startGenericTreoComparison() {
+        guard blackout == nil, jarAuditID == nil, powerRun == nil else { return }
+        showBlackout(mode: 1, smartGC: true)
+        guard blackout != nil else { return }
+        let id = UUID()
+        genericTreoComparisonID = id
+        runGenericTreoComparisonLeg(id: id, leg: 0, results: [])
+    }
+
+    private func runGenericTreoComparisonLeg(id: UUID, leg: Int,
+                                               results: [GenericTreoLeg]) {
+        guard genericTreoComparisonID == id, blackout != nil else { return }
+        let deep = leg == 1
+        treo_afk_guard_auto_set(deep ? 1 : 0)
+        treo_render_set_afk_mode(deep ? 8 : 1)
+        blackout?.setTitle("So Treo JarBox \(leg + 1)/3 · \(deep ? "vẽ Java thưa" : "tương thích") · chạm hủy",
+                          for: .normal)
+        let settle = DispatchWorkItem { [weak self] in
+            guard let self, self.genericTreoComparisonID == id, self.blackout != nil else { return }
+            let start = GenericTreoSnapshot()
+            let measure = DispatchWorkItem { [weak self] in
+                guard let self, self.genericTreoComparisonID == id, self.blackout != nil else { return }
+                let end = GenericTreoSnapshot()
+                let dt = max(0.001, end.cpu.time - start.cpu.time)
+                let main: Double? = start.cpu.mainCPU >= 0 && end.cpu.mainCPU >= start.cpu.mainCPU
+                    ? 100 * (end.cpu.mainCPU - start.cpu.mainCPU) / dt : nil
+                let result = GenericTreoLeg(
+                    total: end.cpu.cpuPercent(since: start.cpu),
+                    main: main,
+                    paint: Double(end.cpu.paintNS &- start.cpu.paintNS) / dt / 10_000_000,
+                    paintHz: Double(end.cpu.paints &- start.cpu.paints) / dt,
+                    guarded: end.guarded &- start.guarded,
+                    real: end.real &- start.real,
+                    late: end.late &- start.late,
+                    nativeSkipped: end.nativeSkipped &- start.nativeSkipped,
+                    javaElided: end.javaElided &- start.javaElided,
+                    frames: end.submitted &- start.submitted,
+                    fellBack: deep && treo_afk_guard_auto_fell_back() != 0,
+                    duration: dt)
+                let all = results + [result]
+                if leg < 2 {
+                    self.runGenericTreoComparisonLeg(id: id, leg: leg + 1, results: all)
+                    return
+                }
+                self.genericTreoComparisonID = nil
+                self.genericTreoWork = nil
+                treo_afk_guard_auto_set(0)
+                treo_render_set_afk_mode(1)
+                let a = all[0], b = all[1], c = all[2]
+                func number(_ x: Double?) -> String {
+                    x.map { String(format: "%.1f", $0) } ?? "?"
+                }
+                var lines = [
+                    "JAR: \(URL(fileURLWithPath: self.jarPath).lastPathComponent)",
+                    "A1 tương thích → B bỏ raster có bảo vệ → A2 tương thích; 20 giây/lượt, 2 giây ổn định/lượt. Cả 3: màn đen, độ sáng 0, GC thích ứng, JIT giữ nguyên.",
+                ]
+                for (i, x) in all.enumerated() {
+                    lines.append(String(format:
+                        "%@: tổng %@%% · main %@%% · paint %.1f%% (%.2f/s) · bỏ raster %llu · vẽ thật %llu · lệnh native bỏ %llu · Java bỏ %llu · lên layer %llu",
+                        ["A1", "B", "A2"][i], number(x.total), number(x.main),
+                        x.paint, x.paintHz, x.guarded, x.real, x.nativeSkipped,
+                        x.javaElided, x.frames))
+                }
+                if let x = a.total, let y = b.total, let z = c.total {
+                    lines.append(String(format:
+                        "B − trung bình A1/A2: tổng %+.1f điểm CPU · main %+.1f điểm CPU · paint %+.1f điểm.",
+                        y - (x + z) / 2,
+                        (b.main ?? 0) - ((a.main ?? 0) + (c.main ?? 0))/2,
+                        b.paint - (a.paint + c.paint)/2))
+                    if abs(x - z) > 3 {
+                        lines.append("KHÔNG KẾT LUẬN: CPU tổng A1/A2 trôi >3 điểm.")
+                    }
+                }
+                if b.fellBack || b.late > 0 {
+                    lines.append("KHÔNG HỢP LỆ: phát hiện Canvas phụ thuộc pixel; đã tự lui về Treo tương thích.")
+                }
+                let baseHz = (a.paintHz + c.paintHz) / 2
+                if baseHz < 1 || abs(b.paintHz - baseHz) > max(1, baseHz * 0.1) {
+                    lines.append("KHÔNG KẾT LUẬN: tần suất paint không tương đương hoặc quá ít.")
+                }
+                if b.guarded == 0 {
+                    lines.append("Không bỏ được raster: có thể JAR dùng GameCanvas, direct buffer hoặc phụ thuộc pixel.")
+                }
+                lines.append("Không đo watt/lõi CPU hay tick game dùng chung. CPU giảm chỉ là ứng viên; phải kiểm tra auto, mạng và trạng thái game sau khi thoát.")
+                self.lastMeasurement = ("So CPU Treo JarBox · A/B/A", lines.joined(separator: "\n\n"))
+                self.afkComparisonDone = true
+                self.blackout?.setTitle("Đo xong · chạm để xem kết quả", for: .normal)
+            }
+            self.genericTreoWork = measure
+            DispatchQueue.main.asyncAfter(deadline: .now() + 20, execute: measure)
+        }
+        genericTreoWork = settle
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2, execute: settle)
+    }
+
+    private func showBlackout(mode: Int32 = 1, smartGC: Bool = false,
+                              deepPaint: Bool = false) {
         guard blackout == nil, jarAuditID == nil else { return }
         discardCPUProfile()
         for code in Array(heldDirections) { releaseDirection(code) }
@@ -1206,6 +1356,10 @@ class GameViewController: UIViewController {
         ])
         blackout = cover
         treo_render_set_afk_mode(mode)
+        if deepPaint {
+            treo_afk_guard_auto_set(1)
+            jarBoxDeepTreoStart = GenericTreoSnapshot()
+        }
         jarBoxSmartTreo = smartGC
         if smartGC {
             jarBoxSmartStartedAt = ProcessInfo.processInfo.systemUptime
@@ -1222,6 +1376,9 @@ class GameViewController: UIViewController {
     @objc private func hideBlackout() {
         guard blackout != nil else { return }
         afkMeasure?.cancel()
+        genericTreoWork?.cancel()
+        genericTreoWork = nil
+        genericTreoComparisonID = nil
         treo_afk_main_trace_cancel()
         if guardedBlackout {
             treo_afk_wakes_set(0)
@@ -1233,6 +1390,17 @@ class GameViewController: UIViewController {
         restoreAfkJIT()
         let showComparison = afkComparisonDone
         afkComparisonDone = false
+        let deepEnd = jarBoxDeepTreoStart.map { start -> String in
+            let end = GenericTreoSnapshot()
+            let skipped = end.guarded &- start.guarded
+            let real = end.real &- start.real
+            let late = end.late &- start.late
+            let fallback = treo_afk_guard_auto_fell_back() != 0
+            return "\nCanvas bỏ raster \(skipped) lượt; giữ vẽ \(real) lượt; pixel muộn \(late). " +
+                (fallback ? "Đã tự lui về Treo tương thích." : "Không phát hiện fallback.")
+        } ?? ""
+        treo_afk_guard_auto_set(0)
+        jarBoxDeepTreoStart = nil
         j2me_render_set_afk_suspended(0)
         if jarBoxSmartTreo {
             let elapsed = max(0.001, ProcessInfo.processInfo.systemUptime - (jarBoxSmartStartedAt ?? ProcessInfo.processInfo.systemUptime))
@@ -1243,10 +1411,12 @@ class GameViewController: UIViewController {
             treo_gc_smart_set(0)
             jarBoxSmartTreo = false
             jarBoxSmartStartedAt = nil
-            lastMeasurement = ("Treo JarBox · GC thông minh",
-                String(format: "Thời gian treo %.1f giây. GC thật %llu chu kỳ; CPU GC %.2f ms/s; heap peak %.1f MiB (Java + native theo bộ đếm GC). %@. Chế độ 500ms được khôi phục. Phép đo này không có watt, không xác nhận toàn bộ logic game vẫn chạy nếu game tự phụ thuộc vào hiển thị.",
-                    elapsed, gcCount, gcCpu / elapsed, peak,
-                    fallback ? "GC đã tự trở về 500ms vì áp lực bộ nhớ" : "Không có cảnh báo GC fallback"))
+            if !showComparison {
+                lastMeasurement = (deepEnd.isEmpty ? "Treo JarBox · GC thông minh" : "Treo sâu JarBox · GC & Raster",
+                    String(format: "Thời gian treo %.1f giây. GC thật %llu chu kỳ; CPU GC %.2f ms/s; heap peak %.1f MiB (Java + native theo bộ đếm GC). %@. Chế độ 500ms được khôi phục. Không đo watt, không xác nhận logic game vẫn chạy nếu game phụ thuộc hiển thị.",
+                        elapsed, gcCount, gcCpu / elapsed, peak,
+                        fallback ? "GC đã tự trở về 500ms vì áp lực bộ nhớ" : "Không có cảnh báo GC fallback") + deepEnd)
+            }
         }
         NotificationCenter.default.removeObserver(self, name: UIApplication.willResignActiveNotification, object: nil)
         if let screen = blackoutScreen, let brightness = previousBrightness, screen.brightness == 0 {
