@@ -72,3 +72,19 @@ Interpretation:
 - **Next valid comparison:** build this same source with `JARBOX_VM_SWITCH_BASELINE=1`, verify `dispatch=switch` and `switch_methods~ > 0`, then compare with `pymobiledevice3` plus the same JarBox VM fields for a similar duration, location and operating conditions. Confirm paint rate, GC count, layer frames, fallback, auto, network and visual restoration.
 
 This observation came from the device owner and is preserved verbatim in substance; it was not independently re-measured by this development session. No new code change was made in recording it.
+
+
+## Paint bridge (mode 8) — second, independent optimization candidate
+
+**Source change:** retain the JAR's Java `Canvas.paint()` callbacks (state, game logic, timers, input/network remain under normal VM semantics); for a verified bundled `javax.microedition.lcdui.Graphics` instance drawing into an actual headless Canvas, the VM can omit only draw-wrapper methods whose bodies are guaranteed to return without doing work while headless. This reuses the preexisting mode-4 method whitelist and `treo_afk_elide_graphics` checks (exact class, layout, Canvas native-context pointer, thread-local active Canvas, headless field, Java method signature and ABI marker). Mode 8 now uses the same narrow bridge. **Graphics state-mutating methods, getters, pixel-dependent paths, offscreen Image graphics, unknown implementations, Java game methods, and all other calls are preserved.**
+
+**Matched candidate vs baseline from the same HEAD, still with `computed-goto`:**
+- Default: `JARBOX_VM_PAINT_BRIDGE_BASELINE` unset/0; Codemagic build log: `paint_bridge=on`; device VM log: `paint_bridge=on`, `bridge_elided_draw_calls` should increase when the Canvas has verified draws.
+- Baseline: `JARBOX_VM_PAINT_BRIDGE_BASELINE=1`; Codemagic build log: `paint_bridge=off`; device log: `paint_bridge=off`, `bridge_elided_draw_calls=0` for mode 8. Mode 4's experimental behavior is intentionally unchanged in both builds.
+- Keep `JARBOX_VM_SWITCH_BASELINE` unset/0 for both paint-bridge builds: changing dispatcher as well would confound the result.
+- Device log also reports `paint_CPU` **ms/s of paint callback CPU time**, app CPU %, iOS main CPU %, paint/s, native layer frames, GC cycles, monitor contention, and approximate interpreted-method counts. The VM does **not** add an individual clock read for each elided draw; it aggregates counters once the paint exits.
+- Accept only a stable app CPU/pymobiledevice3 benefit under similar workload, with comparable paint/s and JAR logic/auto/network correctness plus correct screen restoration. If `bridge_elided_draw_calls=0`, the optimization never activated. If it activates but CPU does not improve or compatibility regresses, keep the verified interpreter path and disable/rollback the new bridge.
+
+Important limitation: **no generic emulator can prove that arbitrary game code inside `paint()` is pure drawing**. This implementation never skips the game's paint callback or its helper methods. A later interprocedural purity verifier could skip *proven* graphics-only helper subtrees, but would require proof and fallback rather than heuristics. Treo is not allowed to break networking or game state merely because pixels are hidden.
+
+**Verification status:** source and cross-file instrumentation reviewed. Xcode build and iPhone A/B are pending; do not claim power or thermal savings.

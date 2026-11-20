@@ -85,13 +85,23 @@ workflows:
           else
             echo "[JarBoxVM][BUILD] dispatch=computed-goto (candidate)"
           fi
+          # Separate paint-bridge A/B from interpreter dispatch A/B.
+          # Same mode 8 Canvas code; only the verified headless draw-call
+          # elision differs. Leave unset for the paint-bridge candidate.
+          vm_paint_bridge_flag=""
+          if [[ "${JARBOX_VM_PAINT_BRIDGE_BASELINE:-0}" == "1" ]]; then
+            vm_paint_bridge_flag="-DTREO_VM_PAINT_BRIDGE_DISABLED=1"
+            echo "[JarBoxVM][BUILD] paint_bridge=off (matched baseline)"
+          else
+            echo "[JarBoxVM][BUILD] paint_bridge=on (candidate)"
+          fi
           xcodebuild -list -project "$J2ME_PROJECT"
           xcodebuild -project "$J2ME_PROJECT" \
             -scheme J2MEEmulator -configuration Release \
             -sdk iphoneos -destination 'generic/platform=iOS' \
             -derivedDataPath "$RUNNER_TEMP/jarbox-build" \
             "OTHER_LDFLAGS=\$(inherited) $RUNNER_TEMP/J2METreo.o $RUNNER_TEMP/TreoSLJIT.o $RUNNER_TEMP/TreoJITProbe.o -framework UIKit -framework Foundation -framework Metal" \
-            "TREO_GAME_JIT_CFLAGS=-DTREO_IOS_GAME_JIT=1 -I$sljit $vm_dispatch_flag" \
+            "TREO_GAME_JIT_CFLAGS=-DTREO_IOS_GAME_JIT=1 -I$sljit $vm_dispatch_flag $vm_paint_bridge_flag" \
             PRODUCT_BUNDLE_IDENTIFIER=app.j2metreo.personal \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build
           

@@ -49,6 +49,16 @@ uint64_t treo_vm_switch_method_calls(void) { return 0; }
 #endif
 int treo_vm_direct_dispatch_build(void) { return TREO_VM_DIRECT_DISPATCH; }
 
+// "Paint bridge": preserve the JAR's Canvas.paint() Java logic but skip a
+// verified bundled Graphics draw wrapper when its Canvas target is headless.
+// This build flag produces a matched baseline without changing the renderer.
+#if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__ && !defined(TREO_VM_PAINT_BRIDGE_DISABLED)
+#define TREO_VM_PAINT_BRIDGE 1
+#else
+#define TREO_VM_PAINT_BRIDGE 0
+#endif
+int treo_vm_paint_bridge_build(void) { return TREO_VM_PAINT_BRIDGE; }
+
 
 #if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__
 extern _Atomic int treo_afk_mode;
@@ -652,9 +662,15 @@ static inline s32 _optimize_inline_setter(JClass *clazz, s32 cfrIdx, Runtime *ru
 
 s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
 #if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__
-    // Elide only a resolved call whose actual Java body would immediately return.
-    // Arguments were already evaluated; leave the caller's stack in the void-return state.
-    if (atomic_load_explicit(&treo_afk_mode, memory_order_relaxed) == 4 &&
+    // Retain game logic inside paint(). For a headless *Canvas* Graphics,
+    // certain bundled draw wrappers are already a no-op. Skip only those
+    // resolved void calls at the VM boundary, preserving evaluation of args.
+    // Existing mode 4 behavior remains; mode 8 uses the guarded raster policy.
+    // Offscreen Image graphics, setters/getters, pixel reads, synchronized,
+    // native, unfamiliar ABIs and other methods always run normally.
+    const int treo_paint_mode = atomic_load_explicit(&treo_afk_mode, memory_order_relaxed);
+    if ((treo_paint_mode == 4 ||
+         (TREO_VM_PAINT_BRIDGE && treo_paint_mode == 8)) &&
         method->para_slots >= 4 && method->return_slots == 0 &&
         !method->is_static && !method->is_sync && !method->is_native &&
         method->_this_class->status >= CLASS_STATUS_CLINITED &&

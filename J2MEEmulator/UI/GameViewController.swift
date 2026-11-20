@@ -1429,6 +1429,8 @@ class GameViewController: UIViewController {
         let fallback = treo_vm_switch_method_calls()
         let contended = treo_vm_monitor_contentions()
         let retries = treo_vm_monitor_retries()
+        let elidedDraws = treo_afk_elided_calls()
+        let paintCPU = treo_afk_paint_cpu_ns()
         let paints = treo_afk_paint_count()
         let layerFrames = treo_afk_layer_frames()
         let gcCycles = treo_gc_smart_count()
@@ -1490,12 +1492,16 @@ class GameViewController: UIViewController {
             let monitors = end.contended &- start.contended
             let retries = end.retries &- start.retries
             let backend = treo_vm_direct_dispatch_build() != 0 ? "computed-goto" : "switch"
+            let bridge = treo_vm_paint_bridge_build() != 0 ? "on" : "off"
             let paintsHz = Double(end.paints &- start.paints) / dt
             let frames = end.layerFrames &- start.layerFrames
             let gc = end.gcCycles &- start.gcCycles
+            let elided = end.elidedDraws &- start.elidedDraws
+            let paintCPUmsPerSecond = Double(end.paintCPU &- start.paintCPU) / dt / 1_000_000
             return String(format:
-                "[JarBoxVM][Treo] %.1fs · dispatch=%@ · direct_methods~%llu · switch_methods~%llu · monitor_contended=%llu · monitor_failed_acquires=%llu · app_CPU=%@%% · main_CPU=%@%% · paint=%.2f/s · layer_frames=%llu · smart_GC=%llu. Counts batched/64; paint is not game ticks; CPU is not watts.",
-                dt, backend, direct, fallback, monitors, retries,
+                "[JarBoxVM][Treo] %.1fs · dispatch=%@ · paint_bridge=%@ · bridge_elided_draw_calls=%llu · paint_CPU=%.2fms/s · direct_methods~%llu · switch_methods~%llu · monitor_contended=%llu · monitor_failed_acquires=%llu · app_CPU=%@%% · main_CPU=%@%% · paint=%.2f/s · layer_frames=%llu · smart_GC=%llu. Counts batched/64; paint is not game ticks; CPU is not watts.",
+                dt, backend, bridge, elided, paintCPUmsPerSecond,
+                direct, fallback, monitors, retries,
                 percent(start.appCPU, end.appCPU), percent(start.mainCPU, end.mainCPU),
                 paintsHz, frames, gc)
         }

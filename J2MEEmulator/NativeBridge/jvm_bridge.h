@@ -42,6 +42,7 @@ int jvm_bridge_is_stop_requested(void);
 // Passive verification for code-signed interpreter fast dispatch.
 // Counts of interpreted Java method invocations are batched in groups of 64.
 int treo_vm_direct_dispatch_build(void);
+int treo_vm_paint_bridge_build(void);
 uint64_t treo_vm_fast_method_calls(void);
 uint64_t treo_vm_switch_method_calls(void);
 uint64_t treo_vm_monitor_contentions(void);
