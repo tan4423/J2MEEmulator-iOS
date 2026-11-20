@@ -16,6 +16,9 @@ final class AnimatedBackgroundView: UIView {
     private var animationAllowed = true
     private var initialLayoutDone = false
     private var completedLoops: UInt64 = 0
+    // Invalidates queued UIView completion closures across rapid game
+    // open/close and app background/foreground transitions.
+    private var animationGeneration: UInt64 = 0
 
     // The springboard is occluded while a fullscreen game runs. These
     // main-actor values make it possible to verify whether its animation
@@ -46,6 +49,7 @@ final class AnimatedBackgroundView: UIView {
             // synchronously when animations are removed.
             animationAllowed = false
             animating = false
+            animationGeneration &+= 1
             let count = activeAnimationLayers
             Self.springboardPauseLayers = count
             Self.springboardAnimating = false
@@ -61,8 +65,9 @@ final class AnimatedBackgroundView: UIView {
     private func startAnimationsIfNeeded() {
         guard animationAllowed, initialLayoutDone, !animating, window != nil else { return }
         animating = true
+        animationGeneration &+= 1
         Self.springboardAnimating = true
-        startAnimations()
+        startAnimations(generation: animationGeneration)
     }
 
     private static let colors: [UIColor] = [
@@ -120,14 +125,16 @@ final class AnimatedBackgroundView: UIView {
         startAnimationsIfNeeded()
     }
 
-    private func startAnimations() {
+    private func startAnimations(generation: UInt64) {
         for (i, circle) in circleViews.enumerated() {
             let delay = Double(i) * 1.5
-            animateCircle(circle, delay: delay)
+            animateCircle(circle, delay: delay, generation: generation)
         }
     }
 
-    private func animateCircle(_ circle: UIView, delay: TimeInterval) {
+    private func animateCircle(_ circle: UIView, delay: TimeInterval,
+                               generation: UInt64) {
+        guard animating, animationAllowed, generation == animationGeneration else { return }
         let duration = Double.random(in: 10...16)
         let newSize = randomSize()
 
@@ -136,17 +143,20 @@ final class AnimatedBackgroundView: UIView {
             delay: delay,
             options: [.curveEaseInOut, .allowUserInteraction],
             animations: { [weak self] in
-                guard let self else { return }
+                guard let self, self.animating, self.animationAllowed,
+                      generation == self.animationGeneration else { return }
                 let x = CGFloat.random(in: -newSize/2 ... self.bounds.width - newSize/2)
                 let y = CGFloat.random(in: -newSize/2 ... self.bounds.height - newSize/2)
                 circle.frame = CGRect(x: x, y: y, width: newSize, height: newSize)
                 circle.layer.cornerRadius = newSize / 2
             },
             completion: { [weak self, weak circle] finished in
-                guard let self, self.animating, finished, let circle else { return }
+                guard let self, let circle, finished,
+                      self.animating, self.animationAllowed,
+                      generation == self.animationGeneration else { return }
                 self.completedLoops &+= 1
                 Self.springboardAnimationLoops &+= 1
-                self.animateCircle(circle, delay: 0)
+                self.animateCircle(circle, delay: 0, generation: generation)
             }
         )
     }

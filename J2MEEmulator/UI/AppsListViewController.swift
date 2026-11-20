@@ -17,6 +17,14 @@ class AppsListViewController: UIViewController,
     private let emptyStateLabel = UILabel()
     private var lastLayoutWidth: CGFloat = 0
     private weak var animatedBackground: AnimatedBackgroundView?
+    private var springboardVisible = false
+
+    // SceneDelegate controls activity explicitly. A covered or inactive
+    // springboard is never allowed to schedule perpetual animations.
+    func sceneActivityChanged(_ active: Bool) {
+        guard springboardVisible else { return }
+        setSpringboardMotion(active, reason: active ? "scene active" : "scene inactive")
+    }
 
     // A fullscreen game hides the springboard. Do not continue animating
     // the six blurred blobs behind it. The build flag provides an exact
@@ -107,13 +115,18 @@ class AppsListViewController: UIViewController,
 
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
-        setSpringboardMotion(true, reason: "springboard became visible")
+        springboardVisible = true
+        let sceneActive = view.window?.windowScene?.activationState == .foregroundActive
+        setSpringboardMotion(sceneActive, reason: sceneActive
+                             ? "springboard visible and scene active"
+                             : "springboard visible, waiting for active scene")
         NotificationCenter.default.addObserver(self, selector: #selector(appDidBecomeActive),
                                                name: UIApplication.didBecomeActiveNotification, object: nil)
     }
 
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
+        springboardVisible = false
         setSpringboardMotion(false, reason: "springboard disappearing")
     }
 
