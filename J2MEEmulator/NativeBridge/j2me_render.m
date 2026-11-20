@@ -203,6 +203,9 @@ static atomic_bool g_afk_needs_redraw;
 static _Atomic uint64_t g_afk_skipped_draws, g_afk_skipped_paints;
 static _Atomic uint64_t g_afk_paint_count, g_afk_paint_cpu_ns;
 
+// Defined with the JAR audit controls later in this file.
+int treo_jar_audit_enabled(void);
+
 // Diagnostic sparse Java paint: only enabled inside its dedicated audit.
 // The Display thread polls this at its EXISTING 16ms cadence. Never spawn
 // a display timer, touch the game loop or submit a native frame.
