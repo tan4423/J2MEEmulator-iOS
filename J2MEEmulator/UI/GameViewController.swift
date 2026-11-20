@@ -1562,6 +1562,18 @@ class GameViewController: UIViewController {
             summary = "B − trung bình A1/A2: \(delta(a.total, b.total, c.total)) điểm tổng; "
                 + "\(delta(a.main, b.main, c.main)) điểm main; \(delta(a.paint, b.paint, c.paint)) điểm trong paint; "
                 + "\(delta(a.ticks, b.ticks, c.ticks)) vòng/s.\nĐối chiếu B với từng mốc A bên dưới.\n\n"
+            if windowAudit {
+                let expectedTicks = (a.ticks + c.ticks) / 2
+                if abs(b.ticks - expectedTicks) > 0.5 || abs(a.ticks - c.ticks) > 0.5 {
+                    summary += "KHÔNG KẾT LUẬN: nhịp game lệch quá 0,5 vòng/s giữa các lượt.\n\n"
+                }
+                let threeCommits = results.compactMap(\.commit)
+                if threeCommits.count == 3 {
+                    summary += String(format: "Mốc UIKit: A1 %.2f · B %.2f · A2 %.2f cặp/s; CPU %.1f · %.1f · %.1f ms/s.\n\n",
+                        threeCommits[0].pairsPerSecond, threeCommits[1].pairsPerSecond, threeCommits[2].pairsPerSecond,
+                        threeCommits[0].millisecondsPerSecond, threeCommits[1].millisecondsPerSecond, threeCommits[2].millisecondsPerSecond)
+                }
+            }
         }
         if budgetMain {
             if results.count == 3, let a = results[0].budget, let b = results[1].budget, let c = results[2].budget {
