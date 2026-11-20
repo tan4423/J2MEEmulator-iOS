@@ -870,7 +870,7 @@ class GameViewController: UIViewController {
             UIAction(title: "Thử tháo giao diện game · JAR") { [weak self] _ in
                 self?.confirmJarAudit(budgetMain: true, detachUI: true)
             },
-            UIAction(title: "Đo hao pin & nhiệt · JAR 20 phút/lượt") { [weak self] _ in
+            UIAction(title: "Đo nhanh CPU, pin & nhiệt · 6 phút") { [weak self] _ in
                 self?.confirmJarAudit(energyAudit: true)
             },
             UIAction(title: "Thử paint thưa 1/3 Hz · JAR") { [weak self] _ in
@@ -1381,7 +1381,7 @@ class GameViewController: UIViewController {
                 (compareLoad ? "Thử chờ thụ động · CPU main" :
                  (profileMain ? "Tìm hàm ăn CPU main" : "Chẩn đoán CPU JAR")),
             message: energyAudit
-                ? "Map 37, auto x1, bắt đầu với Treo trong JAR đang TẮT. Đo A1 TẮT → B BẬT → A2 TẮT, 20 phút/lượt; tự nhắc bạn đổi trạng thái giữa các lượt. GIỮ iPhone trên pin (không sạc), cùng độ sáng cố định, không đổi mạng, không khóa màn hình, không kéo Trung tâm thông báo. Không chặn khung native: A1/A2 là game hiển thị bình thường, B là treo JAR thực tế; tắt JIT suốt bài. Ghi CPU time từ getrusage, pin, nhiệt hệ thống, độ sáng, tick và benchmark. Mức pin là ước lượng thô, không đo watt hay nhiệt độ °C. Có Hủy và tự hoàn nguyên cài đặt."
+                ? "Map 37, auto x1, bắt đầu với Treo trong JAR đang TẮT. Đo A1 TẮT → B BẬT → A2 TẮT, chỉ 2 phút/lượt (6 phút tổng); tự nhắc bạn đổi trạng thái giữa các lượt. GIỮ iPhone trên pin (không sạc), cùng độ sáng cố định, không đổi mạng, không khóa màn hình, không kéo Trung tâm thông báo. Không chặn khung native: A1/A2 là game hiển thị bình thường, B là treo JAR thực tế; tắt JIT suốt bài. Ghi CPU time từ getrusage, pin, nhiệt hệ thống, độ sáng, tick và benchmark. Vì mỗi lượt chỉ 2 phút, biến động pin 0–1% KHÔNG đủ kết luận mức hao pin; ưu tiên CPU time và benchmark. Không đo watt hay nhiệt độ °C. Có Hủy và tự hoàn nguyên cài đặt."
                 : sparsePaintAudit
                 ? "Map 37, auto x1, BẬT Treo tối ưu CPU trong JAR trước. Không bật màn đen JarBox. 4 lượt × 30 giây: A1 không paint → B ép paint thật 1 lần/giây → C 3 lần/giây → A2 không paint; tự chuyển, không cần chạm. Khung game vẫn bị chặn native. Đo CPU tổng/main, tốc độ phép tính cố định, tick và số paint thực. CẢNH BÁO: paint của JAR có thể chứa logic, chỉ dùng để chẩn đoán. Có Hủy; tự tắt ép paint sau thử."
                 : uikitPhases
@@ -1555,7 +1555,7 @@ class GameViewController: UIViewController {
 
     private func scheduleJarEnergySample(id: UUID, leg: Int, remaining: Int) {
         guard remaining > 0 else { return }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 60) { [weak self] in
+        DispatchQueue.main.asyncAfter(deadline: .now() + 30) { [weak self] in
             guard let self, self.jarAuditID == id, self.jarEnergyAudit,
                   self.jarEnergyLeg == leg else { return }
             self.jarEnergySamples.append(JarPowerSnapshot())
@@ -1565,7 +1565,7 @@ class GameViewController: UIViewController {
 
     private func scheduleJarMainBench(id: UUID, leg: Int, left: Int) {
         guard left > 0 else { return }
-        let interval = jarEnergyAudit ? 90.0 : 2.0
+        let interval = jarEnergyAudit ? 7.0 : 2.0
         DispatchQueue.main.asyncAfter(deadline: .now() + interval) { [weak self] in
             guard let self, self.jarAuditID == id,
                   (self.jarUIKitPhaseAudit || self.jarSparsePaintAudit || self.jarEnergyAudit),
@@ -1667,7 +1667,7 @@ class GameViewController: UIViewController {
             if self.jarEnergyAudit {
                 self.jarEnergyLeg = leg
                 self.jarEnergySamples.removeAll()
-                self.scheduleJarEnergySample(id: id, leg: leg, remaining: 18)
+                self.scheduleJarEnergySample(id: id, leg: leg, remaining: 3)
             }
             if self.jarUIKitPhaseAudit || self.jarSparsePaintAudit || self.jarEnergyAudit {
                 self.jarMainBenchLeg = leg
@@ -1688,7 +1688,7 @@ class GameViewController: UIViewController {
             }
             if sourceProfile { treo_afk_main_source_trace_begin() }
             else if profileMain { treo_afk_main_stack_begin() }
-            self.scheduleJarAudit(id: id, after: self.jarEnergyAudit ? 1200 : (profileMain && !sourceProfile ? 20 : ((self.jarMainQoSAudit || self.jarDisplayWaitAudit || self.jarUIKitPhaseAudit || self.jarSparsePaintAudit) ? 30 : (self.jarWindowAudit ? 25 : (self.jarWorkerComparison ? 30 : (self.jarLoadComparison ? 25 : 60))))) { [weak self] in
+            self.scheduleJarAudit(id: id, after: self.jarEnergyAudit ? 120 : (profileMain && !sourceProfile ? 20 : ((self.jarMainQoSAudit || self.jarDisplayWaitAudit || self.jarUIKitPhaseAudit || self.jarSparsePaintAudit) ? 30 : (self.jarWindowAudit ? 25 : (self.jarWorkerComparison ? 30 : (self.jarLoadComparison ? 25 : 60))))) { [weak self] in
                 guard let self else { return }
                 let end = JarAuditSample()
                 let powerEnd: JarPowerSnapshot? = self.jarEnergyAudit ? JarPowerSnapshot() : nil
@@ -1791,7 +1791,7 @@ class GameViewController: UIViewController {
                         row += String(format: "\nĐộ sáng: %.3f → %.3f · mẫu kiểm tra: %d · Low Power Mode: %@ → %@",
                             startPower.brightness, endPower.brightness, snapshots.count,
                             startPower.lowPower ? "bật" : "tắt", endPower.lowPower ? "bật" : "tắt")
-                        energyStable = snapshots.count >= 15 && snapshots.allSatisfy {
+                        energyStable = snapshots.count >= 3 && snapshots.allSatisfy {
                             $0.unplugged && abs($0.brightness - startPower.brightness) <= 0.02
                             && $0.lowPower == startPower.lowPower
                         }
@@ -2054,7 +2054,7 @@ class GameViewController: UIViewController {
                let z = c.batteryDropPerHour {
                 let reference = (x + z) / 2
                 summary += String(format: "Hao pin ước lượng A1 %.2f · B %.2f · A2 %.2f điểm phần trăm/giờ; B − A = %+.2f điểm/giờ.\n", x, y, z, y - reference)
-                summary += "Pin iOS làm tròn và phản ánh toàn điện thoại (màn hình/mạng/hệ thống), không phải riêng CPU. Chênh nhỏ vài điểm/giờ CHƯA đủ kết luận.\n"
+                summary += "Chỉ đo 2 phút/lượt: pin iOS làm tròn khoảng 1%, nên tốc độ quy đổi theo giờ có thể sai rất lớn. KHÔNG kết luận tiết kiệm năng lượng chỉ từ chênh pin; ưu tiên CPU, tick, tốc độ main và trạng thái nhiệt.\n"
             } else { summary += "Không đọc được mức pin, không kết luận hao năng lượng.\n" }
             if abs(b.ticks - (a.ticks + c.ticks) / 2) > 0.5 ||
                abs(a.ticks - c.ticks) > 0.5 {
@@ -2144,7 +2144,7 @@ class GameViewController: UIViewController {
                 detachUI ? "Thử tháo giao diện game · JAR" :
                 (profileMain ? "Tìm stack sau Source · JAR" : "Đo pha CPU main · JAR")
             let sampling = energyAudit
-                ? "A1 tắt → B bật → A2 tắt, mỗi lượt 20 phút; không chặn khung game nên đo tình huống sử dụng thực tế (A1/A2 hiển thị game, B treo). JIT tắt suốt bài. Theo dõi getrusage CPU time, pin iOS, trạng thái nhiệt, độ sáng, Low Power Mode và tick. Hao pin là ước lượng toàn điện thoại, KHÔNG đo watt, nhiệt độ °C hoặc năng lượng riêng CPU."
+                ? "A1 tắt → B bật → A2 tắt, mỗi lượt 2 phút (6 phút tổng); không chặn khung game nên đo tình huống sử dụng thực tế (A1/A2 hiển thị game, B treo). JIT tắt suốt bài. Theo dõi getrusage CPU time, pin iOS, trạng thái nhiệt, độ sáng, Low Power Mode và tick. Mức pin ngắn hạn chỉ tham khảo, tốc độ %/giờ ngoại suy có sai số rất lớn; KHÔNG đo watt, nhiệt độ °C hoặc năng lượng riêng CPU."
                 : sparseAudit
                 ? "JAR treo BẬT suốt bốn lượt. A1/A2 không ép vẽ, B ép 1Hz, C ép 3Hz từ luồng Display; khung vẫn chặn ở native. Đo CPU tổng, main, nhịp game, paint thật và tốc độ việc cố định trên main. Không thay đổi vòng game, không sử dụng tải giả; paint có thể chứa logic và thử nghiệm tự hoàn nguyên."
                 : phaseAudit
