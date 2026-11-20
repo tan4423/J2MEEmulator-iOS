@@ -26,3 +26,45 @@ Game Treo report `[JarBoxVM][Treo]` includes `springboard_motion`, `springboard_
 **Success condition:** reliably lower app **main-thread CPU** across comparable runs without changing Java paint cadence, GC, game state, UI restoration or auto/network. The main thread previously used ~26.9% and VM paint ~162 ms/s; the main thread is distinct from the VM. A lack of measurable main CPU difference means the animations were not material; keep lifecycle cleanup only as justified by code correctness.
 
 **Status:** source patch staged for on-device verification. No claims of a successful iOS build, battery or CPU improvement.
+
+
+## First real-device result — candidate enabled (user observation)
+
+**Build:** default `springboard-animation=pause-when-hidden`, VM computed-goto and Paint Bridge on. Exact IPA SHA / JAR name / clock times of AFK start/end not provided. **Status: strong corroborating evidence; not yet a same-HEAD animation-on A/B.**
+
+| Metric | Earlier Paint Bridge, springboard not explicitly paused | This candidate |
+| --- | ---: | ---: |
+| Treo duration | 158.7 s | 130.5 s |
+| Process CPU time normalized / wall time | 57.1% | **30.2%** |
+| Main-thread CPU time normalized / wall time | 26.9% | **0.0%** (rounded to 0.1%) |
+| Java `paint()` calls/s | 25.62 | 25.54 |
+| Java `paint()` CPU ms/s | 162.40 | 155.41 |
+| GC CPU ms/s | 12.34 | 11.64 |
+| Smart GC cycles | 91 | 72 |
+| Collector heap peak (Java+GC-counted native) | 22.2 MiB | 16.3 MiB |
+| Guarded Canvas raster skips | 4,065 | 3,333 |
+| Pixel fallback | none | none |
+| VM draw calls elided by Paint Bridge | 3,964,040 | 3,473,836 |
+| Computed-goto interpreted methods (approx.) | 38,437,504 | 34,040,704 |
+| Springboard animation state | not instrumented | `paused` |
+| Active springboard animation layer keys before pause | not instrumented | 18 |
+| Completed animation loops during Treo | not instrumented | 0 |
+
+The numerical difference in **whole-process CPU** is **-26.9 percentage points** (57.1 -> 30.2) and **main CPU** is also **-26.9 points** (26.9 -> 0.0). Meanwhile Java paint rate is similar. This is *consistent* with eliminating a main-thread load source external to the game renderer, but two sessions of different durations without matched conditions cannot establish causation or energy savings. Source-review confirms the main-thread counter comes from `CLOCK_THREAD_CPUTIME_ID`; process CPU comes from `getrusage(RUSAGE_SELF)`.
+
+### Independent pymobiledevice3 attachment
+
+A separate user-supplied text log reports 312 parseable JSON process CPU samples over 164.505 s (one final truncated JSON line). Whole-file arithmetic mean: **31.54%**; median: **35.31%**. These are sampled instantaneous process CPU percentages and **not** aligned exactly to the 130.5-s AFK window. The data show materially different regimes:
+
+- +10–30 s from start: around 39–41% CPU
+- +50–90 s: mostly 18–23% CPU
+- +100–150 s: mostly 35–39% CPU
+
+Thus even after main CPU is eliminated the Java/game workload varies. Memory physFootprint near the end is about **69.3 MiB** (total app footprint), which must not be equated with the **16.3 MiB** GC-counted peak (different definitions).
+
+### Decision / next discriminating verification
+
+1. Keep lifecycle cleanup on the development branch as a quality improvement.
+2. Use **one matched same-HEAD counterfactual**: build with `JARBOX_BG_ANIM_BASELINE=1` (only switch animation lifecycle back); keep `JARBOX_VM_SWITCH_BASELINE=0`, `JARBOX_VM_PAINT_BRIDGE_BASELINE=0`. Compare the **same untouched JAR**, similar game state and brightness, and confirm `springboard_motion=running`, `springboard_loops_during_treo`, `main_CPU`, `app_CPU`, paint/s and `pymobiledevice3`. If the baseline reproduces ~27% main CPU, the source hypothesis becomes strong evidence rather than inference.
+3. If matched CPU improves, then optimize *separately* the remaining Java paint CPU (~155 ms/s) and game loop. Do not skip entire `paint()` or modify JARs: some logic depends on it.
+4. Real game logic, network/auto and visual restoration must be tested; neither paint cadence nor no-fallback counts prove these functions.
