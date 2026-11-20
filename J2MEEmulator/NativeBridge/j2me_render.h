@@ -53,6 +53,8 @@ uint64_t treo_afk_bypassed_paints(void);
 uint64_t treo_afk_elided_calls(void);
 void treo_afk_threads_begin(void);
 double treo_afk_current_thread_cpu(void);
+// Samples brief, identical integer work on main; CPU nanoseconds per iteration.
+double treo_main_fixed_work_ns_per_step(void);
 void treo_afk_main_trace_begin(void);
 void treo_afk_main_stack_begin(void);
 void treo_afk_main_source_trace_begin(void);

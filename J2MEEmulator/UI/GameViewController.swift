@@ -390,6 +390,8 @@ class GameViewController: UIViewController {
     private var jarWorkerComparison = false
     private var jarUIKitPhaseAudit = false
     private var jarUIKitPhaseBudget: JarUIKitPhaseBudget?
+    private var jarMainBenchLeg = -1
+    private var jarMainBenchSamples: [Double] = []
     private var jarMainQoSAudit = false
     private var jarMainQoSRestoreStatus: Int32 = 0
     private var jarDisplayWaitAudit = false
@@ -1364,7 +1366,7 @@ class GameViewController: UIViewController {
                 (compareLoad ? "Thử chờ thụ động · CPU main" :
                  (profileMain ? "Tìm hàm ăn CPU main" : "Chẩn đoán CPU JAR")),
             message: uikitPhases
-                ? "Map 37, auto x1, ban đầu TẮT treo trong JAR. Đo A1 tắt → B bật → A2 tắt, mỗi lượt 30 giây và chuyển theo hướng dẫn trên màn hình. Cả ba lượt cùng chặn khung native, tạm tắt JIT, không thêm tải giả và không sửa QoS. Đo CPU main giữa 7 mốc UIKit để chia thành 6 khoảng, bỏ mốc afterUpdateComplete bị thiếu trên iPhone. Kiểm tra treo đúng trạng thái ngay trong 3 giây đầu mỗi lượt. Chỉ kết luận nếu mốc ghép đủ và game giữ nhịp."
+                ? "Map 37, auto x1, ban đầu TẮT treo trong JAR. Đo A1 tắt → B bật → A2 tắt, mỗi lượt 30 giây và chuyển theo hướng dẫn trên màn hình. Cả ba lượt cùng chặn khung native, tạm tắt JIT, không thêm tải giả và không sửa QoS. Đo 6 khoảng UIKit và 12 lần tính toán cố định rất ngắn trên main mỗi lượt, kiểm tra tốc độ xử lý thay vì cố ép QoS. Kiểm tra treo đúng trạng thái từ 3 giây đầu. Chỉ kết luận nếu mốc ghép đủ và game giữ nhịp."
                 : mainQoSAudit
                 ? "Map 37, auto x1, BẬT treo trong JAR trước. Không bật màn đen JarBox hay kéo Trung tâm thông báo. A1 QoS gốc → B User Initiated → C Utility → A2 QoS gốc, 4 lượt × 30 giây. Không tạo tải giả, chỉ đổi QoS main thread; VM/game giữ nguyên. Đo CPU tổng, main, tick và cập nhật UIKit. Nếu iOS từ chối đổi QoS hoặc game chậm, báo không hợp lệ. Có Hủy và tự khôi phục QoS khi kết thúc."
                 : displayWaitAudit
@@ -1443,6 +1445,8 @@ class GameViewController: UIViewController {
         jarUIKitPhaseBudget?.stop()
         jarUIKitPhaseBudget = nil
         jarUIKitPhaseAudit = false
+        jarMainBenchLeg = -1
+        jarMainBenchSamples.removeAll()
         if jarMainQoSAudit {
             jarMainQoSRestoreStatus = treo_main_qos_finish()
             jarMainQoSAudit = false
@@ -1480,6 +1484,17 @@ class GameViewController: UIViewController {
         DispatchQueue.main.asyncAfter(deadline: .now() + seconds, execute: work)
     }
 
+    private func scheduleJarMainBench(id: UUID, leg: Int, left: Int) {
+        guard left > 0 else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
+            guard let self, self.jarAuditID == id, self.jarUIKitPhaseAudit,
+                  self.jarMainBenchLeg == leg else { return }
+            let time = treo_main_fixed_work_ns_per_step()
+            if time > 0 { self.jarMainBenchSamples.append(time) }
+            self.scheduleJarMainBench(id: id, leg: leg, left: left - 1)
+        }
+    }
+
     private struct JarAuditResult {
         let total: Double?
         let main: Double?
@@ -1488,6 +1503,7 @@ class GameViewController: UIViewController {
         let budget: [Double]?
         let commit: JarCommitBudget.Result?
         let phases: JarUIKitPhaseBudget.Result?
+        let mainBenchNS: Double?
         let loadCPU: Double
         let loadRate: Double
     }
@@ -1558,6 +1574,11 @@ class GameViewController: UIViewController {
             let profileMain = self.jarMainProfile
             let budgetMain = self.jarBudgetAudit
             let sourceProfile = budgetMain && profileMain
+            if self.jarUIKitPhaseAudit {
+                self.jarMainBenchLeg = leg
+                self.jarMainBenchSamples.removeAll()
+                self.scheduleJarMainBench(id: id, leg: leg, left: 12)
+            }
             if budgetMain { JarMainBudget.start(sampleSource: sourceProfile) }
             if self.jarUIKitPhaseAudit, #available(iOS 18.0, *) {
                 let phaseBudget = JarUIKitPhaseBudget()
@@ -1602,6 +1623,13 @@ class GameViewController: UIViewController {
                 self.jarCommitBudget = nil
                 let phases = self.jarUIKitPhaseBudget?.finish(wall: dt)
                 self.jarUIKitPhaseBudget = nil
+                let bench = self.jarMainBenchSamples.sorted()
+                let mainBenchNS: Double? = self.jarUIKitPhaseAudit && bench.count >= 6
+                    ? (bench.count.isMultiple(of: 2)
+                        ? (bench[bench.count / 2 - 1] + bench[bench.count / 2]) / 2
+                        : bench[bench.count / 2])
+                    : nil
+                self.jarMainBenchLeg = -1
                 let ticks = Double(on + off) / dt
                 let frames = end.frames &- start.frames
                 let cpuText = total.map { String(format: "%.1f%%", $0) } ?? "?"
@@ -1661,6 +1689,14 @@ class GameViewController: UIViewController {
                     }
                 }
                 if let commit { row += "\n" + commit.detail }
+                if self.jarUIKitPhaseAudit {
+                    if let mainBenchNS {
+                        row += String(format: "\nViệc cố định main: %.3f ns/phép · %d mẫu (median); chỉ kiểm tra tốc độ tính toán, không đo xung CPU.",
+                                      mainBenchNS, bench.count)
+                    } else {
+                        row += "\nViệc cố định main: KHÔNG ĐỦ MẪU"
+                    }
+                }
                 if let phases {
                     row += "\n" + phases.detail
                     if let main {
@@ -1686,7 +1722,7 @@ class GameViewController: UIViewController {
                     return
                 }
                 let measured = results + [JarAuditResult(total: total, main: main, ticks: ticks, paint: paint,
-                    budget: budget, commit: commit, phases: phases,
+                    budget: budget, commit: commit, phases: phases, mainBenchNS: mainBenchNS,
                     loadCPU: Double(end.loadNS &- start.loadNS) / dt / 10_000_000,
                     loadRate: Double(end.loadCalls &- start.loadCalls) / dt)]
                 if workerCompare && leg == 1 {
@@ -1832,6 +1868,18 @@ class GameViewController: UIViewController {
         }
         if phaseAudit && results.count == 3 {
             let a = results[0], b = results[1], c = results[2]
+            if let x = a.mainBenchNS, let y = b.mainBenchNS, let z = c.mainBenchNS {
+                let baseline = (x + z) / 2
+                summary += String(format: "Tốc độ việc tính toán cố định trên main (ns/phép): A1 %.3f · B %.3f · A2 %.3f; B/A %.2f lần.\n",
+                                  x, y, z, y / max(0.001, baseline))
+                if y > baseline * 1.7 {
+                    summary += "GỢI Ý: cùng một phép tính chạy chậm hơn rõ khi treo JAR bật; kiểm tra hiệu năng lõi/tần số, chưa quy nguyên nhân cho core.\n"
+                } else {
+                    summary += "GỢI Ý: không thấy chậm tương ứng trong phép tính cố định; phần CPU main tăng có thể do công việc/đường xử lý khác.\n"
+                }
+            } else {
+                summary += "KHÔNG ĐỦ MẪU benchmark main để so tốc độ.\n"
+            }
             let baselineTicks = (a.ticks + c.ticks) / 2
             if abs(b.ticks - baselineTicks) > 0.5 || abs(a.ticks - c.ticks) > 0.5 {
                 summary += "KHÔNG KẾT LUẬN: nhịp game thay đổi hơn 0,5 vòng/s.\n"
@@ -1892,7 +1940,7 @@ class GameViewController: UIViewController {
                 detachUI ? "Thử tháo giao diện game · JAR" :
                 (profileMain ? "Tìm stack sau Source · JAR" : "Đo pha CPU main · JAR")
             let sampling = phaseAudit
-                ? "Tắt → bật → tắt Treo tối ưu CPU trong JAR. UIUpdateLink thụ động quan sát 7 mốc, phân chia 6 khoảng. Mốc afterUpdateComplete bị thiếu trên iPhone nên không bắt buộc. Phần CPU main ngoài 6 khoảng được báo riêng; các khoảng không định danh hàm hay framework. Không đổi tốc độ vòng game."
+                ? "Tắt → bật → tắt Treo tối ưu CPU trong JAR. UIUpdateLink thụ động quan sát 7 mốc/6 khoảng. Mỗi lượt thêm 12 mẫu phép tính cố định rất ngắn trên main, đo ns CPU/phép để kiểm tra giả thuyết tốc độ CPU. Không đo xung, không tự nhận diện lõi. Phần CPU ngoài 6 khoảng báo riêng. Không đổi tốc độ vòng game."
                 : qosAudit
                 ? "A1/A2 giữ QoS main ban đầu; B User Initiated; C Utility. Chỉ đổi QoS main (API công khai), không tạo tải giả; đọc lại QoS từng lượt, khôi phục sau bài. QoS không trực tiếp đo tần số CPU."
                 : displayAudit

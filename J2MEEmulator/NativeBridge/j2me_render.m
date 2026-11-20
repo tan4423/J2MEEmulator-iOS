@@ -407,6 +407,25 @@ static uint64_t treo_thread_cpu_ns(void) {
     if (clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts) != 0) return 0;
     return (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
 }
+
+// Diagnostic: fixed instruction/work mix to distinguish slower execution
+// from additional UIKit work. 120k dependent volatile integer operations
+// sampled 12 times per 30-second leg (<1% duty). Never spins continuously.
+static volatile uint64_t treo_main_bench_sink = UINT64_C(0x9e3779b97f4a7c15);
+double treo_main_fixed_work_ns_per_step(void) {
+    if (!pthread_main_np()) return -1;
+    enum { Steps = 120000 };
+    volatile uint64_t value = treo_main_bench_sink;
+    const uint64_t start = treo_thread_cpu_ns();
+    if (!start) return -1;
+    for (unsigned i = 0; i < Steps; ++i) {
+        value = value * UINT64_C(6364136223846793005) + UINT64_C(1442695040888963407);
+    }
+    const uint64_t end = treo_thread_cpu_ns();
+    treo_main_bench_sink = value;
+    if (end <= start) return -1;
+    return (double)(end - start) / (double)Steps;
+}
 // Main-thread-only diagnostic snapshots, taken at leg boundaries, not per frame.
 static NSDictionary<NSNumber *, NSArray<NSNumber *> *> *treo_afk_thread_start;
 static struct rusage treo_afk_rusage_start;
