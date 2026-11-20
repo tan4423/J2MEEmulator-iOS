@@ -246,8 +246,10 @@ const char *treo_vm_paint_sample_report(void) {
         if (used < 0 || (size_t)used >= sizeof(paint_report)) break;
         const PaintGlobal *r = &paint_global[top[k]];
         used += snprintf(paint_report+used, sizeof(paint_report)-(size_t)used,
-            "\n[JarBoxVM][PaintHot] #%d self=%.2fms inclusive=%.2fms calls=%llu %s",
-            k+1, (double)r->self_ns/1000000., (double)r->all_ns/1000000.,
+            "\n[JarBoxVM][PaintHot] #%d self=%.2fms (%.1f%% sampledCPU) inclusive=%.2fms calls=%llu %s",
+            k+1, (double)r->self_ns/1000000.,
+            paint_cpu_ns ? 100.0 * (double)r->self_ns / (double)paint_cpu_ns : 0.0,
+            (double)r->all_ns/1000000.,
             (unsigned long long)r->calls, r->signature);
     }
     pthread_mutex_unlock(&paint_lock);
