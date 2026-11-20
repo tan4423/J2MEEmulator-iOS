@@ -101,6 +101,9 @@ static PaintGlobal paint_global[PAINT_GLOBAL];
 static pthread_mutex_t paint_lock = PTHREAD_MUTEX_INITIALIZER;
 static _Atomic uint64_t paint_epoch = 1, paint_seen;
 static uint64_t paint_samples, paint_cpu_ns, paint_overflow, paint_overflow_ns, paint_depth_errors;
+// Compare measured CPU of selected and ordinary paints without any extra clock.
+static _Atomic uint64_t paint_selected_count, paint_plain_count;
+static _Atomic uint64_t paint_selected_ns, paint_plain_ns;
 static char paint_report[4096];
 
 static inline uint64_t paint_clock_ns(void) {
@@ -118,6 +121,10 @@ void treo_vm_paint_sample_reset(void) {
     atomic_store_explicit(&paint_seen, 0, memory_order_relaxed);
     memset(paint_global, 0, sizeof(paint_global));
     paint_samples = paint_cpu_ns = paint_overflow = paint_overflow_ns = paint_depth_errors = 0;
+    atomic_store_explicit(&paint_selected_count,0,memory_order_relaxed);
+    atomic_store_explicit(&paint_plain_count,0,memory_order_relaxed);
+    atomic_store_explicit(&paint_selected_ns,0,memory_order_relaxed);
+    atomic_store_explicit(&paint_plain_ns,0,memory_order_relaxed);
     pthread_mutex_unlock(&paint_lock);
 }
 void treo_vm_paint_sample_begin(void) {
@@ -175,10 +182,11 @@ static inline void treo_vm_paint_method_exit(MethodInfo *m, int token) {
     }
     t->overflow++; t->overflow_ns += self;
 }
-void treo_vm_paint_sample_end(void) {
+int treo_vm_paint_sample_end(void) {
     PaintThread *t = &paint_tls;
-    if (!t->scope || --t->scope) return;
-    if (!t->sampled) return;
+    if (!t->scope || --t->scope) return -1;
+    const int selected = t->sampled ? 1 : 0;
+    if (!selected) return 0;
     uint64_t now = paint_clock_ns();
     // If a nonlocal VM unwind bypassed any return hook, discard its
     // incomplete frames and expose the error rather than silently attributing
@@ -219,6 +227,12 @@ void treo_vm_paint_sample_end(void) {
         }
     }
     pthread_mutex_unlock(&paint_lock);
+    return selected;
+}
+void treo_vm_paint_sample_note_duration(int sampled, uint64_t ns) {
+    if (sampled < 0) return;
+    atomic_fetch_add_explicit(sampled ? &paint_selected_count : &paint_plain_count, 1, memory_order_relaxed);
+    atomic_fetch_add_explicit(sampled ? &paint_selected_ns : &paint_plain_ns, ns, memory_order_relaxed);
 }
 const char *treo_vm_paint_sample_report(void) {
     pthread_mutex_lock(&paint_lock);
@@ -235,13 +249,20 @@ const char *treo_vm_paint_sample_report(void) {
             }
         }
     }
+    const uint64_t selCount = atomic_load_explicit(&paint_selected_count, memory_order_relaxed);
+    const uint64_t plainCount = atomic_load_explicit(&paint_plain_count, memory_order_relaxed);
+    const double selMean = selCount ? (double)atomic_load_explicit(&paint_selected_ns, memory_order_relaxed) / (selCount*1000000.) : 0.;
+    const double plainMean = plainCount ? (double)atomic_load_explicit(&paint_plain_ns, memory_order_relaxed) / (plainCount*1000000.) : 0.;
     int used = snprintf(paint_report, sizeof(paint_report),
         "[JarBoxVM][PaintHot] enabled=1 rate=1/32 paints=%llu sampled=%llu "
-        "sampledCPU=%.2fms selfSum=%.2fms dropped=%llu droppedSelf=%.2fms depthOverflow=%llu",
+        "sampledCPU=%.2fms selfSum=%.2fms dropped=%llu droppedSelf=%.2fms depthOverflow=%llu "
+        "sampled_paint_avg=%.2fms(%llu) plain_paint_avg=%.2fms(%llu) observer_ratio=%.2fx",
         (unsigned long long)atomic_load_explicit(&paint_seen, memory_order_relaxed),
         (unsigned long long)paint_samples, (double)paint_cpu_ns/1000000.,
         (double)counted/1000000., (unsigned long long)paint_overflow,
-        (double)paint_overflow_ns/1000000., (unsigned long long)paint_depth_errors);
+        (double)paint_overflow_ns/1000000., (unsigned long long)paint_depth_errors,
+        selMean, (unsigned long long)selCount, plainMean, (unsigned long long)plainCount,
+        plainMean > 0 ? selMean/plainMean : 0.);
     for (int k = 0; k < 8 && top[k] >= 0; ++k) {
         if (used < 0 || (size_t)used >= sizeof(paint_report)) break;
         const PaintGlobal *r = &paint_global[top[k]];
@@ -258,7 +279,8 @@ const char *treo_vm_paint_sample_report(void) {
 #else
 void treo_vm_paint_sample_reset(void) {}
 void treo_vm_paint_sample_begin(void) {}
-void treo_vm_paint_sample_end(void) {}
+int treo_vm_paint_sample_end(void) { return -1; }
+void treo_vm_paint_sample_note_duration(int sampled, uint64_t ns) {(void)sampled;(void)ns;}
 const char *treo_vm_paint_sample_report(void) {
     return "[JarBoxVM][PaintHot] enabled=0 (same-source baseline)";
 }

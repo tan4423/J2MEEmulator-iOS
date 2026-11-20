@@ -21,3 +21,12 @@ In Codemagic "J2ME Treo JIT probe unsigned", the default is `paint_sampler=1-in-
 - If no Java-only pure helper consumes significant CPU, stop pursuing unsafe whole-paint skipping and optimize engine execution instead.
 
 **Build / iPhone verification status**: not yet tested for this new diagnostic commit.
+
+
+## Device sample (68.5 s) and observer-bias diagnosis
+
+User reports 39.5% process CPU, 0.1% main CPU, 372.24 ms/s paint CPU, 25.42 paint/s, 1741 paints with 55 selected samples. Top methods by sampled self CPU are ByteArrayOutputStream.write (258.40 ms), UTF_8_Writer.write (191.41 ms), Character.isHighSurrogate (152.79 ms), InnerFile.loadFS (108.93 ms), System.arraycopy (93.86 ms), UTF_8_Writer.sizeOf (86.52 ms), ByteArrayOutputStream.ensureOpen (78.79 ms) and String.charAt (45.62 ms). These are real Java/data/OS-file operations, **not safe draw no-ops**. Native InnerFile.loadFS calls stat() and updates metadata; native System.arraycopy uses memmove(). Do not skip them blindly.
+
+Selected paint CPU ~1882.86/55 = **34.23 ms/paint** versus total paint CPU ~372.24/25.42 = **14.64 ms/paint**. Source-level profiler clocks every sampled method entry/exit, so self-time includes profiler overhead. Sampled method rankings cannot yet be interpreted as unbiased uninstrumented CPU hotspots; variance or periodic selection bias may also contribute. Bridge-elided calls ~120/paint (208920/1741) differ markedly from earlier log ~1040/paint, so the game scene/JAR may differ. No matching workload conditions supplied.
+
+Added same-run observer comparison: `sampled_paint_avg` versus `plain_paint_avg`, with counts and `observer_ratio`, using timestamps ALREADY obtained by NativeBridge.profilePaintBegin/End. No extra clock or timers. This distinguishes measurement cost / selection skew from all-paint averages, but remains observational; a same-HEAD `JARBOX_PAINT_SAMPLE_DISABLED=1` build is the clean overhead control. Aim to preserve the CPU-main fix. Do not optimize character encoding, filesystem metadata, array copying or game loop before validating the denominator and semantic use.

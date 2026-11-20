@@ -1236,11 +1236,13 @@ static s32 n_profilePaintBegin(Runtime *runtime, JClass *clazz) {
 static s32 n_profilePaintEnd(Runtime *runtime, JClass *clazz) {
     const s64 stamp = runtime->jnienv->localvar_getLong_2slot(runtime->localvar, 0);
     if (stamp < 0) {
-        treo_vm_paint_sample_end();
+        const int sampled = treo_vm_paint_sample_end();
         const uint64_t end = treo_thread_cpu_ns(), begin = (uint64_t)(-stamp);
         if (end >= begin) {
-            atomic_fetch_add_explicit(&g_afk_paint_cpu_ns, end - begin, memory_order_relaxed);
+            const uint64_t elapsed = end - begin;
+            atomic_fetch_add_explicit(&g_afk_paint_cpu_ns, elapsed, memory_order_relaxed);
             atomic_fetch_add_explicit(&g_afk_paint_count, 1, memory_order_relaxed);
+            treo_vm_paint_sample_note_duration(sampled, elapsed);
         }
         return RUNTIME_STATUS_NORMAL;
     }
