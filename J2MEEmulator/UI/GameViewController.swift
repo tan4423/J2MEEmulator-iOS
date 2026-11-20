@@ -1687,7 +1687,7 @@ class GameViewController: UIViewController {
             }
             if sourceProfile { treo_afk_main_source_trace_begin() }
             else if profileMain { treo_afk_main_stack_begin() }
-            self.scheduleJarAudit(id: id, after: self.jarEnergyAudit ? 1200 : (profileMain && !sourceProfile ? 20 : ((self.jarMainQoSAudit || self.jarDisplayWaitAudit || self.jarUIKitPhaseAudit || self.jarSparsePaintAudit) ? 30 : (self.jarWindowAudit ? 25 : (self.jarWorkerComparison ? 30 : (self.jarLoadComparison ? 25 : 60)))))) { [weak self] in
+            self.scheduleJarAudit(id: id, after: self.jarEnergyAudit ? 1200 : (profileMain && !sourceProfile ? 20 : ((self.jarMainQoSAudit || self.jarDisplayWaitAudit || self.jarUIKitPhaseAudit || self.jarSparsePaintAudit) ? 30 : (self.jarWindowAudit ? 25 : (self.jarWorkerComparison ? 30 : (self.jarLoadComparison ? 25 : 60))))) { [weak self] in
                 guard let self else { return }
                 let end = JarAuditSample()
                 let powerEnd: JarPowerSnapshot? = self.jarEnergyAudit ? JarPowerSnapshot() : nil
