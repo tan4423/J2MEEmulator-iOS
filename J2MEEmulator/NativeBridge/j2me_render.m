@@ -19,6 +19,7 @@
 #endif
 #import <CoreHaptics/CoreHaptics.h>
 #include "j2me_render.h"
+#include "jvm_bridge.h"
 #include "j2me_input.h"
 #include "jvm.h"
 #include "jvm_util.h"
@@ -1226,6 +1227,7 @@ static s32 n_profilePaintBegin(Runtime *runtime, JClass *clazz) {
         if (!g_afk_thread_id) pthread_threadid_np(NULL, &g_afk_thread_id);
         atomic_store_explicit(&g_afk_paint_tid, g_afk_thread_id, memory_order_relaxed);
         start = -(s64)treo_thread_cpu_ns();
+        treo_vm_paint_sample_begin();
     }
     else if (treo_profile_active()) start = (s64)treo_thread_cpu_ns();
     runtime->jnienv->push_long(runtime->stack, start);
@@ -1234,6 +1236,7 @@ static s32 n_profilePaintBegin(Runtime *runtime, JClass *clazz) {
 static s32 n_profilePaintEnd(Runtime *runtime, JClass *clazz) {
     const s64 stamp = runtime->jnienv->localvar_getLong_2slot(runtime->localvar, 0);
     if (stamp < 0) {
+        treo_vm_paint_sample_end();
         const uint64_t end = treo_thread_cpu_ns(), begin = (uint64_t)(-stamp);
         if (end >= begin) {
             atomic_fetch_add_explicit(&g_afk_paint_cpu_ns, end - begin, memory_order_relaxed);

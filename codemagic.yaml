@@ -104,13 +104,21 @@ workflows:
           else
             echo "[JarBoxBG][BUILD] springboard-animation=pause-when-hidden"
           fi
+          # Matched build for profiling overhead: same code, with sampler disabled.
+          paint_sample_flag=""
+          if [[ "${JARBOX_PAINT_SAMPLE_DISABLED:-0}" == "1" ]]; then
+            paint_sample_flag="-DTREO_VM_PAINT_SAMPLE_DISABLED=1"
+            echo "[JarBoxVM][BUILD] paint_sampler=off (same-source baseline)"
+          else
+            echo "[JarBoxVM][BUILD] paint_sampler=1-in-32 (diagnostic)"
+          fi
           xcodebuild -list -project "$J2ME_PROJECT"
           xcodebuild -project "$J2ME_PROJECT" \
             -scheme J2MEEmulator -configuration Release \
             -sdk iphoneos -destination 'generic/platform=iOS' \
             -derivedDataPath "$RUNNER_TEMP/jarbox-build" \
             "OTHER_LDFLAGS=\$(inherited) $RUNNER_TEMP/J2METreo.o $RUNNER_TEMP/TreoSLJIT.o $RUNNER_TEMP/TreoJITProbe.o -framework UIKit -framework Foundation -framework Metal" \
-            "TREO_GAME_JIT_CFLAGS=-DTREO_IOS_GAME_JIT=1 -I$sljit $vm_dispatch_flag $vm_paint_bridge_flag" \
+            "TREO_GAME_JIT_CFLAGS=-DTREO_IOS_GAME_JIT=1 -I$sljit $vm_dispatch_flag $vm_paint_bridge_flag $paint_sample_flag" \
             "SWIFT_ACTIVE_COMPILATION_CONDITIONS=\$(inherited) $bg_flag" \
             PRODUCT_BUNDLE_IDENTIFIER=app.j2metreo.personal \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build

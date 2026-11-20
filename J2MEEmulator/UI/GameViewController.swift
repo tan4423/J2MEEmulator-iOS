@@ -1461,6 +1461,8 @@ class GameViewController: UIViewController {
             cover.trailingAnchor.constraint(equalTo: view.trailingAnchor)
         ])
         blackout = cover
+        // Reset sampling before AFK starts. The springboard animation fix is untouched.
+        treo_vm_paint_sample_reset()
         treo_render_set_afk_mode(mode)
         if deepPaint {
             treo_afk_guard_auto_set(1)
@@ -1512,7 +1514,9 @@ class GameViewController: UIViewController {
                 springboardMotion, end.springboardPauseLayers, springboardLoops)
         }
         vmTreoProbeStart = nil
+        let paintHotReport = String(cString: treo_vm_paint_sample_report())
         if let vmLog { NSLog("%@", vmLog) }
+        NSLog("%@", paintHotReport)
         afkMeasure?.cancel()
         genericTreoWork?.cancel()
         genericTreoWork = nil
@@ -1573,9 +1577,9 @@ class GameViewController: UIViewController {
         blackout = nil
         if let vmLog {
             if let report = lastMeasurement {
-                lastMeasurement = (report.title, report.message + "\n\n" + vmLog)
+                lastMeasurement = (report.title, report.message + "\n\n" + vmLog + "\n\n" + paintHotReport)
             } else {
-                lastMeasurement = ("JarBoxVM · hiệu năng", vmLog)
+                lastMeasurement = ("JarBoxVM · hiệu năng", vmLog + "\n\n" + paintHotReport)
             }
         }
         applyPadMode()

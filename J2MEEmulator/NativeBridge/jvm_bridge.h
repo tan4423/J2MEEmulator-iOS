@@ -48,6 +48,12 @@ uint64_t treo_vm_switch_method_calls(void);
 uint64_t treo_vm_monitor_contentions(void);
 uint64_t treo_vm_monitor_retries(void);
 
+// Bounded one-in-32 Canvas.paint call-tree CPU sampler. No extra timer.
+void treo_vm_paint_sample_reset(void);
+void treo_vm_paint_sample_begin(void);
+void treo_vm_paint_sample_end(void);
+const char *treo_vm_paint_sample_report(void);
+
 #ifdef __cplusplus
 }
 #endif
