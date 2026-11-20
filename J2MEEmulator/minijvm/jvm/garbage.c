@@ -347,13 +347,19 @@ s64 gc_sum_heap(GcCollector *collector) {
 s32 _gc_thread_run(void *para) {
 #if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__
     extern void treo_afk_mark_gc_thread(void);
+    extern void treo_diag_sample(int kind);
+    extern void treo_diag_gc_cycle_begin(void);
+    extern void treo_diag_gc_cycle_end(void);
     treo_afk_mark_gc_thread();
 #endif
     GcCollector *collector = (GcCollector *) para;
     MiniJVM *jvm = collector->jvm;
 
     while (1) {
-
+#if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__
+        // Real miniJVM collector pthread; no extra worker.
+        treo_diag_sample(2);
+#endif
         s64 cur_mil = currentTimeMillis();
 
         if (collector->_garbage_thread_status == GARBAGE_THREAD_STOP) {
@@ -373,7 +379,13 @@ s32 _gc_thread_run(void *para) {
         s64 native_extra = __atomic_load_n(&g_native_extra_heap, __ATOMIC_RELAXED);
         if (cur_mil - collector->lastgc > jvm->garbage_collect_period_ms || heap >= threshold) {
             s64 heap_before = heap;
+#if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__
+            treo_diag_gc_cycle_begin();
+#endif
             _garbage_collect(collector);
+#if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__
+            treo_diag_gc_cycle_end();
+#endif
             s64 heap_after = gc_sum_heap(collector);
             s64 native_after = __atomic_load_n(&g_native_extra_heap, __ATOMIC_RELAXED);
             jvm_printf("[GC] collected: java %lldKB→%lldKB, native %lldKB, total %lldKB→%lldKB (threshold %lldKB) objs=%lld\n",

@@ -466,6 +466,94 @@ double treo_main_fixed_work_ns_per_step(void) {
     if (end <= start) return -1;
     return (double)(end - start) / (double)Steps;
 }
+// Fixed identical integer-work probe on the EXISTING main/JAR/GC pthreads.
+// CPU thread-clock excludes sleep; monotonic wall-clock includes descheduling.
+// Diagnostic only: never infers P/E core, frequencies, watts or game throughput.
+enum { TreoDiagThreads = 3, TreoDiagSteps = 120000 };
+typedef struct { _Atomic uint64_t n, cpu, wall, last; } TreoDiagStat;
+static TreoDiagStat g_diag_stat[3];
+static _Atomic uint64_t g_diag_epoch;
+static atomic_bool g_diag_active;
+static _Atomic uint64_t g_diag_gc_n, g_diag_gc_cpu, g_diag_gc_wall;
+static _Thread_local uint64_t g_diag_sink = UINT64_C(0x9e3779b97f4a7c15);
+static _Thread_local uint64_t g_diag_gc_start_cpu, g_diag_gc_start_wall, g_diag_gc_start_epoch;
+void treo_diag_set(int on) {
+    atomic_store_explicit(&g_diag_active, false, memory_order_release);
+    atomic_fetch_add_explicit(&g_diag_epoch, 1, memory_order_acq_rel);
+    if (on) {
+        for (int i = 0; i < TreoDiagThreads; ++i) {
+            atomic_store(&g_diag_stat[i].n, 0);
+            atomic_store(&g_diag_stat[i].cpu, 0);
+            atomic_store(&g_diag_stat[i].wall, 0);
+            atomic_store(&g_diag_stat[i].last, 0);
+        }
+        atomic_store(&g_diag_gc_n, 0);
+        atomic_store(&g_diag_gc_cpu, 0);
+        atomic_store(&g_diag_gc_wall, 0);
+        atomic_store_explicit(&g_diag_active, true, memory_order_release);
+    }
+}
+void treo_diag_sample(int kind) {
+    if (kind < 0 || kind >= TreoDiagThreads ||
+        !atomic_load_explicit(&g_diag_active, memory_order_acquire)) return;
+    const uint64_t epoch = atomic_load_explicit(&g_diag_epoch, memory_order_acquire);
+    const uint64_t now = treo_afk_now_ns();
+    if (!now) return;
+    if (kind != 0) {
+        uint64_t last = atomic_load_explicit(&g_diag_stat[kind].last, memory_order_relaxed);
+        if (now < last || now - last < UINT64_C(2000000000)) return;
+        if (!atomic_compare_exchange_strong_explicit(&g_diag_stat[kind].last, &last,
+                now, memory_order_relaxed, memory_order_relaxed)) return;
+    }
+    volatile uint64_t value = g_diag_sink;
+    const uint64_t c0 = treo_thread_cpu_ns(), w0 = treo_afk_now_ns();
+    if (!c0 || !w0) return;
+    for (unsigned i = 0; i < TreoDiagSteps; ++i)
+        value = value * UINT64_C(6364136223846793005) + UINT64_C(1442695040888963407);
+    const uint64_t c1 = treo_thread_cpu_ns(), w1 = treo_afk_now_ns();
+    g_diag_sink = value;
+    if (c1 < c0 || w1 < w0 || 
+        !atomic_load_explicit(&g_diag_active, memory_order_acquire) ||
+        atomic_load_explicit(&g_diag_epoch, memory_order_acquire) != epoch) return;
+    atomic_fetch_add_explicit(&g_diag_stat[kind].cpu, c1 - c0, memory_order_relaxed);
+    atomic_fetch_add_explicit(&g_diag_stat[kind].wall, w1 - w0, memory_order_relaxed);
+    atomic_fetch_add_explicit(&g_diag_stat[kind].n, 1, memory_order_release);
+}
+uint64_t treo_diag_samples(int kind) {
+    return (kind >= 0 && kind < TreoDiagThreads)
+        ? atomic_load_explicit(&g_diag_stat[kind].n, memory_order_acquire) : 0;
+}
+double treo_diag_ns_per_step(int kind, int wall) {
+    if (kind < 0 || kind >= TreoDiagThreads) return -1;
+    uint64_t n = treo_diag_samples(kind);
+    if (!n) return -1;
+    const uint64_t elapsed = atomic_load_explicit(wall ?
+        &g_diag_stat[kind].wall : &g_diag_stat[kind].cpu, memory_order_acquire);
+    return (double)elapsed / ((double)n * TreoDiagSteps);
+}
+void treo_diag_gc_cycle_begin(void) {
+    g_diag_gc_start_epoch = 0;
+    if (!atomic_load_explicit(&g_diag_active, memory_order_acquire)) return;
+    g_diag_gc_start_epoch = atomic_load_explicit(&g_diag_epoch, memory_order_acquire);
+    g_diag_gc_start_cpu = treo_thread_cpu_ns();
+    g_diag_gc_start_wall = treo_afk_now_ns();
+}
+void treo_diag_gc_cycle_end(void) {
+    if (!g_diag_gc_start_epoch || !g_diag_gc_start_cpu || !g_diag_gc_start_wall) return;
+    const uint64_t c = treo_thread_cpu_ns(), w = treo_afk_now_ns();
+    if (atomic_load_explicit(&g_diag_active, memory_order_acquire) &&
+        atomic_load_explicit(&g_diag_epoch, memory_order_acquire) == g_diag_gc_start_epoch &&
+        c >= g_diag_gc_start_cpu && w >= g_diag_gc_start_wall) {
+        atomic_fetch_add_explicit(&g_diag_gc_cpu, c - g_diag_gc_start_cpu, memory_order_relaxed);
+        atomic_fetch_add_explicit(&g_diag_gc_wall, w - g_diag_gc_start_wall, memory_order_relaxed);
+        atomic_fetch_add_explicit(&g_diag_gc_n, 1, memory_order_release);
+    }
+    g_diag_gc_start_epoch = 0;
+}
+uint64_t treo_diag_gc_cycles(void) { return atomic_load_explicit(&g_diag_gc_n, memory_order_acquire); }
+double treo_diag_gc_cpu_ms(void) { return (double)atomic_load_explicit(&g_diag_gc_cpu, memory_order_acquire) / 1000000.0; }
+double treo_diag_gc_wall_ms(void) { return (double)atomic_load_explicit(&g_diag_gc_wall, memory_order_acquire) / 1000000.0; }
+
 // Main-thread-only diagnostic snapshots, taken at leg boundaries, not per frame.
 static NSDictionary<NSNumber *, NSArray<NSNumber *> *> *treo_afk_thread_start;
 static struct rusage treo_afk_rusage_start;
@@ -1006,6 +1094,8 @@ static void *treo_jar_worker_main(void *ignored) {
     return NULL;
 }
 void treo_jar_audit_tick(int active) {
+    // Sample on the real game Java thread (called from requestFrame hook).
+    treo_diag_sample(1);
     const int mode = atomic_load_explicit(&treo_jar_load_mode, memory_order_acquire);
     if (active && mode == 1) {
         qos_class_t gameQoS = QOS_CLASS_UNSPECIFIED;

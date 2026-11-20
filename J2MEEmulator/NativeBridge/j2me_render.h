@@ -35,6 +35,16 @@ uint64_t treo_jar_load_cpu_ns(void);
 uint64_t treo_jar_load_wall_ns(void);
 uint64_t treo_jar_load_calls(void);
 uint64_t treo_jar_audit_ticks(int active);
+// Explicitly enabled ONLY in cross-thread diagnostic A/B/A.
+void treo_diag_set(int on);
+void treo_diag_sample(int kind); // 0=main, 1=game, 2=GC
+uint64_t treo_diag_samples(int kind);
+double treo_diag_ns_per_step(int kind, int wall);
+void treo_diag_gc_cycle_begin(void);
+void treo_diag_gc_cycle_end(void);
+uint64_t treo_diag_gc_cycles(void);
+double treo_diag_gc_cpu_ms(void);
+double treo_diag_gc_wall_ms(void);
 // Opt-in diagnostic only: 0/1/3 Java paints per second in an audit leg.
 void treo_jar_sparse_paint_set(int hz);
 uint64_t treo_jar_sparse_paint_due_count(void);
