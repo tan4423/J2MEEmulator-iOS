@@ -781,7 +781,9 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                 sp = runtime->stack->sp;
 
                 do {
-                    if (jdwp_client_count(jvm->jdwpserver)) {
+                    // Avoid a cross-unit function call on every interpreted
+                    // bytecode when this JVM has disabled JDWP at startup.
+                    if (jvm->jdwp_enable && jdwp_client_count(jvm->jdwpserver)) {
                         stack->sp = sp;
 
                         if (!runtime->thrd_info->no_pause) {
