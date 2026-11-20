@@ -36,6 +36,12 @@ final class AnimatedBackgroundView: UIView {
 
     func setAnimationsActive(_ enabled: Bool, reason: String) {
         if !enabled {
+            // Game selection, viewWillDisappear and window detachment can all
+            // request pause. Record active layers only on the first pause.
+            if !animationAllowed && !animating {
+                logAnimationState("already paused; \(reason)")
+                return
+            }
             // Set first: UIView.animate completion blocks may be invoked
             // synchronously when animations are removed.
             animationAllowed = false
