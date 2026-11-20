@@ -76,13 +76,22 @@ workflows:
             fi
           done
           
+          # Switch-only reference uses the same sources, settings, and JARs.
+          # Set JARBOX_VM_SWITCH_BASELINE=1 in Codemagic to build it.
+          vm_dispatch_flag=""
+          if [[ "${JARBOX_VM_SWITCH_BASELINE:-0}" == "1" ]]; then
+            vm_dispatch_flag="-DTREO_VM_FORCE_SWITCH=1"
+            echo "[JarBoxVM][BUILD] dispatch=switch (matched baseline)"
+          else
+            echo "[JarBoxVM][BUILD] dispatch=computed-goto (candidate)"
+          fi
           xcodebuild -list -project "$J2ME_PROJECT"
           xcodebuild -project "$J2ME_PROJECT" \
             -scheme J2MEEmulator -configuration Release \
             -sdk iphoneos -destination 'generic/platform=iOS' \
             -derivedDataPath "$RUNNER_TEMP/jarbox-build" \
             "OTHER_LDFLAGS=\$(inherited) $RUNNER_TEMP/J2METreo.o $RUNNER_TEMP/TreoSLJIT.o $RUNNER_TEMP/TreoJITProbe.o -framework UIKit -framework Foundation -framework Metal" \
-            "TREO_GAME_JIT_CFLAGS=-DTREO_IOS_GAME_JIT=1 -I$sljit" \
+            "TREO_GAME_JIT_CFLAGS=-DTREO_IOS_GAME_JIT=1 -I$sljit $vm_dispatch_flag" \
             PRODUCT_BUNDLE_IDENTIFIER=app.j2metreo.personal \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build
           
