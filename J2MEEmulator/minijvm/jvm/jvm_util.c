@@ -9,6 +9,8 @@
 
 #include "../utils/miniz_wrapper.h"
 #include "jvm_util.h"
+#include <stdint.h>
+#include <stdatomic.h>
 #include "garbage.h"
 #include "jdwp.h"
 
@@ -366,6 +368,21 @@ void thread_zombie_all(MiniJVM *jvm) {
     }
     spin_unlock(&jvm->thread_list->spinlock);
 }
+
+
+#if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__
+static _Atomic uint64_t treo_vm_monitor_contended_total;
+static _Atomic uint64_t treo_vm_monitor_failed_acquires;
+uint64_t treo_vm_monitor_contentions(void) {
+    return atomic_load_explicit(&treo_vm_monitor_contended_total, memory_order_relaxed);
+}
+uint64_t treo_vm_monitor_retries(void) {
+    return atomic_load_explicit(&treo_vm_monitor_failed_acquires, memory_order_relaxed);
+}
+#else
+uint64_t treo_vm_monitor_contentions(void) { return 0; }
+uint64_t treo_vm_monitor_retries(void) { return 0; }
+#endif
 
 void thread_lock_init(ThreadLock *lock) {
     if (lock) {
@@ -908,6 +925,14 @@ s32 jthread_lock(MemoryBlock *mb, Runtime *runtime) { //可能会重入，同一
         jthread_yield(runtime);
         i++;
     }
+#if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__
+    // Log only actual monitor contention; uncontended lock operations
+    // remain uninstrumented. Failed acquisitions include 5ms timeouts.
+    if (i > 0) {
+        atomic_fetch_add_explicit(&treo_vm_monitor_contended_total, 1, memory_order_relaxed);
+        atomic_fetch_add_explicit(&treo_vm_monitor_failed_acquires, (uint64_t)i, memory_order_relaxed);
+    }
+#endif
 
     //获得锁之后，检查是否锁重入
     void *current_thread = (void *) (intptr_t) (runtime->thrd_info);

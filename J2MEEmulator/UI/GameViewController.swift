@@ -346,6 +346,7 @@ class GameViewController: UIViewController {
     private var previousBrightness: CGFloat?
     private var jarBoxSmartTreo = false
     private var jarBoxSmartStartedAt: TimeInterval?
+    private var vmTreoProbeStart: VMTreoProbe?
     private var jarBoxDeepTreoStart: GenericTreoSnapshot?
     private var genericTreoComparisonID: UUID?
     private var genericTreoWork: DispatchWorkItem?
@@ -1417,6 +1418,19 @@ class GameViewController: UIViewController {
         DispatchQueue.main.asyncAfter(deadline: .now() + 2, execute: settle)
     }
 
+
+    // Reads cumulative monotonic counters only. No per-frame clock, timer,
+    // UI observer, or instrumentation is added to the game hot loop.
+    private struct VMTreoProbe {
+        let time = ProcessInfo.processInfo.systemUptime
+        let appCPU = treo_process_cpu_seconds()
+        let mainCPU = treo_afk_current_thread_cpu()
+        let direct = treo_vm_fast_method_calls()
+        let fallback = treo_vm_switch_method_calls()
+        let contended = treo_vm_monitor_contentions()
+        let retries = treo_vm_monitor_retries()
+    }
+
     private func showBlackout(mode: Int32 = 1, smartGC: Bool = false,
                               deepPaint: Bool = false) {
         guard blackout == nil, jarAuditID == nil else { return }
@@ -1455,10 +1469,31 @@ class GameViewController: UIViewController {
             screen.brightness = 0
         }
         NotificationCenter.default.addObserver(self, selector: #selector(hideBlackout), name: UIApplication.willResignActiveNotification, object: nil)
+        vmTreoProbeStart = VMTreoProbe()
     }
 
     @objc private func hideBlackout() {
         guard blackout != nil else { return }
+
+        let vmLog: String? = vmTreoProbeStart.map { start in
+            let end = VMTreoProbe()
+            let dt = max(0.001, end.time - start.time)
+            func percent(_ a: Double, _ b: Double) -> String {
+                guard a >= 0, b >= a else { return "?" }
+                return String(format: "%.1f", 100 * (b - a) / dt)
+            }
+            let direct = end.direct &- start.direct
+            let fallback = end.fallback &- start.fallback
+            let monitors = end.contended &- start.contended
+            let retries = end.retries &- start.retries
+            let backend = treo_vm_direct_dispatch_build() != 0 ? "computed-goto" : "switch"
+            return String(format:
+                "[JarBoxVM][Treo] %.1fs · dispatch=%@ · direct_methods~%llu · switch_methods~%llu · monitor_contended=%llu · monitor_failed_acquires=%llu · app_CPU=%@%% · main_CPU=%@%%. Counts batched/64; CPU is not watts.",
+                dt, backend, direct, fallback, monitors, retries,
+                percent(start.appCPU, end.appCPU), percent(start.mainCPU, end.mainCPU))
+        }
+        vmTreoProbeStart = nil
+        if let vmLog { NSLog("%@", vmLog) }
         afkMeasure?.cancel()
         genericTreoWork?.cancel()
         genericTreoWork = nil
@@ -1517,6 +1552,14 @@ class GameViewController: UIViewController {
         previousBrightness = nil
         blackout?.removeFromSuperview()
         blackout = nil
+        if let vmLog {
+            if let report = lastMeasurement {
+                lastMeasurement = (report.title, report.message + "\n\n" + vmLog)
+            } else {
+                lastMeasurement = ("JarBoxVM · hiệu năng", vmLog)
+            }
+        }
+        applyPadMode()
         if showComparison { showLastMeasurement() }
     }
 

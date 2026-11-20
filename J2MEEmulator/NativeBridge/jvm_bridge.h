@@ -1,5 +1,6 @@
 #ifndef JVM_BRIDGE_H
 #define JVM_BRIDGE_H
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -37,6 +38,14 @@ void jvm_bridge_request_stop(void);
 
 /// Check if stop has been requested. Called from native methods on JVM thread.
 int jvm_bridge_is_stop_requested(void);
+
+// Passive verification for code-signed interpreter fast dispatch.
+// Counts of interpreted Java method invocations are batched in groups of 64.
+int treo_vm_direct_dispatch_build(void);
+uint64_t treo_vm_fast_method_calls(void);
+uint64_t treo_vm_switch_method_calls(void);
+uint64_t treo_vm_monitor_contentions(void);
+uint64_t treo_vm_monitor_retries(void);
 
 #ifdef __cplusplus
 }

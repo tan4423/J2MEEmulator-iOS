@@ -3,6 +3,52 @@
 #include "jit.h"
 #include "garbage.h"
 #include <stdatomic.h>
+#include <stdint.h>
+
+/*
+ * JarBox no-dynamic-JIT interpreter. Clang's labels-as-values point only
+ * to opcode handlers already compiled and code-signed inside the app.
+ * Preserve the original switch for non-Clang/standard builds and JDWP.
+ * Use -DTREO_VM_FORCE_SWITCH=1 to compile a matched baseline IPA.
+ */
+#if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__ && defined(__clang__) && !defined(TREO_VM_FORCE_SWITCH)
+#define TREO_VM_DIRECT_DISPATCH 1
+#define TREO_VM_HANDLER(op) treo_vm_label_##op:
+#else
+#define TREO_VM_DIRECT_DISPATCH 0
+#define TREO_VM_HANDLER(op)
+#endif
+
+#if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__
+static _Atomic uint64_t treo_vm_fast_method_batches;
+static _Atomic uint64_t treo_vm_switch_method_batches;
+// Batched per-thread instrumentation: no atomic increment on each bytecode
+// and no expensive clock or event logging inside the interpreter hot loop.
+static _Thread_local unsigned treo_vm_fast_pending;
+static _Thread_local unsigned treo_vm_switch_pending;
+static inline void treo_vm_note_method(int fast) {
+    if (fast) {
+        if (++treo_vm_fast_pending == 64) {
+            atomic_fetch_add_explicit(&treo_vm_fast_method_batches, 64, memory_order_relaxed);
+            treo_vm_fast_pending = 0;
+        }
+    } else if (++treo_vm_switch_pending == 64) {
+        atomic_fetch_add_explicit(&treo_vm_switch_method_batches, 64, memory_order_relaxed);
+        treo_vm_switch_pending = 0;
+    }
+}
+uint64_t treo_vm_fast_method_calls(void) {
+    return atomic_load_explicit(&treo_vm_fast_method_batches, memory_order_relaxed);
+}
+uint64_t treo_vm_switch_method_calls(void) {
+    return atomic_load_explicit(&treo_vm_switch_method_batches, memory_order_relaxed);
+}
+#else
+uint64_t treo_vm_fast_method_calls(void) { return 0; }
+uint64_t treo_vm_switch_method_calls(void) { return 0; }
+#endif
+int treo_vm_direct_dispatch_build(void) { return TREO_VM_DIRECT_DISPATCH; }
+
 
 #if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__
 extern _Atomic int treo_afk_mode;
@@ -779,6 +825,10 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                 thrd_info = runtime->thrd_info;
                 localvar = runtime->localvar;
                 sp = runtime->stack->sp;
+#if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__
+                const int treo_vm_use_direct = TREO_VM_DIRECT_DISPATCH && !jvm->jdwp_enable;
+                treo_vm_note_method(treo_vm_use_direct);
+#endif
 
                 do {
                     // Avoid a cross-unit function call on every interpreted
@@ -817,9 +867,250 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
 #ifdef __JVM_DEBUG__
                     s64 inst_pc = runtime->pc - ca->code;
 #endif
+#if TREO_VM_DIRECT_DISPATCH
+                    // Exactly 230 handlers share the original opcode bodies.
+                    // Undefined/unsupported byte values take the old error path.
+                    static void *const treo_vm_targets[256] = {
+                        [op_nop] = &&treo_vm_label_op_nop,
+                        [op_aconst_null] = &&treo_vm_label_op_aconst_null,
+                        [op_iconst_m1] = &&treo_vm_label_op_iconst_m1,
+                        [op_iconst_0] = &&treo_vm_label_op_iconst_0,
+                        [op_iconst_1] = &&treo_vm_label_op_iconst_1,
+                        [op_iconst_2] = &&treo_vm_label_op_iconst_2,
+                        [op_iconst_3] = &&treo_vm_label_op_iconst_3,
+                        [op_iconst_4] = &&treo_vm_label_op_iconst_4,
+                        [op_iconst_5] = &&treo_vm_label_op_iconst_5,
+                        [op_lconst_0] = &&treo_vm_label_op_lconst_0,
+                        [op_lconst_1] = &&treo_vm_label_op_lconst_1,
+                        [op_fconst_0] = &&treo_vm_label_op_fconst_0,
+                        [op_fconst_1] = &&treo_vm_label_op_fconst_1,
+                        [op_fconst_2] = &&treo_vm_label_op_fconst_2,
+                        [op_dconst_0] = &&treo_vm_label_op_dconst_0,
+                        [op_dconst_1] = &&treo_vm_label_op_dconst_1,
+                        [op_bipush] = &&treo_vm_label_op_bipush,
+                        [op_sipush] = &&treo_vm_label_op_sipush,
+                        [op_ldc] = &&treo_vm_label_op_ldc,
+                        [op_ldc_w] = &&treo_vm_label_op_ldc_w,
+                        [op_ldc2_w] = &&treo_vm_label_op_ldc2_w,
+                        [op_iload] = &&treo_vm_label_op_iload,
+                        [op_fload] = &&treo_vm_label_op_fload,
+                        [op_aload] = &&treo_vm_label_op_aload,
+                        [op_lload] = &&treo_vm_label_op_lload,
+                        [op_dload] = &&treo_vm_label_op_dload,
+                        [op_fload_0] = &&treo_vm_label_op_fload_0,
+                        [op_iload_0] = &&treo_vm_label_op_iload_0,
+                        [op_fload_1] = &&treo_vm_label_op_fload_1,
+                        [op_iload_1] = &&treo_vm_label_op_iload_1,
+                        [op_fload_2] = &&treo_vm_label_op_fload_2,
+                        [op_iload_2] = &&treo_vm_label_op_iload_2,
+                        [op_fload_3] = &&treo_vm_label_op_fload_3,
+                        [op_iload_3] = &&treo_vm_label_op_iload_3,
+                        [op_dload_0] = &&treo_vm_label_op_dload_0,
+                        [op_lload_0] = &&treo_vm_label_op_lload_0,
+                        [op_dload_1] = &&treo_vm_label_op_dload_1,
+                        [op_lload_1] = &&treo_vm_label_op_lload_1,
+                        [op_dload_2] = &&treo_vm_label_op_dload_2,
+                        [op_lload_2] = &&treo_vm_label_op_lload_2,
+                        [op_dload_3] = &&treo_vm_label_op_dload_3,
+                        [op_lload_3] = &&treo_vm_label_op_lload_3,
+                        [op_aload_0] = &&treo_vm_label_op_aload_0,
+                        [op_aload_1] = &&treo_vm_label_op_aload_1,
+                        [op_aload_2] = &&treo_vm_label_op_aload_2,
+                        [op_aload_3] = &&treo_vm_label_op_aload_3,
+                        [op_iaload] = &&treo_vm_label_op_iaload,
+                        [op_faload] = &&treo_vm_label_op_faload,
+                        [op_laload] = &&treo_vm_label_op_laload,
+                        [op_daload] = &&treo_vm_label_op_daload,
+                        [op_aaload] = &&treo_vm_label_op_aaload,
+                        [op_baload] = &&treo_vm_label_op_baload,
+                        [op_caload] = &&treo_vm_label_op_caload,
+                        [op_saload] = &&treo_vm_label_op_saload,
+                        [op_istore] = &&treo_vm_label_op_istore,
+                        [op_fstore] = &&treo_vm_label_op_fstore,
+                        [op_astore] = &&treo_vm_label_op_astore,
+                        [op_lstore] = &&treo_vm_label_op_lstore,
+                        [op_dstore] = &&treo_vm_label_op_dstore,
+                        [op_fstore_0] = &&treo_vm_label_op_fstore_0,
+                        [op_istore_0] = &&treo_vm_label_op_istore_0,
+                        [op_fstore_1] = &&treo_vm_label_op_fstore_1,
+                        [op_istore_1] = &&treo_vm_label_op_istore_1,
+                        [op_fstore_2] = &&treo_vm_label_op_fstore_2,
+                        [op_istore_2] = &&treo_vm_label_op_istore_2,
+                        [op_fstore_3] = &&treo_vm_label_op_fstore_3,
+                        [op_istore_3] = &&treo_vm_label_op_istore_3,
+                        [op_dstore_0] = &&treo_vm_label_op_dstore_0,
+                        [op_lstore_0] = &&treo_vm_label_op_lstore_0,
+                        [op_dstore_1] = &&treo_vm_label_op_dstore_1,
+                        [op_lstore_1] = &&treo_vm_label_op_lstore_1,
+                        [op_dstore_2] = &&treo_vm_label_op_dstore_2,
+                        [op_lstore_2] = &&treo_vm_label_op_lstore_2,
+                        [op_dstore_3] = &&treo_vm_label_op_dstore_3,
+                        [op_lstore_3] = &&treo_vm_label_op_lstore_3,
+                        [op_astore_0] = &&treo_vm_label_op_astore_0,
+                        [op_astore_1] = &&treo_vm_label_op_astore_1,
+                        [op_astore_2] = &&treo_vm_label_op_astore_2,
+                        [op_astore_3] = &&treo_vm_label_op_astore_3,
+                        [op_fastore] = &&treo_vm_label_op_fastore,
+                        [op_iastore] = &&treo_vm_label_op_iastore,
+                        [op_dastore] = &&treo_vm_label_op_dastore,
+                        [op_lastore] = &&treo_vm_label_op_lastore,
+                        [op_aastore] = &&treo_vm_label_op_aastore,
+                        [op_bastore] = &&treo_vm_label_op_bastore,
+                        [op_castore] = &&treo_vm_label_op_castore,
+                        [op_sastore] = &&treo_vm_label_op_sastore,
+                        [op_pop] = &&treo_vm_label_op_pop,
+                        [op_pop2] = &&treo_vm_label_op_pop2,
+                        [op_dup] = &&treo_vm_label_op_dup,
+                        [op_dup_x1] = &&treo_vm_label_op_dup_x1,
+                        [op_dup_x2] = &&treo_vm_label_op_dup_x2,
+                        [op_dup2] = &&treo_vm_label_op_dup2,
+                        [op_dup2_x1] = &&treo_vm_label_op_dup2_x1,
+                        [op_dup2_x2] = &&treo_vm_label_op_dup2_x2,
+                        [op_swap] = &&treo_vm_label_op_swap,
+                        [op_iadd] = &&treo_vm_label_op_iadd,
+                        [op_ladd] = &&treo_vm_label_op_ladd,
+                        [op_fadd] = &&treo_vm_label_op_fadd,
+                        [op_dadd] = &&treo_vm_label_op_dadd,
+                        [op_isub] = &&treo_vm_label_op_isub,
+                        [op_lsub] = &&treo_vm_label_op_lsub,
+                        [op_fsub] = &&treo_vm_label_op_fsub,
+                        [op_dsub] = &&treo_vm_label_op_dsub,
+                        [op_imul] = &&treo_vm_label_op_imul,
+                        [op_lmul] = &&treo_vm_label_op_lmul,
+                        [op_fmul] = &&treo_vm_label_op_fmul,
+                        [op_dmul] = &&treo_vm_label_op_dmul,
+                        [op_idiv] = &&treo_vm_label_op_idiv,
+                        [op_ldiv] = &&treo_vm_label_op_ldiv,
+                        [op_fdiv] = &&treo_vm_label_op_fdiv,
+                        [op_ddiv] = &&treo_vm_label_op_ddiv,
+                        [op_irem] = &&treo_vm_label_op_irem,
+                        [op_lrem] = &&treo_vm_label_op_lrem,
+                        [op_frem] = &&treo_vm_label_op_frem,
+                        [op_drem] = &&treo_vm_label_op_drem,
+                        [op_ineg] = &&treo_vm_label_op_ineg,
+                        [op_lneg] = &&treo_vm_label_op_lneg,
+                        [op_fneg] = &&treo_vm_label_op_fneg,
+                        [op_dneg] = &&treo_vm_label_op_dneg,
+                        [op_ishl] = &&treo_vm_label_op_ishl,
+                        [op_lshl] = &&treo_vm_label_op_lshl,
+                        [op_ishr] = &&treo_vm_label_op_ishr,
+                        [op_lshr] = &&treo_vm_label_op_lshr,
+                        [op_iushr] = &&treo_vm_label_op_iushr,
+                        [op_lushr] = &&treo_vm_label_op_lushr,
+                        [op_iand] = &&treo_vm_label_op_iand,
+                        [op_land] = &&treo_vm_label_op_land,
+                        [op_ior] = &&treo_vm_label_op_ior,
+                        [op_lor] = &&treo_vm_label_op_lor,
+                        [op_ixor] = &&treo_vm_label_op_ixor,
+                        [op_lxor] = &&treo_vm_label_op_lxor,
+                        [op_iinc] = &&treo_vm_label_op_iinc,
+                        [op_i2l] = &&treo_vm_label_op_i2l,
+                        [op_i2f] = &&treo_vm_label_op_i2f,
+                        [op_i2d] = &&treo_vm_label_op_i2d,
+                        [op_l2i] = &&treo_vm_label_op_l2i,
+                        [op_l2f] = &&treo_vm_label_op_l2f,
+                        [op_l2d] = &&treo_vm_label_op_l2d,
+                        [op_f2i] = &&treo_vm_label_op_f2i,
+                        [op_f2l] = &&treo_vm_label_op_f2l,
+                        [op_f2d] = &&treo_vm_label_op_f2d,
+                        [op_d2i] = &&treo_vm_label_op_d2i,
+                        [op_d2l] = &&treo_vm_label_op_d2l,
+                        [op_d2f] = &&treo_vm_label_op_d2f,
+                        [op_i2b] = &&treo_vm_label_op_i2b,
+                        [op_i2c] = &&treo_vm_label_op_i2c,
+                        [op_i2s] = &&treo_vm_label_op_i2s,
+                        [op_lcmp] = &&treo_vm_label_op_lcmp,
+                        [op_fcmpl] = &&treo_vm_label_op_fcmpl,
+                        [op_fcmpg] = &&treo_vm_label_op_fcmpg,
+                        [op_dcmpl] = &&treo_vm_label_op_dcmpl,
+                        [op_dcmpg] = &&treo_vm_label_op_dcmpg,
+                        [op_ifeq] = &&treo_vm_label_op_ifeq,
+                        [op_ifne] = &&treo_vm_label_op_ifne,
+                        [op_iflt] = &&treo_vm_label_op_iflt,
+                        [op_ifge] = &&treo_vm_label_op_ifge,
+                        [op_ifgt] = &&treo_vm_label_op_ifgt,
+                        [op_ifle] = &&treo_vm_label_op_ifle,
+                        [op_if_icmpeq] = &&treo_vm_label_op_if_icmpeq,
+                        [op_if_icmpne] = &&treo_vm_label_op_if_icmpne,
+                        [op_if_icmplt] = &&treo_vm_label_op_if_icmplt,
+                        [op_if_icmpge] = &&treo_vm_label_op_if_icmpge,
+                        [op_if_icmpgt] = &&treo_vm_label_op_if_icmpgt,
+                        [op_if_icmple] = &&treo_vm_label_op_if_icmple,
+                        [op_if_acmpeq] = &&treo_vm_label_op_if_acmpeq,
+                        [op_if_acmpne] = &&treo_vm_label_op_if_acmpne,
+                        [op_goto] = &&treo_vm_label_op_goto,
+                        [op_jsr] = &&treo_vm_label_op_jsr,
+                        [op_ret] = &&treo_vm_label_op_ret,
+                        [op_tableswitch] = &&treo_vm_label_op_tableswitch,
+                        [op_lookupswitch] = &&treo_vm_label_op_lookupswitch,
+                        [op_lreturn] = &&treo_vm_label_op_lreturn,
+                        [op_dreturn] = &&treo_vm_label_op_dreturn,
+                        [op_ireturn] = &&treo_vm_label_op_ireturn,
+                        [op_freturn] = &&treo_vm_label_op_freturn,
+                        [op_areturn] = &&treo_vm_label_op_areturn,
+                        [op_return] = &&treo_vm_label_op_return,
+                        [op_getstatic] = &&treo_vm_label_op_getstatic,
+                        [op_putstatic] = &&treo_vm_label_op_putstatic,
+                        [op_getfield] = &&treo_vm_label_op_getfield,
+                        [op_putfield] = &&treo_vm_label_op_putfield,
+                        [op_invokevirtual] = &&treo_vm_label_op_invokevirtual,
+                        [op_invokespecial] = &&treo_vm_label_op_invokespecial,
+                        [op_invokestatic] = &&treo_vm_label_op_invokestatic,
+                        [op_invokeinterface] = &&treo_vm_label_op_invokeinterface,
+                        [op_invokedynamic] = &&treo_vm_label_op_invokedynamic,
+                        [op_new] = &&treo_vm_label_op_new,
+                        [op_newarray] = &&treo_vm_label_op_newarray,
+                        [op_anewarray] = &&treo_vm_label_op_anewarray,
+                        [op_arraylength] = &&treo_vm_label_op_arraylength,
+                        [op_athrow] = &&treo_vm_label_op_athrow,
+                        [op_checkcast] = &&treo_vm_label_op_checkcast,
+                        [op_instanceof] = &&treo_vm_label_op_instanceof,
+                        [op_monitorenter] = &&treo_vm_label_op_monitorenter,
+                        [op_monitorexit] = &&treo_vm_label_op_monitorexit,
+                        [op_wide] = &&treo_vm_label_op_wide,
+                        [op_multianewarray] = &&treo_vm_label_op_multianewarray,
+                        [op_ifnull] = &&treo_vm_label_op_ifnull,
+                        [op_ifnonnull] = &&treo_vm_label_op_ifnonnull,
+                        [op_goto_w] = &&treo_vm_label_op_goto_w,
+                        [op_jsr_w] = &&treo_vm_label_op_jsr_w,
+                        [op_breakpoint] = &&treo_vm_label_op_breakpoint,
+                        [op_getstatic_ref] = &&treo_vm_label_op_getstatic_ref,
+                        [op_getstatic_long] = &&treo_vm_label_op_getstatic_long,
+                        [op_getstatic_int] = &&treo_vm_label_op_getstatic_int,
+                        [op_getstatic_short] = &&treo_vm_label_op_getstatic_short,
+                        [op_getstatic_jchar] = &&treo_vm_label_op_getstatic_jchar,
+                        [op_getstatic_byte] = &&treo_vm_label_op_getstatic_byte,
+                        [op_putstatic_ref] = &&treo_vm_label_op_putstatic_ref,
+                        [op_putstatic_long] = &&treo_vm_label_op_putstatic_long,
+                        [op_putstatic_int] = &&treo_vm_label_op_putstatic_int,
+                        [op_putstatic_short] = &&treo_vm_label_op_putstatic_short,
+                        [op_putstatic_byte] = &&treo_vm_label_op_putstatic_byte,
+                        [op_getfield_ref] = &&treo_vm_label_op_getfield_ref,
+                        [op_getfield_long] = &&treo_vm_label_op_getfield_long,
+                        [op_getfield_int] = &&treo_vm_label_op_getfield_int,
+                        [op_getfield_short] = &&treo_vm_label_op_getfield_short,
+                        [op_getfield_jchar] = &&treo_vm_label_op_getfield_jchar,
+                        [op_getfield_byte] = &&treo_vm_label_op_getfield_byte,
+                        [op_putfield_ref] = &&treo_vm_label_op_putfield_ref,
+                        [op_putfield_long] = &&treo_vm_label_op_putfield_long,
+                        [op_putfield_int] = &&treo_vm_label_op_putfield_int,
+                        [op_putfield_short] = &&treo_vm_label_op_putfield_short,
+                        [op_putfield_byte] = &&treo_vm_label_op_putfield_byte,
+                        [op_invokevirtual_fast] = &&treo_vm_label_op_invokevirtual_fast,
+                        [op_invokespecial_fast] = &&treo_vm_label_op_invokespecial_fast,
+                        [op_invokestatic_fast] = &&treo_vm_label_op_invokestatic_fast,
+                        [op_invokeinterface_fast] = &&treo_vm_label_op_invokeinterface_fast,
+                        [op_invokedynamic_fast] = &&treo_vm_label_op_invokedynamic_fast,
+                    };
+                    if (treo_vm_use_direct) {
+                        void *target = treo_vm_targets[(u8)*runtime->pc];
+                        if (target) goto *target;
+                        goto treo_vm_label_default;
+                    }
+#endif
                     switch (*runtime->pc) {
 
-                        case op_nop: {
+                        case op_nop: TREO_VM_HANDLER(op_nop) {
 #if _JVM_DEBUG_LOG_LEVEL > 5
                             invoke_deepth(runtime);
                             jvm_printf("nop\n");
@@ -829,7 +1120,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                             break;
                         }
 
-                        case op_aconst_null: {
+                        case op_aconst_null: TREO_VM_HANDLER(op_aconst_null) {
                             (sp++)->rvalue = NULL;
 #if _JVM_DEBUG_LOG_LEVEL > 5
                             invoke_deepth(runtime);
@@ -840,56 +1131,56 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                             break;
                         }
 
-                        case op_iconst_m1: {
+                        case op_iconst_m1: TREO_VM_HANDLER(op_iconst_m1) {
                             (sp++)->ivalue = -1;
                             runtime->pc++;
                             break;
                         }
 
 
-                        case op_iconst_0: {
+                        case op_iconst_0: TREO_VM_HANDLER(op_iconst_0) {
                             (sp++)->ivalue = 0;
                             runtime->pc++;
                             break;
                         }
 
 
-                        case op_iconst_1: {
+                        case op_iconst_1: TREO_VM_HANDLER(op_iconst_1) {
                             (sp++)->ivalue = 1;
                             runtime->pc++;
                             break;
                         }
 
 
-                        case op_iconst_2: {
+                        case op_iconst_2: TREO_VM_HANDLER(op_iconst_2) {
                             (sp++)->ivalue = 2;
                             runtime->pc++;
                             break;
                         }
 
 
-                        case op_iconst_3: {
+                        case op_iconst_3: TREO_VM_HANDLER(op_iconst_3) {
                             (sp++)->ivalue = 3;
                             runtime->pc++;
                             break;
                         }
 
 
-                        case op_iconst_4: {
+                        case op_iconst_4: TREO_VM_HANDLER(op_iconst_4) {
                             (sp++)->ivalue = 4;
                             runtime->pc++;
                             break;
                         }
 
 
-                        case op_iconst_5: {
+                        case op_iconst_5: TREO_VM_HANDLER(op_iconst_5) {
                             (sp++)->ivalue = 5;
                             runtime->pc++;
                             break;
                         }
 
 
-                        case op_lconst_0: {
+                        case op_lconst_0: TREO_VM_HANDLER(op_lconst_0) {
                             (sp++)->lvalue = 0;
                             sp++;
                             runtime->pc++;
@@ -897,7 +1188,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_lconst_1: {
+                        case op_lconst_1: TREO_VM_HANDLER(op_lconst_1) {
                             (sp++)->lvalue = 1;
                             sp++;
                             runtime->pc++;
@@ -905,28 +1196,28 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_fconst_0: {
+                        case op_fconst_0: TREO_VM_HANDLER(op_fconst_0) {
                             (sp++)->fvalue = 0;
                             runtime->pc++;
                             break;
                         }
 
 
-                        case op_fconst_1: {
+                        case op_fconst_1: TREO_VM_HANDLER(op_fconst_1) {
                             (sp++)->fvalue = 1;
                             runtime->pc++;
                             break;
                         }
 
 
-                        case op_fconst_2: {
+                        case op_fconst_2: TREO_VM_HANDLER(op_fconst_2) {
                             (sp++)->fvalue = 2;
                             runtime->pc++;
                             break;
                         }
 
 
-                        case op_dconst_0: {
+                        case op_dconst_0: TREO_VM_HANDLER(op_dconst_0) {
                             (sp++)->dvalue = 0;
                             sp++;
                             runtime->pc++;
@@ -934,7 +1225,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_dconst_1: {
+                        case op_dconst_1: TREO_VM_HANDLER(op_dconst_1) {
                             (sp++)->dvalue = 1;
                             sp++;
                             runtime->pc++;
@@ -942,7 +1233,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_bipush: {
+                        case op_bipush: TREO_VM_HANDLER(op_bipush) {
 
                             (sp++)->ivalue = (s8) runtime->pc[1];
 #if _JVM_DEBUG_LOG_LEVEL > 5
@@ -955,7 +1246,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_sipush: {
+                        case op_sipush: TREO_VM_HANDLER(op_sipush) {
 #if _JVM_DEBUG_LOG_LEVEL > 5
                             invoke_deepth(runtime);
                             jvm_printf("sipush value %d\n", *((s16 *) (runtime->pc + 1)));
@@ -966,8 +1257,8 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                             break;
                         }
 
-                        case op_ldc:
-                        case op_ldc_w: {
+                        case op_ldc: TREO_VM_HANDLER(op_ldc)
+                        case op_ldc_w: TREO_VM_HANDLER(op_ldc_w) {
                             if (*runtime->pc == op_ldc) {
                                 idx = runtime->pc[1];
                                 runtime->pc += 2;
@@ -1015,7 +1306,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_ldc2_w: {
+                        case op_ldc2_w: TREO_VM_HANDLER(op_ldc2_w) {
 
                             lval1 = class_get_constant_long(clazz, *((u16 *) (runtime->pc + 1)));//long or double
                             (sp++)->lvalue = lval1;
@@ -1030,118 +1321,118 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_iload:
-                        case op_fload: {
+                        case op_iload: TREO_VM_HANDLER(op_iload)
+                        case op_fload: TREO_VM_HANDLER(op_fload) {
                             (sp++)->ivalue = localvar[(u8) runtime->pc[1]].ivalue;
                             runtime->pc += 2;
                             break;
                         }
 
-                        case op_aload: {
+                        case op_aload: TREO_VM_HANDLER(op_aload) {
                             (sp++)->rvalue = localvar[(u8) runtime->pc[1]].rvalue;
                             runtime->pc += 2;
                             break;
                         }
 
 
-                        case op_lload:
-                        case op_dload: {
+                        case op_lload: TREO_VM_HANDLER(op_lload)
+                        case op_dload: TREO_VM_HANDLER(op_dload) {
                             (sp++)->lvalue = localvar[(u8) runtime->pc[1]].lvalue;
                             sp++;
                             runtime->pc += 2;
                             break;
                         }
 
-                        case op_fload_0:
-                        case op_iload_0: {
+                        case op_fload_0: TREO_VM_HANDLER(op_fload_0)
+                        case op_iload_0: TREO_VM_HANDLER(op_iload_0) {
                             (sp++)->ivalue = localvar[0].ivalue;
                             runtime->pc++;
                             break;
                         }
 
-                        case op_fload_1:
-                        case op_iload_1: {
+                        case op_fload_1: TREO_VM_HANDLER(op_fload_1)
+                        case op_iload_1: TREO_VM_HANDLER(op_iload_1) {
                             (sp++)->ivalue = localvar[1].ivalue;
                             runtime->pc++;
                             break;
                         }
 
-                        case op_fload_2:
-                        case op_iload_2: {
+                        case op_fload_2: TREO_VM_HANDLER(op_fload_2)
+                        case op_iload_2: TREO_VM_HANDLER(op_iload_2) {
                             (sp++)->ivalue = localvar[2].ivalue;
                             runtime->pc++;
                             break;
                         }
 
-                        case op_fload_3:
-                        case op_iload_3: {
+                        case op_fload_3: TREO_VM_HANDLER(op_fload_3)
+                        case op_iload_3: TREO_VM_HANDLER(op_iload_3) {
                             (sp++)->ivalue = localvar[3].ivalue;
                             runtime->pc++;
                             break;
                         }
 
-                        case op_dload_0:
-                        case op_lload_0: {
+                        case op_dload_0: TREO_VM_HANDLER(op_dload_0)
+                        case op_lload_0: TREO_VM_HANDLER(op_lload_0) {
                             (sp++)->lvalue = localvar[0].lvalue;
                             (sp++);
                             runtime->pc++;
                             break;
                         }
 
-                        case op_dload_1:
-                        case op_lload_1: {
+                        case op_dload_1: TREO_VM_HANDLER(op_dload_1)
+                        case op_lload_1: TREO_VM_HANDLER(op_lload_1) {
                             (sp++)->lvalue = localvar[1].lvalue;
                             (sp++);
                             runtime->pc++;
                             break;
                         }
 
-                        case op_dload_2:
-                        case op_lload_2: {
+                        case op_dload_2: TREO_VM_HANDLER(op_dload_2)
+                        case op_lload_2: TREO_VM_HANDLER(op_lload_2) {
                             (sp++)->lvalue = localvar[2].lvalue;
                             (sp++);
                             runtime->pc++;
                             break;
                         }
 
-                        case op_dload_3:
-                        case op_lload_3: {
+                        case op_dload_3: TREO_VM_HANDLER(op_dload_3)
+                        case op_lload_3: TREO_VM_HANDLER(op_lload_3) {
                             (sp++)->lvalue = localvar[3].lvalue;
                             (sp++);
                             runtime->pc++;
                             break;
                         }
 
-                        case op_aload_0: {
+                        case op_aload_0: TREO_VM_HANDLER(op_aload_0) {
                             (sp++)->rvalue = localvar[0].rvalue;
                             runtime->pc++;
                             break;
                         }
 
 
-                        case op_aload_1: {
+                        case op_aload_1: TREO_VM_HANDLER(op_aload_1) {
                             (sp++)->rvalue = localvar[1].rvalue;
                             runtime->pc++;
                             break;
                         }
 
 
-                        case op_aload_2: {
+                        case op_aload_2: TREO_VM_HANDLER(op_aload_2) {
                             (sp++)->rvalue = localvar[2].rvalue;
                             runtime->pc++;
                             break;
                         }
 
 
-                        case op_aload_3: {
+                        case op_aload_3: TREO_VM_HANDLER(op_aload_3) {
                             (sp++)->rvalue = localvar[3].rvalue;
                             runtime->pc++;
                             break;
                         }
 
 
-                        case op_iaload:
-                        case op_faload: {
+                        case op_iaload: TREO_VM_HANDLER(op_iaload)
+                        case op_faload: TREO_VM_HANDLER(op_faload) {
                             idx = (--sp)->ivalue;
                             ins = (--sp)->rvalue;
                             if (!ins) {
@@ -1162,8 +1453,8 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_laload:
-                        case op_daload: {
+                        case op_laload: TREO_VM_HANDLER(op_laload)
+                        case op_daload: TREO_VM_HANDLER(op_daload) {
                             idx = (--sp)->ivalue;
                             ins = (--sp)->rvalue;
                             if (!ins) {
@@ -1185,7 +1476,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_aaload: {
+                        case op_aaload: TREO_VM_HANDLER(op_aaload) {
                             idx = (--sp)->ivalue;
                             ins = (--sp)->rvalue;
                             if (!ins) {
@@ -1207,7 +1498,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_baload: {
+                        case op_baload: TREO_VM_HANDLER(op_baload) {
                             idx = (--sp)->ivalue;
                             ins = (--sp)->rvalue;
                             if (!ins) {
@@ -1229,7 +1520,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_caload: {
+                        case op_caload: TREO_VM_HANDLER(op_caload) {
                             idx = (--sp)->ivalue;
                             ins = (--sp)->rvalue;
                             if (!ins) {
@@ -1251,7 +1542,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_saload: {
+                        case op_saload: TREO_VM_HANDLER(op_saload) {
                             idx = (--sp)->ivalue;
                             ins = (--sp)->rvalue;
                             if (!ins) {
@@ -1273,22 +1564,22 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_istore:
-                        case op_fstore: {
+                        case op_istore: TREO_VM_HANDLER(op_istore)
+                        case op_fstore: TREO_VM_HANDLER(op_fstore) {
                             localvar[(u8) runtime->pc[1]].ivalue = (--sp)->ivalue;
                             runtime->pc += 2;
                             break;
                         }
 
-                        case op_astore: {
+                        case op_astore: TREO_VM_HANDLER(op_astore) {
                             localvar[(u8) runtime->pc[1]].rvalue = (--sp)->rvalue;
                             runtime->pc += 2;
                             break;
                         }
 
 
-                        case op_lstore:
-                        case op_dstore: {
+                        case op_lstore: TREO_VM_HANDLER(op_lstore)
+                        case op_dstore: TREO_VM_HANDLER(op_dstore) {
                             --sp;
                             --sp;
                             localvar[(u8) runtime->pc[1]].lvalue = (sp)->lvalue;
@@ -1297,96 +1588,96 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                             break;
                         }
 
-                        case op_fstore_0:
-                        case op_istore_0: {
+                        case op_fstore_0: TREO_VM_HANDLER(op_fstore_0)
+                        case op_istore_0: TREO_VM_HANDLER(op_istore_0) {
                             localvar[0].ivalue = (--sp)->ivalue;
                             runtime->pc++;
                             break;
                         }
 
-                        case op_fstore_1:
-                        case op_istore_1: {
+                        case op_fstore_1: TREO_VM_HANDLER(op_fstore_1)
+                        case op_istore_1: TREO_VM_HANDLER(op_istore_1) {
                             localvar[1].ivalue = (--sp)->ivalue;
                             runtime->pc++;
                             break;
                         }
 
-                        case op_fstore_2:
-                        case op_istore_2: {
+                        case op_fstore_2: TREO_VM_HANDLER(op_fstore_2)
+                        case op_istore_2: TREO_VM_HANDLER(op_istore_2) {
                             localvar[2].ivalue = (--sp)->ivalue;
                             runtime->pc++;
                             break;
                         }
 
-                        case op_fstore_3:
-                        case op_istore_3: {
+                        case op_fstore_3: TREO_VM_HANDLER(op_fstore_3)
+                        case op_istore_3: TREO_VM_HANDLER(op_istore_3) {
                             localvar[3].ivalue = (--sp)->ivalue;
                             runtime->pc++;
                             break;
                         }
 
-                        case op_dstore_0:
-                        case op_lstore_0: {
+                        case op_dstore_0: TREO_VM_HANDLER(op_dstore_0)
+                        case op_lstore_0: TREO_VM_HANDLER(op_lstore_0) {
                             --sp;
                             localvar[0].lvalue = (--sp)->lvalue;
                             runtime->pc++;
                             break;
                         }
 
-                        case op_dstore_1:
-                        case op_lstore_1: {
+                        case op_dstore_1: TREO_VM_HANDLER(op_dstore_1)
+                        case op_lstore_1: TREO_VM_HANDLER(op_lstore_1) {
                             --sp;
                             localvar[1].lvalue = (--sp)->lvalue;
                             runtime->pc++;
                             break;
                         }
 
-                        case op_dstore_2:
-                        case op_lstore_2: {
+                        case op_dstore_2: TREO_VM_HANDLER(op_dstore_2)
+                        case op_lstore_2: TREO_VM_HANDLER(op_lstore_2) {
                             --sp;
                             localvar[2].lvalue = (--sp)->lvalue;
                             runtime->pc++;
                             break;
                         }
 
-                        case op_dstore_3:
-                        case op_lstore_3: {
+                        case op_dstore_3: TREO_VM_HANDLER(op_dstore_3)
+                        case op_lstore_3: TREO_VM_HANDLER(op_lstore_3) {
                             --sp;
                             localvar[3].lvalue = (--sp)->lvalue;
                             runtime->pc++;
                             break;
                         }
 
-                        case op_astore_0: {
+                        case op_astore_0: TREO_VM_HANDLER(op_astore_0) {
                             localvar[0].rvalue = (--sp)->rvalue;
                             runtime->pc++;
                             break;
                         }
 
 
-                        case op_astore_1: {
+                        case op_astore_1: TREO_VM_HANDLER(op_astore_1) {
                             localvar[1].rvalue = (--sp)->rvalue;
                             runtime->pc++;
                             break;
                         }
 
 
-                        case op_astore_2: {
+                        case op_astore_2: TREO_VM_HANDLER(op_astore_2) {
                             localvar[2].rvalue = (--sp)->rvalue;
                             runtime->pc++;
                             break;
                         }
 
 
-                        case op_astore_3: {
+                        case op_astore_3: TREO_VM_HANDLER(op_astore_3) {
                             localvar[3].rvalue = (--sp)->rvalue;
                             runtime->pc++;
                             break;
                         }
 
 
-                        case op_fastore:
-                        case op_iastore: {
+                        case op_fastore: TREO_VM_HANDLER(op_fastore)
+                        case op_iastore: TREO_VM_HANDLER(op_iastore) {
                             ival1 = (--sp)->ivalue;
                             idx = (--sp)->ivalue;
                             ins = (--sp)->rvalue;
@@ -1408,8 +1699,8 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_dastore:
-                        case op_lastore: {
+                        case op_dastore: TREO_VM_HANDLER(op_dastore)
+                        case op_lastore: TREO_VM_HANDLER(op_lastore) {
                             --sp;
                             lval1 = (--sp)->lvalue;
                             idx = (--sp)->ivalue;
@@ -1432,7 +1723,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_aastore: {
+                        case op_aastore: TREO_VM_HANDLER(op_aastore) {
                             rval1 = (--sp)->rvalue;
                             idx = (--sp)->ivalue;
                             ins = (--sp)->rvalue;
@@ -1454,7 +1745,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_bastore: {
+                        case op_bastore: TREO_VM_HANDLER(op_bastore) {
                             ival1 = (--sp)->ivalue;
                             idx = (--sp)->ivalue;
                             ins = (--sp)->rvalue;
@@ -1476,7 +1767,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_castore: {
+                        case op_castore: TREO_VM_HANDLER(op_castore) {
                             ival1 = (--sp)->ivalue;
                             idx = (--sp)->ivalue;
                             ins = (--sp)->rvalue;
@@ -1498,7 +1789,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_sastore: {
+                        case op_sastore: TREO_VM_HANDLER(op_sastore) {
                             ival1 = (--sp)->ivalue;
                             idx = (--sp)->ivalue;
                             ins = (--sp)->rvalue;
@@ -1520,7 +1811,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_pop: {
+                        case op_pop: TREO_VM_HANDLER(op_pop) {
                             --sp;
 #if _JVM_DEBUG_LOG_LEVEL > 5
                             invoke_deepth(runtime);
@@ -1532,7 +1823,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_pop2: {
+                        case op_pop2: TREO_VM_HANDLER(op_pop2) {
                             --sp;
                             --sp;
 
@@ -1546,7 +1837,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_dup: {
+                        case op_dup: TREO_VM_HANDLER(op_dup) {
                             *(sp - 0) = *(sp - 1);
                             sp++;
 
@@ -1560,7 +1851,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_dup_x1: {
+                        case op_dup_x1: TREO_VM_HANDLER(op_dup_x1) {
                             *(sp - 0) = *(sp - 1);
                             *(sp - 1) = *(sp - 2);
                             *(sp - 2) = *(sp - 0);
@@ -1576,7 +1867,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_dup_x2: {
+                        case op_dup_x2: TREO_VM_HANDLER(op_dup_x2) {
                             *(sp - 0) = *(sp - 1);
                             *(sp - 1) = *(sp - 2);
                             *(sp - 2) = *(sp - 3);
@@ -1593,7 +1884,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_dup2: {
+                        case op_dup2: TREO_VM_HANDLER(op_dup2) {
                             *(sp - 0) = *(sp - 2);
                             *(sp + 1) = *(sp - 1);
                             sp++;
@@ -1609,7 +1900,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_dup2_x1: {
+                        case op_dup2_x1: TREO_VM_HANDLER(op_dup2_x1) {
                             sp++;
                             sp++;
                             *(sp - 1) = *(sp - 3);
@@ -1629,7 +1920,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_dup2_x2: {
+                        case op_dup2_x2: TREO_VM_HANDLER(op_dup2_x2) {
                             sp++;
                             sp++;
                             *(sp - 1) = *(sp - 3);
@@ -1649,7 +1940,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_swap: {
+                        case op_swap: TREO_VM_HANDLER(op_swap) {
 
                             *(sp - 0) = *(sp - 2);
                             *(sp - 2) = *(sp - 1);
@@ -1666,7 +1957,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_iadd: {
+                        case op_iadd: TREO_VM_HANDLER(op_iadd) {
 
                             --sp;
                             (sp - 1)->ivalue += (sp - 0)->ivalue;
@@ -1680,7 +1971,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_ladd: {
+                        case op_ladd: TREO_VM_HANDLER(op_ladd) {
                             --sp;
                             --sp;
                             (sp - 2)->lvalue += (sp - 0)->lvalue;
@@ -1695,7 +1986,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_fadd: {
+                        case op_fadd: TREO_VM_HANDLER(op_fadd) {
                             --sp;
                             (sp - 1)->fvalue += (sp - 0)->fvalue;
 
@@ -1709,7 +2000,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_dadd: {
+                        case op_dadd: TREO_VM_HANDLER(op_dadd) {
                             --sp;
                             --sp;
                             (sp - 2)->dvalue += (sp - 0)->dvalue;
@@ -1724,7 +2015,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_isub: {
+                        case op_isub: TREO_VM_HANDLER(op_isub) {
                             --sp;
                             (sp - 1)->ivalue -= (sp - 0)->ivalue;
 
@@ -1738,7 +2029,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_lsub: {
+                        case op_lsub: TREO_VM_HANDLER(op_lsub) {
                             --sp;
                             --sp;
                             (sp - 2)->lvalue -= (sp - 0)->lvalue;
@@ -1753,7 +2044,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_fsub: {
+                        case op_fsub: TREO_VM_HANDLER(op_fsub) {
                             --sp;
                             (sp - 1)->fvalue -= (sp - 0)->fvalue;
 
@@ -1767,7 +2058,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_dsub: {
+                        case op_dsub: TREO_VM_HANDLER(op_dsub) {
                             --sp;
                             --sp;
                             (sp - 2)->dvalue -= (sp - 0)->dvalue;
@@ -1783,7 +2074,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_imul: {
+                        case op_imul: TREO_VM_HANDLER(op_imul) {
 
                             --sp;
                             (sp - 1)->ivalue *= (sp - 0)->ivalue;
@@ -1797,7 +2088,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_lmul: {
+                        case op_lmul: TREO_VM_HANDLER(op_lmul) {
                             --sp;
                             --sp;
                             (sp - 2)->lvalue *= (sp - 0)->lvalue;
@@ -1812,7 +2103,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_fmul: {
+                        case op_fmul: TREO_VM_HANDLER(op_fmul) {
                             --sp;
                             (sp - 1)->fvalue *= (sp - 0)->fvalue;
 #if _JVM_DEBUG_LOG_LEVEL > 5
@@ -1825,7 +2116,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_dmul: {
+                        case op_dmul: TREO_VM_HANDLER(op_dmul) {
                             --sp;
                             --sp;
                             (sp - 2)->dvalue *= (sp - 0)->dvalue;
@@ -1839,7 +2130,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_idiv: {
+                        case op_idiv: TREO_VM_HANDLER(op_idiv) {
 
 #if _JVM_DEBUG_LOG_LEVEL > 5
                             invoke_deepth(runtime);
@@ -1857,7 +2148,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_ldiv: {
+                        case op_ldiv: TREO_VM_HANDLER(op_ldiv) {
 #if _JVM_DEBUG_LOG_LEVEL > 5
                             invoke_deepth(runtime);
                             jvm_printf("ldiv:  %lld\n", (sp - 2)->lvalue);
@@ -1875,7 +2166,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_fdiv: {
+                        case op_fdiv: TREO_VM_HANDLER(op_fdiv) {
                             // there isn't runtime exception throw
                             // https://github.com/digitalgust/miniJVM/issues/30
                             --sp;
@@ -1889,7 +2180,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                             break;
                         }
 
-                        case op_ddiv: {
+                        case op_ddiv: TREO_VM_HANDLER(op_ddiv) {
                             // there isn't runtime exception throw
                             // https://github.com/digitalgust/miniJVM/issues/30
                             --sp;
@@ -1905,7 +2196,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_irem: {
+                        case op_irem: TREO_VM_HANDLER(op_irem) {
                             if (!(sp - 1)->ivalue) {
                                 goto label_arrithmetic_throw;
                             } else {
@@ -1921,7 +2212,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_lrem: {
+                        case op_lrem: TREO_VM_HANDLER(op_lrem) {
                             if (!(sp - 2)->lvalue) {
                                 goto label_arrithmetic_throw;
                             } else {
@@ -1939,7 +2230,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_frem: {
+                        case op_frem: TREO_VM_HANDLER(op_frem) {
                             // there isn't runtime exception throw
                             // https://github.com/digitalgust/miniJVM/issues/30
                             --sp;
@@ -1956,7 +2247,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_drem: {
+                        case op_drem: TREO_VM_HANDLER(op_drem) {
                             // there isn't runtime exception throw
                             // https://github.com/digitalgust/miniJVM/issues/30
                             --sp;
@@ -1975,7 +2266,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_ineg: {
+                        case op_ineg: TREO_VM_HANDLER(op_ineg) {
 
 #if _JVM_DEBUG_LOG_LEVEL > 5
                             invoke_deepth(runtime);
@@ -1988,7 +2279,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_lneg: {
+                        case op_lneg: TREO_VM_HANDLER(op_lneg) {
 
 #if _JVM_DEBUG_LOG_LEVEL > 5
                             invoke_deepth(runtime);
@@ -2001,7 +2292,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_fneg: {
+                        case op_fneg: TREO_VM_HANDLER(op_fneg) {
 
 #if _JVM_DEBUG_LOG_LEVEL > 5
                             invoke_deepth(runtime);
@@ -2014,7 +2305,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_dneg: {
+                        case op_dneg: TREO_VM_HANDLER(op_dneg) {
 
 #if _JVM_DEBUG_LOG_LEVEL > 5
                             invoke_deepth(runtime);
@@ -2027,7 +2318,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_ishl: {
+                        case op_ishl: TREO_VM_HANDLER(op_ishl) {
 
 #if _JVM_DEBUG_LOG_LEVEL > 5
                             invoke_deepth(runtime);
@@ -2041,7 +2332,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_lshl: {
+                        case op_lshl: TREO_VM_HANDLER(op_lshl) {
 
 #if _JVM_DEBUG_LOG_LEVEL > 5
                             invoke_deepth(runtime);
@@ -2055,7 +2346,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_ishr: {
+                        case op_ishr: TREO_VM_HANDLER(op_ishr) {
 
 #if _JVM_DEBUG_LOG_LEVEL > 5
                             invoke_deepth(runtime);
@@ -2069,7 +2360,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_lshr: {
+                        case op_lshr: TREO_VM_HANDLER(op_lshr) {
 
 #if _JVM_DEBUG_LOG_LEVEL > 5
                             invoke_deepth(runtime);
@@ -2083,7 +2374,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_iushr: {
+                        case op_iushr: TREO_VM_HANDLER(op_iushr) {
 
 #if _JVM_DEBUG_LOG_LEVEL > 5
                             invoke_deepth(runtime);
@@ -2097,7 +2388,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_lushr: {
+                        case op_lushr: TREO_VM_HANDLER(op_lushr) {
 
 #if _JVM_DEBUG_LOG_LEVEL > 5
                             invoke_deepth(runtime);
@@ -2111,7 +2402,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_iand: {
+                        case op_iand: TREO_VM_HANDLER(op_iand) {
 
 #if _JVM_DEBUG_LOG_LEVEL > 5
                             invoke_deepth(runtime);
@@ -2125,7 +2416,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_land: {
+                        case op_land: TREO_VM_HANDLER(op_land) {
 
 #if _JVM_DEBUG_LOG_LEVEL > 5
                             invoke_deepth(runtime);
@@ -2140,7 +2431,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_ior: {
+                        case op_ior: TREO_VM_HANDLER(op_ior) {
 
 #if _JVM_DEBUG_LOG_LEVEL > 5
                             invoke_deepth(runtime);
@@ -2154,7 +2445,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_lor: {
+                        case op_lor: TREO_VM_HANDLER(op_lor) {
 
 #if _JVM_DEBUG_LOG_LEVEL > 5
                             invoke_deepth(runtime);
@@ -2169,7 +2460,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_ixor: {
+                        case op_ixor: TREO_VM_HANDLER(op_ixor) {
 
 #if _JVM_DEBUG_LOG_LEVEL > 5
                             invoke_deepth(runtime);
@@ -2183,7 +2474,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_lxor: {
+                        case op_lxor: TREO_VM_HANDLER(op_lxor) {
 
 #if _JVM_DEBUG_LOG_LEVEL > 5
                             invoke_deepth(runtime);
@@ -2198,7 +2489,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_iinc: {
+                        case op_iinc: TREO_VM_HANDLER(op_iinc) {
                             localvar[(u8) runtime->pc[1]].ivalue += (s8) runtime->pc[2];
                             runtime->pc += 3;
 #if _JVM_DEBUG_LOG_LEVEL > 5
@@ -2210,7 +2501,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_i2l: {
+                        case op_i2l: TREO_VM_HANDLER(op_i2l) {
 
 #if _JVM_DEBUG_LOG_LEVEL > 5
                             invoke_deepth(runtime);
@@ -2224,7 +2515,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_i2f: {
+                        case op_i2f: TREO_VM_HANDLER(op_i2f) {
 #if _JVM_DEBUG_LOG_LEVEL > 5
                             invoke_deepth(runtime);
                             jvm_printf("i2f:  %d\n", (sp - 1)->ivalue);
@@ -2236,7 +2527,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_i2d: {
+                        case op_i2d: TREO_VM_HANDLER(op_i2d) {
 #if _JVM_DEBUG_LOG_LEVEL > 5
                             invoke_deepth(runtime);
                             jvm_printf("i2d:  %d\n", (sp - 1)->ivalue);
@@ -2249,7 +2540,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_l2i: {
+                        case op_l2i: TREO_VM_HANDLER(op_l2i) {
 
 #if _JVM_DEBUG_LOG_LEVEL > 5
                             invoke_deepth(runtime);
@@ -2263,7 +2554,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_l2f: {
+                        case op_l2f: TREO_VM_HANDLER(op_l2f) {
 
 #if _JVM_DEBUG_LOG_LEVEL > 5
                             invoke_deepth(runtime);
@@ -2277,7 +2568,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_l2d: {
+                        case op_l2d: TREO_VM_HANDLER(op_l2d) {
 
 #if _JVM_DEBUG_LOG_LEVEL > 5
                             invoke_deepth(runtime);
@@ -2290,7 +2581,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_f2i: {
+                        case op_f2i: TREO_VM_HANDLER(op_f2i) {
 #if _JVM_DEBUG_LOG_LEVEL > 5
                             invoke_deepth(runtime);
                             jvm_printf("f2i: %f\n", (sp - 1)->fvalue);
@@ -2302,7 +2593,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_f2l: {
+                        case op_f2l: TREO_VM_HANDLER(op_f2l) {
 #if _JVM_DEBUG_LOG_LEVEL > 5
                             invoke_deepth(runtime);
                             jvm_printf("f2l: %f\n", (sp - 1)->fvalue);
@@ -2315,7 +2606,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_f2d: {
+                        case op_f2d: TREO_VM_HANDLER(op_f2d) {
 #if _JVM_DEBUG_LOG_LEVEL > 5
                             invoke_deepth(runtime);
                             jvm_printf("f2d: %f\n", (sp - 1)->fvalue);
@@ -2328,7 +2619,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_d2i: {
+                        case op_d2i: TREO_VM_HANDLER(op_d2i) {
 #if _JVM_DEBUG_LOG_LEVEL > 5
                             invoke_deepth(runtime);
                             jvm_printf("d2i: %lf\n", (sp - 2)->dvalue);
@@ -2341,7 +2632,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_d2l: {
+                        case op_d2l: TREO_VM_HANDLER(op_d2l) {
 #if _JVM_DEBUG_LOG_LEVEL > 5
                             invoke_deepth(runtime);
                             jvm_printf("d2l: %lf\n", (sp - 2)->dvalue);
@@ -2353,7 +2644,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_d2f: {
+                        case op_d2f: TREO_VM_HANDLER(op_d2f) {
 #if _JVM_DEBUG_LOG_LEVEL > 5
                             invoke_deepth(runtime);
                             jvm_printf("d2f: %lf\n", (sp - 2)->dvalue);
@@ -2366,7 +2657,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_i2b: {
+                        case op_i2b: TREO_VM_HANDLER(op_i2b) {
 
 #if _JVM_DEBUG_LOG_LEVEL > 5
                             invoke_deepth(runtime);
@@ -2379,7 +2670,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_i2c: {
+                        case op_i2c: TREO_VM_HANDLER(op_i2c) {
 
 #if _JVM_DEBUG_LOG_LEVEL > 5
                             invoke_deepth(runtime);
@@ -2391,7 +2682,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                             break;
                         }
 
-                        case op_i2s: {
+                        case op_i2s: TREO_VM_HANDLER(op_i2s) {
 
 #if _JVM_DEBUG_LOG_LEVEL > 5
                             invoke_deepth(runtime);
@@ -2404,7 +2695,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_lcmp: {
+                        case op_lcmp: TREO_VM_HANDLER(op_lcmp) {
                             --sp;
                             lval1 = (--sp)->lvalue;
                             --sp;
@@ -2423,7 +2714,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_fcmpl: {
+                        case op_fcmpl: TREO_VM_HANDLER(op_fcmpl) {
                             fval1 = (--sp)->fvalue;
                             fval2 = (--sp)->fvalue;
                             if ((sp + 0)->uivalue == 0x7fc00000 || (sp + 1)->uivalue == 0x7fc00000) {
@@ -2443,7 +2734,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_fcmpg: {
+                        case op_fcmpg: TREO_VM_HANDLER(op_fcmpg) {
                             fval1 = (--sp)->fvalue;
                             fval2 = (--sp)->fvalue;
                             if ((sp + 0)->uivalue == 0x7fc00000 || (sp + 1)->uivalue == 0x7fc00000) {
@@ -2463,7 +2754,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_dcmpl: {
+                        case op_dcmpl: TREO_VM_HANDLER(op_dcmpl) {
                             --sp;
                             dval1 = (--sp)->dvalue;
                             --sp;
@@ -2485,7 +2776,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_dcmpg: {
+                        case op_dcmpg: TREO_VM_HANDLER(op_dcmpg) {
                             --sp;
                             dval1 = (--sp)->dvalue;
                             --sp;
@@ -2507,7 +2798,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_ifeq: {
+                        case op_ifeq: TREO_VM_HANDLER(op_ifeq) {
                             ival1 = (--sp)->ivalue;
                             if (ival1 == 0) {
                                 offset = *((s16 *) (runtime->pc + 1));
@@ -2526,7 +2817,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_ifne: {
+                        case op_ifne: TREO_VM_HANDLER(op_ifne) {
                             ival1 = (--sp)->ivalue;
                             if (ival1 != 0) {
                                 offset = *((s16 *) (runtime->pc + 1));
@@ -2545,7 +2836,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_iflt: {
+                        case op_iflt: TREO_VM_HANDLER(op_iflt) {
                             ival1 = (--sp)->ivalue;
                             if (ival1 < 0) {
                                 offset = *((s16 *) (runtime->pc + 1));
@@ -2564,7 +2855,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_ifge: {
+                        case op_ifge: TREO_VM_HANDLER(op_ifge) {
                             ival1 = (--sp)->ivalue;
                             if (ival1 >= 0) {
                                 offset = *((s16 *) (runtime->pc + 1));
@@ -2583,7 +2874,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_ifgt: {
+                        case op_ifgt: TREO_VM_HANDLER(op_ifgt) {
                             ival1 = (--sp)->ivalue;
                             if (ival1 > 0) {
                                 offset = *((s16 *) (runtime->pc + 1));
@@ -2602,7 +2893,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_ifle: {
+                        case op_ifle: TREO_VM_HANDLER(op_ifle) {
                             ival1 = (--sp)->ivalue;
                             if (ival1 <= 0) {
                                 offset = *((s16 *) (runtime->pc + 1));
@@ -2621,7 +2912,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_if_icmpeq: {
+                        case op_if_icmpeq: TREO_VM_HANDLER(op_if_icmpeq) {
                             ival2 = (--sp)->ivalue;
                             ival1 = (--sp)->ivalue;
                             if (ival1 == ival2) {
@@ -2640,7 +2931,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_if_icmpne: {
+                        case op_if_icmpne: TREO_VM_HANDLER(op_if_icmpne) {
                             ival2 = (--sp)->ivalue;
                             ival1 = (--sp)->ivalue;
                             if (ival1 != ival2) {
@@ -2659,7 +2950,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_if_icmplt: {
+                        case op_if_icmplt: TREO_VM_HANDLER(op_if_icmplt) {
                             ival2 = (--sp)->ivalue;
                             ival1 = (--sp)->ivalue;
                             if (ival1 < ival2) {
@@ -2678,7 +2969,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_if_icmpge: {
+                        case op_if_icmpge: TREO_VM_HANDLER(op_if_icmpge) {
                             ival2 = (--sp)->ivalue;
                             ival1 = (--sp)->ivalue;
                             if (ival1 >= ival2) {
@@ -2697,7 +2988,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_if_icmpgt: {
+                        case op_if_icmpgt: TREO_VM_HANDLER(op_if_icmpgt) {
                             ival2 = (--sp)->ivalue;
                             ival1 = (--sp)->ivalue;
                             if (ival1 > ival2) {
@@ -2716,7 +3007,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_if_icmple: {
+                        case op_if_icmple: TREO_VM_HANDLER(op_if_icmple) {
                             ival2 = (--sp)->ivalue;
                             ival1 = (--sp)->ivalue;
                             if (ival1 <= ival2) {
@@ -2735,7 +3026,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_if_acmpeq: {
+                        case op_if_acmpeq: TREO_VM_HANDLER(op_if_acmpeq) {
                             rval2 = (--sp)->rvalue;
                             rval1 = (--sp)->rvalue;
                             if (rval1 == rval2) {
@@ -2754,7 +3045,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_if_acmpne: {
+                        case op_if_acmpne: TREO_VM_HANDLER(op_if_acmpne) {
                             rval2 = (--sp)->rvalue;
                             rval1 = (--sp)->rvalue;
                             if (rval1 != rval2) {
@@ -2773,7 +3064,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_goto: {
+                        case op_goto: TREO_VM_HANDLER(op_goto) {
 
                             offset = *((s16 *) (runtime->pc + 1));
                             runtime->pc += offset;
@@ -2787,7 +3078,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_jsr: {
+                        case op_jsr: TREO_VM_HANDLER(op_jsr) {
                             offset = *((s16 *) (runtime->pc + 1));
                             (sp++)->rvalue = (runtime->pc + 3);
 #if _JVM_DEBUG_LOG_LEVEL > 5
@@ -2799,7 +3090,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_ret: {
+                        case op_ret: TREO_VM_HANDLER(op_ret) {
                             __returnaddress addr = (__refer) (intptr_t) localvar[(u8) runtime->pc[1]].rvalue;
 
 #if _JVM_DEBUG_LOG_LEVEL > 5
@@ -2811,7 +3102,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_tableswitch: {
+                        case op_tableswitch: TREO_VM_HANDLER(op_tableswitch) {
                             idx = (s32) (4 - ((((u64) (intptr_t) runtime->pc) - (u64) (intptr_t) (ca->code)) % 4));//4 byte对齐
 
                             s32 default_offset = *((s32 *) (runtime->pc + idx));
@@ -2842,7 +3133,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_lookupswitch: {
+                        case op_lookupswitch: TREO_VM_HANDLER(op_lookupswitch) {
                             idx = (s32) (4 - ((((u64) (intptr_t) runtime->pc) - (u64) (intptr_t) (ca->code)) % 4));//4 byte对齐
 
                             s32 default_offset = *((s32 *) (runtime->pc + idx));
@@ -2875,8 +3166,8 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_lreturn:
-                        case op_dreturn: {
+                        case op_lreturn: TREO_VM_HANDLER(op_lreturn)
+                        case op_dreturn: TREO_VM_HANDLER(op_dreturn) {
 #if _JVM_DEBUG_LOG_LEVEL > 5
 
                             peek_entry(stack->sp - 1, &entry);
@@ -2893,8 +3184,8 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_ireturn:
-                        case op_freturn: {
+                        case op_ireturn: TREO_VM_HANDLER(op_ireturn)
+                        case op_freturn: TREO_VM_HANDLER(op_freturn) {
                             ival1 = (--sp)->ivalue;
 #if _JVM_DEBUG_LOG_LEVEL > 5
                             invoke_deepth(runtime);
@@ -2906,7 +3197,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                             goto label_exit_while;
                             break;
                         }
-                        case op_areturn: {
+                        case op_areturn: TREO_VM_HANDLER(op_areturn) {
                             rval1 = (--sp)->rvalue;
 #if _JVM_DEBUG_LOG_LEVEL > 5
                             invoke_deepth(runtime);
@@ -2920,7 +3211,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_return: {
+                        case op_return: TREO_VM_HANDLER(op_return) {
 #if _JVM_DEBUG_LOG_LEVEL > 5
                             invoke_deepth(runtime);
                             jvm_printf("return: \n");
@@ -2932,7 +3223,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_getstatic: {
+                        case op_getstatic: TREO_VM_HANDLER(op_getstatic) {
                             stack->sp = sp;
                             idx = *((u16 *) (runtime->pc + 1));
                             fi = class_get_constant_fieldref(clazz, idx)->fieldInfo;
@@ -2986,7 +3277,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_putstatic: {
+                        case op_putstatic: TREO_VM_HANDLER(op_putstatic) {
 
                             idx = *((u16 *) (runtime->pc + 1));
 
@@ -3039,7 +3330,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_getfield: {
+                        case op_getfield: TREO_VM_HANDLER(op_getfield) {
                             s8 byte_changed = 0;
                             spin_lock(&jvm->lock_cloader);
                             {
@@ -3111,7 +3402,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_putfield: {
+                        case op_putfield: TREO_VM_HANDLER(op_putfield) {
                             //there were a multithread error , one enter the ins but changed by another
                             s8 byte_changed = 0;
 
@@ -3182,7 +3473,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_invokevirtual: {
+                        case op_invokevirtual: TREO_VM_HANDLER(op_invokevirtual) {
 
                             cmr = class_get_constant_method_ref(clazz, *((u16 *) (runtime->pc + 1)));
 
@@ -3246,7 +3537,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_invokespecial: {
+                        case op_invokespecial: TREO_VM_HANDLER(op_invokespecial) {
                             cmr = class_get_constant_method_ref(clazz, *((u16 *) (runtime->pc + 1)));
                             m = cmr->methodInfo;
 
@@ -3261,7 +3552,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_invokestatic: {
+                        case op_invokestatic: TREO_VM_HANDLER(op_invokestatic) {
                             cmr = class_get_constant_method_ref(clazz, *((u16 *) (runtime->pc + 1)));
                             m = cmr->methodInfo;
 
@@ -3276,7 +3567,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_invokeinterface: {
+                        case op_invokeinterface: TREO_VM_HANDLER(op_invokeinterface) {
 
                             //s32 paraCount = (u8) runtime->pc[3];
                             cmr = class_get_constant_method_ref(clazz, *((u16 *) (runtime->pc + 1)));
@@ -3306,7 +3597,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_invokedynamic: {
+                        case op_invokedynamic: TREO_VM_HANDLER(op_invokedynamic) {
                             //get bootMethod struct
                             cid = class_get_invoke_dynamic(clazz, *((u16 *) (runtime->pc + 1)));
                             bootMethod = &clazz->bootstrapMethodAttr->bootstrap_methods[cid->bootstrap_method_attr_index];//Boot
@@ -3331,7 +3622,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_new: {
+                        case op_new: TREO_VM_HANDLER(op_new) {
                             idx = *((u16 *) (runtime->pc + 1));
 
                             stack->sp = sp;
@@ -3353,7 +3644,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_newarray: {
+                        case op_newarray: TREO_VM_HANDLER(op_newarray) {
                             idx = runtime->pc[1];
 
                             count = (--sp)->ivalue;
@@ -3371,7 +3662,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_anewarray: {
+                        case op_anewarray: TREO_VM_HANDLER(op_anewarray) {
                             idx = *((u16 *) (runtime->pc + 1));
 
                             count = (--sp)->ivalue;
@@ -3399,7 +3690,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_arraylength: {
+                        case op_arraylength: TREO_VM_HANDLER(op_arraylength) {
                             ins = (--sp)->rvalue;
 
 #if _JVM_DEBUG_LOG_LEVEL > 5
@@ -3416,7 +3707,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_athrow: {
+                        case op_athrow: TREO_VM_HANDLER(op_athrow) {
 
 #if _JVM_DEBUG_LOG_LEVEL > 5
                             ins = (Instance *) pop_ref(stack);
@@ -3430,7 +3721,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_checkcast: {
+                        case op_checkcast: TREO_VM_HANDLER(op_checkcast) {
                             idx = *((u16 *) (runtime->pc + 1));
 
                             ins = (--sp)->rvalue;
@@ -3452,7 +3743,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_instanceof: {
+                        case op_instanceof: TREO_VM_HANDLER(op_instanceof) {
                             ins = (--sp)->rvalue;
                             idx = *((u16 *) (runtime->pc + 1));
 
@@ -3476,7 +3767,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_monitorenter: {
+                        case op_monitorenter: TREO_VM_HANDLER(op_monitorenter) {
                             ins = (--sp)->rvalue;
                             stack->sp = sp;
                             if (!ins)goto label_null_throw;
@@ -3491,7 +3782,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_monitorexit: {
+                        case op_monitorexit: TREO_VM_HANDLER(op_monitorexit) {
                             ins = (--sp)->rvalue;
                             stack->sp = sp;
                             if (!ins)goto label_null_throw;
@@ -3509,7 +3800,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_wide: {
+                        case op_wide: TREO_VM_HANDLER(op_wide) {
 #if _JVM_DEBUG_LOG_LEVEL > 5
 
                             invoke_deepth(runtime);
@@ -3580,7 +3871,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_multianewarray: {
+                        case op_multianewarray: TREO_VM_HANDLER(op_multianewarray) {
                             //data type index
 
                             ustr = class_get_utf8_string(clazz, *((u16 *) (runtime->pc + 1)));
@@ -3607,7 +3898,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_ifnull: {
+                        case op_ifnull: TREO_VM_HANDLER(op_ifnull) {
                             ins = (--sp)->rvalue;
                             if (!ins) {
 
@@ -3625,7 +3916,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_ifnonnull: {
+                        case op_ifnonnull: TREO_VM_HANDLER(op_ifnonnull) {
                             ins = (--sp)->rvalue;
                             if (ins) {
                                 runtime->pc += *((s16 *) (runtime->pc + 1));
@@ -3640,7 +3931,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_goto_w: {
+                        case op_goto_w: TREO_VM_HANDLER(op_goto_w) {
                             offset = *((s32 *) (runtime->pc + 1));
                             runtime->pc += offset;
                             check_gc_pause(offset);
@@ -3652,7 +3943,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_jsr_w: {
+                        case op_jsr_w: TREO_VM_HANDLER(op_jsr_w) {
 
                             offset = *((s32 *) (runtime->pc + 1));
                             (sp++)->rvalue = (runtime->pc + 3);
@@ -3665,7 +3956,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_breakpoint: {
+                        case op_breakpoint: TREO_VM_HANDLER(op_breakpoint) {
 #if _JVM_DEBUG_LOG_LEVEL > 5
 
                             invoke_deepth(runtime);
@@ -3675,7 +3966,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_getstatic_ref: {
+                        case op_getstatic_ref: TREO_VM_HANDLER(op_getstatic_ref) {
                             idx = *((u16 *) (runtime->pc + 1));
                             fi = class_get_constant_fieldref(clazz, idx)->fieldInfo;
                             ptr = getStaticFieldPtr(fi);
@@ -3689,7 +3980,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                             break;
                         }
 
-                        case op_getstatic_long: {
+                        case op_getstatic_long: TREO_VM_HANDLER(op_getstatic_long) {
                             idx = *((u16 *) (runtime->pc + 1));
                             fi = class_get_constant_fieldref(clazz, idx)->fieldInfo;
                             ptr = getStaticFieldPtr(fi);
@@ -3703,7 +3994,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                             break;
                         }
 
-                        case op_getstatic_int: {
+                        case op_getstatic_int: TREO_VM_HANDLER(op_getstatic_int) {
                             idx = *((u16 *) (runtime->pc + 1));
                             fi = class_get_constant_fieldref(clazz, idx)->fieldInfo;
                             ptr = getStaticFieldPtr(fi);
@@ -3716,7 +4007,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                             break;
                         }
 
-                        case op_getstatic_short: {
+                        case op_getstatic_short: TREO_VM_HANDLER(op_getstatic_short) {
                             idx = *((u16 *) (runtime->pc + 1));
                             fi = class_get_constant_fieldref(clazz, idx)->fieldInfo;
                             ptr = getStaticFieldPtr(fi);
@@ -3729,7 +4020,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                             break;
                         }
 
-                        case op_getstatic_jchar: {
+                        case op_getstatic_jchar: TREO_VM_HANDLER(op_getstatic_jchar) {
                             idx = *((u16 *) (runtime->pc + 1));
                             fi = class_get_constant_fieldref(clazz, idx)->fieldInfo;
                             ptr = getStaticFieldPtr(fi);
@@ -3742,7 +4033,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                             break;
                         }
 
-                        case op_getstatic_byte: {
+                        case op_getstatic_byte: TREO_VM_HANDLER(op_getstatic_byte) {
                             idx = *((u16 *) (runtime->pc + 1));
                             fi = class_get_constant_fieldref(clazz, idx)->fieldInfo;
                             ptr = getStaticFieldPtr(fi);
@@ -3756,7 +4047,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_putstatic_ref: {
+                        case op_putstatic_ref: TREO_VM_HANDLER(op_putstatic_ref) {
                             idx = *((u16 *) (runtime->pc + 1));
                             fi = class_get_constant_fieldref(clazz, idx)->fieldInfo;
                             ptr = getStaticFieldPtr(fi);
@@ -3770,7 +4061,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_putstatic_long: {
+                        case op_putstatic_long: TREO_VM_HANDLER(op_putstatic_long) {
                             idx = *((u16 *) (runtime->pc + 1));
                             fi = class_get_constant_fieldref(clazz, idx)->fieldInfo;
                             ptr = getStaticFieldPtr(fi);
@@ -3784,7 +4075,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                             break;
                         }
 
-                        case op_putstatic_int: {
+                        case op_putstatic_int: TREO_VM_HANDLER(op_putstatic_int) {
                             idx = *((u16 *) (runtime->pc + 1));
                             fi = class_get_constant_fieldref(clazz, idx)->fieldInfo;
                             ptr = getStaticFieldPtr(fi);
@@ -3797,7 +4088,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                             break;
                         }
 
-                        case op_putstatic_short: {
+                        case op_putstatic_short: TREO_VM_HANDLER(op_putstatic_short) {
                             idx = *((u16 *) (runtime->pc + 1));
                             fi = class_get_constant_fieldref(clazz, idx)->fieldInfo;
                             ptr = getStaticFieldPtr(fi);
@@ -3810,7 +4101,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                             break;
                         }
 
-                        case op_putstatic_byte: {
+                        case op_putstatic_byte: TREO_VM_HANDLER(op_putstatic_byte) {
                             idx = *((u16 *) (runtime->pc + 1));
                             fi = class_get_constant_fieldref(clazz, idx)->fieldInfo;
                             ptr = getStaticFieldPtr(fi);
@@ -3824,7 +4115,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_getfield_ref: {
+                        case op_getfield_ref: TREO_VM_HANDLER(op_getfield_ref) {
                             offset = *((u16 *) (runtime->pc + 1));
                             ins = (--sp)->rvalue;
                             if (!ins) {
@@ -3843,7 +4134,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_getfield_long: {
+                        case op_getfield_long: TREO_VM_HANDLER(op_getfield_long) {
                             offset = *((u16 *) (runtime->pc + 1));
                             ins = (--sp)->rvalue;
                             if (!ins) {
@@ -3863,7 +4154,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_getfield_int: {
+                        case op_getfield_int: TREO_VM_HANDLER(op_getfield_int) {
                             offset = *((u16 *) (runtime->pc + 1));
                             ins = (--sp)->rvalue;
                             if (!ins) {
@@ -3882,7 +4173,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_getfield_short: {
+                        case op_getfield_short: TREO_VM_HANDLER(op_getfield_short) {
                             offset = *((u16 *) (runtime->pc + 1));
                             ins = (--sp)->rvalue;
                             if (!ins) {
@@ -3901,7 +4192,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_getfield_jchar: {
+                        case op_getfield_jchar: TREO_VM_HANDLER(op_getfield_jchar) {
                             offset = *((u16 *) (runtime->pc + 1));
                             ins = (--sp)->rvalue;
                             if (!ins) {
@@ -3920,7 +4211,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_getfield_byte: {
+                        case op_getfield_byte: TREO_VM_HANDLER(op_getfield_byte) {
                             offset = *((u16 *) (runtime->pc + 1));
                             ins = (--sp)->rvalue;
                             if (!ins) {
@@ -3939,7 +4230,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_putfield_ref: {
+                        case op_putfield_ref: TREO_VM_HANDLER(op_putfield_ref) {
                             offset = *((u16 *) (runtime->pc + 1));
                             rval1 = (--sp)->rvalue;
                             ins = (--sp)->rvalue;
@@ -3959,7 +4250,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_putfield_long: {
+                        case op_putfield_long: TREO_VM_HANDLER(op_putfield_long) {
                             offset = *((u16 *) (runtime->pc + 1));
                             --sp;
                             lval1 = (--sp)->lvalue;
@@ -3979,7 +4270,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_putfield_int: {
+                        case op_putfield_int: TREO_VM_HANDLER(op_putfield_int) {
                             offset = *((u16 *) (runtime->pc + 1));
                             ival1 = (--sp)->ivalue;
                             ins = (--sp)->rvalue;
@@ -3998,7 +4289,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_putfield_short: {
+                        case op_putfield_short: TREO_VM_HANDLER(op_putfield_short) {
                             offset = *((u16 *) (runtime->pc + 1));
                             ival1 = (--sp)->ivalue;
                             ins = (--sp)->rvalue;
@@ -4017,7 +4308,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_putfield_byte: {
+                        case op_putfield_byte: TREO_VM_HANDLER(op_putfield_byte) {
                             offset = *((u16 *) (runtime->pc + 1));
                             ival1 = (--sp)->ivalue;
                             ins = (--sp)->rvalue;
@@ -4036,7 +4327,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_invokevirtual_fast: {
+                        case op_invokevirtual_fast: TREO_VM_HANDLER(op_invokevirtual_fast) {
 
                             cmr = class_get_constant_method_ref(clazz, *((u16 *) (runtime->pc + 1)));
                             ins = (sp - 1 - cmr->para_slots)->rvalue;
@@ -4064,7 +4355,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_invokespecial_fast: {
+                        case op_invokespecial_fast: TREO_VM_HANDLER(op_invokespecial_fast) {
                             cmr = class_get_constant_method_ref(clazz, *((u16 *) (runtime->pc + 1)));
                             m = cmr->methodInfo;
 #if _JVM_DEBUG_PROFILE
@@ -4081,7 +4372,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_invokestatic_fast: {
+                        case op_invokestatic_fast: TREO_VM_HANDLER(op_invokestatic_fast) {
                             cmr = class_get_constant_method_ref(clazz, *((u16 *) (runtime->pc + 1)));
                             m = cmr->methodInfo;
 #if _JVM_DEBUG_PROFILE
@@ -4098,7 +4389,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_invokeinterface_fast: {
+                        case op_invokeinterface_fast: TREO_VM_HANDLER(op_invokeinterface_fast) {
                             //此cmr所描述的方法，对于不同的实例，有不同的method
                             cmr = class_get_constant_method_ref(clazz, *((u16 *) (runtime->pc + 1)));
 
@@ -4126,7 +4417,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
 
-                        case op_invokedynamic_fast: {
+                        case op_invokedynamic_fast: TREO_VM_HANDLER(op_invokedynamic_fast) {
                             //get bootMethod struct
                             cid = class_get_invoke_dynamic(clazz, *((u16 *) (runtime->pc + 1)));
                             bootMethod = &clazz->bootstrapMethodAttr->bootstrap_methods[cid->bootstrap_method_attr_index];//Boot
@@ -4147,7 +4438,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                             break;
                         }
 
-                        default:
+                        default: TREO_VM_HANDLER(default)
                             _op_notsupport(runtime->pc, runtime);
                     }
 
