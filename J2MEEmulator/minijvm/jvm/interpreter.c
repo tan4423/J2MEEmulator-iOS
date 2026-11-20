@@ -60,11 +60,6 @@ int treo_vm_direct_dispatch_build(void) { return TREO_VM_DIRECT_DISPATCH; }
 int treo_vm_paint_bridge_build(void) { return TREO_VM_PAINT_BRIDGE; }
 
 
-#if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__
-extern _Atomic int treo_afk_mode;
-extern int treo_afk_elide_graphics(JClass *clazz, Instance *receiver);
-extern int treo_direct_graphics_enabled(void);
-
 /* Sampled PaintHot attribution. No Java work is omitted; no bytecode hooks. */
 #if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__ && !defined(TREO_VM_PAINT_SAMPLE_DISABLED)
 #define TREO_VM_PAINT_SAMPLE 1
@@ -73,6 +68,7 @@ extern int treo_direct_graphics_enabled(void);
 #endif
 
 #if TREO_VM_PAINT_SAMPLE
+extern _Atomic int treo_afk_mode;
 #include <pthread.h>
 #include <time.h>
 #include <stdio.h>
@@ -250,6 +246,12 @@ const char *treo_vm_paint_sample_report(void) {
     return "[JarBoxVM][PaintHot] enabled=0 (same-source baseline)";
 }
 #endif
+
+
+#if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__
+extern _Atomic int treo_afk_mode;
+extern int treo_afk_elide_graphics(JClass *clazz, Instance *receiver);
+extern int treo_direct_graphics_enabled(void);
 
 static int treo_headless_eligible(MethodInfo *m) {
     u8 tag = __atomic_load_n(&m->treo_afk_kind, __ATOMIC_RELAXED);
