@@ -35,6 +35,12 @@ uint64_t treo_jar_load_cpu_ns(void);
 uint64_t treo_jar_load_wall_ns(void);
 uint64_t treo_jar_load_calls(void);
 uint64_t treo_jar_audit_ticks(int active);
+// Reversible QoS experiment: call from main thread only.
+int treo_main_qos_begin(void);
+int treo_main_qos_current(void);
+int treo_main_qos_expected(int mode);
+int treo_main_qos_apply(int mode);
+int treo_main_qos_finish(void);
 uint64_t treo_afk_paint_count(void);
 uint64_t treo_afk_guarded_paints(void);
 uint64_t treo_afk_guarded_real(void);

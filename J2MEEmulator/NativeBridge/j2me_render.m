@@ -33,9 +33,57 @@
 #include <dlfcn.h>
 #include <pthread.h>
 #include <pthread/qos.h>
+#include <errno.h>
 #if __has_feature(ptrauth_calls)
 #include <ptrauth.h>
 #endif
+
+// Main-thread-only QoS sweep. Active only during a reversible A/B/C/A audit.
+static qos_class_t treo_main_saved_qos = QOS_CLASS_UNSPECIFIED;
+static int treo_main_saved_relative = 0;
+static int treo_main_qos_active = 0;
+
+int treo_main_qos_begin(void) {
+    if (!pthread_main_np()) return EPERM;
+    if (treo_main_qos_active) return EBUSY;
+    qos_class_t original = QOS_CLASS_UNSPECIFIED;
+    int relative = 0;
+    int rc = pthread_get_qos_class_np(pthread_self(), &original, &relative);
+    if (rc) return rc;
+    // This API cannot set UNSPECIFIED, so never start if exact restoration is impossible.
+    if (original == QOS_CLASS_UNSPECIFIED) return ENOTSUP;
+    treo_main_saved_qos = original;
+    treo_main_saved_relative = relative;
+    treo_main_qos_active = 1;
+    return 0;
+}
+int treo_main_qos_current(void) {
+    if (!pthread_main_np()) return -1;
+    qos_class_t current = QOS_CLASS_UNSPECIFIED;
+    if (pthread_get_qos_class_np(pthread_self(), &current, NULL)) return -1;
+    return (int)current;
+}
+int treo_main_qos_expected(int mode) {
+    if (mode == 0) return treo_main_qos_active ? (int)treo_main_saved_qos : -1;
+    if (mode == 1) return (int)QOS_CLASS_USER_INITIATED;
+    if (mode == 2) return (int)QOS_CLASS_UTILITY;
+    return -1;
+}
+int treo_main_qos_apply(int mode) {
+    if (!pthread_main_np() || !treo_main_qos_active) return EPERM;
+    int desired = treo_main_qos_expected(mode);
+    if (desired < 0) return EINVAL;
+    int relative = mode == 0 ? treo_main_saved_relative : 0;
+    int rc = pthread_set_qos_class_self_np((qos_class_t)desired, relative);
+    if (rc) return rc;
+    return treo_main_qos_current() == desired ? 0 : EIO;
+}
+int treo_main_qos_finish(void) {
+    if (!treo_main_qos_active) return 0;
+    int rc = treo_main_qos_apply(0);
+    if (rc == 0) treo_main_qos_active = 0;
+    return rc;
+}
 
 // ============================================================
 // Internal structures
