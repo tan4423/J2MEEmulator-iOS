@@ -169,6 +169,13 @@ void treo_vm_paint_sample_end(void) {
     if (!t->scope || --t->scope) return;
     if (!t->sampled) return;
     uint64_t now = paint_clock_ns();
+    // If a nonlocal VM unwind bypassed any return hook, discard its
+    // incomplete frames and expose the error rather than silently attributing
+    // their CPU to a different paint callback.
+    if (t->depth) {
+        t->depth_errors += t->depth;
+        t->depth = 0;
+    }
     t->sampled = 0;
     pthread_mutex_lock(&paint_lock);
     if (t->epoch == atomic_load_explicit(&paint_epoch, memory_order_acquire)) {
