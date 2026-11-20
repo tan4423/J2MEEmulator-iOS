@@ -241,6 +241,12 @@ public class Display {
                     canvas.doPaint();
                 } else if (refreshAfterAfk == 1) {
                     canvas.refreshAfterAfk(false);
+                } else if (NativeBridge.jarSparsePaintDue()) {
+                    // Diagnostic: invoke genuine Java paint() sparingly, even
+                    // if the JAR's treo mode stopped requesting repaint().
+                    // Does not alter repaintPending or the game tick loop.
+                    // Canvas.doPaint() already serializes with paintLock.
+                    canvas.doPaint();
                 }
             }
 

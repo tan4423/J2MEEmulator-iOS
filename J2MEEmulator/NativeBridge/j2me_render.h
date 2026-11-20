@@ -35,6 +35,9 @@ uint64_t treo_jar_load_cpu_ns(void);
 uint64_t treo_jar_load_wall_ns(void);
 uint64_t treo_jar_load_calls(void);
 uint64_t treo_jar_audit_ticks(int active);
+// Opt-in diagnostic only: 0/1/3 Java paints per second in an audit leg.
+void treo_jar_sparse_paint_set(int hz);
+uint64_t treo_jar_sparse_paint_due_count(void);
 // Reversible QoS experiment: call from main thread only.
 int treo_main_qos_begin(void);
 int treo_main_qos_current(void);

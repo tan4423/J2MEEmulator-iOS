@@ -202,6 +202,43 @@ static atomic_int g_afk_refresh = 0;
 static atomic_bool g_afk_needs_redraw;
 static _Atomic uint64_t g_afk_skipped_draws, g_afk_skipped_paints;
 static _Atomic uint64_t g_afk_paint_count, g_afk_paint_cpu_ns;
+
+// Diagnostic sparse Java paint: only enabled inside its dedicated audit.
+// The Display thread polls this at its EXISTING 16ms cadence. Never spawn
+// a display timer, touch the game loop or submit a native frame.
+static atomic_int treo_sparse_paint_hz;
+static _Atomic uint64_t treo_sparse_next_ns, treo_sparse_due_count;
+void treo_jar_sparse_paint_set(int hz) {
+    if (hz != 1 && hz != 3) hz = 0;
+    // Disable first so an in-flight Display poll cannot re-arm the old mode.
+    atomic_store_explicit(&treo_sparse_paint_hz, 0, memory_order_release);
+    atomic_store_explicit(&treo_sparse_next_ns, 0, memory_order_relaxed);
+    atomic_store_explicit(&treo_sparse_paint_hz, hz, memory_order_release);
+}
+uint64_t treo_jar_sparse_paint_due_count(void) {
+    return atomic_load_explicit(&treo_sparse_due_count, memory_order_relaxed);
+}
+static s32 n_jarSparsePaintDue(Runtime *runtime, JClass *clazz) {
+    const int hz = atomic_load_explicit(&treo_sparse_paint_hz, memory_order_acquire);
+    int due = 0;
+    if ((hz == 1 || hz == 3) && treo_jar_audit_enabled()) {
+        const uint64_t now = treo_afk_now_ns();
+        const uint64_t interval = UINT64_C(1000000000) / (uint64_t)hz;
+        uint64_t next = atomic_load_explicit(&treo_sparse_next_ns, memory_order_relaxed);
+        if (now && next == 0) {
+            // Start after one full interval; avoid a burst on a leg transition.
+            (void)atomic_compare_exchange_strong_explicit(&treo_sparse_next_ns,
+                &next, now + interval, memory_order_relaxed, memory_order_relaxed);
+        } else if (now && now >= next) {
+            due = atomic_compare_exchange_strong_explicit(&treo_sparse_next_ns,
+                &next, now + interval, memory_order_relaxed, memory_order_relaxed);
+            if (due) atomic_fetch_add_explicit(&treo_sparse_due_count, 1, memory_order_relaxed);
+        }
+    }
+    push_int(runtime->stack, due);
+    return RUNTIME_STATUS_NORMAL;
+}
+
 uint64_t treo_afk_paint_count(void) { return atomic_load_explicit(&g_afk_paint_count, memory_order_relaxed); }
 uint64_t treo_afk_paint_cpu_ns(void) { return atomic_load_explicit(&g_afk_paint_cpu_ns, memory_order_relaxed); }
 
@@ -3608,6 +3645,7 @@ static s32 n_vibrate(Runtime *runtime, JClass *clazz) {
 #define CLS "javax/microedition/lcdui/NativeBridge"
 
 static java_native_method j2me_render_methods[] = {
+    {CLS, "jarSparsePaintDue", "()Z", n_jarSparsePaintDue},
     {CLS, "profilePaintBegin", "()J", n_profilePaintBegin},
     {CLS, "profilePaintEnd", "(J)V", n_profilePaintEnd},
     {CLS, "afkSuspended",     "()Z", n_afkSuspended},

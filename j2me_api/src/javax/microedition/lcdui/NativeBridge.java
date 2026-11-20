@@ -76,6 +76,10 @@ public class NativeBridge {
     static native int displayWaitIfUnchanged(int generation, int maxMilliseconds);
     static native void displayWake();
 
+    // Diagnostic only: due at most 1 or 3 times/s. Renderer still blocks
+    // frame submission; JAR/game code and its normal tick are unchanged.
+    static native boolean jarSparsePaintDue();
+
     // UI (Forms/Lists/Alerts)
     public static native void formBegin(String title, int type);
     public static native void formAddStringItem(String label, String text, int appearance);
