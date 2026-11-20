@@ -77,7 +77,13 @@ extern _Atomic int treo_afk_mode;
 #define PAINT_DEPTH 384u
 #define PAINT_LOCAL 256u
 #define PAINT_GLOBAL 512u
-typedef struct { MethodInfo *method; uint64_t self_ns, all_ns, calls; } PaintRow;
+typedef struct {
+    MethodInfo *method;
+    uint64_t self_ns, all_ns, calls;
+    // Copy while this method is on the live VM stack, never dereference a
+    // possibly unloaded class after its paint callback has returned.
+    char signature[176];
+} PaintRow;
 typedef struct { MethodInfo *method; uint64_t start_ns, children_ns; } PaintFrame;
 typedef struct {
     unsigned scope, depth, sampled;
@@ -158,6 +164,11 @@ static inline void treo_vm_paint_method_exit(MethodInfo *m, int token) {
     for (unsigned i = 0; i < PAINT_LOCAL; i++) {
         PaintRow *r = &t->rows[index];
         if (!r->method || r->method == m) {
+            if (!r->method) {
+                snprintf(r->signature, sizeof(r->signature), "%s.%s%s",
+                    utf8_cstr(m->_this_class->name), utf8_cstr(m->name),
+                    utf8_cstr(m->descriptor));
+            }
             r->method = m; r->calls++; r->self_ns += self; r->all_ns += all; return;
         }
         index = (index + 1) & (PAINT_LOCAL - 1);
@@ -193,10 +204,7 @@ void treo_vm_paint_sample_end(void) {
                 if (!dst->method || dst->method == src->method) {
                     if (!dst->method) {
                         dst->method = src->method;
-                        snprintf(dst->signature, sizeof(dst->signature), "%s.%s%s",
-                            utf8_cstr(src->method->_this_class->name),
-                            utf8_cstr(src->method->name),
-                            utf8_cstr(src->method->descriptor));
+                        memcpy(dst->signature, src->signature, sizeof(dst->signature));
                     }
                     dst->calls += src->calls;
                     dst->self_ns += src->self_ns;
