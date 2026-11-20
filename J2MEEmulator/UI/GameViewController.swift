@@ -100,7 +100,7 @@ enum GameLayoutMode {
         "DisplayLink callbacks", "DisplayLink→CA", "CA commit", "CA→Update complete"
     ]
 
-    struct Result {
+    @MainActor struct Result {
         let cpuSeconds: [Double]
         let pairs: [Int]
         let completedCycles: Int
@@ -119,7 +119,7 @@ enum GameLayoutMode {
                                 cyclesPerSecond, completedCycles, dropped, valid ? "hợp lệ" : "KHÔNG ĐỦ MỐC")]
             for i in 0..<JarUIKitPhaseBudget.labels.count {
                 lines.append(String(format: "%@: %.1f ms CPU/s [%d cặp]",
-                                    Self.labels[i], data[i], pairs[i]))
+                                    JarUIKitPhaseBudget.labels[i], data[i], pairs[i]))
             }
             lines.append(String(format: "Tổng CPU trong các khoảng UIKit đo được: %.1f ms/s (KHÔNG cộng vào các pha runloop).",
                                 data.reduce(0, +)))
@@ -129,8 +129,8 @@ enum GameLayoutMode {
 
     private var link: UIUpdateLink?
     private var last: (index: Int, modelTime: Double, cpu: Double)?
-    private var cpu = Array(repeating: 0.0, count: labels.count)
-    private var counts = Array(repeating: 0, count: labels.count)
+    private var cpu = Array(repeating: 0.0, count: JarUIKitPhaseBudget.labels.count)
+    private var counts = Array(repeating: 0, count: JarUIKitPhaseBudget.labels.count)
     private var cycles = 0
     private var dropped = 0
 
