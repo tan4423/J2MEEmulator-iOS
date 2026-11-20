@@ -194,6 +194,10 @@ public class Graphics {
     }
 
     public void drawSubstring(String str, int offset, int len, int x, int y, int anchor) {
+        // Keep Java paint() logic, but avoid allocating invisible text while
+        // headless. Invalid input still reaches substring() and throws.
+        if (headless && str != null && offset >= 0 && len >= 0
+                && offset <= str.length() - len) return;
         drawString(str.substring(offset, offset + len), x, y, anchor);
     }
 
@@ -203,6 +207,9 @@ public class Graphics {
     }
 
     public void drawChars(char[] data, int offset, int length, int x, int y, int anchor) {
+        // Preserve new String(...) exception semantics for invalid ranges.
+        if (headless && data != null && offset >= 0 && length >= 0
+                && offset <= data.length - length) return;
         drawString(new String(data, offset, length), x, y, anchor);
     }
 
@@ -287,11 +294,10 @@ public class Graphics {
         if ((anchor & RIGHT) != 0) xDest -= width;
         if ((anchor & VCENTER) != 0) yDest -= height / 2;
         if ((anchor & BOTTOM) != 0) yDest -= height;
-        // Read pixels from source area, write to dest
-        int[] pixels = new int[width * height];
-        // Use a temporary approach — read from the context's backing image
-        // For now, use drawRegion-like approach through native
-        // This is a simplified implementation
+        // NativeBridge.copyArea handles the bitmap copy. The old
+        // int[width * height] was never used, but still allocated Java heap.
+        // Keep its negative-array-size error for an invalid dimension product.
+        if (width * height < 0) throw new NegativeArraySizeException();
         NativeBridge.copyArea(nativeContext, xSrc + translateX, ySrc + translateY,
                 width, height, xDest + translateX, yDest + translateY);
     }
