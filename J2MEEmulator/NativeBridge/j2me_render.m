@@ -246,6 +246,20 @@ uint64_t treo_afk_paint_count(void) { return atomic_load_explicit(&g_afk_paint_c
 uint64_t treo_afk_paint_cpu_ns(void) { return atomic_load_explicit(&g_afk_paint_cpu_ns, memory_order_relaxed); }
 
 static _Atomic uint64_t treo_guarded_paints, treo_guarded_real, treo_guarded_late, treo_layer_frames;
+// Generic JarBox deep-Treo: never skip paint() Java itself. If a Canvas
+// unexpectedly reads its pixels/native context after guarded elision began,
+// fall back to compatible AFK presentation-only mode for the current session.
+// This opt-in guard does not affect the pre-existing mode-8 A/B/A diagnostics.
+static atomic_bool treo_guarded_afk_auto_enabled;
+static atomic_bool treo_guarded_afk_auto_fallback;
+void treo_afk_guard_auto_set(int enabled) {
+    atomic_store_explicit(&treo_guarded_afk_auto_enabled, false, memory_order_release);
+    if (enabled) atomic_store_explicit(&treo_guarded_afk_auto_fallback, false, memory_order_relaxed);
+    atomic_store_explicit(&treo_guarded_afk_auto_enabled, enabled != 0, memory_order_release);
+}
+int treo_afk_guard_auto_fell_back(void) {
+    return atomic_load_explicit(&treo_guarded_afk_auto_fallback, memory_order_acquire);
+}
 uint64_t treo_afk_guarded_paints(void) { return atomic_load_explicit(&treo_guarded_paints, memory_order_relaxed); }
 uint64_t treo_afk_guarded_real(void) { return atomic_load_explicit(&treo_guarded_real, memory_order_relaxed); }
 uint64_t treo_afk_guarded_late(void) { return atomic_load_explicit(&treo_guarded_late, memory_order_relaxed); }
@@ -258,7 +272,15 @@ static s32 n_afkPaintPolicy(Runtime *runtime, JClass *clazz) {
 static s32 n_afkCanvasResult(Runtime *runtime, JClass *clazz) {
     const int outcome = runtime->jnienv->localvar_getInt(runtime->localvar, 0);
     atomic_fetch_add_explicit(outcome ? &treo_guarded_paints : &treo_guarded_real, 1, memory_order_relaxed);
-    if (outcome == 2) atomic_fetch_add_explicit(&treo_guarded_late, 1, memory_order_relaxed);
+    if (outcome == 2) {
+        atomic_fetch_add_explicit(&treo_guarded_late, 1, memory_order_relaxed);
+        if (atomic_load_explicit(&treo_guarded_afk_auto_enabled, memory_order_acquire) &&
+            atomic_load_explicit(&treo_afk_mode, memory_order_acquire) == 8) {
+            // Never let a generic JAR keep using a suspect headless Canvas.
+            atomic_store_explicit(&treo_guarded_afk_auto_fallback, true, memory_order_release);
+            treo_render_set_afk_mode(1);
+        }
+    }
     return RUNTIME_STATUS_NORMAL;
 }
 

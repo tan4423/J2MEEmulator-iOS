@@ -68,6 +68,9 @@ int treo_main_qos_expected(int mode);
 int treo_main_qos_apply(int mode);
 int treo_main_qos_finish(void);
 uint64_t treo_afk_paint_count(void);
+// Opt-in safety fallback for JarBox's generic guarded Java Canvas AFK.
+void treo_afk_guard_auto_set(int enabled);
+int treo_afk_guard_auto_fell_back(void);
 uint64_t treo_afk_guarded_paints(void);
 uint64_t treo_afk_guarded_real(void);
 uint64_t treo_afk_guarded_late(void);
