@@ -1936,29 +1936,6 @@ class GameViewController: UIViewController {
             return
         }
         var summary = ""
-        if energyAudit && results.count == 3 {
-            let a = results[0], b = results[1], c = results[2]
-            summary += "THỬ PIN/NHIỆT DÀI HẠN (không đo watt hay nhiệt độ °C)\n"
-            summary += String(format: "CPU tổng A1 %.1f%% · B %.1f%% · A2 %.1f%%; tick %.2f · %.2f · %.2f/s.\n",
-                a.total ?? -1, b.total ?? -1, c.total ?? -1, a.ticks, b.ticks, c.ticks)
-            if let x = a.batteryDropPerHour, let y = b.batteryDropPerHour,
-               let z = c.batteryDropPerHour {
-                let reference = (x + z) / 2
-                summary += String(format: "Hao pin ước lượng A1 %.2f · B %.2f · A2 %.2f điểm phần trăm/giờ; B − A = %+.2f điểm/giờ.\n", x, y, z, y - reference)
-                summary += "Pin iOS làm tròn và phản ánh toàn điện thoại (màn hình/mạng/hệ thống), không phải riêng CPU. Chênh nhỏ vài điểm/giờ CHƯA đủ kết luận.\n"
-            } else { summary += "Không đọc được mức pin, không kết luận hao năng lượng.\n" }
-            if abs(b.ticks - (a.ticks + c.ticks) / 2) > 0.5 ||
-               abs(a.ticks - c.ticks) > 0.5 {
-                summary += "KHÔNG KẾT LUẬN: tick game lệch trên 0,5/s.\n"
-            }
-            if abs((a.total ?? 0) - (c.total ?? 0)) > 5 {
-                summary += "CẢNH BÁO: CPU A1/A2 trôi hơn 5 điểm; điều kiện có thể thay đổi.\n"
-            }
-            if !a.energyStable || !b.energyStable || !c.energyStable {
-                summary += "KHÔNG KẾT LUẬN: điều kiện pin/độ sáng/nguồn không ổn định.\n"
-            }
-            summary += "\n"
-        }
         if sparseAudit && results.count == 4 {
             let a = results[0], b = results[1], c = results[2], d = results[3]
             let referenceTotal = ((a.total ?? 0) + (d.total ?? 0)) / 2
@@ -2056,6 +2033,29 @@ class GameViewController: UIViewController {
                 }
             }
         }
+        if energyAudit && results.count == 3 {
+            let a = results[0], b = results[1], c = results[2]
+            summary += "THỬ PIN/NHIỆT DÀI HẠN (không đo watt hay nhiệt độ °C)\n"
+            summary += String(format: "CPU tổng A1 %.1f%% · B %.1f%% · A2 %.1f%%; tick %.2f · %.2f · %.2f/s.\n",
+                a.total ?? -1, b.total ?? -1, c.total ?? -1, a.ticks, b.ticks, c.ticks)
+            if let x = a.batteryDropPerHour, let y = b.batteryDropPerHour,
+               let z = c.batteryDropPerHour {
+                let reference = (x + z) / 2
+                summary += String(format: "Hao pin ước lượng A1 %.2f · B %.2f · A2 %.2f điểm phần trăm/giờ; B − A = %+.2f điểm/giờ.\n", x, y, z, y - reference)
+                summary += "Pin iOS làm tròn và phản ánh toàn điện thoại (màn hình/mạng/hệ thống), không phải riêng CPU. Chênh nhỏ vài điểm/giờ CHƯA đủ kết luận.\n"
+            } else { summary += "Không đọc được mức pin, không kết luận hao năng lượng.\n" }
+            if abs(b.ticks - (a.ticks + c.ticks) / 2) > 0.5 ||
+               abs(a.ticks - c.ticks) > 0.5 {
+                summary += "KHÔNG KẾT LUẬN: tick game lệch trên 0,5/s.\n"
+            }
+            if abs((a.total ?? 0) - (c.total ?? 0)) > 5 {
+                summary += "CẢNH BÁO: CPU A1/A2 trôi hơn 5 điểm; điều kiện có thể thay đổi.\n"
+            }
+            if !a.energyStable || !b.energyStable || !c.energyStable {
+                summary += "KHÔNG KẾT LUẬN: điều kiện pin/độ sáng/nguồn không ổn định.\n"
+            }
+            summary += "\n"
+        }
         if phaseAudit && results.count == 3 {
             let a = results[0], b = results[1], c = results[2]
             if let x = a.mainBenchNS, let y = b.mainBenchNS, let z = c.mainBenchNS {
@@ -2097,7 +2097,7 @@ class GameViewController: UIViewController {
             summary += String(format: "Chênh CPU main toàn bộ: %+.1f điểm (%.1f ms/s). Không đồng nhất tổng khoảng UIKit với toàn main.\n\n",
                 mainDelta, mainDelta * 10)
         }
-        if budgetMain {
+        if budgetMain || energyAudit {
             if results.count == 3, let a = results[0].budget, let b = results[1].budget, let c = results[2].budget {
                 let indices = JarMainBudget.Group.allCases
                 let measured = indices.map { group in
