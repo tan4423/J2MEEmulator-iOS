@@ -879,9 +879,6 @@ class GameViewController: UIViewController {
             UIAction(title: "Treo tương thích · dự phòng") { [weak self] _ in
                 self?.showBlackout(mode: 1, smartGC: true)
             },
-            UIAction(title: "Đo hàm tốn CPU main · Treo (20 giây)") { [weak self] _ in
-                self?.startMainStackAudit()
-            },
             UIAction(title: "Xem kết quả đo gần nhất",
                      attributes: lastMeasurement == nil ? .disabled : []) { [weak self] _ in
                 self?.showLastMeasurement()
