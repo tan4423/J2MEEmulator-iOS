@@ -183,6 +183,9 @@ public abstract class Canvas extends Displayable {
             try {
                 graphics.reset(0, 0, this.width, this.height);
                 graphics.drawImage(image, 0, 0, Graphics.LEFT | Graphics.TOP);
+                // A real copy supersedes any older skipped AFK frame.
+                treoSkippedBufferImage = null;
+                treoSkippedCanvasPixels = false;
                 if (Display.isCurrentCanvas(this)) NativeBridge.flushToScreen(nativeContext);
             } finally {
                 if (stamp > 0) NativeBridge.afkBufferBlitEnd(stamp);
