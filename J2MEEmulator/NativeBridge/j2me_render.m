@@ -203,6 +203,7 @@ static s32 n_afkBypassPaint(Runtime *runtime, JClass *clazz) {
 static atomic_bool g_afk_buffer_audit, g_afk_buffer_skip;
 static _Atomic uint64_t g_afk_buffer_copies, g_afk_buffer_skipped;
 static _Atomic uint64_t g_afk_buffer_skipped_pixels, g_afk_buffer_copy_cpu_ns;
+static uint64_t treo_thread_cpu_ns(void);
 void treo_afk_buffer_audit_set(int enabled, int skip) {
     // No writes/reset of the counters in-flight: UI takes leg deltas.
     atomic_store_explicit(&g_afk_buffer_audit, false, memory_order_release);
