@@ -169,7 +169,8 @@ public abstract class Canvas extends Displayable {
             // Baseline copies the same image into the display-only Canvas,
             // even though native flush later refuses to present it during AFK.
             // GameCanvas.getGraphics()'s real Image remains intact.
-            final boolean safeGameBuffer = this instanceof javax.microedition.lcdui.game.GameCanvas &&
+            final boolean safeGameBuffer = image != null &&
+                    this instanceof javax.microedition.lcdui.game.GameCanvas &&
                     (graphics == null || !graphics.treoPixelDependent);
             final long stamp = NativeBridge.afkBufferBlitBegin(this.width, this.height, safeGameBuffer);
             if (stamp == -1) {
