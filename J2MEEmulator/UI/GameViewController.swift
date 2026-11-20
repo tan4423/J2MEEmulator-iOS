@@ -281,6 +281,9 @@ class GameViewController: UIViewController {
     private var jarMainProfile = false
     private var jarLoadComparison = false
     private var jarWorkerComparison = false
+    private var jarWindowAudit = false
+    private weak var jarOriginalWindow: UIWindow?
+    private var jarProbeWindow: UIWindow?
     private var jarBudgetAudit = false
     private var jarCommitAudit = false
     private var jarCommitBudget: JarCommitBudget?
@@ -735,6 +738,9 @@ class GameViewController: UIViewController {
             UIAction(title: "So tải game và luồng native · JAR") { [weak self] _ in
                 self?.confirmJarAudit(workerComparison: true)
             },
+            UIAction(title: "Thử cửa sổ đen foreground · JAR") { [weak self] _ in
+                self?.confirmJarAudit(windowOcclusion: true)
+            },
             UIAction(title: "Thử tháo giao diện game · JAR") { [weak self] _ in
                 self?.confirmJarAudit(budgetMain: true, detachUI: true)
             },
@@ -1148,22 +1154,89 @@ class GameViewController: UIViewController {
         }
     }
 
+    // Foreground-only visibility experiment. The original UIWindow remains
+    // owned by SceneDelegate and keeps its game controller/VM alive.
+    private func installJarProbeWindow() -> Bool {
+        guard jarProbeWindow == nil, let original = view.window,
+              !original.isHidden, let scene = original.windowScene,
+              scene.activationState == .foregroundActive,
+              UIApplication.shared.applicationState == .active else { return false }
+
+        let controller = UIViewController()
+        controller.view.backgroundColor = .black
+        let title = UILabel()
+        title.text = "Đang đo cửa sổ đen · tự hiện lại game"
+        title.textColor = .white
+        title.font = .systemFont(ofSize: 13)
+        title.textAlignment = .center
+        title.numberOfLines = 0
+        title.translatesAutoresizingMaskIntoConstraints = false
+        controller.view.addSubview(title)
+
+        let cancel = UIButton(type: .system)
+        cancel.setTitle("Hủy đo · hiện game", for: .normal)
+        cancel.tintColor = .white
+        cancel.addTarget(self, action: #selector(stopJarAudit), for: .touchUpInside)
+        cancel.translatesAutoresizingMaskIntoConstraints = false
+        controller.view.addSubview(cancel)
+        NSLayoutConstraint.activate([
+            title.centerXAnchor.constraint(equalTo: controller.view.centerXAnchor),
+            title.centerYAnchor.constraint(equalTo: controller.view.centerYAnchor),
+            title.leadingAnchor.constraint(greaterThanOrEqualTo: controller.view.leadingAnchor, constant: 20),
+            title.trailingAnchor.constraint(lessThanOrEqualTo: controller.view.trailingAnchor, constant: -20),
+            cancel.centerXAnchor.constraint(equalTo: controller.view.centerXAnchor),
+            cancel.topAnchor.constraint(equalTo: title.bottomAnchor, constant: 24),
+            cancel.heightAnchor.constraint(greaterThanOrEqualToConstant: 44)
+        ])
+
+        let replacement = UIWindow(windowScene: scene)
+        replacement.windowLevel = UIWindow.Level(rawValue: original.windowLevel.rawValue + 1)
+        replacement.rootViewController = controller
+        jarOriginalWindow = original
+        jarProbeWindow = replacement
+        replacement.makeKeyAndVisible()
+        original.isHidden = true
+        return isJarProbeWindowVisible()
+    }
+
+    private func isJarProbeWindowVisible() -> Bool {
+        guard let original = jarOriginalWindow, let replacement = jarProbeWindow else { return false }
+        return original.isHidden && !replacement.isHidden && replacement.isKeyWindow
+            && replacement.rootViewController?.view.window === replacement
+            && replacement.windowScene?.activationState == .foregroundActive
+            && UIApplication.shared.applicationState == .active
+    }
+
+    private func restoreJarProbeWindow() {
+        if let original = jarOriginalWindow {
+            original.isHidden = false
+            original.makeKeyAndVisible()
+        }
+        jarProbeWindow?.isHidden = true
+        jarProbeWindow?.rootViewController = nil
+        jarProbeWindow = nil
+        jarOriginalWindow = nil
+    }
+
     private static var jarCommitAuditSupported: Bool {
         if #available(iOS 18.0, *) { return true }
         return false
     }
 
-    private func confirmJarAudit(profileMain: Bool = false, compareLoad: Bool = false, workerComparison: Bool = false, budgetMain: Bool = false, detachUI: Bool = false, measureCommit: Bool = false) {
-        guard !measureCommit || Self.jarCommitAuditSupported else { return }
+    private func confirmJarAudit(profileMain: Bool = false, compareLoad: Bool = false, workerComparison: Bool = false, windowOcclusion: Bool = false, budgetMain: Bool = false, detachUI: Bool = false, measureCommit: Bool = false) {
+        guard !(measureCommit || windowOcclusion) || Self.jarCommitAuditSupported else { return }
         guard jarAuditID == nil, blackout == nil, powerRun == nil, cpuProfileStartedAt == nil else { return }
         let sourceProfile = budgetMain && profileMain
-        let alert = UIAlertController(title: workerComparison ? "So tải game và luồng native · JAR" : measureCommit ? "Đo CPU quanh commit UIKit · JAR" :
+        let alert = UIAlertController(title: windowOcclusion ? "Thử cửa sổ đen foreground · JAR" :
+                workerComparison ? "So tải game và luồng native · JAR" : measureCommit ? "Đo CPU quanh commit UIKit · JAR" :
                 detachUI ? "Thử tháo giao diện game · JAR" :
                 sourceProfile ? "Tìm stack sau Source · JAR" :
                 budgetMain ? "Đo pha CPU main · JAR" :
                 (compareLoad ? "Thử chờ thụ động · CPU main" :
                  (profileMain ? "Tìm hàm ăn CPU main" : "Chẩn đoán CPU JAR")),
-            message: workerComparison
+            message: windowOcclusion
+                ? "Map 37, auto x1, BẬT treo trong JAR trước. Không bật màn đen JarBox. Ba lượt tự động A1 cửa sổ game → B cửa sổ đen tối giản → A2 khôi phục. Mỗi lượt 25 giây, app vẫn foreground; JIT tắt và không xuất khung game cả ba lượt. Nếu scene không active hoặc nhịp game sai, bài đo sẽ báo không hợp lệ. Có nút Hủy và tự khôi phục cửa sổ."
+                : workerComparison
                 ? "Map 37, auto x1, BẬT treo trong JAR trước. Không bật màn đen riêng. A1 → tải CPU trên game → tải trên pthread riêng → A2, mỗi lượt 30 giây. Cả bốn lượt chặn khung, tắt JIT, đo pha main và mốc UIKit; tự chuyển lượt, không cần chạm. Tải chỉ dùng chẩn đoán."
                 : measureCommit
                 ? "Map 37, auto x1, treo trong JAR đang TẮT. Đo tắt → bật → tắt theo lời nhắc. Không bật màn đen Treo riêng. App chặn khung, tạm tắt JIT và chỉ quan sát các mốc UIKit; không lấy stack."
@@ -1181,18 +1254,19 @@ class GameViewController: UIViewController {
             preferredStyle: .alert)
         alert.addAction(UIAlertAction(title: "Hủy", style: .cancel))
         alert.addAction(UIAlertAction(title: profileMain ? "Lấy mẫu" : "Đo", style: .default) { [weak self] _ in
-            self?.startJarAudit(profileMain: profileMain, compareLoad: compareLoad, workerComparison: workerComparison, budgetMain: budgetMain, detachUI: detachUI, measureCommit: measureCommit)
+            self?.startJarAudit(profileMain: profileMain, compareLoad: compareLoad, workerComparison: workerComparison, windowOcclusion: windowOcclusion, budgetMain: budgetMain, detachUI: detachUI, measureCommit: measureCommit)
         })
         present(alert, animated: true)
     }
 
-    private func startJarAudit(profileMain: Bool, compareLoad: Bool, workerComparison: Bool, budgetMain: Bool, detachUI: Bool, measureCommit: Bool) {
+    private func startJarAudit(profileMain: Bool, compareLoad: Bool, workerComparison: Bool, windowOcclusion: Bool, budgetMain: Bool, detachUI: Bool, measureCommit: Bool) {
         guard jarAuditID == nil, blackout == nil, powerRun == nil, cpuProfileStartedAt == nil else { return }
         jarMainProfile = profileMain
         jarLoadComparison = compareLoad
         jarWorkerComparison = workerComparison
-        jarBudgetAudit = budgetMain || workerComparison
-        jarCommitAudit = measureCommit || workerComparison
+        jarWindowAudit = windowOcclusion
+        jarBudgetAudit = budgetMain || workerComparison || windowOcclusion
+        jarCommitAudit = measureCommit || workerComparison || windowOcclusion
         jarDetachAudit = detachUI
         let id = UUID()
         jarAuditID = id
@@ -1219,6 +1293,8 @@ class GameViewController: UIViewController {
         jarCommitBudget?.stop()
         jarCommitBudget = nil
         jarCommitAudit = false
+        if jarWindowAudit { restoreJarProbeWindow() }
+        jarWindowAudit = false
         if jarDetachAudit {
             restoreJarGameViews()
             jarDetachShield?.removeFromSuperview()
@@ -1264,6 +1340,17 @@ class GameViewController: UIViewController {
             : (jarLoadComparison && (leg == 1 || leg == 2) ? Int32(leg) : 0)
         treo_jar_load_set(loadMode)
         let detachUI = jarDetachAudit
+        let windowAudit = jarWindowAudit
+        if windowAudit {
+            if leg == 1 {
+                guard installJarProbeWindow() else {
+                    finishJarAudit(rows: rows + ["Không hợp lệ: không tạo được cửa sổ đen foreground."], results: [])
+                    return
+                }
+            } else if leg == 2 {
+                restoreJarProbeWindow()
+            }
+        }
         if detachUI {
             if leg == 1 {
                 guard detachJarGameViews() else {
@@ -1290,18 +1377,21 @@ class GameViewController: UIViewController {
             if self.jarCommitAudit, #available(iOS 18.0, *) {
                 let commitBudget = JarCommitBudget()
                 self.jarCommitBudget = commitBudget
-                commitBudget.start(in: self.view)
+                commitBudget.start(in: (windowAudit && leg == 1
+                    ? (self.jarProbeWindow?.rootViewController?.view ?? self.view) : self.view))
             }
             if sourceProfile { treo_afk_main_source_trace_begin() }
             else if profileMain { treo_afk_main_stack_begin() }
-            self.scheduleJarAudit(id: id, after: profileMain && !sourceProfile ? 20 : (self.jarWorkerComparison ? 30 : (self.jarLoadComparison ? 25 : 60))) { [weak self] in
+            self.scheduleJarAudit(id: id, after: profileMain && !sourceProfile ? 20 : (self.jarWindowAudit ? 25 : (self.jarWorkerComparison ? 30 : (self.jarLoadComparison ? 25 : 60)))) { [weak self] in
                 guard let self else { return }
                 let end = JarAuditSample()
                 let dt = max(0.001, end.base.time - start.base.time)
                 let on = end.on &- start.on, off = end.off &- start.off
                 let compareLoad = self.jarLoadComparison
                 let workerCompare = self.jarWorkerComparison
-                let names = workerCompare
+                let names = windowAudit
+                    ? ["A1 · Cửa sổ game", "B · Chỉ cửa sổ đen", "A2 · Cửa sổ game"]
+                    : workerCompare
                     ? ["A1 · Không tải", "B · Tải trên game", "C · Tải trên pthread", "A2 · Không tải"]
                     : detachUI
                     ? ["A1 · Gắn UI", "B · Tháo UI", "A2 · Gắn lại UI"]
@@ -1325,8 +1415,17 @@ class GameViewController: UIViewController {
                     dt, paint, paints, Double(end.wakes &- start.wakes) / dt)
                 row += String(format: "\n%.2f vòng game/s", ticks)
                 row += " · \(off) tick tắt / \(on) tick bật · \(frames) khung lên layer"
-                let validState = (detachUI || compareLoad || workerCompare || leg == 1) ? (on > 0 && off == 0) : (off > 0 && on == 0)
+                let validState = (detachUI || compareLoad || workerCompare || windowAudit || leg == 1) ? (on > 0 && off == 0) : (off > 0 && on == 0)
                 let validUI = !detachUI || leg != 1 || self.isJarGameUIActuallyDetached()
+                let validWindow = !windowAudit
+                    || (leg == 1 ? self.isJarProbeWindowVisible()
+                        : (self.jarProbeWindow == nil && self.view.window?.isHidden == false
+                            && self.view.window?.windowScene?.activationState == .foregroundActive
+                            && UIApplication.shared.applicationState == .active))
+                if windowAudit {
+                    row += "\nTrạng thái: \(UIApplication.shared.applicationState == .active ? "app active" : "app không active")"
+                    row += " · \(validWindow ? "cửa sổ đúng điều kiện" : "KHÔNG HỢP LỆ: cửa sổ/scene đổi trạng thái")"
+                }
                 if detachUI {
                     row += "\n\(detachedCount) view gốc đã tháo · \(self.view.subviews.count) view con, \(self.view.layer.sublayers?.count ?? 0) layer con còn ở view game"
                     if !validUI { row += "\nKhông hợp lệ: cây view không còn tách ở cuối lượt B." }
@@ -1359,7 +1458,7 @@ class GameViewController: UIViewController {
                     }
                 }
                 let all = rows + [row]
-                guard validState && validUI && frames == 0 else {
+                guard validState && validUI && validWindow && frames == 0 else {
                     self.finishJarAudit(rows: all, results: [])
                     return
                 }
@@ -1372,7 +1471,7 @@ class GameViewController: UIViewController {
                 }
                 if leg == (compareLoad || workerCompare ? 3 : 2) || (profileMain && !sourceProfile && leg == 1) {
                     self.finishJarAudit(rows: all, results: measured)
-                } else if compareLoad || workerCompare || detachUI {
+                } else if compareLoad || workerCompare || detachUI || windowAudit {
                     self.runJarAudit(id: id, leg: leg + 1, rows: all, results: measured)
                 } else {
                     self.promptJarAudit(id: id, nextLeg: leg + 1, rows: all, results: measured)
@@ -1418,6 +1517,7 @@ class GameViewController: UIViewController {
         let profileMain = jarMainProfile
         let compareLoad = jarLoadComparison
         let workerCompare = jarWorkerComparison
+        let windowAudit = jarWindowAudit
         let budgetMain = jarBudgetAudit
         let detachUI = jarDetachAudit
         let measureCommit = jarCommitAudit
@@ -1487,11 +1587,14 @@ class GameViewController: UIViewController {
                     summary += "Mốc UIKit không đủ hoặc lỗi ghép nhiều: không kết luận về commit.\n\n"
                 }
             }
-            let title = workerCompare ? "So tải game và luồng native · JAR" :
+            let title = windowAudit ? "Thử cửa sổ đen foreground · JAR" :
+                workerCompare ? "So tải game và luồng native · JAR" :
                 measureCommit ? "Đo CPU quanh commit UIKit · JAR" :
                 detachUI ? "Thử tháo giao diện game · JAR" :
                 (profileMain ? "Tìm stack sau Source · JAR" : "Đo pha CPU main · JAR")
-            let sampling = workerCompare
+            let sampling = windowAudit
+                ? "A1/A2 dùng cửa sổ game; B ẩn cửa sổ gốc và hiển thị UIWindow đen tối giản. App foreground-active cả ba lượt, không giả lập inactive. Mốc UIUpdateLink đo trên cửa sổ đang hiện; không coi đó là mọi commit QuartzCore."
+                : workerCompare
                 ? "B dùng tải CPU game; C dùng pthread riêng, cố gắng khớp QoS và tải 10 ms/xung. Cả hai chỉ là tải chẩn đoán; không coi main giảm là tổng giảm. Không lấy stack."
                 : measureCommit
                 ? "UIUpdateLink thụ động, không yêu cầu cập nhật liên tục. Chỉ đo CPU main giữa hai mốc UIKit; không đếm mọi commit QuartzCore. Không cộng số này vào CPU theo pha. Đối chiếu với mức tăng sau Source cũ (~253 ms/s); nếu không tái hiện thì không quy kết."
