@@ -172,7 +172,8 @@ static inline void paint_capture_origin(PaintThread *t, MethodInfo *method) {
     int used = snprintf(dst, cap, "%s.%s", utf8_cstr(method->_this_class->name),
                         utf8_cstr(method->name));
     // Show the immediate caller first and walk up toward game paint.
-    for (int depth = (int)t->depth - 1, shown = 0;
+    const unsigned bounded_depth = t->depth < PAINT_DEPTH ? t->depth : PAINT_DEPTH;
+    for (int depth = (int)bounded_depth - 1, shown = 0;
          depth >= 0 && shown < 12 && used >= 0 && (size_t)used < cap;
          --depth, ++shown) {
         MethodInfo *caller = t->frames[depth].method;
