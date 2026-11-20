@@ -71,6 +71,12 @@ uint64_t treo_afk_paint_count(void);
 // Opt-in safety fallback for JarBox's generic guarded Java Canvas AFK.
 void treo_afk_guard_auto_set(int enabled);
 int treo_afk_guard_auto_fell_back(void);
+// One dedicated A/B/A test of redundant GameCanvas Image->Canvas blits.
+void treo_afk_buffer_audit_set(int enabled, int skip);
+uint64_t treo_afk_buffer_copied(void);
+uint64_t treo_afk_buffer_skipped(void);
+uint64_t treo_afk_buffer_pixels_saved(void);
+uint64_t treo_afk_buffer_copy_cpu_ns(void);
 uint64_t treo_afk_guarded_paints(void);
 uint64_t treo_afk_guarded_real(void);
 uint64_t treo_afk_guarded_late(void);

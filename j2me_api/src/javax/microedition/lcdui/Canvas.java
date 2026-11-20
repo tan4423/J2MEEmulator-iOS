@@ -47,6 +47,10 @@ public abstract class Canvas extends Displayable {
     private long nativeContext;
     private boolean treoSkippedCanvasPixels;
     private boolean treoUsesExplicitBuffer;
+    // Only retain a pending explicit buffer if an opt-in AFK test skipped
+    // copying it. Its actual Image pixels are NEVER discarded/modified.
+    private Image treoSkippedBufferImage;
+    private int treoSkippedBufferX, treoSkippedBufferY;
     private Graphics graphics;
     public volatile boolean repaintPending = true;
     private boolean fullScreen = false;
@@ -161,11 +165,28 @@ public abstract class Canvas extends Displayable {
         synchronized (paintLock) {
             // Hidden Canvas instances must not run paint or present their buffer.
             if (!Display.isCurrentCanvas(this)) return;
-            if (nativeContext == 0) initContext();
             treoUsesExplicitBuffer = true;
-            graphics.reset(0, 0, this.width, this.height);
-            graphics.drawImage(image, 0, 0, Graphics.LEFT | Graphics.TOP);
-            if (Display.isCurrentCanvas(this)) NativeBridge.flushToScreen(nativeContext);
+            // Baseline copies the same image into the display-only Canvas,
+            // even though native flush later refuses to present it during AFK.
+            // GameCanvas.getGraphics()'s real Image remains intact.
+            final boolean safeGameBuffer = this instanceof javax.microedition.lcdui.game.GameCanvas &&
+                    (graphics == null || !graphics.treoPixelDependent);
+            final long stamp = NativeBridge.afkBufferBlitBegin(this.width, this.height, safeGameBuffer);
+            if (stamp == -1) {
+                treoSkippedBufferImage = image;
+                treoSkippedBufferX = 0;
+                treoSkippedBufferY = 0;
+                treoSkippedCanvasPixels = true;
+                return;
+            }
+            if (nativeContext == 0) initContext();
+            try {
+                graphics.reset(0, 0, this.width, this.height);
+                graphics.drawImage(image, 0, 0, Graphics.LEFT | Graphics.TOP);
+                if (Display.isCurrentCanvas(this)) NativeBridge.flushToScreen(nativeContext);
+            } finally {
+                if (stamp > 0) NativeBridge.afkBufferBlitEnd(stamp);
+            }
         }
     }
 
@@ -177,9 +198,16 @@ public abstract class Canvas extends Displayable {
             if (!Display.isCurrentCanvas(this)) return;
             if (nativeContext == 0) initContext();
             treoUsesExplicitBuffer = true;
-            graphics.reset(0, 0, this.width, this.height);
-            graphics.drawImage(image, x, y, Graphics.LEFT | Graphics.TOP);
-            if (Display.isCurrentCanvas(this)) NativeBridge.flushToScreen(nativeContext);
+            // Siemens/ExtendedImage is excluded from the GameCanvas-only
+            // optimization until a separate compatibility experiment exists.
+            final long stamp = NativeBridge.afkBufferBlitBegin(this.width, this.height, false);
+            try {
+                graphics.reset(0, 0, this.width, this.height);
+                graphics.drawImage(image, x, y, Graphics.LEFT | Graphics.TOP);
+                if (Display.isCurrentCanvas(this)) NativeBridge.flushToScreen(nativeContext);
+            } finally {
+                if (stamp > 0) NativeBridge.afkBufferBlitEnd(stamp);
+            }
         }
     }
 
@@ -237,11 +265,24 @@ public abstract class Canvas extends Displayable {
     // Repaint after skipped raster; legacy blackout can publish the old buffer.
     void refreshAfterAfk(boolean redraw) {
         synchronized (paintLock) {
-            if (nativeContext != 0 && Display.isCurrentCanvas(this)) {
+            if (!Display.isCurrentCanvas(this)) return;
+            // If a GameCanvas flush was skipped, rebuild the display-only
+            // Canvas from the CURRENT backing Image before repainting.
+            // Preserve Java paint() semantics: doPaint still runs on redraw.
+            final Image pending = treoSkippedBufferImage;
+            treoSkippedBufferImage = null;
+            if (pending != null) {
+                if (nativeContext == 0) initContext();
+                graphics.reset(0, 0, width, height);
+                graphics.drawImage(pending, treoSkippedBufferX, treoSkippedBufferY,
+                                   Graphics.LEFT | Graphics.TOP);
+                NativeBridge.flushToScreen(nativeContext);
+            }
+            if (nativeContext != 0) {
                 if (redraw) {
                     fullRepaint = true;
                     doPaint();
-                } else {
+                } else if (pending == null) {
                     NativeBridge.flushToScreen(nativeContext);
                 }
             }
@@ -250,6 +291,8 @@ public abstract class Canvas extends Displayable {
 
     void destroyContext() {
         synchronized (paintLock) {
+            treoSkippedBufferImage = null;
+            treoSkippedCanvasPixels = false;
             if (nativeContext != 0) {
                 NativeBridge.destroyContext(nativeContext);
                 nativeContext = 0;

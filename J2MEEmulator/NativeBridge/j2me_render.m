@@ -198,6 +198,60 @@ static s32 n_afkBypassPaint(Runtime *runtime, JClass *clazz) {
     push_int(runtime->stack, bypass);
     return RUNTIME_STATUS_NORMAL;
 }
+// Explicit-buffer AFK audit: the rendered GameCanvas Image is never skipped;
+// only the redundant copy from Image to the hidden Canvas is optional.
+static atomic_bool g_afk_buffer_audit, g_afk_buffer_skip;
+static _Atomic uint64_t g_afk_buffer_copies, g_afk_buffer_skipped;
+static _Atomic uint64_t g_afk_buffer_skipped_pixels, g_afk_buffer_copy_cpu_ns;
+void treo_afk_buffer_audit_set(int enabled, int skip) {
+    // No writes/reset of the counters in-flight: UI takes leg deltas.
+    atomic_store_explicit(&g_afk_buffer_audit, false, memory_order_release);
+    atomic_store_explicit(&g_afk_buffer_skip, enabled && skip, memory_order_release);
+    atomic_store_explicit(&g_afk_buffer_audit, enabled != 0, memory_order_release);
+}
+uint64_t treo_afk_buffer_copied(void) {
+    return atomic_load_explicit(&g_afk_buffer_copies, memory_order_acquire);
+}
+uint64_t treo_afk_buffer_skipped(void) {
+    return atomic_load_explicit(&g_afk_buffer_skipped, memory_order_acquire);
+}
+uint64_t treo_afk_buffer_pixels_saved(void) {
+    return atomic_load_explicit(&g_afk_buffer_skipped_pixels, memory_order_acquire);
+}
+uint64_t treo_afk_buffer_copy_cpu_ns(void) {
+    return atomic_load_explicit(&g_afk_buffer_copy_cpu_ns, memory_order_acquire);
+}
+static s32 n_afkBufferBlitBegin(Runtime *runtime, JClass *clazz) {
+    s64 stamp = 0;
+    if (atomic_load_explicit(&g_afk_buffer_audit, memory_order_acquire) &&
+        atomic_load_explicit(&treo_afk_mode, memory_order_acquire) == 8) {
+        const int w = runtime->jnienv->localvar_getInt(runtime->localvar, 0);
+        const int h = runtime->jnienv->localvar_getInt(runtime->localvar, 1);
+        const int safe = runtime->jnienv->localvar_getInt(runtime->localvar, 2);
+        if (safe && atomic_load_explicit(&g_afk_buffer_skip, memory_order_acquire)) {
+            atomic_fetch_add_explicit(&g_afk_buffer_skipped, 1, memory_order_relaxed);
+            if (w > 0 && h > 0)
+                atomic_fetch_add_explicit(&g_afk_buffer_skipped_pixels,
+                                          (uint64_t)w * (uint64_t)h, memory_order_relaxed);
+            stamp = -1;
+        } else {
+            atomic_fetch_add_explicit(&g_afk_buffer_copies, 1, memory_order_relaxed);
+            stamp = (s64)treo_thread_cpu_ns();
+        }
+    }
+    runtime->jnienv->push_long(runtime->stack, stamp);
+    return RUNTIME_STATUS_NORMAL;
+}
+static s32 n_afkBufferBlitEnd(Runtime *runtime, JClass *clazz) {
+    const s64 stamp = runtime->jnienv->localvar_getLong_2slot(runtime->localvar, 0);
+    if (stamp > 0 && atomic_load_explicit(&g_afk_buffer_audit, memory_order_acquire)) {
+        const uint64_t end = treo_thread_cpu_ns();
+        if (end >= (uint64_t)stamp)
+            atomic_fetch_add_explicit(&g_afk_buffer_copy_cpu_ns,
+                                      end - (uint64_t)stamp, memory_order_relaxed);
+    }
+    return RUNTIME_STATUS_NORMAL;
+}
 static atomic_int g_afk_refresh = 0;
 static atomic_bool g_afk_needs_redraw;
 static _Atomic uint64_t g_afk_skipped_draws, g_afk_skipped_paints;
@@ -3774,6 +3828,8 @@ static java_native_method j2me_render_methods[] = {
     {CLS, "createContext",    "(II)J",                                   n_createContext},
     {CLS, "destroyContext",   "(J)V",                                    n_destroyContext},
     {CLS, "flushToScreen",    "(J)V",                                    n_flushToScreen},
+    {CLS, "afkBufferBlitBegin", "(IIZ)J",                                n_afkBufferBlitBegin},
+    {CLS, "afkBufferBlitEnd",   "(J)V",                                  n_afkBufferBlitEnd},
 
     // Color & State
     {CLS, "setColor",         "(JI)V",                                   n_setColor},

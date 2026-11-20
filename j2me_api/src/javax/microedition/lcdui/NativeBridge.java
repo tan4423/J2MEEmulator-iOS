@@ -14,6 +14,10 @@ public class NativeBridge {
     public static native long createContext(int w, int h);
     public static native void destroyContext(long ctx);
     public static native void flushToScreen(long ctx);
+    // Optional GameCanvas AFK diagnostic. -1 skips only the display buffer
+    // blit, 0 does normal unmeasured work, >0 is a thread CPU clock stamp.
+    static native long afkBufferBlitBegin(int canvasWidth, int canvasHeight, boolean safeGameBuffer);
+    static native void afkBufferBlitEnd(long cpuStamp);
     static native long profilePaintBegin();
     static native void profilePaintEnd(long cpuStart);
     static native boolean afkSuspended();
