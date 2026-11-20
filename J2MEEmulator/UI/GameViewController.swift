@@ -1686,7 +1686,26 @@ class GameViewController: UIViewController {
             }
             if sourceProfile { treo_afk_main_source_trace_begin() }
             else if profileMain { treo_afk_main_stack_begin() }
-            self.scheduleJarAudit(id: id, after: self.jarEnergyAudit ? 120 : (profileMain && !sourceProfile ? 20 : ((self.jarMainQoSAudit || self.jarDisplayWaitAudit || self.jarUIKitPhaseAudit || self.jarSparsePaintAudit) ? 30 : (self.jarWindowAudit ? 25 : (self.jarWorkerComparison ? 30 : (self.jarLoadComparison ? 25 : 60))))) { [weak self] in
+            // Explicit branch selection avoids a fragile nested ternary that
+            // previously left the scheduleJarAudit call with an unmatched ')'.
+            let measurementSeconds: Double
+            if self.jarEnergyAudit {
+                measurementSeconds = 120
+            } else if profileMain && !sourceProfile {
+                measurementSeconds = 20
+            } else if self.jarMainQoSAudit || self.jarDisplayWaitAudit ||
+                        self.jarUIKitPhaseAudit || self.jarSparsePaintAudit {
+                measurementSeconds = 30
+            } else if self.jarWindowAudit {
+                measurementSeconds = 25
+            } else if self.jarWorkerComparison {
+                measurementSeconds = 30
+            } else if self.jarLoadComparison {
+                measurementSeconds = 25
+            } else {
+                measurementSeconds = 60
+            }
+            self.scheduleJarAudit(id: id, after: measurementSeconds) { [weak self] in
                 guard let self else { return }
                 let end = JarAuditSample()
                 let powerEnd: JarPowerSnapshot? = self.jarEnergyAudit ? JarPowerSnapshot() : nil
