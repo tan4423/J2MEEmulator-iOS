@@ -1783,6 +1783,11 @@ class GameViewController: UIViewController {
                                 batteryDropPerHour ?? 0)
                         }
                         row += "\nNhiệt: \(startPower.thermalName) → \(endPower.thermalName) (trạng thái iOS, không phải °C)"
+                        let nominal = snapshots.filter { $0.thermal == .nominal }.count
+                        let fair = snapshots.filter { $0.thermal == .fair }.count
+                        let serious = snapshots.filter { $0.thermal == .serious }.count
+                        let critical = snapshots.filter { $0.thermal == .critical }.count
+                        row += "\nMẫu nhiệt: nominal \(nominal) · fair \(fair) · serious \(serious) · critical \(critical)"
                         row += String(format: "\nĐộ sáng: %.3f → %.3f · mẫu kiểm tra: %d · Low Power Mode: %@ → %@",
                             startPower.brightness, endPower.brightness, snapshots.count,
                             startPower.lowPower ? "bật" : "tắt", endPower.lowPower ? "bật" : "tắt")
