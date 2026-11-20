@@ -2168,14 +2168,14 @@ class GameViewController: UIViewController {
            let a = results[0].throughput,
            let b = results[1].throughput,
            let c = results[2].throughput {
-            let gcACPU = (a.cycleCPUms / max(1, a.cycles) + c.cycleCPUms / max(1, c.cycles)) / 2
+            let gcACPU = (a.cycleCPUms / Double(max(UInt64(1), a.cycles)) + c.cycleCPUms / Double(max(UInt64(1), c.cycles))) / 2
             summary += "THỬ GC THƯA KHI JAR TREO (3 lượt đều bật treo):\n"
             summary += String(format:
                 "Chu kỳ GC: A1 %llu · B %llu · A2 %llu; CPU GC %.1f · %.1f · %.1f ms/s.\n",
                 a.cycles, b.cycles, c.cycles,
                 a.cycleCPUms / 30, b.cycleCPUms / 30, c.cycleCPUms / 30)
             summary += String(format: "CPU/chu kỳ GC: mốc A %.2f ms · B %.2f ms.\n",
-                                      gcACPU, b.cycleCPUms / max(1, b.cycles))
+                                      gcACPU, b.cycleCPUms / Double(max(UInt64(1), b.cycles)))
             let ra = results[0], rb = results[1], rc = results[2]
             summary += String(format: "GC peak (MiB): A1 %.1f · B %.1f · A2 %.1f; fallback B %llu.\n",
                 Double(ra.gcPeakBytes) / 1048576, Double(rb.gcPeakBytes) / 1048576,
