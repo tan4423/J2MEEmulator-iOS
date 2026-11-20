@@ -24,13 +24,13 @@ Both builds use the *same current source*, rather than comparing against months 
 Example shape (not a measured result):
 
 ```text
-[JarBoxVM][Treo] 60.0s · dispatch=computed-goto · direct_methods~112640 · switch_methods~0 · monitor_contended=3 · monitor_failed_acquires=5 · app_CPU=35.0% · main_CPU=20.0%. Counts batched/64; CPU is not watts.
+[JarBoxVM][Treo] 60.0s · dispatch=computed-goto · direct_methods~112640 · switch_methods~0 · monitor_contended=3 · monitor_failed_acquires=5 · app_CPU=35.0% · main_CPU=20.0% · paint=25.35/s · layer_frames=0 · smart_GC=12. Counts batched/64; paint is not game ticks; CPU is not watts.
 ```
 
 - Candidate valid: `dispatch=computed-goto`, `direct_methods~ > 0`.
 - Reference valid: `dispatch=switch`, `switch_methods~ > 0`, `direct_methods~ = 0`.
 - If monitor contention is negligible, the earlier mutex fix was likely not a major workload CPU bottleneck, even though the timeout bug was real.
-- Compare **whole-app CPU** and `pymobiledevice3` under matched workloads, not the number of method calls alone. If saving is marginal or inconsistent, **do not promote direct dispatch**. If the app crashes or Java logic/auto/network breaks, return to the user-verified build.
+- Compare **whole-app CPU** and `pymobiledevice3` under matched workloads, not the number of method calls alone. Confirm `paint` cadence, `layer_frames` and Smart GC counts are comparable. `paint` is only a partial workload proxy, not a generic Java/game tick counter. If saving is marginal or inconsistent, **do not promote direct dispatch**. If the app crashes or Java logic/auto/network breaks, return to the user-verified build.
 - `main_CPU` is Apple's UI main-thread CPU, not CPU time of the JVM interpreter.
 - CPU% is not watts. A high-quality decision requires stable game logic, auto/network, UI restoration, and longer power/thermal observations.
 
