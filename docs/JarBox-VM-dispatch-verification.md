@@ -88,3 +88,34 @@ This observation came from the device owner and is preserved verbatim in substan
 Important limitation: **no generic emulator can prove that arbitrary game code inside `paint()` is pure drawing**. This implementation never skips the game's paint callback or its helper methods. A later interprocedural purity verifier could skip *proven* graphics-only helper subtrees, but would require proof and fallback rather than heuristics. Treo is not allowed to break networking or game state merely because pixels are hidden.
 
 **Verification status:** source and cross-file instrumentation reviewed. Xcode build and iPhone A/B are pending; do not claim power or thermal savings.
+
+## Real-device Paint Bridge candidate — device-owner observation
+
+Build: `paint_bridge=on`, `dispatch=computed-goto`, guarded Canvas headless Treo with Smart GC. Game identity, installed IPA hash, workload stage, temperature, ambient conditions, and parallel `pymobiledevice3` reading were not provided. This is not yet a matched A/B.
+
+| Field | Observation |
+| --- | ---: |
+| Treo elapsed | 158.7 s |
+| Process CPU | 57.1% |
+| iOS main CPU | 26.9% |
+| Paint CPU time | 162.40 ms/s (16.24 single-core CPU percentage points) |
+| Java `paint()` rate | 25.62/s |
+| Elided headless Java draw wrapper calls | 3,964,040 (~24,978/s, ~975 per paint) |
+| Direct-dispatch interpreted method calls (approx.) | 38,437,504 |
+| Switch-dispatch interpreted method calls (approx.) | 0 |
+| Actual contended monitors / retry attempts | 1 / 1 |
+| Canvas raster omitted / preserved | 4,065 / 0 |
+| Late pixel read / fallback | 0 / none |
+| Layer frames | 0 |
+| Smart GC count | 91 |
+| Smart GC CPU | 12.34 ms/s |
+| Java/native collector heap peak | 22.2 MiB |
+| Smart GC fallback | none |
+
+**Verified for this observation:** Paint Bridge was entered millions of times, the VM direct dispatcher remained active, and the guarded Canvas backend did not report pixel fallback. The Java paint callback continues to run ~25.6 times/s.
+
+**Cross-run reference (not causal):** the preceding user-provided `computed-goto` log without `paint_bridge` was 106.5 s, process CPU 59.6%, main 27.3%, paint 25.57/s, GC CPU 13.49 ms/s. The observed process CPU difference (-2.5 percentage points) is **not a proven Paint Bridge gain** because the runs differ in duration and possibly workload, device state and temperature; no same-HEAD paint-bridge-off control exists yet.
+
+**Research implication:** eliminating many already-headless draw wrapper calls does not automatically eliminate the *Java work preparing those draw calls*. `paint_CPU=162.40 ms/s` remains material and may include arbitrary game logic: neither arbitrary paint callback elimination nor Java game-JAR patching is justified. The iOS main CPU of ~26.9% is a distinct unresolved hot spot. Even removing all measured paint CPU would leave a naive arithmetic remainder ~40.9% CPU before scheduling effects; that is **not** a prediction or permissible optimization.
+
+**Validation before adoption:** build *the same HEAD* with `JARBOX_VM_PAINT_BRIDGE_BASELINE=1` and `JARBOX_VM_SWITCH_BASELINE=0`; compare a matching real-device scenario. Confirm bridge-on/off counters, paint CPU ms/s, app/main CPU, GC, paint rate, JAR logic and network, and screen restoration. Preserve source-correctness improvements even where no device-wide CPU impact appears.
