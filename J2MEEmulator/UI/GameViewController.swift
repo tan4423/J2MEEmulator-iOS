@@ -394,6 +394,7 @@ class GameViewController: UIViewController {
     private var jarEnergyLeg = -1
     private var jarEnergySamples: [JarPowerSnapshot] = []
     private var jarSparsePaintAudit = false
+    private var jarThroughputAudit = false
     private var jarUIKitPhaseAudit = false
     private var jarUIKitPhaseBudget: JarUIKitPhaseBudget?
     private var jarMainBenchLeg = -1
@@ -872,6 +873,9 @@ class GameViewController: UIViewController {
             },
             UIAction(title: "Thử paint thưa 1/3 Hz · JAR") { [weak self] _ in
                 self?.confirmJarAudit(sparsePaintAudit: true)
+            },
+            UIAction(title: "Đo tốc độ main/game/GC · A/B/A") { [weak self] _ in
+                self?.confirmJarAudit(throughputAudit: true)
             },
             UIAction(title: "Đo 6 pha UIKit · tắt → bật → tắt",
                      attributes: Self.jarCommitAuditSupported ? [] : .disabled) { [weak self] _ in
@@ -1362,11 +1366,12 @@ class GameViewController: UIViewController {
         return false
     }
 
-    private func confirmJarAudit(profileMain: Bool = false, compareLoad: Bool = false, workerComparison: Bool = false, windowOcclusion: Bool = false, displayWaitAudit: Bool = false, mainQoSAudit: Bool = false, uikitPhases: Bool = false, sparsePaintAudit: Bool = false, energyAudit: Bool = false, budgetMain: Bool = false, detachUI: Bool = false, measureCommit: Bool = false) {
+    private func confirmJarAudit(profileMain: Bool = false, compareLoad: Bool = false, workerComparison: Bool = false, windowOcclusion: Bool = false, displayWaitAudit: Bool = false, mainQoSAudit: Bool = false, uikitPhases: Bool = false, sparsePaintAudit: Bool = false, energyAudit: Bool = false, throughputAudit: Bool = false, budgetMain: Bool = false, detachUI: Bool = false, measureCommit: Bool = false) {
         guard !(measureCommit || windowOcclusion || displayWaitAudit || mainQoSAudit || uikitPhases) || Self.jarCommitAuditSupported else { return }
         guard jarAuditID == nil, blackout == nil, powerRun == nil, cpuProfileStartedAt == nil else { return }
         let sourceProfile = budgetMain && profileMain
-        let alert = UIAlertController(title: energyAudit ? "Đo hao pin & nhiệt · JAR" :
+        let alert = UIAlertController(title: throughputAudit ? "Đo tốc độ main/game/GC · JAR" :
+                energyAudit ? "Đo hao pin & nhiệt · JAR" :
                 sparsePaintAudit ? "Thử paint thưa 1/3 Hz · JAR" :
                 uikitPhases ? "Đo 6 pha UIKit · tắt → bật → tắt" :
                 mainQoSAudit ? "Thử hạ QoS main · JAR" :
@@ -1378,7 +1383,9 @@ class GameViewController: UIViewController {
                 budgetMain ? "Đo pha CPU main · JAR" :
                 (compareLoad ? "Thử chờ thụ động · CPU main" :
                  (profileMain ? "Tìm hàm ăn CPU main" : "Chẩn đoán CPU JAR")),
-            message: energyAudit
+            message: throughputAudit
+                ? "Map 37, auto x1, đầu tiên TẮT Treo tối ưu CPU trong JAR. Đo A1 tắt → B bật → A2 tắt, 30 giây/lượt, có hướng dẫn đổi trạng thái. Mỗi lượt giữ chặn khung native, tắt JIT. Ghi cùng 120.000 phép tính trên main, game, GC thật (CPU time và thời gian thực) cùng số lần/chi phí thu gom GC. Lấy mẫu thưa, không tạo luồng tải giả; không đo trực tiếp watt, lõi P/E hay xung nhịp. Chỉ kết luận nếu game giữ nhịp và đủ mẫu."
+                : energyAudit
                 ? "Map 37, auto x1, bắt đầu với Treo trong JAR đang TẮT. Đo A1 TẮT → B BẬT → A2 TẮT, chỉ 2 phút/lượt (6 phút tổng); tự nhắc bạn đổi trạng thái giữa các lượt. GIỮ iPhone trên pin (không sạc), cùng độ sáng cố định, không đổi mạng, không khóa màn hình, không kéo Trung tâm thông báo. Không chặn khung native: A1/A2 là game hiển thị bình thường, B là treo JAR thực tế; tắt JIT suốt bài. Ghi CPU time từ getrusage, pin, nhiệt hệ thống, độ sáng, tick và benchmark. Vì mỗi lượt chỉ 2 phút, biến động pin 0–1% KHÔNG đủ kết luận mức hao pin; ưu tiên CPU time và benchmark. Không đo watt hay nhiệt độ °C. Có Hủy và tự hoàn nguyên cài đặt."
                 : sparsePaintAudit
                 ? "Map 37, auto x1, BẬT Treo tối ưu CPU trong JAR trước. Không bật màn đen JarBox. 4 lượt × 30 giây: A1 không paint → B ép paint thật 1 lần/giây → C 3 lần/giây → A2 không paint; tự chuyển, không cần chạm. Khung game vẫn bị chặn native. Đo CPU tổng/main, tốc độ phép tính cố định, tick và số paint thực. CẢNH BÁO: paint của JAR có thể chứa logic, chỉ dùng để chẩn đoán. Có Hủy; tự tắt ép paint sau thử."
@@ -1408,12 +1415,12 @@ class GameViewController: UIViewController {
             preferredStyle: .alert)
         alert.addAction(UIAlertAction(title: "Hủy", style: .cancel))
         alert.addAction(UIAlertAction(title: profileMain ? "Lấy mẫu" : "Đo", style: .default) { [weak self] _ in
-            self?.startJarAudit(profileMain: profileMain, compareLoad: compareLoad, workerComparison: workerComparison, windowOcclusion: windowOcclusion, displayWaitAudit: displayWaitAudit, mainQoSAudit: mainQoSAudit, uikitPhases: uikitPhases, sparsePaintAudit: sparsePaintAudit, energyAudit: energyAudit, budgetMain: budgetMain, detachUI: detachUI, measureCommit: measureCommit)
+            self?.startJarAudit(profileMain: profileMain, compareLoad: compareLoad, workerComparison: workerComparison, windowOcclusion: windowOcclusion, displayWaitAudit: displayWaitAudit, mainQoSAudit: mainQoSAudit, uikitPhases: uikitPhases, sparsePaintAudit: sparsePaintAudit, energyAudit: energyAudit, throughputAudit: throughputAudit, budgetMain: budgetMain, detachUI: detachUI, measureCommit: measureCommit)
         })
         present(alert, animated: true)
     }
 
-    private func startJarAudit(profileMain: Bool, compareLoad: Bool, workerComparison: Bool, windowOcclusion: Bool, displayWaitAudit: Bool, mainQoSAudit: Bool, uikitPhases: Bool, sparsePaintAudit: Bool, energyAudit: Bool, budgetMain: Bool, detachUI: Bool, measureCommit: Bool) {
+    private func startJarAudit(profileMain: Bool, compareLoad: Bool, workerComparison: Bool, windowOcclusion: Bool, displayWaitAudit: Bool, mainQoSAudit: Bool, uikitPhases: Bool, sparsePaintAudit: Bool, energyAudit: Bool, throughputAudit: Bool, budgetMain: Bool, detachUI: Bool, measureCommit: Bool) {
         guard jarAuditID == nil, blackout == nil, powerRun == nil, cpuProfileStartedAt == nil else { return }
         if mainQoSAudit {
             let code = treo_main_qos_begin()
@@ -1441,6 +1448,7 @@ class GameViewController: UIViewController {
         jarEnergyAudit = energyAudit
         jarMainQoSAudit = mainQoSAudit
         jarUIKitPhaseAudit = uikitPhases
+        jarThroughputAudit = throughputAudit
         jarSparsePaintAudit = sparsePaintAudit
         jarMainProfile = profileMain
         jarLoadComparison = compareLoad
@@ -1478,6 +1486,8 @@ class GameViewController: UIViewController {
         jarUIKitPhaseBudget?.stop()
         jarUIKitPhaseBudget = nil
         jarUIKitPhaseAudit = false
+        treo_diag_set(0)
+        jarThroughputAudit = false
         if jarEnergyAudit {
             if let prior = jarEnergyOldIdleTimer {
                 UIApplication.shared.isIdleTimerDisabled = prior
@@ -1561,15 +1571,58 @@ class GameViewController: UIViewController {
         }
     }
 
+    // Identical short native integer-work benchmark on three existing pthreads.
+    // These are mean nanoseconds/iteration, NOT MHz, P/E core IDs or Joules.
+    private struct JarThroughputStats {
+        let mainN = treo_diag_samples(0)
+        let gameN = treo_diag_samples(1)
+        let gcN = treo_diag_samples(2)
+        let mainCPU = treo_diag_ns_per_step(0, 0)
+        let gameCPU = treo_diag_ns_per_step(1, 0)
+        let gcCPU = treo_diag_ns_per_step(2, 0)
+        let mainWall = treo_diag_ns_per_step(0, 1)
+        let gameWall = treo_diag_ns_per_step(1, 1)
+        let gcWall = treo_diag_ns_per_step(2, 1)
+        let cycles = treo_diag_gc_cycles()
+        let cycleCPUms = treo_diag_gc_cpu_ms()
+        let cycleWallms = treo_diag_gc_wall_ms()
+
+        var valid: Bool {
+            mainN >= 8 && gameN >= 8 && gcN >= 2 &&
+            mainCPU > 0 && gameCPU > 0 && gcCPU > 0
+        }
+
+        func detail(wallSeconds: Double) -> String {
+            var rows: [String] = []
+            let samples: [(String, UInt64, Double, Double)] = [
+                ("main", mainN, mainCPU, mainWall),
+                ("game", gameN, gameCPU, gameWall),
+                ("GC", gcN, gcCPU, gcWall)
+            ]
+            for (name, count, cpu, wall) in samples {
+                rows.append(String(format: "%@: %llu mẫu · CPU %.3f ns/phép · wall %.3f ns/phép",
+                                   name, count, cpu, wall))
+            }
+            rows.append(String(format:
+                "GC thật: %llu chu kỳ · CPU %.1f ms/s · wall %.1f ms/s (thời gian ngừng thế giới có thể nằm trong wall)",
+                cycles, cycleCPUms / max(0.001, wallSeconds), cycleWallms / max(0.001, wallSeconds)))
+            return rows.joined(separator: "\n")
+        }
+    }
+
     private func scheduleJarMainBench(id: UUID, leg: Int, left: Int) {
         guard left > 0 else { return }
         let interval = jarEnergyAudit ? 7.0 : 2.0
         DispatchQueue.main.asyncAfter(deadline: .now() + interval) { [weak self] in
             guard let self, self.jarAuditID == id,
-                  (self.jarUIKitPhaseAudit || self.jarSparsePaintAudit || self.jarEnergyAudit),
+                  (self.jarUIKitPhaseAudit || self.jarSparsePaintAudit || self.jarEnergyAudit || self.jarThroughputAudit),
                   self.jarMainBenchLeg == leg else { return }
-            let time = treo_main_fixed_work_ns_per_step()
-            if time > 0 { self.jarMainBenchSamples.append(time) }
+            if self.jarThroughputAudit {
+                treo_diag_sample(0)
+            } else {
+                let time = treo_main_fixed_work_ns_per_step()
+                if time > 0 { self.jarMainBenchSamples.append(time) }
+            }
             self.scheduleJarMainBench(id: id, leg: leg, left: left - 1)
         }
     }
@@ -1583,6 +1636,7 @@ class GameViewController: UIViewController {
         let commit: JarCommitBudget.Result?
         let phases: JarUIKitPhaseBudget.Result?
         let mainBenchNS: Double?
+        let throughput: JarThroughputStats?
         let sparseRate: Double
         let actualPaintRate: Double
         let batteryDropPerHour: Double?
@@ -1592,9 +1646,10 @@ class GameViewController: UIViewController {
     }
 
     private func runJarAudit(id: UUID, leg: Int, rows: [String], results: [JarAuditResult]) {
-        // Energy audit measures ACTUAL usage: normal game presents frames,
-        // JAR treo does not. CPU microbench audits still suppress both arms.
+        // Energy audit measures ACTUAL usage; cross-thread diagnostics use
+        // matching native frame suppression in all three A/B/A legs.
         treo_render_set_afk_mode(jarEnergyAudit ? 0 : 1)
+        treo_diag_set(0)
         let sparseAudit = jarSparsePaintAudit
         let sparseHz: Int32 = sparseAudit ? (leg == 1 ? 1 : leg == 2 ? 3 : 0) : 0
         treo_jar_sparse_paint_set(sparseHz)
@@ -1639,7 +1694,7 @@ class GameViewController: UIViewController {
         let settleOff = treo_jar_audit_ticks(0)
         scheduleJarAudit(id: id, after: 3) { [weak self] in
             guard let self else { return }
-            if self.jarUIKitPhaseAudit || self.jarSparsePaintAudit || self.jarEnergyAudit {
+            if self.jarUIKitPhaseAudit || self.jarSparsePaintAudit || self.jarEnergyAudit || self.jarThroughputAudit {
                 let observedOn = treo_jar_audit_ticks(1) &- settleOn
                 let observedOff = treo_jar_audit_ticks(0) &- settleOff
                 let expectedOn = self.jarSparsePaintAudit || leg == 1
@@ -1661,13 +1716,14 @@ class GameViewController: UIViewController {
             let profileMain = self.jarMainProfile
             let budgetMain = self.jarBudgetAudit
             let sourceProfile = budgetMain && profileMain
+            if self.jarThroughputAudit { treo_diag_set(1) }
             let powerStart: JarPowerSnapshot? = self.jarEnergyAudit ? JarPowerSnapshot() : nil
             if self.jarEnergyAudit {
                 self.jarEnergyLeg = leg
                 self.jarEnergySamples.removeAll()
                 self.scheduleJarEnergySample(id: id, leg: leg, remaining: 3)
             }
-            if self.jarUIKitPhaseAudit || self.jarSparsePaintAudit || self.jarEnergyAudit {
+            if self.jarUIKitPhaseAudit || self.jarSparsePaintAudit || self.jarEnergyAudit || self.jarThroughputAudit {
                 self.jarMainBenchLeg = leg
                 self.jarMainBenchSamples.removeAll()
                 self.scheduleJarMainBench(id: id, leg: leg, left: 12)
@@ -1694,7 +1750,7 @@ class GameViewController: UIViewController {
             } else if profileMain && !sourceProfile {
                 measurementSeconds = 20
             } else if self.jarMainQoSAudit || self.jarDisplayWaitAudit ||
-                        self.jarUIKitPhaseAudit || self.jarSparsePaintAudit {
+                        self.jarUIKitPhaseAudit || self.jarSparsePaintAudit || self.jarThroughputAudit {
                 measurementSeconds = 30
             } else if self.jarWindowAudit {
                 measurementSeconds = 25
@@ -1708,6 +1764,8 @@ class GameViewController: UIViewController {
             self.scheduleJarAudit(id: id, after: measurementSeconds) { [weak self] in
                 guard let self else { return }
                 let end = JarAuditSample()
+                if self.jarThroughputAudit { treo_diag_set(0) }
+                let throughput: JarThroughputStats? = self.jarThroughputAudit ? JarThroughputStats() : nil
                 let powerEnd: JarPowerSnapshot? = self.jarEnergyAudit ? JarPowerSnapshot() : nil
                 let energySamples = self.jarEnergySamples
                 self.jarEnergyLeg = -1
@@ -1715,7 +1773,9 @@ class GameViewController: UIViewController {
                 let on = end.on &- start.on, off = end.off &- start.off
                 let compareLoad = self.jarLoadComparison
                 let workerCompare = self.jarWorkerComparison
-                let names = self.jarEnergyAudit
+                let names = self.jarThroughputAudit
+                    ? ["A1 · JAR tắt (luồng)", "B · JAR bật (luồng)", "A2 · JAR tắt (luồng)"]
+                    : self.jarEnergyAudit
                     ? ["A1 · JAR tắt (pin)", "B · JAR bật (pin)", "A2 · JAR tắt lại (pin)"]
                     : sparseAudit
                     ? ["A1 · Không paint", "B · Paint 1 Hz", "C · Paint 3 Hz", "A2 · Không paint"]
@@ -1848,6 +1908,12 @@ class GameViewController: UIViewController {
                     }
                 }
                 if let commit { row += "\n" + commit.detail }
+                if self.jarThroughputAudit, let throughput {
+                    row += "\n" + throughput.detail(wallSeconds: dt)
+                    if !throughput.valid {
+                        row += "\nKHÔNG ĐỦ MẪU: main/game cần ít nhất 8, GC ít nhất 2."
+                    }
+                }
                 if self.jarUIKitPhaseAudit || sparseAudit || self.jarEnergyAudit {
                     if let mainBenchNS {
                         row += String(format: "\nViệc cố định main: %.3f ns/phép · %d mẫu (median); chỉ kiểm tra tốc độ tính toán, không đo xung CPU.",
@@ -1878,6 +1944,7 @@ class GameViewController: UIViewController {
                     (displayWaits >= 1 && abs(displayGcSafeWaits - displayWaits) <= 0.1)
                 let validQoS = !qosAudit || treo_main_qos_expected(qosMode) == treo_main_qos_current()
                 let validEnergy = !self.jarEnergyAudit || energyStable
+                let validThroughput = !self.jarThroughputAudit || (throughput?.valid ?? false)
                 let targetHz = Double(sparseHz)
                 let validSparse = !sparseAudit || (targetHz == 0
                     ? (sparseRate <= 0.15 && paints <= 0.15)
@@ -1885,13 +1952,13 @@ class GameViewController: UIViewController {
                        && abs(paints - targetHz) <= 0.45))
                 if !validSparse { row += "\nKHÔNG HỢP LỆ: paint thực tế khác tần suất yêu cầu." }
                 let validFrames = self.jarEnergyAudit ? (leg == 1 || frames > 0) : frames == 0
-                guard validState && validUI && validWindow && validDisplay && validQoS && validSparse && validEnergy && validFrames else {
+                guard validState && validUI && validWindow && validDisplay && validQoS && validSparse && validEnergy && validThroughput && validFrames else {
                     self.finishJarAudit(rows: all, results: [])
                     return
                 }
                 let measured = results + [JarAuditResult(total: total, main: main, ticks: ticks, paint: paint,
                     budget: budget, commit: commit, phases: phases, mainBenchNS: mainBenchNS,
-                    sparseRate: sparseRate, actualPaintRate: paints,
+                    throughput: throughput, sparseRate: sparseRate, actualPaintRate: paints,
                     batteryDropPerHour: batteryDropPerHour, energyStable: energyStable,
                     loadCPU: Double(end.loadNS &- start.loadNS) / dt / 10_000_000,
                     loadRate: Double(end.loadCalls &- start.loadCalls) / dt)]
@@ -1951,6 +2018,7 @@ class GameViewController: UIViewController {
         let qosAudit = jarMainQoSAudit
         let phaseAudit = jarUIKitPhaseAudit
         let sparseAudit = jarSparsePaintAudit
+        let throughputAudit = jarThroughputAudit
         let energyAudit = jarEnergyAudit
         let budgetMain = jarBudgetAudit
         let detachUI = jarDetachAudit
@@ -2064,6 +2132,34 @@ class GameViewController: UIViewController {
                 }
             }
         }
+        if throughputAudit && results.count == 3,
+           let a = results[0].throughput,
+           let b = results[1].throughput,
+           let c = results[2].throughput {
+            summary += "ĐỐI CHIẾU CÙNG MỘT PHÉP TÍNH TRÊN LUỒNG THẬT (B / trung bình A1,A2):\n"
+            let measures: [(String, Double, Double, Double, Double, Double, Double)] = [
+                ("main", a.mainCPU, b.mainCPU, c.mainCPU, a.mainWall, b.mainWall, c.mainWall),
+                ("game", a.gameCPU, b.gameCPU, c.gameCPU, a.gameWall, b.gameWall, c.gameWall),
+                ("GC", a.gcCPU, b.gcCPU, c.gcCPU, a.gcWall, b.gcWall, c.gcWall)
+            ]
+            for (name, aCPU, bCPU, cCPU, aWall, bWall, cWall) in measures {
+                summary += String(format:
+                    "%@: CPU %.2f× · wall %.2f× (B %.3f ns CPU/phép).\n",
+                    name, bCPU / max(0.001, (aCPU + cCPU) / 2),
+                    bWall / max(0.001, (aWall + cWall) / 2), bCPU)
+            }
+            summary += String(format:
+                "GC chu kỳ A1 %llu · B %llu · A2 %llu; CPU GC chu kỳ tổng %.1f · %.1f · %.1f ms/lượt.\n",
+                a.cycles, b.cycles, c.cycles, a.cycleCPUms, b.cycleCPUms, c.cycleCPUms)
+            let ta = results[0].ticks, tb = results[1].ticks, tc = results[2].ticks
+            if abs(tb - (ta + tc) / 2) > 0.5 || abs(ta - tc) > 0.5 {
+                summary += "KHÔNG KẾT LUẬN: nhịp requestFrame lệch quá 0,5 lần/s.\n"
+            }
+            if a.gcN < 4 || b.gcN < 4 || c.gcN < 4 {
+                summary += "CẢNH BÁO: ít mẫu GC, không diễn giải hệ số nhỏ.\n"
+            }
+            summary += "CPU ns/phép không phải chu kỳ máy; wall ns/phép gồm thời gian deschedule. Không xác định P/E core hay Joule.\n\n"
+        }
         if energyAudit && results.count == 3 {
             let a = results[0], b = results[1], c = results[2]
             summary += "THỬ PIN/NHIỆT DÀI HẠN (không đo watt hay nhiệt độ °C)\n"
@@ -2128,7 +2224,7 @@ class GameViewController: UIViewController {
             summary += String(format: "Chênh CPU main toàn bộ: %+.1f điểm (%.1f ms/s). Không đồng nhất tổng khoảng UIKit với toàn main.\n\n",
                 mainDelta, mainDelta * 10)
         }
-        if budgetMain || energyAudit {
+        if budgetMain || energyAudit || throughputAudit {
             if results.count == 3, let a = results[0].budget, let b = results[1].budget, let c = results[2].budget {
                 let indices = JarMainBudget.Group.allCases
                 let measured = indices.map { group in
@@ -2152,7 +2248,8 @@ class GameViewController: UIViewController {
                     summary += "Mốc UIKit không đủ hoặc lỗi ghép nhiều: không kết luận về commit.\n\n"
                 }
             }
-            let title = energyAudit ? "Đo hao pin & nhiệt · JAR" :
+            let title = throughputAudit ? "Đo tốc độ main/game/GC · JAR" :
+                energyAudit ? "Đo hao pin & nhiệt · JAR" :
                 sparseAudit ? "Thử paint thưa 1/3 Hz · JAR" :
                 phaseAudit ? "Đo 6 pha UIKit · JAR" :
                 qosAudit ? "Thử hạ QoS main · JAR" :
@@ -2162,7 +2259,9 @@ class GameViewController: UIViewController {
                 measureCommit ? "Đo CPU quanh commit UIKit · JAR" :
                 detachUI ? "Thử tháo giao diện game · JAR" :
                 (profileMain ? "Tìm stack sau Source · JAR" : "Đo pha CPU main · JAR")
-            let sampling = energyAudit
+            let sampling = throughputAudit
+                ? "A1 tắt → B bật → A2 tắt, mỗi lượt 30 giây, cùng chặn khung native và JIT tắt. Đo cùng phép tính ngắn trên main, game, GC thật (CPU/wall ns/phép), GC chu kỳ và tick. Không tạo tải giả liên tục; không đo watt, core ID hay xung."
+                : energyAudit
                 ? "A1 tắt → B bật → A2 tắt, mỗi lượt 2 phút (6 phút tổng); không chặn khung game nên đo tình huống sử dụng thực tế (A1/A2 hiển thị game, B treo). JIT tắt suốt bài. Theo dõi getrusage CPU time, pin iOS, trạng thái nhiệt, độ sáng, Low Power Mode và tick. Mức pin ngắn hạn chỉ tham khảo, tốc độ %/giờ ngoại suy có sai số rất lớn; KHÔNG đo watt, nhiệt độ °C hoặc năng lượng riêng CPU."
                 : sparseAudit
                 ? "JAR treo BẬT suốt bốn lượt. A1/A2 không ép vẽ, B ép 1Hz, C ép 3Hz từ luồng Display; khung vẫn chặn ở native. Đo CPU tổng, main, nhịp game, paint thật và tốc độ việc cố định trên main. Không thay đổi vòng game, không sử dụng tải giả; paint có thể chứa logic và thử nghiệm tự hoàn nguyên."
