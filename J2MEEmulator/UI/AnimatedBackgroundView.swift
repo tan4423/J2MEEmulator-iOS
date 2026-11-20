@@ -13,6 +13,51 @@ final class AnimatedBackgroundView: UIView {
     private let blurView = NeutralBlurView(radius: 40)
     private var circleViews: [UIView] = []
     private var animating = false
+    private var animationAllowed = true
+    private var initialLayoutDone = false
+    private var completedLoops: UInt64 = 0
+
+    // The springboard is occluded while a fullscreen game runs. These
+    // main-actor values make it possible to verify whether its animation
+    // still consumes render-loop work during Treo without per-frame probes.
+    static private(set) var springboardAnimating = false
+    static private(set) var springboardPauseLayers = 0
+    static private(set) var springboardAnimationLoops: UInt64 = 0
+
+    var activeAnimationLayers: Int {
+        circleViews.reduce(0) { $0 + ($1.layer.animationKeys()?.count ?? 0) }
+    }
+
+    func logAnimationState(_ reason: String) {
+        NSLog("[JarBoxBG] %@ running=%@ layers=%d totalLoops=%llu",
+              reason, animating ? "yes" : "no",
+              activeAnimationLayers, completedLoops)
+    }
+
+    func setAnimationsActive(_ enabled: Bool, reason: String) {
+        if !enabled {
+            // Set first: UIView.animate completion blocks may be invoked
+            // synchronously when animations are removed.
+            animationAllowed = false
+            animating = false
+            let count = activeAnimationLayers
+            Self.springboardPauseLayers = count
+            Self.springboardAnimating = false
+            for circle in circleViews { circle.layer.removeAllAnimations() }
+            logAnimationState("paused \(reason); previously active layers \(count)")
+            return
+        }
+        animationAllowed = true
+        startAnimationsIfNeeded()
+        logAnimationState("resumed \(reason)")
+    }
+
+    private func startAnimationsIfNeeded() {
+        guard animationAllowed, initialLayoutDone, !animating, window != nil else { return }
+        animating = true
+        Self.springboardAnimating = true
+        startAnimations()
+    }
 
     private static let colors: [UIColor] = [
         UIColor(red: 0.15, green: 0.22, blue: 0.55, alpha: 0.38),  // Blue
@@ -53,8 +98,9 @@ final class AnimatedBackgroundView: UIView {
         circlesContainer.frame = bounds
         blurView.frame = bounds
 
-        if !animating {
-            // Initial random positions
+        if !initialLayoutDone && bounds.width > 0 && bounds.height > 0 {
+            // Lay out random circle positions exactly once. A paused view
+            // must not restart animations just because Auto Layout runs.
             for circle in circleViews {
                 let size = randomSize()
                 circle.frame = CGRect(
@@ -63,9 +109,9 @@ final class AnimatedBackgroundView: UIView {
                     width: size, height: size)
                 circle.layer.cornerRadius = size / 2
             }
-            animating = true
-            startAnimations()
+            initialLayoutDone = true
         }
+        startAnimationsIfNeeded()
     }
 
     private func startAnimations() {
@@ -90,10 +136,24 @@ final class AnimatedBackgroundView: UIView {
                 circle.frame = CGRect(x: x, y: y, width: newSize, height: newSize)
                 circle.layer.cornerRadius = newSize / 2
             },
-            completion: { [weak self] _ in
-                self?.animateCircle(circle, delay: 0)
+            completion: { [weak self, weak circle] finished in
+                guard let self, self.animating, finished, let circle else { return }
+                self.completedLoops &+= 1
+                Self.springboardAnimationLoops &+= 1
+                self.animateCircle(circle, delay: 0)
             }
         )
+    }
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        if window == nil {
+            // Fullscreen presentations may detach the springboard view.
+            // Do not leave self-restarting animations on detached layers.
+            setAnimationsActive(false, reason: "detached from window")
+        } else if animationAllowed {
+            startAnimationsIfNeeded()
+        }
     }
 
     private func randomSize() -> CGFloat {

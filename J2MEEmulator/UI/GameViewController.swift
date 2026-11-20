@@ -1434,6 +1434,9 @@ class GameViewController: UIViewController {
         let paints = treo_afk_paint_count()
         let layerFrames = treo_afk_layer_frames()
         let gcCycles = treo_gc_smart_count()
+        let springboardMotion = AnimatedBackgroundView.springboardAnimating
+        let springboardPauseLayers = AnimatedBackgroundView.springboardPauseLayers
+        let springboardLoops = AnimatedBackgroundView.springboardAnimationLoops
     }
 
     private func showBlackout(mode: Int32 = 1, smartGC: Bool = false,
@@ -1496,14 +1499,17 @@ class GameViewController: UIViewController {
             let paintsHz = Double(end.paints &- start.paints) / dt
             let frames = end.layerFrames &- start.layerFrames
             let gc = end.gcCycles &- start.gcCycles
+            let springboardMotion = end.springboardMotion ? "running" : "paused"
+            let springboardLoops = end.springboardLoops &- start.springboardLoops
             let elided = end.elidedDraws &- start.elidedDraws
             let paintCPUmsPerSecond = Double(end.paintCPU &- start.paintCPU) / dt / 1_000_000
             return String(format:
-                "[JarBoxVM][Treo] %.1fs · dispatch=%@ · paint_bridge=%@ · bridge_elided_draw_calls=%llu · paint_CPU=%.2fms/s · direct_methods~%llu · switch_methods~%llu · monitor_contended=%llu · monitor_failed_acquires=%llu · app_CPU=%@%% · main_CPU=%@%% · paint=%.2f/s · layer_frames=%llu · smart_GC=%llu. Counts batched/64; paint is not game ticks; CPU is not watts.",
+                "[JarBoxVM][Treo] %.1fs · dispatch=%@ · paint_bridge=%@ · bridge_elided_draw_calls=%llu · paint_CPU=%.2fms/s · direct_methods~%llu · switch_methods~%llu · monitor_contended=%llu · monitor_failed_acquires=%llu · app_CPU=%@%% · main_CPU=%@%% · paint=%.2f/s · layer_frames=%llu · smart_GC=%llu · springboard_motion=%@ · springboard_layers_at_pause=%d · springboard_loops_during_treo=%llu. Counts batched/64; paint is not game ticks; CPU is not watts.",
                 dt, backend, bridge, elided, paintCPUmsPerSecond,
                 direct, fallback, monitors, retries,
                 percent(start.appCPU, end.appCPU), percent(start.mainCPU, end.mainCPU),
-                paintsHz, frames, gc)
+                paintsHz, frames, gc,
+                springboardMotion, end.springboardPauseLayers, springboardLoops)
         }
         vmTreoProbeStart = nil
         if let vmLog { NSLog("%@", vmLog) }

@@ -16,6 +16,19 @@ class AppsListViewController: UIViewController,
     private var springboardCollectionView: UICollectionView!
     private let emptyStateLabel = UILabel()
     private var lastLayoutWidth: CGFloat = 0
+    private weak var animatedBackground: AnimatedBackgroundView?
+
+    // A fullscreen game hides the springboard. Do not continue animating
+    // the six blurred blobs behind it. The build flag provides an exact
+    // same-source baseline that retains the old background behavior.
+    private func setSpringboardMotion(_ enabled: Bool, reason: String) {
+        guard let bg = animatedBackground else { return }
+#if JARBOX_BG_ANIM_BASELINE
+        bg.logAnimationState("baseline retained; \(reason)")
+#else
+        bg.setAnimationsActive(enabled, reason: reason)
+#endif
+    }
 
     /// Directory where imported JARs are stored
     private static var gamesDirectory: String {
@@ -31,6 +44,7 @@ class AppsListViewController: UIViewController,
 
         // Animated blob background
         let bg = AnimatedBackgroundView()
+        animatedBackground = bg
         bg.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(bg)
         NSLayoutConstraint.activate([
@@ -93,8 +107,14 @@ class AppsListViewController: UIViewController,
 
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
+        setSpringboardMotion(true, reason: "springboard became visible")
         NotificationCenter.default.addObserver(self, selector: #selector(appDidBecomeActive),
                                                name: UIApplication.didBecomeActiveNotification, object: nil)
+    }
+
+    override func viewWillDisappear(_ animated: Bool) {
+        super.viewWillDisappear(animated)
+        setSpringboardMotion(false, reason: "springboard disappearing")
     }
 
     override func viewDidDisappear(_ animated: Bool) {
@@ -462,6 +482,9 @@ class AppsListViewController: UIViewController,
                                          render3dScale: render3dScale, fpsLimit: fps)
         gameVC.modalPresentationStyle = .fullScreen
 
+        // Pause as soon as the user opens a game, without waiting for the
+        // fullscreen presentation's view-controller lifecycle callback.
+        setSpringboardMotion(false, reason: "game launching")
         // Do not couple the game's orientation change to the springboard zoom animation.
         present(gameVC, animated: false)
     }

@@ -95,6 +95,15 @@ workflows:
           else
             echo "[JarBoxVM][BUILD] paint_bridge=on (candidate)"
           fi
+          # A/B for main-thread springboard animation lifecycle, using
+          # identical JARs, JVM interpreter and Paint Bridge options.
+          bg_flag=""
+          if [[ "${JARBOX_BG_ANIM_BASELINE:-0}" == "1" ]]; then
+            bg_flag="JARBOX_BG_ANIM_BASELINE"
+            echo "[JarBoxBG][BUILD] springboard-animation=baseline-keep"
+          else
+            echo "[JarBoxBG][BUILD] springboard-animation=pause-when-hidden"
+          fi
           xcodebuild -list -project "$J2ME_PROJECT"
           xcodebuild -project "$J2ME_PROJECT" \
             -scheme J2MEEmulator -configuration Release \
@@ -102,6 +111,7 @@ workflows:
             -derivedDataPath "$RUNNER_TEMP/jarbox-build" \
             "OTHER_LDFLAGS=\$(inherited) $RUNNER_TEMP/J2METreo.o $RUNNER_TEMP/TreoSLJIT.o $RUNNER_TEMP/TreoJITProbe.o -framework UIKit -framework Foundation -framework Metal" \
             "TREO_GAME_JIT_CFLAGS=-DTREO_IOS_GAME_JIT=1 -I$sljit $vm_dispatch_flag $vm_paint_bridge_flag" \
+            "SWIFT_ACTIVE_COMPILATION_CONDITIONS=\$(inherited) $bg_flag" \
             PRODUCT_BUNDLE_IDENTIFIER=app.j2metreo.personal \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build
           
