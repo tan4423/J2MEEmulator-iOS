@@ -1245,7 +1245,7 @@ class GameViewController: UIViewController {
             jarBoxSmartStartedAt = nil
             lastMeasurement = ("Treo JarBox · GC thông minh",
                 String(format: "Thời gian treo %.1f giây. GC thật %llu chu kỳ; CPU GC %.2f ms/s; heap peak %.1f MiB (Java + native theo bộ đếm GC). %@. Chế độ 500ms được khôi phục. Phép đo này không có watt, không xác nhận toàn bộ logic game vẫn chạy nếu game tự phụ thuộc vào hiển thị.",
-                    elapsed, gcCount, gcCpu * 1000 / elapsed, peak,
+                    elapsed, gcCount, gcCpu / elapsed, peak,
                     fallback ? "GC đã tự trở về 500ms vì áp lực bộ nhớ" : "Không có cảnh báo GC fallback"))
         }
         NotificationCenter.default.removeObserver(self, name: UIApplication.willResignActiveNotification, object: nil)
