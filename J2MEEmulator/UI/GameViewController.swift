@@ -1253,7 +1253,7 @@ class GameViewController: UIViewController {
         let deep = leg == 1
         treo_afk_guard_auto_set(deep ? 1 : 0)
         treo_render_set_afk_mode(deep ? 8 : 1)
-        blackout?.setTitle("So Treo JarBox \(leg + 1)/3 · \(deep ? "vẽ Java thưa" : "tương thích") · chạm hủy",
+        blackout?.setTitle("So Treo JarBox \(leg + 1)/3 · \(deep ? "bỏ raster" : "tương thích") · chạm hủy",
                           for: .normal)
         let settle = DispatchWorkItem { [weak self] in
             guard let self, self.genericTreoComparisonID == id, self.blackout != nil else { return }
@@ -1320,6 +1320,21 @@ class GameViewController: UIViewController {
                 }
                 if b.guarded == 0 {
                     lines.append("Không bỏ được raster: có thể JAR dùng GameCanvas, direct buffer hoặc phụ thuộc pixel.")
+                }
+                let stableCPU = a.total != nil && b.total != nil && c.total != nil &&
+                    abs((a.total ?? 0) - (c.total ?? 0)) <= 3
+                let stablePaint = baseHz >= 1 &&
+                    abs(b.paintHz - baseHz) <= max(1, baseHz * 0.1)
+                let compatible = !b.fellBack && b.late == 0 && b.guarded > 0 &&
+                    b.frames == 0 && a.frames == 0 && c.frames == 0
+                if stableCPU && stablePaint && compatible,
+                   let cpuA = a.total, let cpuB = b.total, let cpuC = c.total {
+                    let saved = (cpuA + cpuC)/2 - cpuB
+                    lines.append(saved >= 2
+                        ? String(format: "ỨNG VIÊN CÓ LỢI: giảm %.1f điểm CPU tổng trên cùng JAR, cùng chế độ treo. Chưa chứng minh giảm watt.", saved)
+                        : String(format: "CHƯA THẤY LỢI ÍCH CPU TỔNG: cải thiện %+.1f điểm; không nên bật Treo sâu mặc định.", saved))
+                } else {
+                    lines.append("KHÔNG ĐỦ CĂN CỨ CHẤM TỐI ƯU: dữ liệu trôi, raster không được bỏ, game không paint đều hoặc xảy ra fallback.")
                 }
                 lines.append("Không đo watt/lõi CPU hay tick game dùng chung. CPU giảm chỉ là ứng viên; phải kiểm tra auto, mạng và trạng thái game sau khi thoát.")
                 self.lastMeasurement = ("So CPU Treo JarBox · A/B/A", lines.joined(separator: "\n\n"))
