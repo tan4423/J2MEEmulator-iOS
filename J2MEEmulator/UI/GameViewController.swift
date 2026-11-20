@@ -349,6 +349,8 @@ class GameViewController: UIViewController {
     private var jarBoxDeepTreoStart: GenericTreoSnapshot?
     private var genericTreoComparisonID: UUID?
     private var genericTreoWork: DispatchWorkItem?
+    private var gameCanvasBlitAuditID: UUID?
+    private var gameCanvasBlitAuditWork: DispatchWorkItem?
     private var heldDirections: Set<Int32> = []
     private var directionTimers: [Int32: Timer] = [:]
 
@@ -378,6 +380,8 @@ class GameViewController: UIViewController {
         afkMeasure?.cancel()
         jarAuditWork?.cancel()
         genericTreoWork?.cancel()
+        gameCanvasBlitAuditWork?.cancel()
+        treo_afk_buffer_audit_set(0, 0)
         if jarBoxSmartTreo { treo_gc_smart_set(0) }
         treo_afk_guard_auto_set(0)
     }
@@ -859,155 +863,24 @@ class GameViewController: UIViewController {
             ])
             return
         }
+        // User-facing menu: stable functions + exactly ONE active experiment.
+        // Historical probes remain in source for rollback, not in the UI.
         screenMenu.menu = UIMenu(children: [
             UIAction(title: "Phím điều hướng", state: padMode == .directions ? .on : .off) { [weak self] _ in self?.setPadMode(.directions) },
             UIAction(title: "Phím số", state: padMode == .numbers ? .on : .off) { [weak self] _ in self?.setPadMode(.numbers) },
             UIAction(title: "Ẩn phím · màn hình lớn", state: padMode == .hidden ? .on : .off) { [weak self] _ in self?.setPadMode(.hidden) },
+            UIAction(title: "Treo tiết kiệm · GC thông minh") { [weak self] _ in
+                self?.showBlackout(mode: 8, smartGC: true, deepPaint: true)
+            },
+            UIAction(title: "Treo tương thích · dự phòng") { [weak self] _ in
+                self?.showBlackout(mode: 1, smartGC: true)
+            },
+            UIAction(title: "Thử GameCanvas · bỏ sao chép khung (A/B/A)") { [weak self] _ in
+                self?.startGameCanvasBlitAudit()
+            },
             UIAction(title: "Xem kết quả đo gần nhất",
                      attributes: lastMeasurement == nil ? .disabled : []) { [weak self] _ in
                 self?.showLastMeasurement()
-            },
-            UIAction(title: powerRun == nil ? "Bắt đầu đo nhiệt và CPU tổng" : "Dừng đo nhiệt và CPU tổng",
-                     attributes: cpuProfileStartedAt == nil ? [] : .disabled) { [weak self] _ in
-                self?.togglePowerRun()
-            },
-            UIAction(title: "Thử chờ thụ động · CPU main") { [weak self] _ in self?.confirmJarAudit(compareLoad: true) },
-            UIAction(title: "So tải game và luồng native · JAR") { [weak self] _ in
-                self?.confirmJarAudit(workerComparison: true)
-            },
-            UIAction(title: "Thử hạ QoS main · JAR") { [weak self] _ in
-                self?.confirmJarAudit(mainQoSAudit: true)
-            },
-            UIAction(title: "Thử Display GC-safe · JAR") { [weak self] _ in
-                self?.confirmJarAudit(displayWaitAudit: true)
-            },
-            UIAction(title: "Thử cửa sổ đen foreground · JAR") { [weak self] _ in
-                self?.confirmJarAudit(windowOcclusion: true)
-            },
-            UIAction(title: "Thử tháo giao diện game · JAR") { [weak self] _ in
-                self?.confirmJarAudit(budgetMain: true, detachUI: true)
-            },
-            UIAction(title: "Thử paint thưa 1/3 Hz · JAR") { [weak self] _ in
-                self?.confirmJarAudit(sparsePaintAudit: true)
-            },
-            UIAction(title: "Thử GC treo 0,5s → 2s → 0,5s") { [weak self] _ in
-                self?.confirmJarAudit(gcPeriodAudit: true)
-            },
-            UIAction(title: "Đo tốc độ main/game/GC · A/B/A") { [weak self] _ in
-                self?.confirmJarAudit(throughputAudit: true)
-            },
-            UIAction(title: "Đo 6 pha UIKit · tắt → bật → tắt",
-                     attributes: Self.jarCommitAuditSupported ? [] : .disabled) { [weak self] _ in
-                self?.confirmJarAudit(uikitPhases: true)
-            },
-            UIAction(title: "Đo CPU quanh commit UIKit · JAR",
-                     attributes: Self.jarCommitAuditSupported ? [] : .disabled) { [weak self] _ in
-                self?.confirmJarAudit(budgetMain: true, measureCommit: true)
-            },
-            UIAction(title: "Đo pha CPU main · JAR") { [weak self] _ in self?.confirmJarAudit(budgetMain: true) },
-            UIAction(title: "Tìm stack sau Source · JAR") { [weak self] _ in
-                self?.confirmJarAudit(profileMain: true, budgetMain: true)
-            },
-            UIAction(title: "Chẩn đoán CPU JAR · tắt → bật → tắt") { [weak self] _ in self?.confirmJarAudit() },
-            UIAction(title: "Treo JarBox · không cần mod JAR (GC thông minh)") { [weak self] _ in
-                self?.showBlackout(smartGC: true)
-            },
-            UIAction(title: "Treo sâu JarBox · giảm vẽ Java (thử nghiệm)") { [weak self] _ in
-                self?.confirmGenericDeepTreo()
-            },
-            UIAction(title: "So CPU Treo thường/sâu · 1 phút") { [weak self] _ in
-                self?.startGenericTreoComparison()
-            },
-            UIAction(title: "Treo tối đa · màn hình đen") { [weak self] _ in self?.showBlackout() },
-            UIAction(title: "Treo · vẽ SIMD ngầm (thử nghiệm)") { [weak self] _ in self?.showBlackout(mode: 5) },
-            UIAction(title: "So CPU treo · Canvas nhanh",
-                     attributes: powerRun == nil ? [] : .disabled) { [weak self] _ in self?.startGuardedComparison(fast: true) },
-            UIAction(title: "So CPU treo · Canvas không dựng hình",
-                     attributes: powerRun == nil ? [] : .disabled) { [weak self] _ in self?.confirmGuardedComparison() },
-            UIAction(title: "So CPU treo · paint 5 Hz / JIT") { [weak self] _ in self?.confirmAfkPaintTest() },
-            UIAction(title: treo_game_jit_is_enabled() != 0 ? "Tắt JIT Java (thử nghiệm)" : "Bật JIT Java (thử nghiệm)", attributes: powerRun == nil ? [] : .disabled) { [weak self] _ in
-                guard let self else { return }
-                if treo_game_jit_is_enabled() != 0 {
-                    treo_game_jit_set_enabled(0)
-                    self.applyPadMode()
-                    return
-                }
-                let prompt = UIAlertController(title: "JIT Java thử nghiệm",
-                    message: "Chỉ bật sau khi StikDebug đã attach vào tiến trình này. Phương thức game chạy nhiều sẽ được biên dịch; tính năng có thể gây lỗi hoặc thoát app.",
-                    preferredStyle: .alert)
-                prompt.addAction(UIAlertAction(title: "Hủy", style: .cancel))
-                prompt.addAction(UIAlertAction(title: "Bật JIT Java", style: .default) { [weak self] _ in
-                    let smoke = treo_jit_probe()
-                    let result = smoke == 42 ? treo_game_jit_backend_probe() : smoke
-                    if result == 42 {
-                        treo_game_jit_set_enabled(1)
-                        self?.applyPadMode()
-                    } else {
-                        let report = UIAlertController(title: "Không bật được JIT Java",
-                            message: "Mã lỗi kiểm tra thực thi: \(result). Game vẫn chạy bằng trình thông dịch.",
-                            preferredStyle: .alert)
-                        report.addAction(UIAlertAction(title: "OK", style: .default))
-                        self?.present(report, animated: true)
-                    }
-                })
-                self.present(prompt, animated: true)
-            },
-            UIAction(title: "Bỏ sprite ngoài vùng vẽ (thử nghiệm)",
-                     attributes: cpuProfileStartedAt == nil && powerRun == nil ? [] : .disabled,
-                     state: treo_render_region_cull_enabled() != 0 ? .on : .off) { [weak self] _ in
-                let enabled = treo_render_region_cull_enabled() != 0
-                treo_render_set_region_cull_enabled(enabled ? 0 : 1)
-                self?.applyPadMode()
-            },
-            UIAction(title: cpuProfileStartedAt == nil ? "Bắt đầu đo CPU" : "Dừng và xem số liệu CPU",
-                     attributes: powerRun == nil ? [] : .disabled) { [weak self] _ in
-                self?.toggleCPUProfile()
-            },
-            UIAction(title: "Vẽ sprite trực tiếp · CPU SIMD",
-                     attributes: cpuProfileStartedAt == nil && powerRun == nil ? [] : .disabled,
-                     state: treo_software_enabled() != 0 ? .on : .off) { [weak self] _ in
-                let enabling = treo_software_enabled() == 0
-                if enabling {
-                    treo_cpu_batch_set_enabled(0)
-                    treo_metal_live_set_enabled(0)
-                    treo_render_set_region_cull_enabled(0)
-                }
-                treo_software_set_enabled(enabling ? 1 : 0)
-                self?.applyPadMode()
-            },
-            UIAction(title: "Đường vẽ trực tiếp · SIMD+",
-                     attributes: cpuProfileStartedAt == nil && powerRun == nil && treo_software_enabled() != 0 ? [] : .disabled,
-                     state: treo_direct_graphics_enabled() != 0 && treo_software_enabled() != 0 ? .on : .off) { [weak self] _ in
-                treo_direct_graphics_set_enabled(treo_direct_graphics_enabled() == 0 ? 1 : 0)
-                self?.applyPadMode()
-            },
-            UIAction(title: "Dùng lại cụm sprite (CPU)",
-                     attributes: cpuProfileStartedAt == nil && powerRun == nil ? [] : .disabled,
-                     state: treo_cpu_batch_enabled() != 0 ? .on : .off) { [weak self] _ in
-                let enabling = treo_cpu_batch_enabled() == 0
-                if enabling { treo_metal_live_set_enabled(0); treo_software_set_enabled(0) }
-                treo_cpu_batch_set_enabled(enabling ? 1 : 0)
-                self?.applyPadMode()
-            },
-            UIAction(title: "Metal toàn khung (thử nghiệm)",
-                     attributes: cpuProfileStartedAt == nil && powerRun == nil ? [] : .disabled,
-                     state: treo_metal_live_enabled() != 0 ? .on : .off) { [weak self] _ in
-                let enabling = treo_metal_live_enabled() == 0
-                if enabling { treo_cpu_batch_set_enabled(0); treo_software_set_enabled(0) }
-                treo_metal_live_set_enabled(enabling ? 1 : 0)
-                self?.applyPadMode()
-            },
-            UIAction(title: "Đo thử Metal · drawRegion", attributes: powerRun == nil ? [] : .disabled) { [weak self] _ in
-                self?.showMetalReplay()
-            },
-            UIAction(title: "Thống kê JIT Java") { [weak self] _ in
-                let compiled = treo_game_jit_compiled_count()
-                let calls = treo_game_jit_call_count()
-                let report = UIAlertController(title: "Thống kê JIT Java",
-                    message: "Từ khi mở app: \(compiled) phương thức đã biên dịch · \(calls) lượt mã máy.\n\(treo_game_jit_fallback_count()) lần biên dịch không dùng được; tiếp tục thông dịch.\nBộ nhớ mã Java: \(treo_game_jit_code_kib()) KiB / 32 MiB.",
-                    preferredStyle: .alert)
-                report.addAction(UIAlertAction(title: "OK", style: .default))
-                self?.present(report, animated: true)
             }
         ])
     }
@@ -1348,6 +1221,130 @@ class GameViewController: UIViewController {
         DispatchQueue.main.asyncAfter(deadline: .now() + 2, execute: settle)
     }
 
+    // One active experiment. GameCanvas maintains a real offscreen Image;
+    // this changes only the redundant Image -> hidden Canvas copy.
+    private struct GameCanvasBlitSnapshot {
+        let base = AfkSample()
+        let copies = treo_afk_buffer_copied()
+        let skipped = treo_afk_buffer_skipped()
+        let savedPixels = treo_afk_buffer_pixels_saved()
+        let copyCpu = treo_afk_buffer_copy_cpu_ns()
+        let frames = treo_afk_layer_frames()
+    }
+    private struct GameCanvasBlitResult {
+        let total: Double?
+        let main: Double?
+        let paint: Double
+        let copies: UInt64
+        let skipped: UInt64
+        let savedPixels: UInt64
+        let copyCpuMsPerS: Double
+        let blitRate: Double
+        let frames: UInt64
+        let duration: Double
+        let canvasFallback: Bool
+    }
+
+    private func startGameCanvasBlitAudit() {
+        guard blackout == nil, jarAuditID == nil, powerRun == nil,
+              gameCanvasBlitAuditID == nil else { return }
+        // All legs use the same already-developed deep Treo + adaptive GC.
+        showBlackout(mode: 8, smartGC: true, deepPaint: true)
+        guard blackout != nil else { return }
+        let id = UUID()
+        gameCanvasBlitAuditID = id
+        runGameCanvasBlitLeg(id: id, leg: 0, results: [])
+    }
+
+    private func runGameCanvasBlitLeg(id: UUID, leg: Int,
+                                     results: [GameCanvasBlitResult]) {
+        guard gameCanvasBlitAuditID == id, blackout != nil else { return }
+        let skip = leg == 1
+        // Keep Java/GameCanvas behavior, JIT, GC and blackout identical.
+        treo_afk_buffer_audit_set(1, skip ? 1 : 0)
+        blackout?.setTitle("GameCanvas A/B/A \(leg + 1)/3 · \(skip ? "bỏ bản sao" : "bản gốc") · chạm hủy",
+                           for: .normal)
+        let settle = DispatchWorkItem { [weak self] in
+            guard let self, self.gameCanvasBlitAuditID == id, self.blackout != nil else { return }
+            let begin = GameCanvasBlitSnapshot()
+            let measure = DispatchWorkItem { [weak self] in
+                guard let self, self.gameCanvasBlitAuditID == id, self.blackout != nil else { return }
+                let end = GameCanvasBlitSnapshot()
+                let dt = max(0.001, end.base.time - begin.base.time)
+                let main: Double? = begin.base.mainCPU >= 0 && end.base.mainCPU >= begin.base.mainCPU
+                    ? 100 * (end.base.mainCPU - begin.base.mainCPU) / dt : nil
+                let copies = end.copies &- begin.copies
+                let skipped = end.skipped &- begin.skipped
+                let result = GameCanvasBlitResult(
+                    total: end.base.cpuPercent(since: begin.base),
+                    main: main,
+                    paint: Double(end.base.paintNS &- begin.base.paintNS) / dt / 10_000_000,
+                    copies: copies,
+                    skipped: skipped,
+                    savedPixels: end.savedPixels &- begin.savedPixels,
+                    copyCpuMsPerS: Double(end.copyCpu &- begin.copyCpu) / dt / 1_000_000,
+                    blitRate: Double(copies + skipped) / dt,
+                    frames: end.frames &- begin.frames,
+                    duration: dt,
+                    canvasFallback: treo_afk_guard_auto_fell_back() != 0)
+                let all = results + [result]
+                if leg < 2 {
+                    self.runGameCanvasBlitLeg(id: id, leg: leg + 1, results: all)
+                    return
+                }
+                self.gameCanvasBlitAuditID = nil
+                self.gameCanvasBlitAuditWork = nil
+                treo_afk_buffer_audit_set(0, 0)
+                let a = all[0], b = all[1], c = all[2]
+                let avgRate = (a.blitRate + c.blitRate) / 2
+                let copyCPUBaseline = (a.copyCpuMsPerS + c.copyCpuMsPerS) / 2
+                func fmt(_ value: Double?) -> String {
+                    value.map { String(format: "%.1f", $0) } ?? "?"
+                }
+                var report = [
+                    "JAR: \(URL(fileURLWithPath: self.jarPath).lastPathComponent)",
+                    "A1 sao chép → B bỏ bản sao GameCanvas → A2 sao chép. 20 giây/lượt, thêm 2 giây ổn định/lượt. Cả ba giữ Treo sâu, GC thông minh, JIT không đổi. Buffer Image thật của GameCanvas không bị bỏ.",
+                ]
+                for (index, v) in all.enumerated() {
+                    report.append(String(format:
+                        "%@: CPU tổng %@%% · main %@%% · paint %.1f%% · %.2f flush/s · sao chép %llu · bỏ %llu · CPU bản sao %.2f ms/s · pixel tránh chép %llu · khung layer %llu",
+                        ["A1", "B", "A2"][index], fmt(v.total), fmt(v.main),
+                        v.paint, v.blitRate, v.copies, v.skipped,
+                        v.copyCpuMsPerS, v.savedPixels, v.frames))
+                }
+                if let x = a.total, let y = b.total, let z = c.total {
+                    report.append(String(format:
+                        "B − trung bình A1/A2: %+.1f điểm CPU tổng; baseline CPU bản sao %.2f ms/s.",
+                        y - (x + z)/2, copyCPUBaseline))
+                }
+                let stable = a.total != nil && b.total != nil && c.total != nil &&
+                    abs((a.total ?? 0) - (c.total ?? 0)) <= 3 &&
+                    avgRate >= 1 &&
+                    abs(a.blitRate - c.blitRate) <= max(1, avgRate * 0.1) &&
+                    abs(b.blitRate - avgRate) <= max(1, avgRate * 0.1)
+                let valid = stable && a.copies >= 5 && c.copies >= 5 &&
+                    b.skipped >= 5 && !b.canvasFallback &&
+                    a.frames == 0 && b.frames == 0 && c.frames == 0
+                if valid, let x = a.total, let y = b.total, let z = c.total {
+                    let saved = (x+z)/2 - y
+                    report.append(saved >= 2
+                        ? String(format: "ỨNG VIÊN CÓ LỢI: bỏ bản sao GameCanvas giảm %.1f điểm CPU tổng.", saved)
+                        : String(format: "CHƯA CÓ LỢI ÍCH CPU TỔNG RÕ RÀNG: thay đổi %.1f điểm; giữ cách vẽ cũ.", saved))
+                } else {
+                    report.append("CHƯA ĐỦ CĂN CỨ: kiểm tra số lượt flush, ổn định A1/A2, fallback và khung layer. Nếu B bỏ 0, JAR có thể không dùng GameCanvas.")
+                }
+                report.append("Bài này không có bộ đếm tick Java chung cho mọi JAR. Hãy kiểm tra auto, kết nối mạng, hiển thị sau khi chạm thoát; không suy CPU% thành watt.")
+                self.lastMeasurement = ("GameCanvas · bỏ bản sao A/B/A", report.joined(separator: "\n\n"))
+                self.afkComparisonDone = true
+                self.blackout?.setTitle("Đo xong · chạm để xem kết quả", for: .normal)
+            }
+            self.gameCanvasBlitAuditWork = measure
+            DispatchQueue.main.asyncAfter(deadline: .now() + 20, execute: measure)
+        }
+        gameCanvasBlitAuditWork = settle
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2, execute: settle)
+    }
+
     private func showBlackout(mode: Int32 = 1, smartGC: Bool = false,
                               deepPaint: Bool = false) {
         guard blackout == nil, jarAuditID == nil else { return }
@@ -1394,6 +1391,10 @@ class GameViewController: UIViewController {
         genericTreoWork?.cancel()
         genericTreoWork = nil
         genericTreoComparisonID = nil
+        gameCanvasBlitAuditWork?.cancel()
+        gameCanvasBlitAuditWork = nil
+        gameCanvasBlitAuditID = nil
+        treo_afk_buffer_audit_set(0, 0)
         treo_afk_main_trace_cancel()
         if guardedBlackout {
             treo_afk_wakes_set(0)
