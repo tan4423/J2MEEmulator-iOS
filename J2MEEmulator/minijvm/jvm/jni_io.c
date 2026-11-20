@@ -1070,7 +1070,6 @@ s32 org_mini_fs_InnerFile_loadFS(Runtime *runtime, JClass *clazz) {
             ret = RUNTIME_STATUS_EXCEPTION;
         } else {
             s32 state = stat(platformPath->buf, &buf);
-            s32 a = S_ISDIR(buf.st_mode);
             if (state == 0) {
                 c8 *className = "org/mini/fs/InnerFileStat";
                 c8 *ptr;
