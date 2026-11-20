@@ -344,6 +344,8 @@ class GameViewController: UIViewController {
     private var blackout: UIButton?
     private var blackoutScreen: UIScreen?
     private var previousBrightness: CGFloat?
+    private var jarBoxSmartTreo = false
+    private var jarBoxSmartStartedAt: TimeInterval?
     private var heldDirections: Set<Int32> = []
     private var directionTimers: [Int32: Timer] = [:]
 
@@ -372,6 +374,7 @@ class GameViewController: UIViewController {
         measurementDeadline?.cancel()
         afkMeasure?.cancel()
         jarAuditWork?.cancel()
+        if jarBoxSmartTreo { treo_gc_smart_set(0) }
     }
 
     private var alertTimeoutWork: DispatchWorkItem?
@@ -513,6 +516,13 @@ class GameViewController: UIViewController {
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
         startGame()
+    }
+
+    override func didReceiveMemoryWarning() {
+        super.didReceiveMemoryWarning()
+        // Don't wait for the next native heap snapshot if iOS itself
+        // reports memory pressure. The AFK overlay may remain visible.
+        if jarBoxSmartTreo { treo_gc_smart_force_safe() }
     }
 
     // ============================================================
@@ -894,6 +904,9 @@ class GameViewController: UIViewController {
                 self?.confirmJarAudit(profileMain: true, budgetMain: true)
             },
             UIAction(title: "Chẩn đoán CPU JAR · tắt → bật → tắt") { [weak self] _ in self?.confirmJarAudit() },
+            UIAction(title: "Treo JarBox · mọi JAR (GC thông minh)") { [weak self] _ in
+                self?.showBlackout(smartGC: true)
+            },
             UIAction(title: "Treo tối đa · màn hình đen") { [weak self] _ in self?.showBlackout() },
             UIAction(title: "Treo · vẽ SIMD ngầm (thử nghiệm)") { [weak self] _ in self?.showBlackout(mode: 5) },
             UIAction(title: "So CPU treo · Canvas nhanh",
@@ -1171,13 +1184,14 @@ class GameViewController: UIViewController {
         if let blackout { view.bringSubviewToFront(blackout) }
     }
 
-    private func showBlackout(mode: Int32 = 1) {
-        guard blackout == nil else { return }
+    private func showBlackout(mode: Int32 = 1, smartGC: Bool = false) {
+        guard blackout == nil, jarAuditID == nil else { return }
         discardCPUProfile()
         for code in Array(heldDirections) { releaseDirection(code) }
         let cover = UIButton(type: .custom)
         cover.backgroundColor = .black
-        cover.setTitle("Chạm để hiện game", for: .normal)
+        cover.setTitle(smartGC ? "Treo JarBox · chạm để trở lại game" : "Chạm để hiện game",
+                       for: .normal)
         cover.setTitleColor(UIColor(white: 0.36, alpha: 1), for: .normal)
         cover.titleLabel?.font = .systemFont(ofSize: 14)
         cover.accessibilityLabel = "Hiện lại game"
@@ -1192,6 +1206,11 @@ class GameViewController: UIViewController {
         ])
         blackout = cover
         treo_render_set_afk_mode(mode)
+        jarBoxSmartTreo = smartGC
+        if smartGC {
+            jarBoxSmartStartedAt = ProcessInfo.processInfo.systemUptime
+            treo_gc_smart_set(1)
+        }
         if let screen = view.window?.windowScene?.screen {
             blackoutScreen = screen
             previousBrightness = screen.brightness
@@ -1215,6 +1234,20 @@ class GameViewController: UIViewController {
         let showComparison = afkComparisonDone
         afkComparisonDone = false
         j2me_render_set_afk_suspended(0)
+        if jarBoxSmartTreo {
+            let elapsed = max(0.001, ProcessInfo.processInfo.systemUptime - (jarBoxSmartStartedAt ?? ProcessInfo.processInfo.systemUptime))
+            let gcCount = treo_gc_smart_count()
+            let gcCpu = treo_gc_smart_cpu_ms()
+            let peak = Double(treo_gc_smart_heap_peak()) / 1_048_576
+            let fallback = treo_gc_smart_fell_back() != 0
+            treo_gc_smart_set(0)
+            jarBoxSmartTreo = false
+            jarBoxSmartStartedAt = nil
+            lastMeasurement = ("Treo JarBox · GC thông minh",
+                String(format: "Thời gian treo %.1f giây. GC thật %llu chu kỳ; CPU GC %.2f ms/s; heap peak %.1f MiB (Java + native theo bộ đếm GC). %@. Chế độ 500ms được khôi phục. Phép đo này không có watt, không xác nhận toàn bộ logic game vẫn chạy nếu game tự phụ thuộc vào hiển thị.",
+                    elapsed, gcCount, gcCpu * 1000 / elapsed, peak,
+                    fallback ? "GC đã tự trở về 500ms vì áp lực bộ nhớ" : "Không có cảnh báo GC fallback"))
+        }
         NotificationCenter.default.removeObserver(self, name: UIApplication.willResignActiveNotification, object: nil)
         if let screen = blackoutScreen, let brightness = previousBrightness, screen.brightness == 0 {
             screen.brightness = brightness

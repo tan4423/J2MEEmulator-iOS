@@ -340,6 +340,57 @@ static void treo_gc_probe_note_heap(uint64_t value) {
 }
 #endif
 
+// JarBox-wide, opt-in GC cadence while native presentation is suspended.
+// Unlike the A/B/A probe above, the smart mode is a user-facing AFK feature.
+// It never skips Java game logic or changes the VM's permanent GC settings.
+#if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__
+extern int j2me_render_is_afk_suspended(void);
+static int treo_gc_smart_enabled, treo_gc_smart_fallback;
+static uint64_t treo_gc_smart_peak_bytes, treo_gc_smart_cycles, treo_gc_smart_cpu_ns;
+void treo_gc_smart_set(int enabled) {
+    if (enabled) {
+        __atomic_store_n(&treo_gc_smart_fallback, 0, __ATOMIC_RELEASE);
+        __atomic_store_n(&treo_gc_smart_peak_bytes, 0, __ATOMIC_RELAXED);
+        __atomic_store_n(&treo_gc_smart_cycles, 0, __ATOMIC_RELAXED);
+        __atomic_store_n(&treo_gc_smart_cpu_ns, 0, __ATOMIC_RELAXED);
+    }
+    __atomic_store_n(&treo_gc_smart_enabled, enabled != 0, __ATOMIC_RELEASE);
+}
+void treo_gc_smart_force_safe(void) {
+    if (__atomic_load_n(&treo_gc_smart_enabled, __ATOMIC_ACQUIRE))
+        __atomic_store_n(&treo_gc_smart_fallback, 1, __ATOMIC_RELEASE);
+}
+int treo_gc_smart_period_ms(void) {
+    return __atomic_load_n(&treo_gc_smart_enabled, __ATOMIC_ACQUIRE) &&
+           !__atomic_load_n(&treo_gc_smart_fallback, __ATOMIC_ACQUIRE) &&
+           j2me_render_is_afk_suspended() ? 2000 : 500;
+}
+int treo_gc_smart_fell_back(void) {
+    return __atomic_load_n(&treo_gc_smart_fallback, __ATOMIC_ACQUIRE);
+}
+uint64_t treo_gc_smart_heap_peak(void) {
+    return __atomic_load_n(&treo_gc_smart_peak_bytes, __ATOMIC_ACQUIRE);
+}
+uint64_t treo_gc_smart_count(void) {
+    return __atomic_load_n(&treo_gc_smart_cycles, __ATOMIC_ACQUIRE);
+}
+double treo_gc_smart_cpu_ms(void) {
+    return (double)__atomic_load_n(&treo_gc_smart_cpu_ns, __ATOMIC_ACQUIRE) / 1000000.0;
+}
+static void treo_gc_smart_note_heap(uint64_t value) {
+    if (!__atomic_load_n(&treo_gc_smart_enabled, __ATOMIC_ACQUIRE)) return;
+    uint64_t current = __atomic_load_n(&treo_gc_smart_peak_bytes, __ATOMIC_RELAXED);
+    while (value > current && !__atomic_compare_exchange_n(
+            &treo_gc_smart_peak_bytes, &current, value, 1,
+            __ATOMIC_RELAXED, __ATOMIC_RELAXED)) {}
+}
+static uint64_t treo_gc_smart_thread_cpu(void) {
+    struct timespec t;
+    if (clock_gettime(CLOCK_THREAD_CPUTIME_ID, &t) != 0) return 0;
+    return (uint64_t)t.tv_sec * UINT64_C(1000000000) + (uint64_t)t.tv_nsec;
+}
+#endif
+
 // External native memory counter — set by j2me_render.m for CGContext allocations.
 // Allows GC to account for native memory pressure alongside Java heap.
 s64 g_native_extra_heap = 0;
@@ -408,7 +459,19 @@ s32 _gc_thread_run(void *para) {
         s64 native_extra = __atomic_load_n(&g_native_extra_heap, __ATOMIC_RELAXED);
         s64 desired = jvm->garbage_collect_period_ms;
 #if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__
-        if (heap >= 0) treo_gc_probe_note_heap((uint64_t)heap);
+        if (heap >= 0) {
+            treo_gc_probe_note_heap((uint64_t)heap);
+            treo_gc_smart_note_heap((uint64_t)heap);
+        }
+        // Keep the Java/native heap pressure threshold unchanged. If the
+        // memory headroom shrinks, latch at 500 ms until the user leaves AFK.
+        if (treo_gc_smart_period_ms() > desired) {
+            if (heap >= threshold * 3 / 4) {
+                treo_gc_smart_force_safe();
+            } else {
+                desired = 2000;
+            }
+        }
         int probe = treo_gc_probe_current_period_ms();
         if (probe > desired) {
             if (heap >= threshold * 3 / 4) {
@@ -430,9 +493,18 @@ s32 _gc_thread_run(void *para) {
             s64 heap_before = heap;
 #if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__
             treo_diag_gc_cycle_begin();
+            const int smartRecord = __atomic_load_n(&treo_gc_smart_enabled, __ATOMIC_ACQUIRE);
+            const uint64_t smartCpuStart = smartRecord ? treo_gc_smart_thread_cpu() : 0;
 #endif
             _garbage_collect(collector);
 #if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__
+            if (smartCpuStart && __atomic_load_n(&treo_gc_smart_enabled, __ATOMIC_ACQUIRE)) {
+                const uint64_t smartCpuEnd = treo_gc_smart_thread_cpu();
+                if (smartCpuEnd >= smartCpuStart) {
+                    __atomic_add_fetch(&treo_gc_smart_cpu_ns, smartCpuEnd - smartCpuStart, __ATOMIC_RELAXED);
+                    __atomic_add_fetch(&treo_gc_smart_cycles, 1, __ATOMIC_RELAXED);
+                }
+            }
             treo_diag_gc_cycle_end();
 #endif
             s64 heap_after = gc_sum_heap(collector);

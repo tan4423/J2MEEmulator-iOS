@@ -36,6 +36,14 @@ uint64_t treo_jar_load_wall_ns(void);
 uint64_t treo_jar_load_calls(void);
 uint64_t treo_jar_audit_ticks(int active);
 // Explicitly enabled ONLY in cross-thread diagnostic A/B/A.
+// JarBox-wide safe AFK GC: native presentation off, fallback at heap pressure.
+void treo_gc_smart_set(int enabled);
+void treo_gc_smart_force_safe(void);
+int treo_gc_smart_period_ms(void);
+int treo_gc_smart_fell_back(void);
+uint64_t treo_gc_smart_heap_peak(void);
+uint64_t treo_gc_smart_count(void);
+double treo_gc_smart_cpu_ms(void);
 // Opt-in GC cadence test: 0 = original 500 ms, 2000 = test mode.
 void treo_gc_probe_set_period_ms(int requested);
 int treo_gc_probe_current_period_ms(void);
