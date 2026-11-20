@@ -147,13 +147,15 @@ final class AnimatedBackgroundView: UIView {
 
     override func didMoveToWindow() {
         super.didMoveToWindow()
+#if !JARBOX_BG_ANIM_BASELINE
         if window == nil {
-            // Fullscreen presentations may detach the springboard view.
-            // Do not leave self-restarting animations on detached layers.
+            // Fullscreen presentations can detach the springboard layer
+            // without immediately triggering a lifecycle callback.
             setAnimationsActive(false, reason: "detached from window")
         } else if animationAllowed {
             startAnimationsIfNeeded()
         }
+#endif
     }
 
     private func randomSize() -> CGFloat {
