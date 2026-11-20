@@ -351,6 +351,8 @@ class GameViewController: UIViewController {
     private var genericTreoWork: DispatchWorkItem?
     private var gameCanvasBlitAuditID: UUID?
     private var gameCanvasBlitAuditWork: DispatchWorkItem?
+    private var mainStackAuditID: UUID?
+    private var mainStackAuditWork: DispatchWorkItem?
     private var heldDirections: Set<Int32> = []
     private var directionTimers: [Int32: Timer] = [:]
 
@@ -381,6 +383,8 @@ class GameViewController: UIViewController {
         jarAuditWork?.cancel()
         genericTreoWork?.cancel()
         gameCanvasBlitAuditWork?.cancel()
+        mainStackAuditWork?.cancel()
+        treo_afk_main_trace_cancel()
         treo_afk_buffer_audit_set(0, 0)
         if jarBoxSmartTreo { treo_gc_smart_set(0) }
         treo_afk_guard_auto_set(0)
@@ -875,8 +879,8 @@ class GameViewController: UIViewController {
             UIAction(title: "Treo tương thích · dự phòng") { [weak self] _ in
                 self?.showBlackout(mode: 1, smartGC: true)
             },
-            UIAction(title: "Thử GameCanvas · bỏ sao chép khung (A/B/A)") { [weak self] _ in
-                self?.startGameCanvasBlitAudit()
+            UIAction(title: "Đo hàm tốn CPU main · Treo (20 giây)") { [weak self] _ in
+                self?.startMainStackAudit()
             },
             UIAction(title: "Xem kết quả đo gần nhất",
                      attributes: lastMeasurement == nil ? .disabled : []) { [weak self] _ in
@@ -1221,6 +1225,72 @@ class GameViewController: UIViewController {
         DispatchQueue.main.asyncAfter(deadline: .now() + 2, execute: settle)
     }
 
+
+    // Single active diagnostic; the game, JIT, GC policy and rendering
+    // semantics remain identical throughout the measurement.
+    private func startMainStackAudit() {
+        guard blackout == nil, jarAuditID == nil, powerRun == nil,
+              mainStackAuditID == nil, gameCanvasBlitAuditID == nil,
+              genericTreoComparisonID == nil else { return }
+        lastAFKTrace = ""
+        showBlackout(mode: 8, smartGC: true, deepPaint: true)
+        guard blackout != nil else { return }
+        let id = UUID()
+        mainStackAuditID = id
+        blackout?.setTitle("CPU main · ổn định 2 giây · chạm hủy", for: .normal)
+
+        let settle = DispatchWorkItem { [weak self] in
+            guard let self, self.mainStackAuditID == id, self.blackout != nil else { return }
+            let start = AfkSample()
+            let framesStart = treo_afk_layer_frames()
+            // The native sampler briefly suspends main to copy a bounded stack.
+            // Symbolization happens after resuming main, not while suspended.
+            treo_afk_main_stack_snapshot_begin()
+            self.blackout?.setTitle("Đang đo stack CPU main · chạm hủy", for: .normal)
+
+            let finish = DispatchWorkItem { [weak self] in
+                guard let self, self.mainStackAuditID == id, self.blackout != nil else { return }
+                let raw = treo_afk_main_trace_end()
+                let end = AfkSample()
+                let dt = max(0.001, end.time - start.time)
+                let main: Double? = start.mainCPU >= 0 && end.mainCPU >= start.mainCPU
+                    ? 100 * (end.mainCPU - start.mainCPU) / dt : nil
+                let fullTrace = raw.map { String(cString: $0) }
+                    ?? "Không lấy được báo cáo stack native."
+                if let raw { free(raw) }
+                let totalText = end.cpuPercent(since: start)
+                    .map { String(format: "%.1f%%", $0) } ?? "?"
+                let mainText = main.map { String(format: "%.1f%%", $0) } ?? "?"
+                let paint = Double(end.paintNS &- start.paintNS) / dt / 10_000_000
+                let paintHz = Double(end.paints &- start.paints) / dt
+                let frames = treo_afk_layer_frames() &- framesStart
+                let fallback = treo_afk_guard_auto_fell_back() != 0
+                let jar = URL(fileURLWithPath: self.jarPath).lastPathComponent
+                let heading = String(format:
+                    "JAR: %@\nTreo sâu + Smart GC · JIT không đổi · 2 giây ổn định, %.1f giây đo.\nCPU toàn app %@ · main %@ · paint %.1f%% (%.2f/s).\nKhung lên layer %llu · Canvas fallback: %@.",
+                    jar, dt, totalText, mainText, paint, paintHz, frames,
+                    fallback ? "có" : "không")
+                let caution = "\nĐây là mẫu main đang runnable, không phải % CPU hay watt từng hàm. " +
+                    "Sampler có chi phí riêng. Không có tick Java dùng chung; kiểm tra auto/mạng và hình sau khi thoát."
+                self.lastAFKTrace = heading + "\n\n" + fullTrace + caution
+                let preview = fullTrace.split(separator: "\n", omittingEmptySubsequences: false)
+                    .prefix(11).joined(separator: "\n")
+                self.lastMeasurement = ("CPU luồng chính",
+                    heading + "\n\n" + preview +
+                    "\n\nBấm Sao chép để lấy báo cáo stack đầy đủ." + caution)
+                self.mainStackAuditID = nil
+                self.mainStackAuditWork = nil
+                self.afkComparisonDone = true
+                self.blackout?.setTitle("Đo xong · chạm xem báo cáo", for: .normal)
+            }
+            self.mainStackAuditWork = finish
+            DispatchQueue.main.asyncAfter(deadline: .now() + 20, execute: finish)
+        }
+        mainStackAuditWork = settle
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2, execute: settle)
+    }
+
+    // Historical GameCanvas test retained for rollback but hidden from the menu.
     // One active experiment. GameCanvas maintains a real offscreen Image;
     // this changes only the redundant Image -> hidden Canvas copy.
     private struct GameCanvasBlitSnapshot {
@@ -1397,6 +1467,9 @@ class GameViewController: UIViewController {
         gameCanvasBlitAuditWork?.cancel()
         gameCanvasBlitAuditWork = nil
         gameCanvasBlitAuditID = nil
+        mainStackAuditWork?.cancel()
+        mainStackAuditWork = nil
+        mainStackAuditID = nil
         treo_afk_buffer_audit_set(0, 0)
         treo_afk_main_trace_cancel()
         if guardedBlackout {

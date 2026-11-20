@@ -92,6 +92,7 @@ double treo_afk_current_thread_cpu(void);
 double treo_main_fixed_work_ns_per_step(void);
 void treo_afk_main_trace_begin(void);
 void treo_afk_main_stack_begin(void);
+void treo_afk_main_stack_snapshot_begin(void);
 void treo_afk_main_source_trace_begin(void);
 void treo_afk_main_source_mark(int active);
 void treo_afk_main_trace_cancel(void);

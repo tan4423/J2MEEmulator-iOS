@@ -751,7 +751,7 @@ static int treo_trace_snapshot(thread_t target, uintptr_t low, uintptr_t high, u
 }
 #endif
 
-static void treo_afk_trace_begin(bool stack, bool sourceOnly) {
+static void treo_afk_trace_begin(bool stack, bool sourceOnly, bool requireSnapshot) {
     treo_afk_main_trace_cancel();
 #if defined(__arm64__)
     if (!treo_trace_queue) treo_trace_queue = dispatch_queue_create("treo.afk.main.trace", DISPATCH_QUEUE_SERIAL);
@@ -760,7 +760,7 @@ static void treo_afk_trace_begin(bool stack, bool sourceOnly) {
     treo_trace_has_stack = stack;
     treo_trace_source_only = sourceOnly;
     treo_trace_source_checks = treo_trace_source_changed = 0;
-    treo_trace_snapshot_mode = sourceOnly || (stack && atomic_load_explicit(&treo_jar_auditing, memory_order_relaxed));
+    treo_trace_snapshot_mode = requireSnapshot || sourceOnly || (stack && atomic_load_explicit(&treo_jar_auditing, memory_order_relaxed));
     const pthread_t main = pthread_self();
     const uintptr_t high = (uintptr_t)pthread_get_stackaddr_np(main);
     const size_t stack_size = pthread_get_stacksize_np(main);
@@ -822,9 +822,11 @@ static void treo_afk_trace_begin(bool stack, bool sourceOnly) {
     dispatch_resume(treo_trace_timer);
 #endif
 }
-void treo_afk_main_trace_begin(void) { treo_afk_trace_begin(false, false); }
-void treo_afk_main_stack_begin(void) { treo_afk_trace_begin(true, false); }
-void treo_afk_main_source_trace_begin(void) { treo_afk_trace_begin(true, true); }
+void treo_afk_main_trace_begin(void) { treo_afk_trace_begin(false, false, false); }
+void treo_afk_main_stack_begin(void) { treo_afk_trace_begin(true, false, false); }
+void treo_afk_main_source_trace_begin(void) { treo_afk_trace_begin(true, true, true); }
+// Always use a bounded, consistent stack snapshot for the JarBox AFK probe.
+void treo_afk_main_stack_snapshot_begin(void) { treo_afk_trace_begin(true, false, true); }
 
 void treo_afk_main_trace_cancel(void) {
     if (!treo_trace_timer) return;
@@ -902,11 +904,21 @@ char *treo_afk_main_trace_end(void) {
     NSMutableDictionary<NSString *, NSNumber *> *hist = [NSMutableDictionary new];
     NSMutableDictionary<NSNumber *, NSString *> *symbols = [NSMutableDictionary new];
     NSMutableDictionary<NSString *, NSNumber *> *caEntry = [NSMutableDictionary new];
+    NSMutableDictionary<NSString *, NSNumber *> *moduleHist = [NSMutableDictionary new];
+    NSMutableDictionary<NSString *, NSNumber *> *leafHist = [NSMutableDictionary new];
     unsigned deep = 0, maxDepth = 0, caSamples = 0;
     for (unsigned i = 0; i < treo_trace_count; ++i) {
         NSNumber *pc = @(treo_trace_points[i].pc), *lr = @(treo_trace_points[i].lr);
         NSString *leaf = symbols[pc];
         if (!leaf) { leaf = treo_trace_symbol(treo_trace_points[i].pc); symbols[pc] = leaf; }
+        leafHist[leaf] = @(leafHist[leaf].unsignedIntValue + 1);
+        Dl_info moduleInfo = {0};
+        NSString *moduleName = @"unknown";
+        if (dladdr((const void *)treo_trace_points[i].pc, &moduleInfo) && moduleInfo.dli_fname) {
+            NSString *fileName = [NSString stringWithUTF8String:moduleInfo.dli_fname];
+            if (fileName) moduleName = fileName.lastPathComponent;
+        }
+        moduleHist[moduleName] = @(moduleHist[moduleName].unsignedIntValue + 1);
         NSString *link = symbols[lr];
         if (!link) { link = treo_trace_symbol(treo_trace_points[i].lr); symbols[lr] = link; }
         if (treo_trace_snapshot_mode) {
@@ -953,6 +965,10 @@ char *treo_afk_main_trace_end(void) {
     NSMutableString *result = [NSMutableString stringWithFormat:@"Main PC/LR: %u mẫu runnable / %u lần lấy; %u lỗi",
                                treo_trace_count, treo_trace_ticks, treo_trace_errors];
     if (treo_trace_snapshot_mode) {
+        [result appendString:@"\nModule xuất hiện nhiều (số mẫu, không phải % CPU của module):"];
+        treo_trace_append_chains(result, moduleHist, 8);
+        [result appendString:@"\nPC/hàm xuất hiện nhiều:"];
+        treo_trace_append_chains(result, leafHist, 8);
         [result appendFormat:@"\n%u chuỗi FP · sâu nhất %u · %u chạm giới hạn %u frame (16 KiB/mẫu)",
             treo_trace_chains, maxDepth, deep, TreoTraceDepth];
         [result appendFormat:@"\nBiên QuartzCore trong %u mẫu (frame QuartzCore ngoài cùng đã thấy ← caller):", caSamples];
