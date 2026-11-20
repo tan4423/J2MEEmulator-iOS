@@ -91,6 +91,111 @@ enum GameLayoutMode {
     }
 }
 
+// Passive, fine-grained iOS 18 UIKit update phase probe. These values are
+// main-thread CPU between public UIKit phase boundaries, NOT individual
+// framework/function attribution. It never requests continuous updates.
+@MainActor private final class JarUIKitPhaseBudget {
+    static let labels = [
+        "Scheduled→Event", "Event dispatch", "Event→DisplayLink",
+        "DisplayLink callbacks", "DisplayLink→CA", "CA commit", "CA→Update complete"
+    ]
+
+    struct Result {
+        let cpuSeconds: [Double]
+        let pairs: [Int]
+        let completedCycles: Int
+        let dropped: Int
+        let wall: Double
+
+        var valid: Bool {
+            completedCycles >= 10 && dropped <= max(10, completedCycles / 10)
+                && pairs.allSatisfy { $0 >= 10 }
+        }
+        var cpuMSPerSecond: [Double] { cpuSeconds.map { $0 * 1000 / max(0.001, wall) } }
+        var cyclesPerSecond: Double { Double(completedCycles) / max(0.001, wall) }
+        var detail: String {
+            let data = cpuMSPerSecond
+            var lines = [String(format: "Các pha UIKit: %.2f chu kỳ/s · %d chu kỳ đủ · %d mốc mất/khác nhịp · %@",
+                                cyclesPerSecond, completedCycles, dropped, valid ? "hợp lệ" : "KHÔNG ĐỦ MỐC")]
+            for i in 0..<Self.labels.count {
+                lines.append(String(format: "%@: %.1f ms CPU/s [%d cặp]",
+                                    Self.labels[i], data[i], pairs[i]))
+            }
+            lines.append(String(format: "Tổng CPU trong các khoảng UIKit đo được: %.1f ms/s (KHÔNG cộng vào các pha runloop).",
+                                data.reduce(0, +)))
+            return lines.joined(separator: "\n")
+        }
+    }
+
+    private var link: UIUpdateLink?
+    private var last: (index: Int, modelTime: Double, cpu: Double)?
+    private var cpu = Array(repeating: 0.0, count: labels.count)
+    private var counts = Array(repeating: 0, count: labels.count)
+    private var cycles = 0
+    private var dropped = 0
+
+    @available(iOS 18.0, *)
+    func start(in view: UIView) {
+        stop()
+        cpu = Array(repeating: 0.0, count: Self.labels.count)
+        counts = Array(repeating: 0, count: Self.labels.count)
+        cycles = 0
+        dropped = 0
+
+        let probe = UIUpdateLink(view: view)
+        let boundaries: [UIUpdateActionPhase] = [
+            .afterUpdateScheduled, .beforeEventDispatch, .afterEventDispatch,
+            .beforeCADisplayLinkDispatch, .afterCADisplayLinkDispatch,
+            .beforeCATransactionCommit, .afterCATransactionCommit, .afterUpdateComplete
+        ]
+        for (index, boundary) in boundaries.enumerated() {
+            probe.addAction(to: boundary) { [weak self] _, info in
+                self?.record(index: index, modelTime: info.modelTime)
+            }
+        }
+        // Never touch requiresContinuousUpdates: it previously caused SIGTRAP
+        // on iOS 18.6.2 when accessed before phase actions were registered.
+        link = probe
+        probe.isEnabled = true
+    }
+
+    private func record(index: Int, modelTime: Double) {
+        let time = treo_afk_current_thread_cpu()
+        guard time >= 0 else { dropped += 1; last = nil; return }
+        if index == 0 {
+            if last != nil { dropped += 1 }
+            last = (index, modelTime, time)
+            return
+        }
+        guard let previous = last, previous.index + 1 == index,
+              previous.modelTime == modelTime, time >= previous.cpu else {
+            dropped += 1
+            last = nil
+            return
+        }
+        cpu[index - 1] += time - previous.cpu
+        counts[index - 1] += 1
+        if index == Self.labels.count {
+            cycles += 1
+            last = nil
+        } else {
+            last = (index, modelTime, time)
+        }
+    }
+
+    func finish(wall: Double) -> Result {
+        let result = Result(cpuSeconds: cpu, pairs: counts, completedCycles: cycles,
+                            dropped: dropped + (last == nil ? 0 : 1), wall: wall)
+        stop()
+        return result
+    }
+    func stop() {
+        link?.isEnabled = false
+        link = nil
+        last = nil
+    }
+}
+
 // Partition the main thread's CPU clock between run-loop markers.
 // These are time windows, not attribution to an individual observer or framework.
 @MainActor private enum JarMainBudget {
@@ -281,6 +386,8 @@ class GameViewController: UIViewController {
     private var jarMainProfile = false
     private var jarLoadComparison = false
     private var jarWorkerComparison = false
+    private var jarUIKitPhaseAudit = false
+    private var jarUIKitPhaseBudget: JarUIKitPhaseBudget?
     private var jarMainQoSAudit = false
     private var jarMainQoSRestoreStatus: Int32 = 0
     private var jarDisplayWaitAudit = false
@@ -752,6 +859,10 @@ class GameViewController: UIViewController {
             },
             UIAction(title: "Thử tháo giao diện game · JAR") { [weak self] _ in
                 self?.confirmJarAudit(budgetMain: true, detachUI: true)
+            },
+            UIAction(title: "Đo 7 pha UIKit · tắt → bật → tắt",
+                     attributes: Self.jarCommitAuditSupported ? [] : .disabled) { [weak self] _ in
+                self?.confirmJarAudit(uikitPhases: true)
             },
             UIAction(title: "Đo CPU quanh commit UIKit · JAR",
                      attributes: Self.jarCommitAuditSupported ? [] : .disabled) { [weak self] _ in
@@ -1236,11 +1347,12 @@ class GameViewController: UIViewController {
         return false
     }
 
-    private func confirmJarAudit(profileMain: Bool = false, compareLoad: Bool = false, workerComparison: Bool = false, windowOcclusion: Bool = false, displayWaitAudit: Bool = false, mainQoSAudit: Bool = false, budgetMain: Bool = false, detachUI: Bool = false, measureCommit: Bool = false) {
-        guard !(measureCommit || windowOcclusion || displayWaitAudit || mainQoSAudit) || Self.jarCommitAuditSupported else { return }
+    private func confirmJarAudit(profileMain: Bool = false, compareLoad: Bool = false, workerComparison: Bool = false, windowOcclusion: Bool = false, displayWaitAudit: Bool = false, mainQoSAudit: Bool = false, uikitPhases: Bool = false, budgetMain: Bool = false, detachUI: Bool = false, measureCommit: Bool = false) {
+        guard !(measureCommit || windowOcclusion || displayWaitAudit || mainQoSAudit || uikitPhases) || Self.jarCommitAuditSupported else { return }
         guard jarAuditID == nil, blackout == nil, powerRun == nil, cpuProfileStartedAt == nil else { return }
         let sourceProfile = budgetMain && profileMain
-        let alert = UIAlertController(title: mainQoSAudit ? "Thử hạ QoS main · JAR" :
+        let alert = UIAlertController(title: uikitPhases ? "Đo 7 pha UIKit · tắt → bật → tắt" :
+                mainQoSAudit ? "Thử hạ QoS main · JAR" :
                 displayWaitAudit ? "Thử Display chờ sự kiện · JAR" :
                 windowOcclusion ? "Thử cửa sổ đen foreground · JAR" :
                 workerComparison ? "So tải game và luồng native · JAR" : measureCommit ? "Đo CPU quanh commit UIKit · JAR" :
@@ -1249,7 +1361,9 @@ class GameViewController: UIViewController {
                 budgetMain ? "Đo pha CPU main · JAR" :
                 (compareLoad ? "Thử chờ thụ động · CPU main" :
                  (profileMain ? "Tìm hàm ăn CPU main" : "Chẩn đoán CPU JAR")),
-            message: mainQoSAudit
+            message: uikitPhases
+                ? "Map 37, auto x1, ban đầu TẮT treo trong JAR. Đo A1 tắt → B bật → A2 tắt, mỗi lượt 30 giây và chuyển theo hướng dẫn trên màn hình. Cả ba lượt cùng chặn khung native, tạm tắt JIT, không thêm tải giả và không sửa QoS. Đo CPU main giữa 8 mốc chuẩn UIKit để chia thành 7 khoảng. Các khoảng không nhận diện tên hàm bên trong; chỉ kết luận nếu các chu kỳ được ghép đủ và game giữ nhịp."
+                : mainQoSAudit
                 ? "Map 37, auto x1, BẬT treo trong JAR trước. Không bật màn đen JarBox hay kéo Trung tâm thông báo. A1 QoS gốc → B User Initiated → C Utility → A2 QoS gốc, 4 lượt × 30 giây. Không tạo tải giả, chỉ đổi QoS main thread; VM/game giữ nguyên. Đo CPU tổng, main, tick và cập nhật UIKit. Nếu iOS từ chối đổi QoS hoặc game chậm, báo không hợp lệ. Có Hủy và tự khôi phục QoS khi kết thúc."
                 : displayWaitAudit
                 ? "Map 37, auto x1, BẬT treo trong JAR trước, không bật màn đen JarBox riêng. Đo A1 chờ 16ms cũ → B chờ tín hiệu input/repaint (tối đa 250ms) → A2 chờ cũ. Ba lượt 30 giây, tự chuyển; JIT tắt và chặn khung đều như nhau. Giữ nguyên auto, không chạm. Có nút hủy; nếu tick game lệch hoặc Display không thật sự ngủ theo tín hiệu, báo không kết luận."
@@ -1273,12 +1387,12 @@ class GameViewController: UIViewController {
             preferredStyle: .alert)
         alert.addAction(UIAlertAction(title: "Hủy", style: .cancel))
         alert.addAction(UIAlertAction(title: profileMain ? "Lấy mẫu" : "Đo", style: .default) { [weak self] _ in
-            self?.startJarAudit(profileMain: profileMain, compareLoad: compareLoad, workerComparison: workerComparison, windowOcclusion: windowOcclusion, displayWaitAudit: displayWaitAudit, mainQoSAudit: mainQoSAudit, budgetMain: budgetMain, detachUI: detachUI, measureCommit: measureCommit)
+            self?.startJarAudit(profileMain: profileMain, compareLoad: compareLoad, workerComparison: workerComparison, windowOcclusion: windowOcclusion, displayWaitAudit: displayWaitAudit, mainQoSAudit: mainQoSAudit, uikitPhases: uikitPhases, budgetMain: budgetMain, detachUI: detachUI, measureCommit: measureCommit)
         })
         present(alert, animated: true)
     }
 
-    private func startJarAudit(profileMain: Bool, compareLoad: Bool, workerComparison: Bool, windowOcclusion: Bool, displayWaitAudit: Bool, mainQoSAudit: Bool, budgetMain: Bool, detachUI: Bool, measureCommit: Bool) {
+    private func startJarAudit(profileMain: Bool, compareLoad: Bool, workerComparison: Bool, windowOcclusion: Bool, displayWaitAudit: Bool, mainQoSAudit: Bool, uikitPhases: Bool, budgetMain: Bool, detachUI: Bool, measureCommit: Bool) {
         guard jarAuditID == nil, blackout == nil, powerRun == nil, cpuProfileStartedAt == nil else { return }
         if mainQoSAudit {
             let code = treo_main_qos_begin()
@@ -1290,12 +1404,13 @@ class GameViewController: UIViewController {
         }
         jarMainQoSRestoreStatus = 0
         jarMainQoSAudit = mainQoSAudit
+        jarUIKitPhaseAudit = uikitPhases
         jarMainProfile = profileMain
         jarLoadComparison = compareLoad
         jarWorkerComparison = workerComparison
         jarWindowAudit = windowOcclusion
         jarDisplayWaitAudit = displayWaitAudit
-        jarBudgetAudit = budgetMain || workerComparison || windowOcclusion || displayWaitAudit || mainQoSAudit
+        jarBudgetAudit = budgetMain || workerComparison || windowOcclusion || displayWaitAudit || mainQoSAudit || uikitPhases
         jarCommitAudit = measureCommit || workerComparison || windowOcclusion || displayWaitAudit || mainQoSAudit
         jarDetachAudit = detachUI
         let id = UUID()
@@ -1323,6 +1438,9 @@ class GameViewController: UIViewController {
         jarCommitBudget?.stop()
         jarCommitBudget = nil
         jarCommitAudit = false
+        jarUIKitPhaseBudget?.stop()
+        jarUIKitPhaseBudget = nil
+        jarUIKitPhaseAudit = false
         if jarMainQoSAudit {
             jarMainQoSRestoreStatus = treo_main_qos_finish()
             jarMainQoSAudit = false
@@ -1367,6 +1485,7 @@ class GameViewController: UIViewController {
         let paint: Double
         let budget: [Double]?
         let commit: JarCommitBudget.Result?
+        let phases: JarUIKitPhaseBudget.Result?
         let loadCPU: Double
         let loadRate: Double
     }
@@ -1424,6 +1543,11 @@ class GameViewController: UIViewController {
             let budgetMain = self.jarBudgetAudit
             let sourceProfile = budgetMain && profileMain
             if budgetMain { JarMainBudget.start(sampleSource: sourceProfile) }
+            if self.jarUIKitPhaseAudit, #available(iOS 18.0, *) {
+                let phaseBudget = JarUIKitPhaseBudget()
+                self.jarUIKitPhaseBudget = phaseBudget
+                phaseBudget.start(in: self.view)
+            }
             if self.jarCommitAudit, #available(iOS 18.0, *) {
                 let commitBudget = JarCommitBudget()
                 self.jarCommitBudget = commitBudget
@@ -1432,7 +1556,7 @@ class GameViewController: UIViewController {
             }
             if sourceProfile { treo_afk_main_source_trace_begin() }
             else if profileMain { treo_afk_main_stack_begin() }
-            self.scheduleJarAudit(id: id, after: profileMain && !sourceProfile ? 20 : ((self.jarMainQoSAudit || self.jarDisplayWaitAudit) ? 30 : (self.jarWindowAudit ? 25 : (self.jarWorkerComparison ? 30 : (self.jarLoadComparison ? 25 : 60))))) { [weak self] in
+            self.scheduleJarAudit(id: id, after: profileMain && !sourceProfile ? 20 : ((self.jarMainQoSAudit || self.jarDisplayWaitAudit || self.jarUIKitPhaseAudit) ? 30 : (self.jarWindowAudit ? 25 : (self.jarWorkerComparison ? 30 : (self.jarLoadComparison ? 25 : 60))))) { [weak self] in
                 guard let self else { return }
                 let end = JarAuditSample()
                 let dt = max(0.001, end.base.time - start.base.time)
@@ -1460,6 +1584,8 @@ class GameViewController: UIViewController {
                 let budget = budgetMain ? JarMainBudget.finish(wall: dt, mainPercent: main) : nil
                 let commit = self.jarCommitBudget?.finish(wall: dt)
                 self.jarCommitBudget = nil
+                let phases = self.jarUIKitPhaseBudget?.finish(wall: dt)
+                self.jarUIKitPhaseBudget = nil
                 let ticks = Double(on + off) / dt
                 let frames = end.frames &- start.frames
                 let cpuText = total.map { String(format: "%.1f%%", $0) } ?? "?"
@@ -1519,6 +1645,7 @@ class GameViewController: UIViewController {
                     }
                 }
                 if let commit { row += "\n" + commit.detail }
+                if let phases { row += "\n" + phases.detail }
                 if compareLoad || workerCompare {
                     let calls = end.loadCalls &- start.loadCalls
                     let wall = Double(end.loadWall &- start.loadWall) / Double(max(1, calls)) / 1_000_000
@@ -1536,7 +1663,7 @@ class GameViewController: UIViewController {
                     return
                 }
                 let measured = results + [JarAuditResult(total: total, main: main, ticks: ticks, paint: paint,
-                    budget: budget, commit: commit,
+                    budget: budget, commit: commit, phases: phases,
                     loadCPU: Double(end.loadNS &- start.loadNS) / dt / 10_000_000,
                     loadRate: Double(end.loadCalls &- start.loadCalls) / dt)]
                 if workerCompare && leg == 1 {
@@ -1593,6 +1720,7 @@ class GameViewController: UIViewController {
         let windowAudit = jarWindowAudit
         let displayAudit = jarDisplayWaitAudit
         let qosAudit = jarMainQoSAudit
+        let phaseAudit = jarUIKitPhaseAudit
         let budgetMain = jarBudgetAudit
         let detachUI = jarDetachAudit
         let measureCommit = jarCommitAudit
@@ -1657,6 +1785,25 @@ class GameViewController: UIViewController {
             }
             summary += "\n"
         }
+        if phaseAudit && results.count == 3 {
+            let a = results[0], b = results[1], c = results[2]
+            if let pa = a.phases, let pb = b.phases, let pc = c.phases,
+               pa.valid && pb.valid && pc.valid {
+                summary += "Chênh CPU giữa mốc UIKit, B − trung bình A1/A2 (ms CPU/s):\n"
+                var deltaSum = 0.0
+                for i in 0..<JarUIKitPhaseBudget.labels.count {
+                    let delta = pb.cpuMSPerSecond[i] - (pa.cpuMSPerSecond[i] + pc.cpuMSPerSecond[i]) / 2
+                    deltaSum += delta
+                    summary += String(format: "%@: %+.1f\n", JarUIKitPhaseBudget.labels[i], delta)
+                }
+                summary += String(format: "Tổng các khoảng đo được: %+.1f ms CPU/s.\n", deltaSum)
+            } else {
+                summary += "KHÔNG KẾT LUẬN: thiếu chu kỳ UIKit ghép đủ, hãy xem mốc lỗi từng lượt.\n"
+            }
+            let mainDelta = (b.main ?? 0) - ((a.main ?? 0) + (c.main ?? 0)) / 2
+            summary += String(format: "Chênh CPU main toàn bộ: %+.1f điểm (%.1f ms/s). Không đồng nhất tổng khoảng UIKit với toàn main.\n\n",
+                mainDelta, mainDelta * 10)
+        }
         if results.count == 3 {
             let a = results[0], b = results[1], c = results[2]
             func delta(_ x: Double?, _ y: Double?, _ z: Double?) -> String {
@@ -1703,14 +1850,17 @@ class GameViewController: UIViewController {
                     summary += "Mốc UIKit không đủ hoặc lỗi ghép nhiều: không kết luận về commit.\n\n"
                 }
             }
-            let title = qosAudit ? "Thử hạ QoS main · JAR" :
+            let title = phaseAudit ? "Đo 7 pha UIKit · JAR" :
+                qosAudit ? "Thử hạ QoS main · JAR" :
                 displayAudit ? "Thử Display chờ sự kiện · JAR" :
                 windowAudit ? "Thử cửa sổ đen foreground · JAR" :
                 workerCompare ? "So tải game và luồng native · JAR" :
                 measureCommit ? "Đo CPU quanh commit UIKit · JAR" :
                 detachUI ? "Thử tháo giao diện game · JAR" :
                 (profileMain ? "Tìm stack sau Source · JAR" : "Đo pha CPU main · JAR")
-            let sampling = qosAudit
+            let sampling = phaseAudit
+                ? "Tắt → bật → tắt Treo tối ưu CPU trong JAR. UIUpdateLink thụ động quan sát 8 mốc để phân chia 7 khoảng. Khoảng đo chỉ cho biết thời gian CPU giữa hai mốc, không định danh hàm hay toàn bộ framework. Không đổi tốc độ vòng game."
+                : qosAudit
                 ? "A1/A2 giữ QoS main ban đầu; B User Initiated; C Utility. Chỉ đổi QoS main (API công khai), không tạo tải giả; đọc lại QoS từng lượt, khôi phục sau bài. QoS không trực tiếp đo tần số CPU."
                 : displayAudit
                 ? "A1/A2 chờ 16ms cũ; B dùng condition variable có version chống mất tín hiệu, có watchdog 250ms. Bắt buộc kiểm tra poll/s, wait/s, timeout/s và game tick/s trước khi quy kết CPU. Không thay đổi vòng game."
