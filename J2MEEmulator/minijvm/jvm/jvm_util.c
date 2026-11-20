@@ -888,11 +888,19 @@ s32 jthread_lock(MemoryBlock *mb, Runtime *runtime) { //可能会重入，同一
 #if _JVM_DEBUG_LOG_LEVEL > 5
     s64 waitTime = currentTimeMillis();
 #endif
-    struct timespec t;
-    t.tv_nsec = 5 * NANO_2_MILLS_SCALE;
-    t.tv_sec = 0;
-    //can pause when lock
-    while (mtx_timedlock(&jtl->mutex_lock, &t) != thrd_success) {
+    // mtx_timedlock expects an absolute TIME_UTC deadline, not a 5 ms
+    // relative duration. The old (tv_sec=0, tv_nsec=5ms) value was already
+    // expired, so contended Java monitors spun in yield() instead of sleeping.
+    // Recalculate the 5 ms deadline on every retry, retaining GC safepoints.
+    while (1) {
+        struct timespec t;
+        timespec_get(&t, TIME_UTC);
+        t.tv_nsec += 5 * NANO_2_MILLS_SCALE;
+        if (t.tv_nsec >= 1000000000L) {
+            t.tv_nsec -= 1000000000L;
+            t.tv_sec++;
+        }
+        if (mtx_timedlock(&jtl->mutex_lock, &t) == thrd_success) break;
         check_suspend_and_pause(runtime);
         if (runtime->thrd_info->type == THREAD_TYPE_JDWP) {
             break;
