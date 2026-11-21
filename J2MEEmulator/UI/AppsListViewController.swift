@@ -1035,7 +1035,10 @@ class AppsListViewController: UIViewController,
         let cell = collectionView.dequeueReusableCell(
             withReuseIdentifier: SpringboardCell.reuseID, for: indexPath) as! SpringboardCell
         let app = apps[indexPath.item]
-        cell.configure(name: app.name, icon: app.icon,
+        let count = (try? JarBoxGameStorage.registeredClones(
+            jarPath: app.path, documents: Self.documentsDirectory).count) ?? 0
+        let groupTitle = count == 0 ? app.name : app.name + " · " + String(count + 1) + " tab"
+        cell.configure(name: groupTitle, icon: app.icon,
                        running: parkedGameController?.ownsLiveGameSession(for: app.path) == true)
         return cell
     }
@@ -1054,6 +1057,15 @@ class AppsListViewController: UIViewController,
             let saveLogAction = UIAction(title: "Nhật ký save & cài đặt",
                                          image: UIImage(systemName: "doc.text")) { [weak self] _ in
                 self?.showSaveLog(for: app)
+            }
+            let addTab = UIAction(title: "+ Tab · dữ liệu mặc định",
+                                  image: UIImage(systemName: "plus.square.on.square")) { [weak self] _ in
+                self?.addDefaultTab(for: app)
+            }
+            let removeTab = UIAction(title: "− Tab · xóa dữ liệu riêng",
+                                     image: UIImage(systemName: "minus.square"),
+                                     attributes: .destructive) { [weak self] _ in
+                self?.presentTabDeletion(for: app)
             }
             var sessionActions: [UIMenuElement] = []
             if isRunning {
@@ -1116,8 +1128,11 @@ class AppsListViewController: UIViewController,
                                   children: [toggle3D, fpsMenu])
             let settings = UIMenu(options: .displayInline, children: [resMenu, advanced])
             let actions = UIMenu(options: .displayInline, children: [rename, clearData, delete])
+            let tabActions = UIMenu(title: "Các tab · cùng JAR, save độc lập",
+                                    image: UIImage(systemName: "square.on.square"),
+                                    children: [addTab, removeTab])
             let information = UIMenu(options: .displayInline, children: [infoAction, saveLogAction])
-            return UIMenu(children: sessionActions + [information, settings, actions])
+            return UIMenu(children: sessionActions + [tabActions, information, settings, actions])
         })
     }
 
@@ -1378,12 +1393,131 @@ class AppsListViewController: UIViewController,
     func collectionView(_ collectionView: UICollectionView,
                         didSelectItemAt indexPath: IndexPath) {
         let app = apps[indexPath.item]
-        // Never launch a second view hierarchy from the *parked* overlay,
-        // even in the brief gap after the native slot becomes idle but before
-        // the old owner finishes its UIKit teardown.
+        do {
+            let clones = try JarBoxGameStorage.registeredClones(
+                jarPath: app.path, documents: Self.documentsDirectory)
+            if clones.isEmpty {
+                launchGameTab(app, cloneID: nil, tabTitle: app.name)
+            } else {
+                showTabChooser(for: app, clones: clones)
+            }
+        } catch {
+            presentSaveOperationError(error)
+        }
+    }
+
+    /// A group tile expands into independent windows/tabs. No clone is
+    /// started until tapped; each gets a separately resolved save root.
+    private func showTabChooser(for app: AppInfo,
+                                clones: [JarBoxGameStorage.CloneRecord]) {
+        let menu = UIAlertController(title: app.name + " · " + String(clones.count + 1) + " tab",
+                                     message: "Chọn tab cần mở. Các tab dùng chung JAR, không chung dữ liệu.",
+                                     preferredStyle: .actionSheet)
+        menu.addAction(UIAlertAction(title: "Tab gốc", style: .default) { [weak self] _ in
+            self?.launchGameTab(app, cloneID: nil, tabTitle: app.name)
+        })
+        for clone in clones {
+            menu.addAction(UIAlertAction(title: clone.label, style: .default) { [weak self] _ in
+                self?.launchGameTab(app, cloneID: clone.id, tabTitle: app.name + " · " + clone.label)
+            })
+        }
+        menu.addAction(UIAlertAction(title: "+ Tab", style: .default) { [weak self] _ in
+            self?.addDefaultTab(for: app)
+        })
+        menu.addAction(UIAlertAction(title: "− Tab", style: .destructive) { [weak self] _ in
+            self?.presentTabDeletion(for: app)
+        })
+        menu.addAction(UIAlertAction(title: "Hủy", style: .cancel))
+        if let popover = menu.popoverPresentationController {
+            popover.sourceView = springboardCollectionView
+            popover.sourceRect = CGRect(x: springboardCollectionView.bounds.midX,
+                                        y: springboardCollectionView.bounds.midY,
+                                        width: 1, height: 1)
+        }
+        present(menu, animated: true)
+    }
+
+    private func addDefaultTab(for app: AppInfo) {
+        do {
+            let entries = try JarBoxGameStorage.registeredClones(
+                jarPath: app.path, documents: Self.documentsDirectory)
+            let used = Set(entries.map { $0.label })
+            var n = 1
+            while used.contains("Tab " + String(n)) { n += 1 }
+            let clone = try JarBoxGameStorage.createDefaultClone(
+                jarPath: app.path, documents: Self.documentsDirectory,
+                label: "Tab " + String(n))
+            scanApps()
+            let alert = UIAlertController(
+                title: "Đã tạo " + clone.label,
+                message: "Tab mới dùng chung file JAR nhưng bắt đầu với RMS và cài đặt mặc định, không sao chép save gốc.",
+                preferredStyle: .alert)
+            alert.addAction(UIAlertAction(title: "OK", style: .default))
+            present(alert, animated: true)
+        } catch {
+            presentSaveOperationError(error)
+        }
+    }
+
+    private func presentTabDeletion(for app: AppInfo) {
+        do {
+            let clones = try JarBoxGameStorage.registeredClones(
+                jarPath: app.path, documents: Self.documentsDirectory)
+            guard !clones.isEmpty else {
+                let alert = UIAlertController(title: "Chưa có tab nhân bản",
+                    message: "Tab gốc không thể xóa bằng − Tab.",
+                    preferredStyle: .alert)
+                alert.addAction(UIAlertAction(title: "OK", style: .default))
+                present(alert, animated: true)
+                return
+            }
+            let picker = UIAlertController(title: "− Tab · " + app.name,
+                message: "Chọn bản nhân cần xóa cùng RMS, cài đặt và log của bản đó.",
+                preferredStyle: .actionSheet)
+            for clone in clones {
+                picker.addAction(UIAlertAction(title: "Xóa " + clone.label,
+                    style: .destructive) { [weak self] _ in
+                    self?.confirmDeleteTab(app, clone: clone)
+                })
+            }
+            picker.addAction(UIAlertAction(title: "Hủy", style: .cancel))
+            if let popover = picker.popoverPresentationController {
+                popover.sourceView = springboardCollectionView
+                popover.sourceRect = CGRect(x: springboardCollectionView.bounds.midX,
+                                            y: springboardCollectionView.bounds.midY,
+                                            width: 1, height: 1)
+            }
+            present(picker, animated: true)
+        } catch {
+            presentSaveOperationError(error)
+        }
+    }
+
+    private func confirmDeleteTab(_ app: AppInfo, clone: JarBoxGameStorage.CloneRecord) {
+        let alert = UIAlertController(title: "Xóa " + clone.label + "?",
+            message: "Toàn bộ RMS, save, nhật ký và cài đặt riêng của tab sẽ bị xóa vĩnh viễn. Tab gốc và các bản nhân khác không bị ảnh hưởng.",
+            preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "Hủy", style: .cancel))
+        alert.addAction(UIAlertAction(title: "− Xóa Tab", style: .destructive) { [weak self] _ in
+            guard let self else { return }
+            do {
+                try JarBoxGameStorage.removeClone(
+                    jarPath: app.path, documents: Self.documentsDirectory,
+                    cloneID: clone.id)
+                self.scanApps()
+            } catch {
+                self.presentSaveOperationError(error)
+            }
+        })
+        present(alert, animated: true)
+    }
+
+    private func launchGameTab(_ app: AppInfo, cloneID: UUID?, tabTitle: String) {
+        // The library may overlay an existing JVM. Never treat the same JAR
+        // file as the same running *tab* unless the instance UUID also matches.
         if let parked = parkedGameController {
             if parked.ownsLiveGameSession() {
-                if parked.jarPath == app.path {
+                if parked.ownsLiveInstance(for: app.path, cloneID: cloneID) {
                     resumeParkedGame()
                 } else {
                     showAnotherGameBlocked(app)
@@ -1392,9 +1526,8 @@ class AppsListViewController: UIViewController,
                 updateStuckSessionButton()
                 openStuckSessionRecovery()
             } else {
-                let alert = UIAlertController(
-                    title: "Đang đóng phiên cũ",
-                    message: "Hãy chờ JarBox quay lại thư viện chính trước khi mở game tiếp theo.",
+                let alert = UIAlertController(title: "Đang đóng phiên cũ",
+                    message: "Hãy chờ JarBox quay về thư viện chính trước khi mở tab tiếp theo.",
                     preferredStyle: .alert)
                 alert.addAction(UIAlertAction(title: "OK", style: .default))
                 present(alert, animated: true)
@@ -1407,18 +1540,25 @@ class AppsListViewController: UIViewController,
             return
         }
 
-        let render3dScale = Self.is3DSupersampling(for: app) ? 3 : 1
-        let res = Self.resolution(for: app)
-        let fps = Self.fpsLimit(for: app)
-        let gameVC = GameViewController(jarPath: app.path, appName: app.name, appIcon: app.icon,
-                                         canvasWidth: res.w, canvasHeight: res.h,
-                                         render3dScale: render3dScale, fpsLimit: fps)
-        gameVC.modalPresentationStyle = .fullScreen
+        // No clone may launch without a registered, existing private root.
+        do {
+            if cloneID != nil {
+                _ = try JarBoxGameStorage.prepareRoot(
+                    jarPath: app.path, documents: Self.documentsDirectory, cloneID: cloneID)
+            }
+        } catch {
+            presentSaveOperationError(error)
+            return
+        }
 
-        // Pause as soon as the user opens a game, without waiting for the
-        // fullscreen presentation's view-controller lifecycle callback.
+        let render3dScale = Self.is3DSupersampling(for: app, cloneID: cloneID) ? 3 : 1
+        let res = Self.resolution(for: app, cloneID: cloneID)
+        let fps = Self.fpsLimit(for: app, cloneID: cloneID)
+        let gameVC = GameViewController(jarPath: app.path, appName: tabTitle,
+            appIcon: app.icon, canvasWidth: res.w, canvasHeight: res.h,
+            render3dScale: render3dScale, fpsLimit: fps, cloneID: cloneID)
+        gameVC.modalPresentationStyle = .fullScreen
         setSpringboardMotion(false, reason: "game launching")
-        // Do not couple the game's orientation change to the springboard zoom animation.
         present(gameVC, animated: false)
     }
 }
