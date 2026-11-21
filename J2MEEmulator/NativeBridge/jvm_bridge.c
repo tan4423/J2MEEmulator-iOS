@@ -83,20 +83,23 @@ static int treo_is_nso_family(const char *jar_path) {
 #endif
 
 
-static MiniJVM *g_jvm = NULL;
-static atomic_int g_jvm_stop_requested = 0;
-
-// Only ONE miniJVM may exist in-process. UI acquisition happens BEFORE
-// scheduling the asynchronous startup worker; this closes the rapid
-// open/back/open race where two workers previously touched the same g_jvm.
+// First stage of per-JVM ownership: keep all VM lifecycle fields together
+// rather than scattering independent mutable process globals. This context
+// owns one concrete miniJVM heap and its stop token. The input/render/audio
+// native bridges are not yet independently instantiated, so the single-live
+// JVM guard MUST remain until those subsystems have their own contexts.
 enum { BRIDGE_IDLE = 0, BRIDGE_STARTING = 1, BRIDGE_RUNNING = 2,
        BRIDGE_CLEANUP = 3 };
-static atomic_int g_bridge_session_active = 0;
-static atomic_int g_bridge_phase = BRIDGE_IDLE;
-// Exclusive VM slot for now, but all stop requests carry a generation.
-// A stale UI callback can never cancel a later game/clone session.
+typedef struct {
+    MiniJVM *jvm;
+    atomic_int stop_requested;
+    atomic_int active;
+    atomic_int phase;
+    _Atomic uint64_t token;
+} JarBoxVMContext;
+static JarBoxVMContext g_bridge_vm = {0};
+// Tokens are never reused, even when this context is reset and acquired again.
 static _Atomic uint64_t g_bridge_session_sequence;
-static _Atomic uint64_t g_bridge_session_current;
 // Protect the JVM pointer/phase while the cancellation watchdog interrupts
 // Java threads; normal VM execution never takes this mutex.
 static pthread_mutex_t g_bridge_lifecycle_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -216,13 +219,13 @@ const char *jvm_bridge_last_error(void) {
 
 int jvm_bridge_try_begin_session(void) {
     int expected = 0;
-    if (!atomic_compare_exchange_strong_explicit(&g_bridge_session_active,
+    if (!atomic_compare_exchange_strong_explicit(&g_bridge_vm.active,
             &expected, 1, memory_order_acq_rel, memory_order_acquire))
         return 0;
     const uint64_t token = atomic_fetch_add_explicit(
         &g_bridge_session_sequence, 1, memory_order_relaxed) + 1;
-    atomic_store_explicit(&g_bridge_session_current, token, memory_order_release);
-    atomic_store_explicit(&g_jvm_stop_requested, 0, memory_order_release);
+    atomic_store_explicit(&g_bridge_vm.token, token, memory_order_release);
+    atomic_store_explicit(&g_bridge_vm.stop_requested, 0, memory_order_release);
     atomic_store_explicit(&g_bridge_last_error_ready, 0, memory_order_release);
     g_bridge_last_error[0] = '\0';
     pthread_mutex_lock(&g_bridge_nso_trace_lock);
@@ -241,7 +244,7 @@ int jvm_bridge_try_begin_session(void) {
     atomic_store_explicit(&g_mod_dispatch_probe_notes, 0, memory_order_release);
     atomic_store_explicit(&g_mod_method_missing_notes, 0, memory_order_release);
     atomic_store_explicit(&g_mod_protocol_notes, 0, memory_order_release);
-    atomic_store_explicit(&g_bridge_phase, BRIDGE_STARTING, memory_order_release);
+    atomic_store_explicit(&g_bridge_vm.phase, BRIDGE_STARTING, memory_order_release);
     // Visible from the first frame in Chẩn đoán kết nối, regardless of
     // which Java network API the game calls. Detects an older installed IPA.
     jvm_bridge_note_net_trace("probe:java8_utf8_boot_patch=v1");
@@ -251,25 +254,25 @@ int jvm_bridge_try_begin_session(void) {
     return 1;
 }
 int jvm_bridge_session_phase(void) {
-    return atomic_load_explicit(&g_bridge_phase, memory_order_acquire);
+    return atomic_load_explicit(&g_bridge_vm.phase, memory_order_acquire);
 }
 int jvm_bridge_session_is_active(void) {
-    return atomic_load_explicit(&g_bridge_session_active, memory_order_acquire);
+    return atomic_load_explicit(&g_bridge_vm.active, memory_order_acquire);
 }
 uint64_t jvm_bridge_session_token(void) {
-    return atomic_load_explicit(&g_bridge_session_current, memory_order_acquire);
+    return atomic_load_explicit(&g_bridge_vm.token, memory_order_acquire);
 }
 void jvm_bridge_finish_session(void) {
     // Only the owning startup worker calls this AFTER native teardown.
-    if (g_jvm) {
+    if (g_bridge_vm.jvm) {
         printf("[JarBoxVM][Lifecycle] ERROR: refusing to release live JVM session\n");
         return;
     }
     pthread_mutex_lock(&g_bridge_lifecycle_lock);
-    atomic_store_explicit(&g_bridge_phase, BRIDGE_IDLE, memory_order_release);
-    atomic_store_explicit(&g_jvm_stop_requested, 0, memory_order_release);
-    atomic_store_explicit(&g_bridge_session_current, 0, memory_order_release);
-    atomic_store_explicit(&g_bridge_session_active, 0, memory_order_release);
+    atomic_store_explicit(&g_bridge_vm.phase, BRIDGE_IDLE, memory_order_release);
+    atomic_store_explicit(&g_bridge_vm.stop_requested, 0, memory_order_release);
+    atomic_store_explicit(&g_bridge_vm.token, 0, memory_order_release);
+    atomic_store_explicit(&g_bridge_vm.active, 0, memory_order_release);
     pthread_mutex_unlock(&g_bridge_lifecycle_lock);
     printf("[JarBoxVM][Lifecycle] session=released\n");
 }
@@ -277,14 +280,14 @@ int jvm_bridge_interrupt_active_threads_for_token(uint64_t token) {
     if (!token) return 0;
     pthread_mutex_lock(&g_bridge_lifecycle_lock);
     const int matching =
-        atomic_load_explicit(&g_bridge_session_current, memory_order_acquire) == token &&
-        atomic_load_explicit(&g_bridge_session_active, memory_order_acquire);
-    const int phase = atomic_load_explicit(&g_bridge_phase, memory_order_acquire);
+        atomic_load_explicit(&g_bridge_vm.token, memory_order_acquire) == token &&
+        atomic_load_explicit(&g_bridge_vm.active, memory_order_acquire);
+    const int phase = atomic_load_explicit(&g_bridge_vm.phase, memory_order_acquire);
     int interrupted = 0;
     if (matching &&
-        atomic_load_explicit(&g_jvm_stop_requested, memory_order_acquire) &&
-        phase == BRIDGE_RUNNING && g_jvm) {
-        thread_stop_all(g_jvm);
+        atomic_load_explicit(&g_bridge_vm.stop_requested, memory_order_acquire) &&
+        phase == BRIDGE_RUNNING && g_bridge_vm.jvm) {
+        thread_stop_all(g_bridge_vm.jvm);
         interrupted = 1;
     }
     pthread_mutex_unlock(&g_bridge_lifecycle_lock);
@@ -303,11 +306,11 @@ int g_render_3d_scale = 1;
 int jvm_bridge_init(const char *res_root, const char *save_root, const char *midlet_jar,
                     int screen_width, int screen_height, int render_3d_scale,
                     int fps_limit) {
-    if (!atomic_load_explicit(&g_bridge_session_active, memory_order_acquire)) {
+    if (!atomic_load_explicit(&g_bridge_vm.active, memory_order_acquire)) {
         printf("[JarBoxVM][Lifecycle] init denied: no acquired session\n");
         return -5;
     }
-    if (g_jvm) {
+    if (g_bridge_vm.jvm) {
         printf("[JVM Bridge] JVM already initialized\n");
         return -1;
     }
@@ -320,7 +323,7 @@ int jvm_bridge_init(const char *res_root, const char *save_root, const char *mid
     printf("[JarBoxVM][NinjaDeep] profile=%s (NSO resource family)\n",
            ninja_match ? "matched" : "generic");
 #endif
-    // Note: g_jvm_stop_requested is NOT reset here — it is reset in
+    // Note: g_bridge_vm.stop_requested is NOT reset here — it is reset in
     // jvm_bridge_destroy() after the previous session.  Resetting it here
     // would race with backTapped() which may have already set the flag
     // before this function runs on the background thread.
@@ -338,62 +341,62 @@ int jvm_bridge_init(const char *res_root, const char *save_root, const char *mid
     printf("[JVM Bridge] classpath: %s\n", classpath);
 
     // Create JVM instance
-    g_jvm = jvm_create();
-    if (!g_jvm) {
+    g_bridge_vm.jvm = jvm_create();
+    if (!g_bridge_vm.jvm) {
         printf("[JVM Bridge] ERROR: jvm_create() failed\n");
         return -2;
     }
 
-    g_jvm->jdwp_enable = 0;
-    g_jvm->jdwp_suspend_on_start = 0;
-    g_jvm->max_heap_size = 128 * 1024 * 1024;       // 128MB (java + native via g_native_extra_heap)
-    g_jvm->garbage_collect_period_ms = 500;          // GC every 0.5 sec
-    g_jvm->heap_overload_percent = 70;               // GC at 70% heap
+    g_bridge_vm.jvm->jdwp_enable = 0;
+    g_bridge_vm.jvm->jdwp_suspend_on_start = 0;
+    g_bridge_vm.jvm->max_heap_size = 128 * 1024 * 1024;       // 128MB (java + native via g_native_extra_heap)
+    g_bridge_vm.jvm->garbage_collect_period_ms = 500;          // GC every 0.5 sec
+    g_bridge_vm.jvm->heap_overload_percent = 70;               // GC at 70% heap
 
-    s32 ret = jvm_init(g_jvm, (c8 *)bootclasspath, (c8 *)classpath);
+    s32 ret = jvm_init(g_bridge_vm.jvm, (c8 *)bootclasspath, (c8 *)classpath);
     if (ret) {
         printf("[JVM Bridge] ERROR: jvm_init() failed with code %d\n", ret);
-        jvm_destroy(g_jvm);
-        g_jvm = NULL;
+        jvm_destroy(g_bridge_vm.jvm);
+        g_bridge_vm.jvm = NULL;
         atomic_store_explicit(&treo_exact_ninja_verified, 0, memory_order_release);
         return -3;
     }
 
     // Register native methods
-    j2me_render_reg_natives(g_jvm);
-    j2me_input_reg_natives(g_jvm);
-    j2me_ui_reg_natives(g_jvm);
-    j2me_audio_reg_natives(g_jvm);
-    j2me_micro3d_gl_reg_natives(g_jvm);
-    j2me_m3g_reg_natives(g_jvm);
+    j2me_render_reg_natives(g_bridge_vm.jvm);
+    j2me_input_reg_natives(g_bridge_vm.jvm);
+    j2me_ui_reg_natives(g_bridge_vm.jvm);
+    j2me_audio_reg_natives(g_bridge_vm.jvm);
+    j2me_micro3d_gl_reg_natives(g_bridge_vm.jvm);
+    j2me_m3g_reg_natives(g_bridge_vm.jvm);
 
     // Set system properties
-    sys_properties_set_c(g_jvm, "os.name", "iOS");
-    sys_properties_set_c(g_jvm, "app.save.root", save_root);
-    sys_properties_set_c(g_jvm, "microedition.platform", "Apple/iPhone");
-    sys_properties_set_c(g_jvm, "microedition.encoding", "UTF-8");
-    sys_properties_set_c(g_jvm, "microedition.locale", "en");
-    sys_properties_set_c(g_jvm, "microedition.profiles", "MIDP-2.0");
-    sys_properties_set_c(g_jvm, "microedition.configuration", "CLDC-1.1");
+    sys_properties_set_c(g_bridge_vm.jvm, "os.name", "iOS");
+    sys_properties_set_c(g_bridge_vm.jvm, "app.save.root", save_root);
+    sys_properties_set_c(g_bridge_vm.jvm, "microedition.platform", "Apple/iPhone");
+    sys_properties_set_c(g_bridge_vm.jvm, "microedition.encoding", "UTF-8");
+    sys_properties_set_c(g_bridge_vm.jvm, "microedition.locale", "en");
+    sys_properties_set_c(g_bridge_vm.jvm, "microedition.profiles", "MIDP-2.0");
+    sys_properties_set_c(g_bridge_vm.jvm, "microedition.configuration", "CLDC-1.1");
 
     // Screen dimensions — used by Display.java to set canvas size
     char sw[16], sh[16];
     snprintf(sw, sizeof(sw), "%d", screen_width);
     snprintf(sh, sizeof(sh), "%d", screen_height);
-    sys_properties_set_c(g_jvm, "j2me.screen.width", sw);
-    sys_properties_set_c(g_jvm, "j2me.screen.height", sh);
+    sys_properties_set_c(g_bridge_vm.jvm, "j2me.screen.width", sw);
+    sys_properties_set_c(g_bridge_vm.jvm, "j2me.screen.height", sh);
 
     // 3D supersampling scale for M3G and MascotCapsule (1=native, 2=2x AA, 3=3x AA)
     g_render_3d_scale = render_3d_scale > 0 ? render_3d_scale : 1;
     char ss[8];
     snprintf(ss, sizeof(ss), "%d", g_render_3d_scale);
-    sys_properties_set_c(g_jvm, "micro3d.v3.fbo.scale", ss);  // MC3D reads this in Render.java
+    sys_properties_set_c(g_bridge_vm.jvm, "micro3d.v3.fbo.scale", ss);  // MC3D reads this in Render.java
 
     // FPS limit (0 = unlimited)
     if (fps_limit > 0) {
         char fl[8];
         snprintf(fl, sizeof(fl), "%d", fps_limit);
-        sys_properties_set_c(g_jvm, "j2me.fps.limit", fl);
+        sys_properties_set_c(g_bridge_vm.jvm, "j2me.fps.limit", fl);
     }
     printf("[JVM Bridge] Screen size: %dx%d, 3D render scale: %s, FPS limit: %d\n",
            screen_width, screen_height, ss, fps_limit);
@@ -403,14 +406,14 @@ int jvm_bridge_init(const char *res_root, const char *save_root, const char *mid
 }
 
 int jvm_bridge_run_midlet(const char *midlet_jar_path) {
-    if (!g_jvm) {
+    if (!g_bridge_vm.jvm) {
         printf("[JVM Bridge] ERROR: JVM not initialized\n");
         return -1;
     }
 
     pthread_mutex_lock(&g_bridge_lifecycle_lock);
-    atomic_store_explicit(&g_bridge_phase, BRIDGE_RUNNING, memory_order_release);
-    const int cancelled = atomic_load_explicit(&g_jvm_stop_requested, memory_order_acquire);
+    atomic_store_explicit(&g_bridge_vm.phase, BRIDGE_RUNNING, memory_order_release);
+    const int cancelled = atomic_load_explicit(&g_bridge_vm.stop_requested, memory_order_acquire);
     pthread_mutex_unlock(&g_bridge_lifecycle_lock);
     if (cancelled) {
         printf("[JarBoxVM][Lifecycle] MIDlet start cancelled before call_main\n");
@@ -421,12 +424,12 @@ int jvm_bridge_run_midlet(const char *midlet_jar_path) {
     ArrayList *java_para = arraylist_create(0);
     arraylist_push_back(java_para, (void *)midlet_jar_path);
 
-    s32 ret = call_main(g_jvm, (c8 *)"javax/microedition/shell/MIDletRunner", java_para);
+    s32 ret = call_main(g_bridge_vm.jvm, (c8 *)"javax/microedition/shell/MIDletRunner", java_para);
 
     arraylist_destroy(java_para);
 
     pthread_mutex_lock(&g_bridge_lifecycle_lock);
-    atomic_store_explicit(&g_bridge_phase, BRIDGE_CLEANUP, memory_order_release);
+    atomic_store_explicit(&g_bridge_vm.phase, BRIDGE_CLEANUP, memory_order_release);
     pthread_mutex_unlock(&g_bridge_lifecycle_lock);
     printf("[JVM Bridge] MIDlet finished with code %d\n", ret);
     return ret;
@@ -434,9 +437,9 @@ int jvm_bridge_run_midlet(const char *midlet_jar_path) {
 
 void jvm_bridge_destroy(void) {
     pthread_mutex_lock(&g_bridge_lifecycle_lock);
-    atomic_store_explicit(&g_bridge_phase, BRIDGE_CLEANUP, memory_order_release);
+    atomic_store_explicit(&g_bridge_vm.phase, BRIDGE_CLEANUP, memory_order_release);
     pthread_mutex_unlock(&g_bridge_lifecycle_lock);
-    if (g_jvm) {
+    if (g_bridge_vm.jvm) {
         printf("[JVM Bridge] Destroying JVM\n");
 
         // Step 1: Stop render subsystem first — zombie threads calling native
@@ -446,16 +449,16 @@ void jvm_bridge_destroy(void) {
         // Step 2: Signal JVM shutdown and stop all threads.
         // exit_flag makes jvm_destroy's non-daemon wait loop exit immediately;
         // thread_stop_all sets is_stop/is_interrupt on each thread.
-        g_jvm->collector->exit_flag = 1;
-        thread_stop_all(g_jvm);
+        g_bridge_vm.jvm->collector->exit_flag = 1;
+        thread_stop_all(g_bridge_vm.jvm);
 
         // Step 3: jvm_destroy waits up to 3s for threads, then force-zombies.
         // After this, threads either exited or are zombie (status only — pthread
         // may still be running but render_stop prevents them touching freed resources).
         // Note: force-zombied pthreads may still execute briefly — class_clinit
         // and print_exception have is_stop / jvm_state guards to avoid crashes.
-        jvm_destroy(g_jvm);
-        g_jvm = NULL;
+        jvm_destroy(g_bridge_vm.jvm);
+        g_bridge_vm.jvm = NULL;
 
         // Step 4: Clean up native subsystems — safe because:
         // - render_stop blocks all render acquire calls
@@ -477,10 +480,10 @@ int jvm_bridge_request_stop_for_token(uint64_t token) {
     if (!token) return 0;
     pthread_mutex_lock(&g_bridge_lifecycle_lock);
     const int matching =
-        atomic_load_explicit(&g_bridge_session_active, memory_order_acquire) &&
-        atomic_load_explicit(&g_bridge_session_current, memory_order_acquire) == token;
+        atomic_load_explicit(&g_bridge_vm.active, memory_order_acquire) &&
+        atomic_load_explicit(&g_bridge_vm.token, memory_order_acquire) == token;
     if (matching)
-        atomic_store_explicit(&g_jvm_stop_requested, 1, memory_order_release);
+        atomic_store_explicit(&g_bridge_vm.stop_requested, 1, memory_order_release);
     pthread_mutex_unlock(&g_bridge_lifecycle_lock);
     if (matching) {
         printf("[JarBoxVM][Lifecycle] stop_requested token=%llu\n",
@@ -494,5 +497,5 @@ void jvm_bridge_request_stop(void) {
 }
 
 int jvm_bridge_is_stop_requested(void) {
-    return atomic_load(&g_jvm_stop_requested);
+    return atomic_load(&g_bridge_vm.stop_requested);
 }
