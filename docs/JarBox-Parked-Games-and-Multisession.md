@@ -50,8 +50,13 @@ Status: **one live miniJVM, one parked app**, not simultaneous JVMs.
   deep-idle wait, native Canvas guard, Smart GC mode and AFK mode before
   showing a live frame or cooperatively shutting down the JVM. Native
   shutdown after a self-exit clears the state too. No new timers, polling
-  loops, JAR modifications, network overrides or CPU/GPU benchmarks are
-  introduced on the parked library.
+  loops, JAR modifications, or network overrides are introduced.
+- The parked path captures **two passive process-CPU samples only** (when
+  entering and leaving the library); a `[JarBoxVM][ParkTreo]` event log
+  records elapsed time, average *process* CPU percentage and whether the
+  native Canvas guard fell back. These are the same process-wide counters
+  available to the prior Treo dashboard and are **not** per-JVM percentages.
+  Logging adds no periodic timer or display refresh to the idle library.
 
 ## Runtime/OS constraints — intentionally explicit
 
