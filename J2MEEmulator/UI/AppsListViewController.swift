@@ -886,6 +886,10 @@ class AppsListViewController: UIViewController,
                                       image: UIImage(systemName: "info.circle")) { [weak self] _ in
                 self?.showGameInformation(app)
             }
+            let saveLogAction = UIAction(title: "Nhật ký save & cài đặt",
+                                         image: UIImage(systemName: "doc.text")) { [weak self] _ in
+                self?.showSaveLog(for: app)
+            }
             var sessionActions: [UIMenuElement] = []
             if isRunning {
                 sessionActions = [
@@ -947,7 +951,7 @@ class AppsListViewController: UIViewController,
                                   children: [toggle3D, fpsMenu])
             let settings = UIMenu(options: .displayInline, children: [resMenu, advanced])
             let actions = UIMenu(options: .displayInline, children: [rename, clearData, delete])
-            let information = UIMenu(options: .displayInline, children: [infoAction])
+            let information = UIMenu(options: .displayInline, children: [infoAction, saveLogAction])
             return UIMenu(children: sessionActions + [information, settings, actions])
         })
     }
@@ -971,6 +975,18 @@ class AppsListViewController: UIViewController,
             "Giới hạn FPS: " + (fps == 0 ? "Không giới hạn" : String(fps)),
             "Trạng thái: " + (active ? "Đang chạy ẩn" : "Không chạy ẩn")
         ]
+        // Filesystem metadata only: never inspect binary RMS contents.
+        let rmsPath = (JarBoxGameStorage.rootPath(
+            jarPath: app.path, documents: Self.documentsDirectory) as NSString)
+            .appendingPathComponent("rms")
+        if let files = try? FileManager.default.contentsOfDirectory(atPath: rmsPath) {
+            let storeCount = files.filter { $0.hasSuffix(".rsh") }.count
+            let recordCount = files.filter { $0.hasSuffix(".rsr") }.count
+            lines.append("RMS: " + String(storeCount) + " kho, " +
+                         String(recordCount) + " bản ghi trên đĩa")
+        } else {
+            lines.append("RMS: chưa có hoặc chưa chuyển dữ liệu cũ")
+        }
         if active, let game = parkedGameController {
             lines.append("")
             lines.append(game.parkedSessionInformation())
@@ -979,6 +995,36 @@ class AppsListViewController: UIViewController,
                                       message: lines.joined(separator: "\n"),
                                       preferredStyle: .alert)
         alert.addAction(UIAlertAction(title: "Đóng", style: .default))
+        present(alert, animated: true)
+    }
+
+    /// On-demand metadata log stored under the same *install-specific* root.
+    /// It contains no saved record bodies; the user can inspect or copy it.
+    private func showSaveLog(for app: AppInfo) {
+        let log = (JarBoxGameStorage.rootPath(
+            jarPath: app.path, documents: Self.documentsDirectory) as NSString)
+            .appendingPathComponent("save-events.log")
+        let fm = FileManager.default
+        var lines = "Chưa có nhật ký. Nhật ký chỉ ghi các thao tác RMS và cài đặt kể từ phiên bản hỗ trợ."
+        if let attr = try? fm.attributesOfItem(atPath: log),
+           let size = attr[.size] as? NSNumber,
+           size.intValue <= 128 * 1024,
+           let contents = try? String(contentsOfFile: log, encoding: .utf8) {
+            let entries = contents.split(separator: "\n", omittingEmptySubsequences: true)
+            lines = entries.isEmpty
+                ? "Chưa có thao tác nào."
+                : entries.suffix(24).joined(separator: "\n")
+            if entries.count > 24 {
+                lines = "24 sự kiện gần nhất / " + String(entries.count) + " sự kiện\n\n" + lines
+            }
+        }
+        let alert = UIAlertController(title: "Save & cài đặt · " + app.name,
+                                      message: lines,
+                                      preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "Sao chép", style: .default) { _ in
+            UIPasteboard.general.string = lines
+        })
+        alert.addAction(UIAlertAction(title: "Đóng", style: .cancel))
         present(alert, animated: true)
     }
 
