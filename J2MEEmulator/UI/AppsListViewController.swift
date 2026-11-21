@@ -9,6 +9,12 @@ import UIKit
 import UniformTypeIdentifiers
 import Darwin
 
+// The parked library always uses portrait, even over an N-Gage game.
+final class JarBoxLibraryNavigationController: UINavigationController {
+    override var supportedInterfaceOrientations: UIInterfaceOrientationMask { .portrait }
+    override var preferredInterfaceOrientationForPresentation: UIInterfaceOrientation { .portrait }
+}
+
 class AppsListViewController: UIViewController,
                       UICollectionViewDataSource,
                       UICollectionViewDelegate,
@@ -19,6 +25,11 @@ class AppsListViewController: UIViewController,
     private var lastLayoutWidth: CGFloat = 0
     private weak var animatedBackground: AnimatedBackgroundView?
     private var springboardVisible = false
+
+    // Set only for a library presented over its *own* live GameViewController.
+    // A weak reference plus the native session token prevents stale UI controls
+    // from treating a subsequent game as this session.
+    weak var parkedGameController: GameViewController?
 
     // Keep lifecycle diagnostics but do not restart any decorative work.
     func sceneActivityChanged(_ active: Bool) {
@@ -141,6 +152,18 @@ class AppsListViewController: UIViewController,
     // Event-driven recovery for sessions stranded by an unexpected UI exit.
     // No timer, animation or background polling on the low-power library.
     private func updateStuckSessionButton() {
+        if let parked = parkedGameController {
+            if parked.ownsLiveGameSession() {
+                navigationItem.title = "Đang chạy ẩn: " + parked.appName
+                navigationItem.leftBarButtonItem = UIBarButtonItem(
+                    title: "Tiếp tục", style: .plain,
+                    target: self, action: #selector(resumeParkedGame))
+                return
+            }
+            navigationItem.title = "Thư viện"
+            navigationItem.leftBarButtonItem = nil
+            return
+        }
         if jvm_bridge_session_is_active() != 0 {
             navigationItem.leftBarButtonItem = UIBarButtonItem(
                 title: "Dừng phiên kẹt", style: .plain,
@@ -148,6 +171,29 @@ class AppsListViewController: UIViewController,
         } else {
             navigationItem.leftBarButtonItem = nil
         }
+    }
+
+    @objc private func resumeParkedGame() {
+        parkedGameController?.resumeParkedGame()
+    }
+
+    private func showAnotherGameBlocked(_ app: AppInfo) {
+        guard let parked = parkedGameController, parked.ownsLiveGameSession() else { return }
+        let alert = UIAlertController(
+            title: "Đang có game chạy ẩn",
+            message: parked.appName + " vẫn đang chạy. MiniJVM hiện chỉ có " +
+                "một phiên trong tiến trình, nên không thể mở " + app.name +
+                " đồng thời mà không làm hỏng dữ liệu JVM. " +
+                "Bạn có thể quay lại game cũ hoặc dừng nó trước khi mở game mới.",
+            preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "Tiếp tục game cũ", style: .default) { [weak self] _ in
+            self?.resumeParkedGame()
+        })
+        alert.addAction(UIAlertAction(title: "Dừng game đang chạy", style: .destructive) { [weak self] _ in
+            self?.parkedGameController?.stopParkedGame()
+        })
+        alert.addAction(UIAlertAction(title: "Ở lại thư viện", style: .cancel))
+        present(alert, animated: true)
     }
 
     @objc private func openStuckSessionRecovery() {
@@ -391,7 +437,8 @@ class AppsListViewController: UIViewController,
         let cell = collectionView.dequeueReusableCell(
             withReuseIdentifier: SpringboardCell.reuseID, for: indexPath) as! SpringboardCell
         let app = apps[indexPath.item]
-        cell.configure(name: app.name, icon: app.icon)
+        cell.configure(name: app.name, icon: app.icon,
+                       running: parkedGameController?.ownsLiveGameSession(for: app.path) == true)
         return cell
     }
 
@@ -401,6 +448,19 @@ class AppsListViewController: UIViewController,
         guard let indexPath = indexPaths.first else { return nil }
         let app = apps[indexPath.item]
         return UIContextMenuConfiguration(actionProvider: { [weak self] _ in
+            let isRunning = self?.parkedGameController?.ownsLiveGameSession(for: app.path) == true
+            var sessionActions: [UIMenuElement] = []
+            if isRunning {
+                sessionActions = [
+                    UIAction(title: "Tiếp tục game", image: UIImage(systemName: "play.fill")) { [weak self] _ in
+                        self?.resumeParkedGame()
+                    },
+                    UIAction(title: "Dừng game hoàn toàn", image: UIImage(systemName: "stop.fill"),
+                             attributes: .destructive) { [weak self] _ in
+                        self?.parkedGameController?.stopParkedGame()
+                    }
+                ]
+            }
             let ssEnabled = Self.is3DSupersampling(for: app)
             let toggle3D = UIAction(title: ssEnabled ? "Disable 3D Enhancement" : "Enable 3D Enhancement",
                                     subtitle: ssEnabled ? "Lower quality, but closer to original" : "Smoother 3D, but not original-accurate",
@@ -413,11 +473,12 @@ class AppsListViewController: UIViewController,
                 self?.promptRenameApp(app)
             }
             let clearData = UIAction(title: "Clear Game Data",
-                                     image: UIImage(systemName: "eraser")) { _ in
+                                     image: UIImage(systemName: "eraser"),
+                                     attributes: isRunning ? .disabled : []) { _ in
                 self?.confirmClearGameData(for: app)
             }
             let delete = UIAction(title: "Delete", image: UIImage(systemName: "trash"),
-                                  attributes: .destructive) { _ in
+                                  attributes: isRunning ? [.destructive, .disabled] : .destructive) { _ in
                 self?.confirmDeleteApp(at: indexPath)
             }
             let currentRes = Self.resolution(for: app)
@@ -448,7 +509,7 @@ class AppsListViewController: UIViewController,
                                   children: [toggle3D, fpsMenu])
             let settings = UIMenu(options: .displayInline, children: [resMenu, advanced])
             let actions = UIMenu(options: .displayInline, children: [rename, clearData, delete])
-            return UIMenu(children: [settings, actions])
+            return UIMenu(children: sessionActions + [settings, actions])
         })
     }
 
@@ -592,6 +653,14 @@ class AppsListViewController: UIViewController,
     func collectionView(_ collectionView: UICollectionView,
                         didSelectItemAt indexPath: IndexPath) {
         let app = apps[indexPath.item]
+        if let parked = parkedGameController, parked.ownsLiveGameSession() {
+            if parked.jarPath == app.path {
+                resumeParkedGame()
+            } else {
+                showAnotherGameBlocked(app)
+            }
+            return
+        }
         if jvm_bridge_session_is_active() != 0 {
             updateStuckSessionButton()
             openStuckSessionRecovery()
