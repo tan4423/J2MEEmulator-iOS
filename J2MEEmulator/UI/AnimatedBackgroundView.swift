@@ -1,3 +1,4 @@
+#if JARBOX_BG_ANIM_BASELINE
 //
 //  AnimatedBackgroundView.swift
 //  J2MEEmulator
@@ -179,3 +180,120 @@ final class AnimatedBackgroundView: UIView {
         return CGFloat.random(in: base * 0.3 ... base * 0.7)
     }
 }
+
+#else
+
+// Low-power springboard background.
+//
+// The old effect moves six UIKit views underneath a radius-40
+// UIVisualEffectView. Although Core Animation does most of its work outside
+// the app CPU budget, this keeps GPU compositing and backdrop filtering alive
+// for as long as the library screen is visible. Replace it with one opaque
+// raster drawn ONCE per size/scale. No layers animate or have live filters.
+//
+// JARBOX_BG_ANIM_BASELINE keeps the original implementation available as an
+// opt-in matched build baseline. Deep Treo and Java rendering are untouched.
+import UIKit
+
+final class AnimatedBackgroundView: UIView {
+    private let backdrop = UIImageView()
+    private var renderedSize: CGSize = .zero
+    private var renderedScale: CGFloat = 0
+    private var renderCount: UInt64 = 0
+
+    // Retain the existing fields used by GameViewController's AFK report.
+    static private(set) var springboardAnimating = false
+    static private(set) var springboardPauseLayers = 0
+    static private(set) var springboardAnimationLoops: UInt64 = 0
+
+    var activeAnimationLayers: Int { 0 }
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        isOpaque = true
+        backgroundColor = .black
+        backdrop.isOpaque = true
+        backdrop.contentMode = .scaleToFill
+        backdrop.isUserInteractionEnabled = false
+        backdrop.accessibilityElementsHidden = true
+        addSubview(backdrop)
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    func logAnimationState(_ reason: String) {
+        NSLog("[JarBoxBG] mode=static_bitmap reason=%@ animated=no animation_layers=0 renders=%llu cached_px=%dx%d",
+              reason, renderCount,
+              Int(renderedSize.width * renderedScale),
+              Int(renderedSize.height * renderedScale))
+    }
+
+    func setAnimationsActive(_ enabled: Bool, reason: String) {
+        // No periodic work to start or stop, including during app switching.
+        Self.springboardAnimating = false
+        Self.springboardPauseLayers = 0
+        logAnimationState(reason)
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        backdrop.frame = bounds
+        guard bounds.width >= 1, bounds.height >= 1 else { return }
+        // Cap the backing store at 2x resolution to avoid a large 3x
+        // full-screen allocation while retaining smooth static gradients.
+        let scale = min(window?.screen.scale ?? UIScreen.main.scale, 2.0)
+        let size = bounds.size
+        guard size != renderedSize || scale != renderedScale else { return }
+        renderedSize = size
+        renderedScale = scale
+        backdrop.image = Self.makeBackground(size: size, scale: scale)
+        renderCount &+= 1
+        logAnimationState("bitmap prepared; one image, no blur/compositor loop")
+    }
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        // Window scale can differ on an external display. The next layout
+        // rerenders at most once if dimensions/scale really changed.
+        if window != nil { setNeedsLayout() }
+    }
+
+    private static func makeBackground(size: CGSize, scale: CGFloat) -> UIImage {
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = scale
+        format.opaque = true
+        let points: [(CGFloat, CGFloat, CGFloat, UIColor)] = [
+            (0.10, 0.20, 0.55, UIColor(red: 0.17, green: 0.25, blue: 0.64, alpha: 0.46)),
+            (0.91, 0.14, 0.51, UIColor(red: 0.49, green: 0.12, blue: 0.36, alpha: 0.40)),
+            (0.75, 0.63, 0.65, UIColor(red: 0.04, green: 0.38, blue: 0.41, alpha: 0.39)),
+            (0.17, 0.74, 0.56, UIColor(red: 0.36, green: 0.17, blue: 0.48, alpha: 0.38)),
+            (0.45, 0.38, 0.49, UIColor(red: 0.10, green: 0.38, blue: 0.28, alpha: 0.28)),
+            (0.86, 0.91, 0.57, UIColor(red: 0.53, green: 0.24, blue: 0.14, alpha: 0.30)),
+        ]
+        return UIGraphicsImageRenderer(size: size, format: format).image { renderer in
+            UIColor(red: 0.015, green: 0.025, blue: 0.055, alpha: 1).setFill()
+            renderer.fill(CGRect(origin: .zero, size: size))
+            let context = renderer.cgContext
+            let colorSpace = CGColorSpaceCreateDeviceRGB()
+            let base = min(size.width, size.height)
+            for (x, y, radiusScale, color) in points {
+                let radius = base * radiusScale
+                let core = color.cgColor
+                let outer = color.withAlphaComponent(0).cgColor
+                guard let gradient = CGGradient(
+                    colorsSpace: colorSpace,
+                    colors: [core, outer] as CFArray,
+                    locations: [0.0, 1.0]) else { continue }
+                context.drawRadialGradient(
+                    gradient,
+                    startCenter: CGPoint(x: size.width * x, y: size.height * y),
+                    startRadius: 0,
+                    endCenter: CGPoint(x: size.width * x, y: size.height * y),
+                    endRadius: radius,
+                    options: [])
+            }
+        }
+    }
+}
+
+#endif
