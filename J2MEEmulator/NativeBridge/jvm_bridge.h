@@ -57,6 +57,8 @@ int jvm_bridge_mod_loop_exception_log_slot(void);
 // are independent of the repeating UI exception notes.
 int jvm_bridge_mod_dispatch_probe_slot(void);
 int jvm_bridge_mod_method_missing_slot(void);
+// Bounded, content-free diagnostics for the mod's version-response branches.
+int jvm_bridge_mod_protocol_note_slot(void);
 
 /// Initialize miniJVM with the given resource and save directories.
 /// @param res_root         Path to directory containing runtime JARs

@@ -635,6 +635,7 @@ extern void jvm_bridge_mod_loop_note_stage(int stage);
 extern int jvm_bridge_mod_loop_exception_log_slot(void);
 extern int jvm_bridge_mod_dispatch_probe_slot(void);
 extern int jvm_bridge_mod_method_missing_slot(void);
+extern int jvm_bridge_mod_protocol_note_slot(void);
 #endif
 
 s32 exception_handle(RuntimeStack *stack, Runtime *runtime) {
@@ -1291,6 +1292,43 @@ static inline void treo_nso_trace_cu_invokespecial(Runtime *rt, int probe,
 #endif
 s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
 #if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__
+    // These server/mod notices are drawn by Class_cu.d(String), from
+    // Class_fq.d or Class_gv.g. A popup can be a server-supplied message
+    // or a local failure fallback. The caller PC disambiguates them,
+    // without observing or logging text, request bytes, host or identity.
+    if (atomic_load_explicit(&treo_nso_init_target_active, memory_order_relaxed) &&
+        method && method->_this_class &&
+        pruntime && pruntime->clazz && pruntime->method &&
+        utf8_equals_c(method->_this_class->name, "Class_cu") &&
+        utf8_equals_c(method->name, "d") &&
+        utf8_equals_c(method->descriptor, "(Ljava/lang/String;)V") &&
+        ((utf8_equals_c(pruntime->clazz->name, "Class_fq") &&
+          utf8_equals_c(pruntime->method->name, "d")) ||
+         (utf8_equals_c(pruntime->clazz->name, "Class_gv") &&
+          utf8_equals_c(pruntime->method->name, "g"))) &&
+        jvm_bridge_mod_protocol_note_slot()) {
+        CodeAttribute *caller_code = pruntime->method->converted_code;
+        const long caller_pc = caller_code && caller_code->code &&
+            pruntime->pc >= caller_code->code &&
+            pruntime->pc < caller_code->code + caller_code->code_length ?
+            (long)(pruntime->pc - caller_code->code) : -1L;
+        const char *route = "other";
+        if (utf8_equals_c(pruntime->clazz->name, "Class_fq")) {
+            if (caller_pc == 1761) route = "server_message";
+            else if (caller_pc == 1750 || caller_pc == 2583)
+                route = "local_fallback";
+        } else {
+            if (caller_pc == 538) route = "server_message";
+            else if (caller_pc == 527 || caller_pc == 600)
+                route = "local_fallback";
+        }
+        char event[168];
+        snprintf(event, sizeof(event),
+                 "mod_notice_origin:caller=%s.%s,pc=%ld,route=%s",
+                 utf8_cstr(pruntime->clazz->name),
+                 utf8_cstr(pruntime->method->name), caller_pc, route);
+        jvm_bridge_note_net_trace(event);
+    }
     // Non-invasive mod-specific call-site breadcrumbs. These four
     // counters let one frozen-screen snapshot distinguish being stuck
     // inside popup update, repaint, serviceRepaints or game-thread sleep.
@@ -3648,6 +3686,25 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
 
                         case op_ifeq: TREO_VM_HANDLER(op_ifeq) {
                             ival1 = (--sp)->ivalue;
+#if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__
+                            // Exact first-line acceptance branch in the
+                            // unmodified JAR: Class_fq.d PC587 and
+                            // Class_gv.g PC153. Record boolean only.
+                            if (atomic_load_explicit(&treo_nso_init_target_active, memory_order_relaxed) &&
+                                ((utf8_equals_c(clazz->name, "Class_fq") &&
+                                  utf8_equals_c(method->name, "d") &&
+                                  (s32)(runtime->pc - ca->code) == 587) ||
+                                 (utf8_equals_c(clazz->name, "Class_gv") &&
+                                  utf8_equals_c(method->name, "g") &&
+                                  (s32)(runtime->pc - ca->code) == 153)) &&
+                                jvm_bridge_mod_protocol_note_slot()) {
+                                char event[124];
+                                snprintf(event, sizeof(event),
+                                         "mod_version_status:source=%s,accepted=%d",
+                                         utf8_cstr(clazz->name), ival1 != 0);
+                                jvm_bridge_note_net_trace(event);
+                            }
+#endif
                             if (ival1 == 0) {
                                 offset = *((s16 *) (runtime->pc + 1));
                                 runtime->pc += offset;

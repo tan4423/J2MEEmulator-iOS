@@ -1199,3 +1199,39 @@ Local `javac --release 8` produced the LocalTime class successfully.
 A separate renamed-package Java fixture passed now, of, withSecond,
 withNano, equals/hashCode, List.contains, compareTo, toString and invalid
 range checks. This is NOT an iOS build/runtime test.
+
+
+## 2026-11-21 Same JAR, unexpected short update notice only in JarBox
+
+User confirms **the same, current, byte-identical JAR** runs without the
+interstitial "old version / visit website" notice on MicroEmulator, but
+displays it briefly on JarBox while otherwise loading and playing
+normally after boot patch `b87b8cb`. Treat as an emulator compatibility
+difference; do NOT call the JAR obsolete, rewrite the mod identifier,
+forge server responses or suppress the popup.
+
+Bytecode inspection of the unmodified `217_TrungDucTV_51026.jar`:
+- `Class_dw.c` is initialized from a JAR-constant decoded by
+  `Class_fj.a`, not computed from `LocalTime` or the current date.
+- `Class_fq.d` makes a direct Java socket, sends `Class_dw.c` with
+  `PrintWriter.println`, then compares the first line to a decoded
+  constant. At `ifeq` PC587, false takes the branch that reads
+  server text and calls `Class_cu.d(String)` at PC1761; local
+  fallback text calls are at PC1750/2583.
+- `Class_gv.g` likewise compares the first line at `ifeq` PC153.
+  On false, it reads the server message and calls `Class_cu.d` at
+  PC538. Local fallback paths call that method at PC527/600.
+- The game has already reached its main game server on port 14444,
+  so this is no longer a startup blocker.
+
+Add *content-free* protocol branch instrumentation to the interpreter:
+`mod_version_status:source=Class_fq/Class_gv,accepted=0/1`
+at exactly those original bytecode PCs and
+`mod_notice_origin:caller=...,pc=...,route=server_message/local_fallback`
+when the popup method is invoked by those callers. All event writes
+are capped at 20 per session and restricted to the known mod target.
+No server response lines, payloads, hostnames, IDs, credentials, or
+message strings are captured. No changes to runtime behavior, Java
+streams, packets, version decisions or the game JAR. The point is
+to distinguish a real server-issued notice from the Java fallback
+before changing the otherwise working emulator.
