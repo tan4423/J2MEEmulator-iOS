@@ -2,6 +2,7 @@
 package javax.microedition.io;
 
 import com.sun.cldc.io.ConnectionBaseInterface;
+import javax.microedition.lcdui.NativeBridge;
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
@@ -52,6 +53,7 @@ public final class Connector {
         // protocols expecting partial TCP reads. This route deliberately
         // matches MicroEmulator for outgoing sockets only.
         if ("socket".equals(protocol) && "org.mini.net".equals(protocolRoot)) {
+            NativeBridge.netTraceStage(1);
             String authority = name.substring(colon + 1);
             if (authority.startsWith("//")) {
                 authority = authority.substring(2);
@@ -73,9 +75,11 @@ public final class Connector {
                     }
                     try {
                         Connection connected = new MicroCompatibleSocketConnection(host, port);
+                        NativeBridge.netTraceStage(4);
                         System.out.println("[JarBoxNET] socket_mode=micro_compatible connect=ok");
                         return connected;
                     } catch (IOException error) {
+                        NativeBridge.netTraceStage(9);
                         System.err.println("[JarBoxNET] socket_mode=micro_compatible connect=failed type="
                                 + error.getClass().getName());
                         throw error;
@@ -84,6 +88,8 @@ public final class Connector {
             }
         }
 
+        final boolean webProtocol = "http".equals(protocol) || "https".equals(protocol);
+        if (webProtocol) NativeBridge.netTraceStage(10);
         String className = protocolRoot + "." + protocol + ".Protocol";
         try {
             Class type = Class.forName(className);
@@ -93,6 +99,8 @@ public final class Connector {
             }
             Connection connection = ((ConnectionBaseInterface) instance).openPrim(
                     name.substring(colon + 1), mode, timeouts);
+            // HTTP handler instantiation only; the request may be deferred.
+            if (webProtocol) NativeBridge.netTraceStage(11);
             // One event per connection attempt, never one event per packet.
             // HTTP can defer actual TCP work until the response is read.
             System.out.println("[JarBoxNET] protocol=" + protocol + " handler=ready");
@@ -105,6 +113,7 @@ public final class Connector {
         } catch (IllegalAccessException failure) {
             throw new IOException(failure.toString());
         } catch (IOException failure) {
+            if (webProtocol) NativeBridge.netTraceStage(12);
             // Do not log the complete URL, query or credentials.
             System.err.println("[JarBoxNET] protocol=" + protocol + " io_failure=" + failure.getClass().getName());
             throw failure;

@@ -7,6 +7,7 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.net.Socket;
+import javax.microedition.lcdui.NativeBridge;
 
 /**
  * Java ME socket wrapper matching MicroEmulator 2.0.4's implementation:
@@ -19,7 +20,9 @@ final class MicroCompatibleSocketConnection implements SocketConnection {
     private boolean tcpNoDelay = true;
 
     MicroCompatibleSocketConnection(String host, int port) throws IOException {
+        NativeBridge.netTraceStage(2);
         socket = new Socket(host, port);
+        NativeBridge.netTraceStage(3);
     }
 
     public InputStream openInputStream() throws IOException {
@@ -27,7 +30,10 @@ final class MicroCompatibleSocketConnection implements SocketConnection {
     }
 
     public DataInputStream openDataInputStream() throws IOException {
-        return new DataInputStream(openInputStream());
+        NativeBridge.netTraceStage(7);
+        DataInputStream stream = new DataInputStream(openInputStream());
+        NativeBridge.netTraceStage(8);
+        return stream;
     }
 
     public OutputStream openOutputStream() throws IOException {
@@ -35,7 +41,10 @@ final class MicroCompatibleSocketConnection implements SocketConnection {
     }
 
     public DataOutputStream openDataOutputStream() throws IOException {
-        return new DataOutputStream(openOutputStream());
+        NativeBridge.netTraceStage(5);
+        DataOutputStream stream = new DataOutputStream(openOutputStream());
+        NativeBridge.netTraceStage(6);
+        return stream;
     }
 
     public void close() throws IOException {

@@ -12,6 +12,8 @@
 #include "j2me_input.h"
 #include "jvm.h"
 #include "jvm_util.h"
+
+extern void jvm_bridge_note_net_trace(const char *detail);
 #include <stdio.h>
 #include <pthread.h>
 #include <stdatomic.h>
@@ -426,9 +428,38 @@ static s32 n_platformRequest(Runtime *runtime, JClass *clazz) {
 // Native method table
 // ============================================================
 
+// No network data, URLs, credentials, or timing loop. Called only when
+// Java ME Connector/stream state advances during a connection attempt.
+static s32 n_netTraceStage(Runtime *runtime, JClass *clazz) {
+    const int stage = localvar_getInt(runtime->localvar, 0);
+    const char *label = NULL;
+    switch (stage) {
+        case 1: label = "socket_dispatch"; break;
+        case 2: label = "socket_construct_begin"; break;
+        case 3: label = "socket_construct_ready"; break;
+        case 4: label = "socket_dispatch_ready"; break;
+        case 5: label = "socket_data_output_begin"; break;
+        case 6: label = "socket_data_output_ready"; break;
+        case 7: label = "socket_data_input_begin"; break;
+        case 8: label = "socket_data_input_ready"; break;
+        case 9: label = "socket_dispatch_io_failure"; break;
+        case 10: label = "http_dispatch"; break;
+        case 11: label = "http_handler_ready"; break;
+        case 12: label = "http_dispatch_io_failure"; break;
+        default: break;
+    }
+    if (label) {
+        char event[96];
+        snprintf(event, sizeof(event), "api_stage:%s", label);
+        jvm_bridge_note_net_trace(event);
+    }
+    return RUNTIME_STATUS_NORMAL;
+}
+
 #define CLS "javax/microedition/lcdui/NativeBridge"
 
 static java_native_method j2me_ui_methods[] = {
+    {CLS, "netTraceStage", "(I)V", n_netTraceStage},
     {CLS, "takeText", "(II)[C", n_takeText},
     {CLS, "lockScreen", "()V", n_lockScreen},
     {CLS, "unlockScreen", "()V", n_unlockScreen},

@@ -930,3 +930,29 @@ No concurrent-JVM feature is activated in this commit.
 The double-confirmed process-level fallback also checks that the originally
 stuck session token is still current before acting: a delayed confirmation
 must never terminate a newly launched game or future clone session.
+
+
+## 2026-11-21 Server mod hypothesis and TCP/API first-stream stage capture
+
+User clarified the first connection is likely to a private mod-developer
+service (purpose unknown). Do not assume an advertisement or bypass the
+mod server's checks. Actual JAR bytecode `Class_bn.run()` calls:
+`Connector.open(socket://...)` at PC 59, `SocketConnection.openDataOutputStream()`
+at PC 79, `openDataInputStream()` at PC 98, then launches packet sender
+`Class_bj` and receiver `Class_bq` before sending its first packet.
+Four native TCP connections to port 2024 succeeded, then all closed without
+any native read or write event. This is consistent with an early stream or
+thread initialization failure, but not conclusive without Java-stage traces.
+
+Added a zero-payload Java ME native stage trace on `NativeBridge`, called
+only at `Connector` socket/HTTP handler transitions, socket construction,
+and DataInputStream/DataOutputStream creation. It records event labels only;
+no IP, URL, query, packet, credentials, or background polling. Bounded
+connection diagnostic log expanded to 8 KiB / 64 events for four retries.
+The legacy stream semantics and game JAR are NOT changed in this step.
+Next: build this HEAD, reproduce once, copy **Chẩn đoán kết nối**; compare
+last `api_stage` event with `tcp_connect`, `tcp_close` and
+`game_net_exception` before modifying the stream or handshake logic.
+
+If later adding cloned or concurrent games, move this bounded trace to the
+session's own diagnostic context; current app still enforces one JVM slot.

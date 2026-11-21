@@ -111,12 +111,12 @@ static unsigned g_bridge_nso_init_trace_count;
 // Fixed-size, bounded event log for network failures. No per-packet tracing,
 // DNS name, credentials, payloads, file IO, timers, or background pollers.
 static pthread_mutex_t g_bridge_net_trace_lock = PTHREAD_MUTEX_INITIALIZER;
-static char g_bridge_net_trace[4096];
+static char g_bridge_net_trace[8192];
 static unsigned g_bridge_net_trace_count;
 void jvm_bridge_note_net_trace(const char *detail) {
     if (!detail || !detail[0]) return;
     pthread_mutex_lock(&g_bridge_net_trace_lock);
-    if (g_bridge_net_trace_count < 24) {
+    if (g_bridge_net_trace_count < 64) {
         size_t len = strlen(g_bridge_net_trace);
         size_t avail = sizeof(g_bridge_net_trace) - len - 1;
         if (avail >= 64) {
