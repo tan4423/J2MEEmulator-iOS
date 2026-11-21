@@ -1060,3 +1060,38 @@ iOS/miniJVM execution test. Build and iPhone validation still required.
 
 Maintain the game-specific session token lifecycle safety; do not
 enable concurrent JVMs or mutate private server requests.
+
+
+## 2026-11-21 Popup appears, game immediately becomes unresponsive
+
+User confirms the new `UTF_8_Reader` boot fix reached a visible private-mod
+popup: the direct TCP link connected and both directions transferred at least
+one byte before a clean close. On MicroEmulator, the popup requires a user
+OK confirmation and then proceeds to login. User clarified JarBox freezes
+**as soon as the popup appears**, before OK can advance. This is NOT the
+same earlier socket-read hang, and not evidence that port 2024 failed.
+
+Verified original JAR bytecode: game uses `Class_em` / `Class_cc` for a
+self-drawn Canvas dialog, *not* javax.microedition.lcdui.Alert.
+`Class_ek.keyPressed` delegates to `Class_bv.a(int)`, implemented by
+`Class_cu.a(int)`, which routes active dialogs to `Class_cc.a(int)`.
+The real game recognizes `-5` FIRE and softkeys `-6` / `-7`;
+JarBox's on-screen OK is already mapped to FIRE `-5`. Therefore do not
+change key mappings, auto-dismiss the mod popup, or fabricate game state.
+
+Trace only these mod-specific transitions:
+`game_popup:configured/content_ready`, `game_loop:entered`,
+`input_post/input_polled:key=...,action=...`, `game_key_handler:enter`,
+`popup_key_handler:enter`. Also capture two numeric counters on each
+copy of **Chẩn đoán kết nối**: `display_poll_count` counts native event
+polls, and `popup_update_count` counts the game's `Class_cc.a()` loop
+updates. The latter increments atomically, no per-frame logging or timer.
+Copy diagnostics once immediately after the freeze, press on-screen OK,
+and copy again ~5 seconds later. If main UI buttons are frozen, that is a
+separate finding (UIKit deadlock) and no diagnostic extraction may be
+possible. Distinguish queue-not-polled vs game-handler-not-invoked vs
+game-loop-stopped before editing input flow or Java scheduling. This is
+a cause-localizing source change, NOT a claim of fixed login.
+
+No modification to JAR, network packets, Deep Treo fast paths, `main`,
+Codemagic workflow count, session-token stop safeguards, or clone behavior.

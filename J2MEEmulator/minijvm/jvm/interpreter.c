@@ -1445,6 +1445,38 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
     Instance *nso_init_receiver = NULL;
     Instance *nso_init_argument = NULL;
     if (atomic_load_explicit(&treo_nso_init_target_active, memory_order_relaxed)) {
+        // The private-server dialog is painted inside Class_em/Class_cc,
+        // not native J2ME Alert. Count its per-frame update method to detect
+        // a stalled game loop without a timer, Java stack walk or log spam.
+        // Record only method-entry transitions (never dialog strings).
+        if (utf8_equals_c(clazz->name, "Class_cc")) {
+            if (utf8_equals_c(method->name, "a")) {
+                if (utf8_equals_c(method->descriptor, "()V"))
+                    jvm_bridge_mod_popup_tick();
+                else if (utf8_equals_c(method->descriptor, "(I)V"))
+                    jvm_bridge_note_net_trace("popup_key_handler:enter");
+            }
+        } else if (utf8_equals_c(clazz->name, "Class_cu")) {
+            if (utf8_equals_c(method->name, "run") &&
+                utf8_equals_c(method->descriptor, "()V"))
+                jvm_bridge_note_net_trace("game_loop:entered");
+            else if (utf8_equals_c(method->name, "a") &&
+                     utf8_equals_c(method->descriptor, "(I)V"))
+                jvm_bridge_note_net_trace("game_key_handler:enter");
+            else if ((utf8_equals_c(method->name, "a") ||
+                      utf8_equals_c(method->name, "b") ||
+                      utf8_equals_c(method->name, "c") ||
+                      utf8_equals_c(method->name, "d") ||
+                      utf8_equals_c(method->name, "e")) &&
+                     utf8_equals_c(method->descriptor,
+                                   "(Ljava/lang/String;)V"))
+                jvm_bridge_note_net_trace("game_popup:configured");
+        } else if (utf8_equals_c(clazz->name, "Class_em") &&
+                   utf8_equals_c(method->name, "a") &&
+                   utf8_equals_c(method->descriptor,
+                       "(Ljava/lang/String;LClass_by;LClass_by;LClass_by;)V")) {
+            jvm_bridge_note_net_trace("game_popup:content_ready");
+        }
         if (utf8_equals_c(method->name, "<init>")) {
             if (utf8_equals_c(clazz->name, "Class_cu")) nso_init_probe = 1;
             else if (utf8_equals_c(clazz->name, "GameMidlet")) nso_init_probe = 2;

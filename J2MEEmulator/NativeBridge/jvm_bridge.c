@@ -113,6 +113,13 @@ static unsigned g_bridge_nso_init_trace_count;
 static pthread_mutex_t g_bridge_net_trace_lock = PTHREAD_MUTEX_INITIALIZER;
 static char g_bridge_net_trace[8192];
 static unsigned g_bridge_net_trace_count;
+static _Atomic uint64_t g_mod_popup_update_ticks;
+void jvm_bridge_mod_popup_tick(void) {
+    atomic_fetch_add_explicit(&g_mod_popup_update_ticks, 1, memory_order_relaxed);
+}
+uint64_t jvm_bridge_mod_popup_tick_count(void) {
+    return atomic_load_explicit(&g_mod_popup_update_ticks, memory_order_relaxed);
+}
 void jvm_bridge_note_net_trace(const char *detail) {
     if (!detail || !detail[0]) return;
     pthread_mutex_lock(&g_bridge_net_trace_lock);
@@ -192,6 +199,7 @@ int jvm_bridge_try_begin_session(void) {
     g_bridge_net_trace[0] = '\0';
     g_bridge_net_trace_count = 0;
     pthread_mutex_unlock(&g_bridge_net_trace_lock);
+    atomic_store_explicit(&g_mod_popup_update_ticks, 0, memory_order_release);
     atomic_store_explicit(&g_bridge_phase, BRIDGE_STARTING, memory_order_release);
     // Visible from the first frame in Chẩn đoán kết nối, regardless of
     // which Java network API the game calls. Detects an older installed IPA.

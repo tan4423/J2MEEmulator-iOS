@@ -33,6 +33,21 @@ static InputEvent g_queue[INPUT_QUEUE_SIZE];
 static atomic_int g_write_pos = 0;
 static atomic_int g_read_pos = 0;
 
+// Only enabled for the known TrungDucTV NSO mod during its normal game
+// runtime. Do not log every key or every frame on other Java ME games.
+extern _Atomic int treo_nso_init_target_active;
+static void trace_modal_key(const char *where, int type, int keyCode) {
+    if (!atomic_load_explicit(&treo_nso_init_target_active, memory_order_relaxed))
+        return;
+    if ((type != J2ME_INPUT_KEY_PRESSED && type != J2ME_INPUT_KEY_RELEASED)
+            || (keyCode != -5 && keyCode != -6 && keyCode != -7 && keyCode != 53))
+        return;
+    char event[128];
+    snprintf(event, sizeof(event), "input_%s:key=%d,action=%s", where,
+             keyCode, type == J2ME_INPUT_KEY_PRESSED ? "press" : "release");
+    jvm_bridge_note_net_trace(event);
+}
+
 // Opt-in Display idle wait. Version sampling before polling prevents lost
 // native input and repaint notifications between the Java test and sleep.
 static atomic_int g_display_wait_enabled;
@@ -83,7 +98,9 @@ static void enqueue_event(int type, int x, int y, int keyCode) {
     int rp = atomic_load_explicit(&g_read_pos, memory_order_acquire);
 
     if (next_wp == rp) {
-        // Queue full — drop event
+        // If the OK key was dropped, make the failure visible; never invent
+        // a replacement key event or alter ring-buffer ownership.
+        trace_modal_key("drop", type, keyCode);
         return;
     }
 
@@ -93,6 +110,7 @@ static void enqueue_event(int type, int x, int y, int keyCode) {
     g_queue[wp].keyCode = keyCode;
 
     atomic_store_explicit(&g_write_pos, next_wp, memory_order_release);
+    trace_modal_key("post", type, keyCode);
     j2me_display_wake();
 }
 
@@ -152,6 +170,7 @@ static s32 n_pollInputEvent(Runtime *runtime, JClass *clazz) {
     body[1] = evt.x;
     body[2] = evt.y;
     body[3] = evt.keyCode;
+    trace_modal_key("polled", evt.type, evt.keyCode);
 
     env->push_ref(runtime->stack, arr);
     return RUNTIME_STATUS_NORMAL;

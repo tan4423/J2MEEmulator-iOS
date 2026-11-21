@@ -968,10 +968,15 @@ class GameViewController: UIViewController {
         let buildID = packagedCommit ?? "không có (IPA cũ/chưa gắn phiên bản)"
         let bootPatch = packagedPatch ?? "không có"
         let hasStartupProbe = trace.contains("probe:java8_utf8_boot_patch=v1")
+        // The cumulative counters can be compared across two copied
+        // snapshots to distinguish a frozen Java Display or game loop
+        // from a working loop that simply awaits a modal acknowledgement.
         let report = "JarBoxNET\n" +
             "build_commit=" + buildID + "\n" +
             "boot_patch=" + bootPatch + "\n" +
             "vm_start_probe=" + (hasStartupProbe ? "seen" : "missing") + "\n" +
+            "display_poll_count=" + String(treo_display_poll_calls()) + "\n" +
+            "popup_update_count=" + String(jvm_bridge_mod_popup_tick_count()) + "\n" +
             (trace.isEmpty
                 ? "Chưa ghi nhận TCP hoặc exception mạng của game."
                 : trace)

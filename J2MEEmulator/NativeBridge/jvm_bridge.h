@@ -42,6 +42,11 @@ const char *jvm_bridge_last_error(void);
 void jvm_bridge_note_net_trace(const char *detail);
 const char *jvm_bridge_net_trace(void);
 
+// Sampled on demand from the debug menu. An atomic game-loop counter is
+// cheaper and safer than polling/walking live Java threads or their stack.
+void jvm_bridge_mod_popup_tick(void);
+uint64_t jvm_bridge_mod_popup_tick_count(void);
+
 /// Initialize miniJVM with the given resource and save directories.
 /// @param res_root         Path to directory containing runtime JARs
 /// @param save_root        Path to writable directory for app data
