@@ -296,3 +296,56 @@ rendering/audio engines or the number of Codemagic workflows.
 `build_commit` and `boot_patch`, then play Ninja School and TrungDucTV,
 close/reopen each game, and optionally run a small MIDlet that calls the
 new primitive APIs and `andThen` to test default-method dispatch in miniJVM.
+
+
+## Java 8 functional-interface completion (v9, 2026-11-21)
+
+The user confirmed the v8 Ninja School/TrungDucTV regression build runs
+normally. This changes the **shared boot library only**, with no JAR-specific
+branches, fake method bodies, server spoofing or revised JVM scheduling.
+
+JarBox previously provided 10 Java 8 `java.util.function` interfaces.
+`tools/generate_java8_function_boot.py` now generates **all remaining 33**,
+covering exactly the **43 public interface names** in the Java 8 package:
+BiConsumer/BiFunction/BiPredicate, BooleanSupplier, UnaryOperator,
+BinaryOperator, typed primitive predicates/operators/converters/functions,
+ObjInt/ObjLong/ObjDouble consumers, and ToInt/ToLong/ToDouble functions.
+Where Java 8 specifies `compose`, `andThen`, `and`, `or`, `negate`,
+`identity`, `minBy` and `maxBy`, the implementations perform real
+composition, short-circuit evaluation and comparator calls rather than
+returning dummy values. The runtime patch also completes the Java 8
+`Objects.requireNonNull(T, Supplier<String>)` overload, with lazy
+message evaluation.
+
+The generator is deterministic: it emits public Java sources in the
+build's temporary workspace, compiled with the existing boot patches at
+`javac --release 8`. All generated classfiles and their anonymous helper
+classes are inserted into `minijvm_rt.jar`; the existing single Codemagic
+workflow checks the 33 generated classfile paths, key method signatures
+and representative helper classfiles. The IPA fingerprint is
+`boot_patch=java8_function_api_v9`.
+
+**Verification boundary:** On a local host JDK 21, the generation compiled
+successfully to Java 8 bytecode. A package-renamed test compared each of the
+33 interface public method signatures to the host JDK's reference and ran
+behavioral checks of compositions, order, primitive conversion, early null
+rejection and predicate short-circuiting. The fixture also asserts generated
+classfiles do not invoke `invokedynamic`. The committed regression test is
+`tools/tests/test_java8_full_function.py`. This **does not prove** native
+miniJVM iOS support for arbitrary default-interface-method calls or Java 8
+lambda bootstrap execution; those must be tested with real on-device fixtures.
+
+**Not all Java SE 8:** the remaining compatibility surface includes
+`java.util.stream`, `java.util.Spliterator`, many `java.nio` classes,
+additional `java.time`/formatting/zone APIs, Java reflection/loading
+differences, default interface dispatch and `invokedynamic` behavior.
+Completing all of Java SE 8 is not equivalent to shipping the
+`java.util.function` package and cannot responsibly be claimed from these
+tests. Use the existing read-only API auditor on supplied JAR files and
+confirm the next missing class/method/field or VM operation on-device.
+
+No changes to `main`, Deep Treo optimizations, game graphics/audio/network,
+private-server version logic, original JAR content, or session-token teardown.
+The number of Codemagic workflows remains one. Revalidate the v9 IPA on
+Ninja School, TrungDucTV and ideally a small java.util.function fixture
+before treating this version as the device regression baseline.
