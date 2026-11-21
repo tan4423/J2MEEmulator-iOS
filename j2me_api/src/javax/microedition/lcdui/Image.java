@@ -57,12 +57,80 @@ public class Image {
     }
 
     public static Image createImage(String name) throws IOException {
+        // No cache in normal play or compatibility Treo. Each call creates
+        // an independent Image/CGImage, never a shared mutable handle.
+        final boolean useCache = name != null && NativeBridge.afkImageCacheEnabled();
+        final ClassLoader loader = useCache ?
+                Thread.currentThread().getContextClassLoader() : null;
+        if (useCache) {
+            byte[] cached = cachedResourceBytes(name, loader);
+            if (cached != null) return createImage(cached, 0, cached.length);
+        }
         InputStream is = findResource(name);
         if (is == null) {
             System.out.println("[Image] ERROR: resource not found: " + name);
             throw new IOException("Image resource not found: " + name);
         }
-        return createImage(is);
+        if (!useCache) return createImage(is);
+        byte[] data = readAllBytes(is);
+        Image result = createImage(data, 0, data.length);
+        // Do not cache absent or invalid images: decode must succeed first.
+        cacheResourceBytes(name, loader, data);
+        return result;
+    }
+
+    // Experimental, bounded compression-data cache for static JAR resources.
+    // 128 direct-mapped entries, <=256 KiB each, <=2 MiB retained total.
+    // Key includes the context classloader, not only the resource path.
+    private static final int RESOURCE_SLOTS = 128;
+    private static final int RESOURCE_MAX_ITEM = 256 * 1024;
+    private static final int RESOURCE_MAX_BYTES = 2 * 1024 * 1024;
+
+    private static final class ResourceEntry {
+        final String name;
+        final ClassLoader loader;
+        final byte[] source;
+        ResourceEntry(String name, ClassLoader loader, byte[] source) {
+            this.name = name;
+            this.loader = loader;
+            this.source = source;
+        }
+    }
+    private static final ResourceEntry[] resourceCache = new ResourceEntry[RESOURCE_SLOTS];
+    private static int cachedByteCount;
+    private static int evictionCursor;
+    private static int hitBatch;
+
+    private static int cacheSlot(String name) {
+        return (name.hashCode() & 0x7fffffff) & (RESOURCE_SLOTS - 1);
+    }
+    private static synchronized byte[] cachedResourceBytes(String name, ClassLoader loader) {
+        ResourceEntry entry = resourceCache[cacheSlot(name)];
+        if (entry == null || entry.loader != loader || !entry.name.equals(name)) return null;
+        if (++hitBatch == 64) {
+            NativeBridge.imageCacheNote(64, 0);
+            hitBatch = 0;
+        }
+        return entry.source;
+    }
+    private static synchronized void cacheResourceBytes(String name, ClassLoader loader,
+                                                         byte[] source) {
+        if (source == null || source.length == 0 || source.length > RESOURCE_MAX_ITEM) return;
+        int slot = cacheSlot(name);
+        ResourceEntry old = resourceCache[slot];
+        if (old != null) cachedByteCount -= old.source.length;
+        resourceCache[slot] = null;
+        while (cachedByteCount + source.length > RESOURCE_MAX_BYTES) {
+            ResourceEntry victim = resourceCache[evictionCursor];
+            if (victim != null) {
+                cachedByteCount -= victim.source.length;
+                resourceCache[evictionCursor] = null;
+            }
+            evictionCursor = (evictionCursor + 1) & (RESOURCE_SLOTS - 1);
+        }
+        resourceCache[slot] = new ResourceEntry(name, loader, source);
+        cachedByteCount += source.length;
+        NativeBridge.imageCacheNote(0, source.length);
     }
 
     private static InputStream findResource(String name) {
