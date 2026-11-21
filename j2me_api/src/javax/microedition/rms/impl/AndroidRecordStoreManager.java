@@ -161,7 +161,9 @@ public class AndroidRecordStoreManager implements RecordStoreManager {
 			created = true;
 		}
 
-		recordStores.put(recordStoreName, recordStoreImpl);
+		// Publish only after all persisted records were actually read.
+		// If a record is corrupt, the caller receives a failure and must
+		// never reopen a half-populated in-memory store as if it were valid.
 		synchronized (recordStoreImpl.records) {
 			File dataDir = new File(getDataDir());
 			String prefix = recordStoreName + ".";
@@ -184,6 +186,7 @@ public class AndroidRecordStoreManager implements RecordStoreManager {
 
 		}
 
+		recordStores.put(recordStoreName, recordStoreImpl);
 		RmsEventLog.note(created ? "CREATE" : "OPEN", recordStoreName, -1, -1);
 		System.out.println("[RMS] Store opened");
 		return recordStoreImpl;
