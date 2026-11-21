@@ -393,9 +393,78 @@ static uint64_t treo_gc_smart_thread_cpu(void) {
 }
 #endif
 
-// External native memory counter — set by j2me_render.m for CGContext allocations.
-// Allows GC to account for native memory pressure alongside Java heap.
-s64 g_native_extra_heap = 0;
+// Generation-keyed per-JVM native memory accounting: old render handles must
+// never debit a later VM when allocator addresses are reused.
+#define JARBOX_NATIVE_HEAP_SLOTS 8
+typedef struct { MiniJVM *owner; uint64_t key; s64 bytes; } JarBoxNativeHeapSlot;
+static JarBoxNativeHeapSlot g_native_heaps[JARBOX_NATIVE_HEAP_SLOTS];
+static uint64_t g_native_heap_sequence;
+static spinlock_t g_native_heap_lock = {0, 0, 0};
+
+int jarbox_native_heap_register_vm(MiniJVM *jvm) {
+    if (!jvm) return 0;
+    spin_lock(&g_native_heap_lock);
+    int acquired = 0;
+    for (int i = 0; i < JARBOX_NATIVE_HEAP_SLOTS; ++i) {
+        if (g_native_heaps[i].owner == jvm) { acquired = 1; break; }
+    }
+    if (!acquired) for (int i = 0; i < JARBOX_NATIVE_HEAP_SLOTS; ++i) {
+        JarBoxNativeHeapSlot *slot = &g_native_heaps[i];
+        if (slot->owner) continue;
+        slot->owner = jvm;
+        slot->bytes = 0;
+        uint64_t seq = ++g_native_heap_sequence;
+        slot->key = (seq << 8) | (uint64_t)(i + 1);
+        acquired = 1;
+        break;
+    }
+    spin_unlock(&g_native_heap_lock);
+    return acquired;
+}
+uint64_t jarbox_native_heap_key_for_vm(MiniJVM *jvm) {
+    uint64_t result = 0;
+    spin_lock(&g_native_heap_lock);
+    for (int i = 0; i < JARBOX_NATIVE_HEAP_SLOTS; ++i) {
+        if (jvm && g_native_heaps[i].owner == jvm) {
+            result = g_native_heaps[i].key; break;
+        }
+    }
+    spin_unlock(&g_native_heap_lock);
+    return result;
+}
+void jarbox_native_heap_account(uint64_t key, s64 delta_bytes) {
+    if (!key || !delta_bytes) return;
+    unsigned index = (unsigned)(key & 0xffU);
+    if (!index || index > JARBOX_NATIVE_HEAP_SLOTS) return;
+    spin_lock(&g_native_heap_lock);
+    JarBoxNativeHeapSlot *slot = &g_native_heaps[index - 1];
+    if (slot->owner && slot->key == key) {
+        slot->bytes += delta_bytes;
+        if (slot->bytes < 0) slot->bytes = 0;
+    }
+    spin_unlock(&g_native_heap_lock);
+}
+s64 jarbox_native_heap_for_vm(MiniJVM *jvm) {
+    s64 result = 0;
+    spin_lock(&g_native_heap_lock);
+    for (int i = 0; i < JARBOX_NATIVE_HEAP_SLOTS; ++i) {
+        if (jvm && g_native_heaps[i].owner == jvm) {
+            result = g_native_heaps[i].bytes; break;
+        }
+    }
+    spin_unlock(&g_native_heap_lock);
+    return result;
+}
+void jarbox_native_heap_unregister_vm(MiniJVM *jvm) {
+    spin_lock(&g_native_heap_lock);
+    for (int i = 0; i < JARBOX_NATIVE_HEAP_SLOTS; ++i) {
+        JarBoxNativeHeapSlot *slot = &g_native_heaps[i];
+        if (jvm && slot->owner == jvm) {
+            slot->owner = NULL; slot->key = 0; slot->bytes = 0; break;
+        }
+    }
+    spin_unlock(&g_native_heap_lock);
+}
 
 s64 gc_sum_heap(GcCollector *collector) {
     s64 hsize = threadlist_sum_heap(collector->jvm);
@@ -404,7 +473,7 @@ s64 gc_sum_heap(GcCollector *collector) {
         hsize += collector->obj_heap_size;
     }
     spin_unlock(&collector->lock);
-    s64 native_extra = __atomic_load_n(&g_native_extra_heap, __ATOMIC_RELAXED);
+    s64 native_extra = jarbox_native_heap_for_vm(collector->jvm);
     if (native_extra > 0) hsize += native_extra;
     return hsize;
 }
@@ -458,7 +527,7 @@ s32 _gc_thread_run(void *para) {
 
         s64 heap = gc_sum_heap(collector);
         s64 threshold = jvm->max_heap_size * jvm->heap_overload_percent / 100;
-        s64 native_extra = __atomic_load_n(&g_native_extra_heap, __ATOMIC_RELAXED);
+        s64 native_extra = jarbox_native_heap_for_vm(jvm);
         s64 desired = jvm->garbage_collect_period_ms;
 #if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__
         if (heap >= 0) {
@@ -510,7 +579,7 @@ s32 _gc_thread_run(void *para) {
             treo_diag_gc_cycle_end();
 #endif
             s64 heap_after = gc_sum_heap(collector);
-            s64 native_after = __atomic_load_n(&g_native_extra_heap, __ATOMIC_RELAXED);
+            s64 native_after = jarbox_native_heap_for_vm(jvm);
             jvm_printf("[GC] collected: java %lldKB→%lldKB, native %lldKB, total %lldKB→%lldKB (threshold %lldKB) objs=%lld\n",
                        (heap_before - native_extra) / 1024, (heap_after - native_after) / 1024,
                        native_after / 1024,
