@@ -103,6 +103,37 @@ static char g_bridge_last_error[1536];
 static pthread_mutex_t g_bridge_nso_trace_lock = PTHREAD_MUTEX_INITIALIZER;
 static char g_bridge_nso_init_trace[4096];
 static unsigned g_bridge_nso_init_trace_count;
+
+// Fixed-size, bounded event log for network failures. No per-packet tracing,
+// DNS name, credentials, payloads, file IO, timers, or background pollers.
+static pthread_mutex_t g_bridge_net_trace_lock = PTHREAD_MUTEX_INITIALIZER;
+static char g_bridge_net_trace[4096];
+static unsigned g_bridge_net_trace_count;
+void jvm_bridge_note_net_trace(const char *detail) {
+    if (!detail || !detail[0]) return;
+    pthread_mutex_lock(&g_bridge_net_trace_lock);
+    if (g_bridge_net_trace_count < 24) {
+        size_t len = strlen(g_bridge_net_trace);
+        size_t avail = sizeof(g_bridge_net_trace) - len - 1;
+        if (avail >= 64) {
+            int added = snprintf(g_bridge_net_trace + len, avail + 1,
+                                 "%s%s", len ? "\n" : "", detail);
+            if (added > 0 && (size_t)added < avail)
+                ++g_bridge_net_trace_count;
+        }
+    }
+    pthread_mutex_unlock(&g_bridge_net_trace_lock);
+    printf("[JarBoxNET] %s\n", detail);
+}
+const char *jvm_bridge_net_trace(void) {
+    // Return a stable per-calling-thread snapshot to Swift. Reading does not
+    // hold the writer lock while UIAlert or clipboard methods are invoked.
+    static _Thread_local char snapshot[sizeof(g_bridge_net_trace)];
+    pthread_mutex_lock(&g_bridge_net_trace_lock);
+    memcpy(snapshot, g_bridge_net_trace, sizeof(snapshot));
+    pthread_mutex_unlock(&g_bridge_net_trace_lock);
+    return snapshot;
+}
 void jvm_bridge_note_nso_init_trace(const char *detail) {
     if (!detail || !detail[0]) return;
     pthread_mutex_lock(&g_bridge_nso_trace_lock);
@@ -150,6 +181,10 @@ int jvm_bridge_try_begin_session(void) {
     g_bridge_nso_init_trace[0] = '\0';
     g_bridge_nso_init_trace_count = 0;
     pthread_mutex_unlock(&g_bridge_nso_trace_lock);
+    pthread_mutex_lock(&g_bridge_net_trace_lock);
+    g_bridge_net_trace[0] = '\0';
+    g_bridge_net_trace_count = 0;
+    pthread_mutex_unlock(&g_bridge_net_trace_lock);
     atomic_store_explicit(&g_bridge_phase, BRIDGE_STARTING, memory_order_release);
     printf("[JarBoxVM][Lifecycle] session=acquired phase=starting\n");
     return 1;

@@ -5,11 +5,15 @@
 #include <sys/stat.h>
 #include <string.h>   // NULL and possibly memcpy, memset
 #include <locale.h>
+#include <errno.h>
 #include "jvm.h"
 #include "garbage.h"
 #include "jvm_util.h"
 #include "../utils/miniz_wrapper.h"
 
+#if defined(__APPLE__)
+extern void jvm_bridge_note_net_trace(const char *detail);
+#endif
 
 #ifdef __cplusplus
 extern "C" {
@@ -375,13 +379,20 @@ s32 org_mini_net_SocketNative_connect0(Runtime *runtime, JClass *clazz) {
         memcpy(&vmsock->hostport, port->arr_body, port->arr_length);
         jthread_block_enter(runtime);
         ret = mbedtls_net_connect(ctx, host->arr_body, port->arr_body, proto);
+#if defined(__APPLE__)
+        const int connect_errno = ret == 0 ? 0 : errno;
+#endif
         jthread_block_exit(runtime);
 #if defined(__APPLE__)
-        // Only one line per actual connect attempt, never per frame/packet.
-        // Log native result code and port, not hostname/credentials.
+        // Capture the actual TCP attempt, not a speculative ClassLoader or
+        // symbolic-method lookup. No destination hostname is recorded.
         if (proto == MBEDTLS_NET_PROTO_TCP) {
-            fprintf(stderr, "[JarBoxNET] tcp_connect=%s native_code=%d port=%s\n",
-                    ret == 0 ? "ok" : "failed", ret, (const char *)port->arr_body);
+            char event[160];
+            snprintf(event, sizeof(event),
+                     "tcp_connect:%s,code=%d,errno=%d,port=%s",
+                     ret == 0 ? "ok" : "failed", ret, connect_errno,
+                     (const char *)port->arr_body);
+            jvm_bridge_note_net_trace(event);
         }
 #endif
 #if defined(__APPLE__)

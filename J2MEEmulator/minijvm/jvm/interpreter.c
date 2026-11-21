@@ -627,6 +627,10 @@ void _op_notsupport(u8 *opCode, Runtime *runtime) {
 //----------------------------------  tool func  ------------------------------------------
 
 
+#if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__
+extern void jvm_bridge_note_net_trace(const char *detail);
+#endif
+
 s32 exception_handle(RuntimeStack *stack, Runtime *runtime) {
 
     Instance *ins = pop_ref(stack);
@@ -644,6 +648,24 @@ s32 exception_handle(RuntimeStack *stack, Runtime *runtime) {
     s32 index = 0;
     ExceptionTable *et = NULL;// _find_exception_handler(runtime, ins, ca, (s32) (runtime->pc - ca->code), &index);
     s32 offset = (s32) (runtime->pc - ca->code);
+#if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__
+    // The uploaded TrungDucTV Class_bn.run bytecode catches Exception over
+    // PCs 49..497. Capture the original exception class BEFORE game code
+    // swallows it and displays a generic "cannot connect" dialog.
+    // No changes to Java exception control flow or stack are made.
+    if (ins && ins->mb.clazz && runtime->clazz && runtime->method &&
+        utf8_equals_c(runtime->clazz->name, "Class_bn") &&
+        utf8_equals_c(runtime->method->name, "run") &&
+        offset >= 49 && offset < 497) {
+        const char *stage = offset < 66 ? "open_socket" :
+                            offset < 106 ? "open_stream" : "handshake";
+        char event[200];
+        snprintf(event, sizeof(event),
+                 "game_net_exception:stage=%s,pc=%d,type=%s",
+                 stage, offset, utf8_cstr(ins->mb.clazz->name));
+        jvm_bridge_note_net_trace(event);
+    }
+#endif
     s32 i;
     ExceptionTable *e = ca->exception_table;
     for (i = 0; i < ca->exception_table_length; i++) {

@@ -846,3 +846,23 @@ This verifies Java Socket short-read behavior on desktop, **not**
 miniJVM/iOS compatibility or real server connectivity. Rebuild
 branch, test Micro-compatible TCP and send `[JarBoxNET]` logs if
 connection still fails. No confirmed iPhone success yet.
+
+
+## 2026-11-21 Network exception capture after Micro-compatible socket test
+
+On-device TrungDucTV still displays the generic server-connect error after
+the `ef8c6b6` Micro-compatible stream commit. This does NOT reveal whether
+the failure was DNS/TCP, socket stream creation, or handshake.
+
+The **unaltered game JAR** `Class_bn.run()` catches `java/lang/Exception`
+for bytecodes 49..497; the Java exception is swallowed before the player can
+copy it. Added an exceptional-path-only interpreter note at this catch, which
+records class and PC with stage bins open_socket/open_stream/handshake. Added
+native one-event-per-connect results including numeric mbedTLS/errno/port.
+A bounded 4 KB in-memory bridge buffer is reset per JVM session and exposed
+under game (...) menu > **Chẩn đoán kết nối** > **Sao chép**.
+No payloads, hostnames, passwords, repetitive packet logging, timers, or
+network retries. Logs are available while game UI is open, even if the JVM
+continues running after a connection failure. With these measurements, make
+the smallest cause-specific correction instead of speculative code changes.
+No changes to game JAR, main, Deep Treo, or workflow count.

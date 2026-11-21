@@ -30,6 +30,11 @@ void jvm_bridge_note_nso_init_trace(const char *detail);
 const char *jvm_bridge_nso_init_trace(void);
 const char *jvm_bridge_last_error(void);
 
+// Network event diagnostics live outside the Java stack and are reset for
+// each JVM session. Only connection attempts and failures are stored.
+void jvm_bridge_note_net_trace(const char *detail);
+const char *jvm_bridge_net_trace(void);
+
 /// Initialize miniJVM with the given resource and save directories.
 /// @param res_root         Path to directory containing runtime JARs
 /// @param save_root        Path to writable directory for app data

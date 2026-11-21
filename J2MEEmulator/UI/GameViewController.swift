@@ -871,6 +871,7 @@ class GameViewController: UIViewController {
         for pin in portraitPadBottomPins { pin.isActive = padIsVisible }
         if jarAuditID != nil {
             screenMenu.menu = UIMenu(children: [
+                UIAction(title: "Chẩn đoán kết nối") { [weak self] _ in self?.showNetworkDiagnostics() },
                 UIAction(title: "Hủy chẩn đoán CPU JAR", attributes: .destructive) { [weak self] _ in self?.stopJarAudit() }
             ])
             return
@@ -890,8 +891,28 @@ class GameViewController: UIViewController {
             UIAction(title: "Xem kết quả đo gần nhất",
                      attributes: lastMeasurement == nil ? .disabled : []) { [weak self] _ in
                 self?.showLastMeasurement()
+            },
+            UIAction(title: "Chẩn đoán kết nối") { [weak self] _ in
+                self?.showNetworkDiagnostics()
             }
         ])
+    }
+
+    private func showNetworkDiagnostics() {
+        guard viewIfLoaded?.window != nil, presentedViewController == nil else { return }
+        let trace = String(cString: jvm_bridge_net_trace())
+        let report = "JarBoxNET\n" +
+            (trace.isEmpty
+                ? "Chưa ghi nhận lần thử TCP hoặc exception mạng của game.\n" +
+                  "Nếu game vẫn báo lỗi, có thể lỗi xảy ra trước bước kết nối."
+                : trace)
+        let alert = UIAlertController(title: "Chẩn đoán kết nối",
+                                      message: report, preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "Sao chép", style: .default) { _ in
+            UIPasteboard.general.string = report
+        })
+        alert.addAction(UIAlertAction(title: "Đóng", style: .cancel))
+        present(alert, animated: true)
     }
 
     private func cancelMeasurementDeadline() {
