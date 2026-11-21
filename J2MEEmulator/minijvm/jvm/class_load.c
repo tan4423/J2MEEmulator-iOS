@@ -1915,7 +1915,10 @@ void _class_optimize(JClass *clazz) {
         }
     }
     for (i = 0; i < clazz->constantPool.interfaceMethodRef->length; i++) {
-        ConstantMethodRef *cmr = (ConstantMethodRef *) arraylist_get_value(clazz->constantPool.methodRef, i);
+        // Interface refs are a distinct constant-pool table. Indexing
+        // methodRef here can read the wrong entry (or NULL) in obfuscated
+        // MIDlets and leave invokeinterface resolution uninitialized.
+        ConstantMethodRef *cmr = (ConstantMethodRef *) arraylist_get_value(clazz->constantPool.interfaceMethodRef, i);
         cmr->nameAndType = class_get_constant_name_and_type(clazz, cmr->nameAndTypeIndex);
         cmr->name = class_get_utf8_string(clazz, cmr->nameAndType->nameIndex);
         cmr->descriptor = class_get_utf8_string(clazz, cmr->nameAndType->typeIndex);
