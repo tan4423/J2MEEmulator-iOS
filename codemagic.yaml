@@ -36,8 +36,13 @@ workflows:
           mkdir -p "$classes"
           javac --release 8 -sourcepath '' -cp "$jars/j2me_api.jar:$jars/minijvm_rt.jar" \
             -d "$classes" j2me_api/src/javax/microedition/lcdui/{Display,Canvas,Graphics,Image,TextBox,NativeBridge,Form,ChoiceGroup,List}.java \
-            j2me_api/src/javax/microedition/shell/MIDletRunner.java
+            j2me_api/src/javax/microedition/shell/MIDletRunner.java \
+            j2me_api/src/javax/microedition/io/Connector.java
           jar uf "$jars/j2me_api.jar" -C "$classes" .
+          # The shipped Connector.class was the unsupported-transport stub.
+          # Require the actual Java ME protocol dispatcher in the built JAR.
+          javap -classpath "$jars/j2me_api.jar:$jars/minijvm_rt.jar" -c javax.microedition.io.Connector | grep -q 'ConnectionBaseInterface.openPrim'
+          echo "[JarBoxNET][BUILD] Connector socket/http/https dispatch=enabled"
           
           # Use only the pinned SLJIT source; do not build or run upstream scripts.
           git init -q "$RUNNER_TEMP/sljit-upstream"

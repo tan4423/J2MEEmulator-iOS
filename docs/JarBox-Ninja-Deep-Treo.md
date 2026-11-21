@@ -773,3 +773,39 @@ and restores the previous setting on disappearance, preserving long-running
 NSO auto/Treo while letting the library use normal iOS auto-lock.
 The iOS display and brightness can still consume energy while manually
 kept awake; do not equate UI simplification with measured watt savings.
+
+
+## 2026-11-21 TrungDucTV loads successfully; J2ME socket transport fix
+
+The user confirmed on iPhone that TrungDucTV now reaches its splash/login
+UI, instead of crashing in `GameMidlet.<init>`. The next screenshot says
+\"Không thể kết nối tới server\". This DOES NOT itself prove the external
+server is currently online.
+
+Bytecode inspection of the **unaltered** uploaded
+`217_TrungDucTV_51026.jar` shows `Class_bn.run()` invokes
+`javax.microedition.io.Connector.open(String)` at PC 59, casts the
+result to `SocketConnection`, then opens data input/output streams.
+The JarBox repository's `j2me_api/src/javax/microedition/io/Connector.java`
+was an unconditional `IOException(Connector.open() not supported)` stub.
+The shipped `j2me_api.jar` contains a tiny ~1760-byte Connector.class,
+consistent with that stub. iOS ATS already includes
+`NSAllowsArbitraryLoads=true`, so removing ATS was NOT necessary.
+
+Replace the stub with miniJVM upstream's standard Connector dispatcher,
+which uses `org.mini.net.<protocol>.Protocol` implementations for
+`socket://`, `http://`, and `https://` (and other protocols if provided
+by the runtime). Keep the original game's destination host/port/protocol.
+The existing SINGLE Codemagic workflow must compile `Connector.java`
+alongside its other changed Java API classes and update `j2me_api.jar`
+in the generated build. `javap` in the workflow checks that the new
+`Connector.class` actually invokes `ConnectionBaseInterface.openPrim`.
+Only connection-attempt-level logs are emitted, with no URL/query/password
+logging and no per-packet polling. No direct edits to game JAR, main,
+Deep Treo optimizations, or additional workflows.
+
+Next: build `loader-ios-jit-probe`, confirm TrungDucTV can complete the
+TCP handshake and login against its configured server. If it still shows
+the server error, obtain the `[JarBoxNET]` logs; do not invent a server
+address or claim that an unavailable external server can be fixed locally.
+A GitHub source commit is not a successful Codemagic build or device test.
