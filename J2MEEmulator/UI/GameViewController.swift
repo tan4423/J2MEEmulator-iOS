@@ -1522,6 +1522,10 @@ class GameViewController: UIViewController {
         let elidedDraws = treo_afk_elided_calls()
         let utf16Fast = treo_vm_utf16_fast_calls()
         let arrayLookupFast = treo_vm_array_lookup_fast_calls()
+        let ninjaMatched = treo_ninja_deep_verified()
+        let ninjaRepaints = treo_ninja_deep_skipped(0)
+        let ninjaServices = treo_ninja_deep_skipped(1)
+        let ninjaPaints = treo_ninja_deep_skipped(2)
         let imageHits = treo_image_cache_hits()
         let imageStores = treo_image_cache_stores()
         let imageStoredBytes = treo_image_cache_stored_bytes()
@@ -1678,6 +1682,10 @@ class GameViewController: UIViewController {
             let utf16Fast = end.utf16Fast &- start.utf16Fast
             let arrayLookupFast = end.arrayLookupFast &- start.arrayLookupFast
             let arrayLookupBuild = treo_vm_array_lookup_build() != 0 ? "on" : "off"
+            let ninjaProfile = end.ninjaMatched != 0 ? "matched" : "generic"
+            let ninjaRepaints = end.ninjaRepaints &- start.ninjaRepaints
+            let ninjaServices = end.ninjaServices &- start.ninjaServices
+            let ninjaPaints = end.ninjaPaints &- start.ninjaPaints
             let utf16Build = treo_vm_utf16_fast_build() != 0 ? "on" : "off"
             let imageCacheBuild = treo_image_cache_build() != 0 ? "on" : "off"
             let imageCacheHits = end.imageHits &- start.imageHits
@@ -1685,9 +1693,10 @@ class GameViewController: UIViewController {
             let imageStoredBytes = end.imageStoredBytes &- start.imageStoredBytes
             let paintCPUmsPerSecond = Double(end.paintCPU &- start.paintCPU) / dt / 1_000_000
             return String(format:
-                "[JarBoxVM][Treo] %.1fs · dispatch=%@ · paint_bridge=%@ · bridge_elided_draw_calls=%llu · utf16_fast=%@ · utf16_fast_calls~%llu · array_lookup=%@ · array_lookup_fast_calls~%llu · image_cache=%@ · image_cache_hits~%llu · image_cache_stores=%llu · image_cache_stored_bytes_total=%llu · paint_CPU=%.2fms/s · direct_methods~%llu · switch_methods~%llu · monitor_contended=%llu · monitor_failed_acquires=%llu · app_CPU=%@%% · main_CPU=%@%% · paint=%.2f/s · layer_frames=%llu · smart_GC=%llu · springboard_motion=%@ · springboard_layers_at_pause=%d · springboard_loops_during_treo=%llu · thermal_start=%@ · thermal_end=%@ · thermal_peak=%@ · thermal_changes=%d · hud_updates=%d. Counts batched/64; paint is not game ticks; CPU is not watts; thermal state is not degrees Celsius.",
+                "[JarBoxVM][Treo] %.1fs · dispatch=%@ · paint_bridge=%@ · bridge_elided_draw_calls=%llu · utf16_fast=%@ · utf16_fast_calls~%llu · array_lookup=%@ · array_lookup_fast_calls~%llu · ninja_profile=%@ · ninja_repaint_skips=%llu · ninja_service_skips=%llu · ninja_paint_skips=%llu · image_cache=%@ · image_cache_hits~%llu · image_cache_stores=%llu · image_cache_stored_bytes_total=%llu · paint_CPU=%.2fms/s · direct_methods~%llu · switch_methods~%llu · monitor_contended=%llu · monitor_failed_acquires=%llu · app_CPU=%@%% · main_CPU=%@%% · paint=%.2f/s · layer_frames=%llu · smart_GC=%llu · springboard_motion=%@ · springboard_layers_at_pause=%d · springboard_loops_during_treo=%llu · thermal_start=%@ · thermal_end=%@ · thermal_peak=%@ · thermal_changes=%d · hud_updates=%d. Counts batched/64; paint is not game ticks; CPU is not watts; thermal state is not degrees Celsius.",
                 dt, backend, bridge, elided, utf16Build, utf16Fast,
                  arrayLookupBuild, arrayLookupFast,
+                ninjaProfile, ninjaRepaints, ninjaServices, ninjaPaints,
                 imageCacheBuild, imageCacheHits, imageCacheStores, imageStoredBytes,
                 paintCPUmsPerSecond,
                 direct, fallback, monitors, retries,
