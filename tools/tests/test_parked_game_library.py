@@ -25,8 +25,8 @@ class ParkedGameLibraryTest(unittest.TestCase):
 
     def test_back_is_non_destructive_and_menu_stop_is_explicit(self):
         back = re.search(
-            r'@objc private func backTapped\(\)\s*\{([^{}]*)\}',
-            self.game,
+            r'@objc private func backTapped\(\)\s*\{(.*?)\n    \}',
+            self.game, re.DOTALL,
         )
         self.assertIsNotNone(back)
         self.assertIn('openLibraryKeepingGame()', back.group(1))
