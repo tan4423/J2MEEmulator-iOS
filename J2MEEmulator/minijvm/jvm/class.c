@@ -113,6 +113,20 @@ s32 class_prepar(Instance *loader, JClass *clazz, Runtime *runtime) {
         }
     }
 
+    /*
+     * Instance fields in a subclass are laid out AFTER all inherited
+     * instance fields. A lazily loaded parent may still be UNPREPARED
+     * here; reading superclass->field_instance_len before preparing it
+     * silently uses zero and overlaps the subclass's fields with the
+     * parent's storage. This is especially likely for Java 8 modded
+     * MIDlets where class load order differs from legacy J2ME games.
+     *
+     * Prepare parent layouts first, without executing superclass <clinit>.
+     * The status PREPARING guard above prevents recursive preparation.
+     */
+    if (clazz->superclass && clazz->superclass->status < CLASS_STATUS_PREPARED) {
+        class_prepar(clazz->superclass->jloader, clazz->superclass, runtime);
+    }
     find_supers(clazz, runtime);
 
     s32 i;
