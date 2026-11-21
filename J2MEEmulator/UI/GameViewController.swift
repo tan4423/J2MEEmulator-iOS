@@ -1430,6 +1430,7 @@ class GameViewController: UIViewController {
         let contended = treo_vm_monitor_contentions()
         let retries = treo_vm_monitor_retries()
         let elidedDraws = treo_afk_elided_calls()
+        let utf16Fast = treo_vm_utf16_fast_calls()
         let paintCPU = treo_afk_paint_cpu_ns()
         let paints = treo_afk_paint_count()
         let layerFrames = treo_afk_layer_frames()
@@ -1504,10 +1505,12 @@ class GameViewController: UIViewController {
             let springboardMotion = end.springboardMotion ? "running" : "paused"
             let springboardLoops = end.springboardLoops &- start.springboardLoops
             let elided = end.elidedDraws &- start.elidedDraws
+            let utf16Fast = end.utf16Fast &- start.utf16Fast
+            let utf16Build = treo_vm_utf16_fast_build() != 0 ? "on" : "off"
             let paintCPUmsPerSecond = Double(end.paintCPU &- start.paintCPU) / dt / 1_000_000
             return String(format:
-                "[JarBoxVM][Treo] %.1fs · dispatch=%@ · paint_bridge=%@ · bridge_elided_draw_calls=%llu · paint_CPU=%.2fms/s · direct_methods~%llu · switch_methods~%llu · monitor_contended=%llu · monitor_failed_acquires=%llu · app_CPU=%@%% · main_CPU=%@%% · paint=%.2f/s · layer_frames=%llu · smart_GC=%llu · springboard_motion=%@ · springboard_layers_at_pause=%d · springboard_loops_during_treo=%llu. Counts batched/64; paint is not game ticks; CPU is not watts.",
-                dt, backend, bridge, elided, paintCPUmsPerSecond,
+                "[JarBoxVM][Treo] %.1fs · dispatch=%@ · paint_bridge=%@ · bridge_elided_draw_calls=%llu · utf16_fast=%@ · utf16_fast_calls~%llu · paint_CPU=%.2fms/s · direct_methods~%llu · switch_methods~%llu · monitor_contended=%llu · monitor_failed_acquires=%llu · app_CPU=%@%% · main_CPU=%@%% · paint=%.2f/s · layer_frames=%llu · smart_GC=%llu · springboard_motion=%@ · springboard_layers_at_pause=%d · springboard_loops_during_treo=%llu. Counts batched/64; paint is not game ticks; CPU is not watts.",
+                dt, backend, bridge, elided, utf16Build, utf16Fast, paintCPUmsPerSecond,
                 direct, fallback, monitors, retries,
                 percent(start.appCPU, end.appCPU), percent(start.mainCPU, end.mainCPU),
                 paintsHz, frames, gc,

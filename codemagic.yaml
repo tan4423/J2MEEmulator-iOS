@@ -112,13 +112,21 @@ workflows:
           else
             echo "[JarBoxVM][BUILD] paint_sampler=1-in-32 (diagnostic)"
           fi
+          # UTF-16 method-intrinsic matched source baseline.
+          utf16_flag=""
+          if [[ "${JARBOX_VM_UTF16_BASELINE:-0}" == "1" ]]; then
+            utf16_flag="-DTREO_VM_UTF16_FAST_DISABLED=1"
+            echo "[JarBoxVM][BUILD] utf16_fast=off (baseline)"
+          else
+            echo "[JarBoxVM][BUILD] utf16_fast=on"
+          fi
           xcodebuild -list -project "$J2ME_PROJECT"
           xcodebuild -project "$J2ME_PROJECT" \
             -scheme J2MEEmulator -configuration Release \
             -sdk iphoneos -destination 'generic/platform=iOS' \
             -derivedDataPath "$RUNNER_TEMP/jarbox-build" \
             "OTHER_LDFLAGS=\$(inherited) $RUNNER_TEMP/J2METreo.o $RUNNER_TEMP/TreoSLJIT.o $RUNNER_TEMP/TreoJITProbe.o -framework UIKit -framework Foundation -framework Metal" \
-            "TREO_GAME_JIT_CFLAGS=-DTREO_IOS_GAME_JIT=1 -I$sljit $vm_dispatch_flag $vm_paint_bridge_flag $paint_sample_flag" \
+            "TREO_GAME_JIT_CFLAGS=-DTREO_IOS_GAME_JIT=1 -I$sljit $vm_dispatch_flag $vm_paint_bridge_flag $paint_sample_flag $utf16_flag" \
             "SWIFT_ACTIVE_COMPILATION_CONDITIONS=\$(inherited) $bg_flag" \
             PRODUCT_BUNDLE_IDENTIFIER=app.j2metreo.personal \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build
