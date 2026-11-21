@@ -29,6 +29,7 @@
 #define JARBOX_INPUT_CONTEXT_CAPACITY 4
 typedef struct {
     _Atomic(MiniJVM *) vm;
+    uint64_t generation; // guarded by g_input_context_lock
     JarBoxInputRing ring;
     atomic_int display_wait_enabled;
     pthread_mutex_t display_wait_lock;
@@ -41,6 +42,7 @@ static J2MEInputContext g_input_contexts[JARBOX_INPUT_CONTEXT_CAPACITY];
 static pthread_once_t g_input_context_once = PTHREAD_ONCE_INIT;
 static pthread_mutex_t g_input_context_lock = PTHREAD_MUTEX_INITIALIZER;
 static _Atomic(J2MEInputContext *) g_visible_input_context;
+static uint64_t g_input_next_generation; // guarded by g_input_context_lock
 
 static void init_input_contexts(void) {
     for (int i = 0; i < JARBOX_INPUT_CONTEXT_CAPACITY; ++i) {
@@ -83,6 +85,8 @@ static int bind_input_context(MiniJVM *vm) {
                 atomic_store_explicit(&ctx->display_wait_enabled, 0, memory_order_relaxed);
                 ctx->canvas_width = 240;
                 ctx->canvas_height = 320;
+                ctx->generation = ++g_input_next_generation;
+                if (ctx->generation == 0) ctx->generation = ++g_input_next_generation;
                 atomic_store_explicit(&ctx->vm, vm, memory_order_release);
                 break;
             }
@@ -169,8 +173,8 @@ void j2me_input_set_canvas_size(int width, int height) {
     ctx->canvas_height = height;
 }
 
-static void enqueue_event(int type, int x, int y, int keyCode) {
-    J2MEInputContext *ctx = visible_input_context();
+static void enqueue_to_context(J2MEInputContext *ctx,
+                               int type, int x, int y, int keyCode) {
     if (!ctx) return;
     const JarBoxInputEvent event = {type, x, y, keyCode};
     if (!jarbox_input_ring_push(&ctx->ring, &event)) {
@@ -180,6 +184,10 @@ static void enqueue_event(int type, int x, int y, int keyCode) {
     }
     trace_modal_key("post", type, keyCode);
     wake_input_context(ctx);
+}
+
+static void enqueue_event(int type, int x, int y, int keyCode) {
+    enqueue_to_context(visible_input_context(), type, x, y, keyCode);
 }
 
 static int dequeue_event(J2MEInputContext *ctx, JarBoxInputEvent *out) {
@@ -196,6 +204,28 @@ void j2me_input_post_touch(int type, int x, int y) {
 
 void j2me_input_post_key(int type, int keyCode) {
     enqueue_event(type, 0, 0, keyCode);
+}
+
+// Audio completion events must target the JVM that created the sound, even
+// after UI input focus changes. Generation prevents a delayed event from an
+// old JVM whose address is reused by the allocator for a later session.
+uint64_t j2me_input_binding_generation(MiniJVM *vm) {
+    pthread_mutex_lock(&g_input_context_lock);
+    J2MEInputContext *ctx = context_for_vm(vm);
+    const uint64_t generation = ctx ? ctx->generation : 0;
+    pthread_mutex_unlock(&g_input_context_lock);
+    return generation;
+}
+
+// Call only from the same main-thread producer used for physical iOS input.
+void j2me_input_post_key_to_vm(MiniJVM *vm, uint64_t generation,
+                               int type, int keyCode) {
+    if (!generation) return;
+    pthread_mutex_lock(&g_input_context_lock);
+    J2MEInputContext *ctx = context_for_vm(vm);
+    if (ctx && ctx->generation == generation)
+        enqueue_to_context(ctx, type, 0, 0, keyCode);
+    pthread_mutex_unlock(&g_input_context_lock);
 }
 
 // ============================================================
