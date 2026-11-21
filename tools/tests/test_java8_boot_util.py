@@ -60,7 +60,7 @@ public class TestJava8BootUtil {
             vector(bytes);
         }
         bad("!"); bad("T"); bad("T=Q="); bad("TQ="); bad("TQ==A");
-        check(Arrays.equals(Base64.getMimeDecoder().decode(" Zm9v\\r\\n? "),
+        check(Arrays.equals(Base64.getMimeDecoder().decode(" Zm9v\r\n? "),
              new byte[] {'f','o','o'}), "mime whitespace");
         check(Objects.equals(null, null) && Objects.equals("a", new String("a")), "equals");
         check(Objects.deepEquals(
