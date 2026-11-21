@@ -416,7 +416,9 @@ class AppsListViewController: UIViewController,
         refreshJarBoxSleepHUD()
         let timer = Timer.scheduledTimer(withTimeInterval: 15.0, repeats: true) {
             [weak self] _ in
-            self?.refreshJarBoxSleepHUD()
+            Task { @MainActor [weak self] in
+                self?.refreshJarBoxSleepHUD()
+            }
         }
         timer.tolerance = 3.0
         jarBoxSleepTimer = timer
