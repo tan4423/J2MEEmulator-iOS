@@ -85,8 +85,8 @@ class RmsPersistenceAuditTest(unittest.TestCase):
         self.run_case(classes, b, "write", "ACCOUNT_B_PRIVATE")
         self.run_case(classes, a, "read", "ACCOUNT_A_PRIVATE")
         self.run_case(classes, b, "read", "ACCOUNT_B_PRIVATE")
-        log_a = (a / "save-events.log").read_text()
-        log_b = (b / "save-events.log").read_text()
+        log_a = (a / "rms-events.log").read_text()
+        log_b = (b / "rms-events.log").read_text()
         self.assertIn("RMS_SAVE", log_a)
         self.assertIn("RMS_SAVE", log_b)
         self.assertIn("RMS_CREATE", log_a)
@@ -115,7 +115,7 @@ class RmsPersistenceAuditTest(unittest.TestCase):
                 self.run_case(classes, dest, "corrupt")
                 self.assertEqual(record.read_bytes(), b"BROKEN_ORIGINAL_DO_NOT_DELETE")
                 self.assertIn("RMS_READ_ERROR",
-                              (dest / "save-events.log").read_text())
+                              (dest / "rms-events.log").read_text())
 
 
 if __name__ == "__main__":
