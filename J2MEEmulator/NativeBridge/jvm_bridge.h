@@ -17,6 +17,11 @@ int jvm_bridge_try_begin_session(void);
 int jvm_bridge_session_phase(void);
 /// Check the actual ownership flag (phase may briefly be idle during start).
 int jvm_bridge_session_is_active(void);
+/// Monotonically increasing ID of the active session, zero if none.
+/// Used to reject callbacks from a previously closed game instance.
+uint64_t jvm_bridge_session_token(void);
+int jvm_bridge_request_stop_for_token(uint64_t token);
+int jvm_bridge_interrupt_active_threads_for_token(uint64_t token);
 /// Must only be called by the owning worker AFTER native cleanup.
 void jvm_bridge_finish_session(void);
 /// After user cancellation grace period, interrupt Java wait/sleep/loops.

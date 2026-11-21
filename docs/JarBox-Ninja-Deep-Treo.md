@@ -907,3 +907,22 @@ with only byte counts/result codes (never payloads). Capture swallowed
 exceptions in `Class_bq.run` and `Class_bj.run` as type/PC.
 The existing **Chẩn đoán kết nối** menu exposes the bounded trace.
 This is a diagnostic change and does not claim login is fixed.
+
+
+## 2026-11-21 stop scopes for future game cloning / multi-session support
+
+The original bridge's `g_jvm` and render/audio state are still global: the
+app **does not yet support simultaneous JVMs**. As a safe stepping stone,
+every exclusive JVM acquisition now receives a monotonically increasing
+64-bit session token. All GameViewController stop/escalation requests and
+library stuck-session recovery use token-scoped native APIs. They reject
+late callbacks for an already finished game rather than stopping a later
+session or clone. Only the owning worker may release the VM lock after
+native cleanup. The fallback process-level quit remains user-confirmed
+and affects the entire app; it is not a per-game close operation.
+
+Future multi-instance design must move VM, thread ownership, socket registry,
+renderer, audio, stop state and per-clone save/RMS directories into separate
+`GameSession` contexts with stable `instanceId`. Do not clear a global
+lock or destroy a shared native resource to simulate independent game stops.
+No concurrent-JVM feature is activated in this commit.

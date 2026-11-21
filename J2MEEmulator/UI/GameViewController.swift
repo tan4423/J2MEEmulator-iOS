@@ -503,6 +503,7 @@ class GameViewController: UIViewController {
     private var stopEscalationWork: DispatchWorkItem?
     private var stopRescueWork: DispatchWorkItem?
     private var ownsJVMSession = false
+    private var gameSessionToken: UInt64 = 0
     private var gameStopRequested = false
     private var startupTimeoutShown = false
     private var gameIdleTimerPreviouslyDisabled: Bool?
@@ -3398,6 +3399,7 @@ class GameViewController: UIViewController {
             return
         }
         ownsJVMSession = true
+        gameSessionToken = jvm_bridge_session_token()
         setGlobalEmulatorView(emulatorView)
         j2me_render_set_afk_suspended(0)
         j2me_render_set_flush_callback(flushCallback)
@@ -3418,6 +3420,7 @@ class GameViewController: UIViewController {
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
                 self.ownsJVMSession = false
+                self.gameSessionToken = 0
                 self.stopEscalationWork?.cancel()
                 self.stopEscalationWork = nil
                 self.stopRescueWork?.cancel()
@@ -3466,6 +3469,7 @@ class GameViewController: UIViewController {
     }
 
     private func showBlockedSessionAlert() {
+        let blockedToken = jvm_bridge_session_token()
         let alert = UIAlertController(
             title: "Phiên JVM cũ chưa kết thúc",
             message: "JVM của game trước vẫn còn hoạt động (pha \(jvm_bridge_session_phase())). " +
@@ -3473,9 +3477,10 @@ class GameViewController: UIViewController {
                      "Hãy thử ngắt phiên cũ; nếu vẫn kẹt, đóng hẳn JarBox.",
             preferredStyle: .alert)
         alert.addAction(UIAlertAction(title: "Ngắt phiên cũ", style: .default) { [weak self] _ in
-            jvm_bridge_request_stop()
+            let signalled = jvm_bridge_request_stop_for_token(blockedToken)
             DispatchQueue.global(qos: .userInitiated).async {
-                let result = jvm_bridge_interrupt_active_threads()
+                let result = signalled != 0
+                    ? jvm_bridge_interrupt_active_threads_for_token(blockedToken) : 0
                 NSLog("[JarBoxVM][Lifecycle] blocked_slot_interrupt=%d", result)
             }
             self?.dismiss(animated: true)
@@ -3572,16 +3577,18 @@ class GameViewController: UIViewController {
         for code in Array(heldDirections) { releaseDirection(code) }
         if blackout != nil { hideBlackout() }
         // Leave Back usable: another tap opens stuck-session recovery.
-        // Otherwise a still-running game could trap the user behind the UI.
-        jvm_bridge_request_stop()
+        // Scope stop to THIS game so a late callback cannot stop a clone.
+        let token = gameSessionToken
+        _ = jvm_bridge_request_stop_for_token(token)
 
         // Cooperative stop first; interrupt the still-running Java threads
         // only after a grace period, on a background queue.
         let escalate = DispatchWorkItem { [weak self] in
             guard let self, self.gameStopRequested, self.ownsJVMSession else { return }
             DispatchQueue.global(qos: .userInitiated).async {
-                let interrupted = jvm_bridge_interrupt_active_threads()
-                NSLog("[JarBoxVM][Lifecycle] cancel_escalation result=%d", interrupted)
+                let interrupted = jvm_bridge_interrupt_active_threads_for_token(token)
+                NSLog("[JarBoxVM][Lifecycle] cancel_escalation result=%d token=%llu",
+                      interrupted, token)
             }
         }
         stopEscalationWork = escalate

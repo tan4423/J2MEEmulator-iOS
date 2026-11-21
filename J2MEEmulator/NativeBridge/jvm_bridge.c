@@ -93,6 +93,10 @@ enum { BRIDGE_IDLE = 0, BRIDGE_STARTING = 1, BRIDGE_RUNNING = 2,
        BRIDGE_CLEANUP = 3 };
 static atomic_int g_bridge_session_active = 0;
 static atomic_int g_bridge_phase = BRIDGE_IDLE;
+// Exclusive VM slot for now, but all stop requests carry a generation.
+// A stale UI callback can never cancel a later game/clone session.
+static _Atomic uint64_t g_bridge_session_sequence;
+static _Atomic uint64_t g_bridge_session_current;
 // Protect the JVM pointer/phase while the cancellation watchdog interrupts
 // Java threads; normal VM execution never takes this mutex.
 static pthread_mutex_t g_bridge_lifecycle_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -174,6 +178,9 @@ int jvm_bridge_try_begin_session(void) {
     if (!atomic_compare_exchange_strong_explicit(&g_bridge_session_active,
             &expected, 1, memory_order_acq_rel, memory_order_acquire))
         return 0;
+    const uint64_t token = atomic_fetch_add_explicit(
+        &g_bridge_session_sequence, 1, memory_order_relaxed) + 1;
+    atomic_store_explicit(&g_bridge_session_current, token, memory_order_release);
     atomic_store_explicit(&g_jvm_stop_requested, 0, memory_order_release);
     atomic_store_explicit(&g_bridge_last_error_ready, 0, memory_order_release);
     g_bridge_last_error[0] = '\0';
@@ -195,6 +202,9 @@ int jvm_bridge_session_phase(void) {
 int jvm_bridge_session_is_active(void) {
     return atomic_load_explicit(&g_bridge_session_active, memory_order_acquire);
 }
+uint64_t jvm_bridge_session_token(void) {
+    return atomic_load_explicit(&g_bridge_session_current, memory_order_acquire);
+}
 void jvm_bridge_finish_session(void) {
     // Only the owning startup worker calls this AFTER native teardown.
     if (g_jvm) {
@@ -204,26 +214,33 @@ void jvm_bridge_finish_session(void) {
     pthread_mutex_lock(&g_bridge_lifecycle_lock);
     atomic_store_explicit(&g_bridge_phase, BRIDGE_IDLE, memory_order_release);
     atomic_store_explicit(&g_jvm_stop_requested, 0, memory_order_release);
+    atomic_store_explicit(&g_bridge_session_current, 0, memory_order_release);
     atomic_store_explicit(&g_bridge_session_active, 0, memory_order_release);
     pthread_mutex_unlock(&g_bridge_lifecycle_lock);
     printf("[JarBoxVM][Lifecycle] session=released\n");
 }
-int jvm_bridge_interrupt_active_threads(void) {
-    // Called only after a grace period following user cancel. Never deallocate
-    // a JVM or mutate its global pointer from this watchdog thread.
-    if (!atomic_load_explicit(&g_jvm_stop_requested, memory_order_acquire))
-        return 0;
+int jvm_bridge_interrupt_active_threads_for_token(uint64_t token) {
+    if (!token) return 0;
     pthread_mutex_lock(&g_bridge_lifecycle_lock);
+    const int matching =
+        atomic_load_explicit(&g_bridge_session_current, memory_order_acquire) == token &&
+        atomic_load_explicit(&g_bridge_session_active, memory_order_acquire);
     const int phase = atomic_load_explicit(&g_bridge_phase, memory_order_acquire);
     int interrupted = 0;
-    if (phase == BRIDGE_RUNNING && g_jvm) {
-        thread_stop_all(g_jvm); // wake wait/sleep; interpreter sees is_stop
+    if (matching &&
+        atomic_load_explicit(&g_jvm_stop_requested, memory_order_acquire) &&
+        phase == BRIDGE_RUNNING && g_jvm) {
+        thread_stop_all(g_jvm);
         interrupted = 1;
     }
     pthread_mutex_unlock(&g_bridge_lifecycle_lock);
     if (interrupted)
-        printf("[JarBoxVM][Lifecycle] stop=escalated_java_threads\n");
+        printf("[JarBoxVM][Lifecycle] stop=escalated_java_threads token=%llu\n",
+               (unsigned long long)token);
     return interrupted;
+}
+int jvm_bridge_interrupt_active_threads(void) {
+    return jvm_bridge_interrupt_active_threads_for_token(jvm_bridge_session_token());
 }
 
 /* 3D supersampling scale — shared by M3G (reads directly) and MC3D (via system property) */
@@ -402,10 +419,24 @@ void jvm_bridge_destroy(void) {
     }
 }
 
+int jvm_bridge_request_stop_for_token(uint64_t token) {
+    if (!token) return 0;
+    pthread_mutex_lock(&g_bridge_lifecycle_lock);
+    const int matching =
+        atomic_load_explicit(&g_bridge_session_active, memory_order_acquire) &&
+        atomic_load_explicit(&g_bridge_session_current, memory_order_acquire) == token;
+    if (matching)
+        atomic_store_explicit(&g_jvm_stop_requested, 1, memory_order_release);
+    pthread_mutex_unlock(&g_bridge_lifecycle_lock);
+    if (matching) {
+        printf("[JarBoxVM][Lifecycle] stop_requested token=%llu\n",
+               (unsigned long long)token);
+        j2me_display_wake();
+    }
+    return matching;
+}
 void jvm_bridge_request_stop(void) {
-    printf("[JVM Bridge] Stop requested\n");
-    atomic_store(&g_jvm_stop_requested, 1);
-    j2me_display_wake();
+    (void)jvm_bridge_request_stop_for_token(jvm_bridge_session_token());
 }
 
 int jvm_bridge_is_stop_requested(void) {

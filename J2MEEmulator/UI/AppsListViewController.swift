@@ -155,6 +155,7 @@ class AppsListViewController: UIViewController,
             updateStuckSessionButton()
             return
         }
+        let blockedToken = jvm_bridge_session_token()
         let alert = UIAlertController(
             title: "Phiên game cũ chưa dừng",
             message: "Bạn đã về thư viện nhưng JVM vẫn tồn tại (pha \(jvm_bridge_session_phase())). " +
@@ -162,9 +163,10 @@ class AppsListViewController: UIViewController,
                      "bạn có thể đóng JarBox để giải phóng toàn bộ tiến trình.",
             preferredStyle: .alert)
         alert.addAction(UIAlertAction(title: "Ngắt luồng Java", style: .default) { _ in
-            jvm_bridge_request_stop()
+            let signalled = jvm_bridge_request_stop_for_token(blockedToken)
             DispatchQueue.global(qos: .userInitiated).async {
-                let interrupted = jvm_bridge_interrupt_active_threads()
+                let interrupted = signalled != 0
+                    ? jvm_bridge_interrupt_active_threads_for_token(blockedToken) : 0
                 NSLog("[JarBoxVM][Lifecycle] library_interrupt=%d", interrupted)
             }
         })
