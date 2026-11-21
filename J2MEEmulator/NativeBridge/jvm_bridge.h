@@ -17,6 +17,11 @@ int jvm_bridge_try_begin_session(void);
 int jvm_bridge_session_phase(void);
 /// Check the actual ownership flag (phase may briefly be idle during start).
 int jvm_bridge_session_is_active(void);
+/// Truthful number of live native VM slots (currently 0 or 1).
+int jvm_bridge_active_session_count(void);
+/// Maximum independently safe concurrent sessions, still 1 until global
+/// native renderer/UI/Treo/GC/3D resources have per-JVM owners.
+int jvm_bridge_supported_concurrent_sessions(void);
 /// Monotonically increasing ID of the active session, zero if none.
 /// Used to reject callbacks from a previously closed game instance.
 uint64_t jvm_bridge_session_token(void);
