@@ -7,6 +7,7 @@
 
 #import <AVFoundation/AVFoundation.h>
 #include "j2me_audio.h"
+#include "j2me_input.h"
 #include "jvm.h"
 #include "jvm_util.h"
 #include <stdio.h>
@@ -59,102 +60,148 @@ static NSURL *getSoundFontURL(void) {
 }
 
 // ============================================================
-// Audio completion delegate
+// Completion events and per-JVM audio ownership
 // ============================================================
 
-// Event type for END_OF_MEDIA posted to input queue
 #define J2ME_AUDIO_END_OF_MEDIA 13
 
+// A physical AVAudioSession is an iOS shared resource; individual player
+// ownership, callbacks and teardown are nevertheless scoped to their JVM.
 @interface J2MEAudioDelegate : NSObject <AVAudioPlayerDelegate>
+@property(nonatomic, assign) MiniJVM *owner;
+@property(nonatomic, assign) uint64_t generation;
 @end
 
 @implementation J2MEAudioDelegate
 - (void)audioPlayerDidFinishPlaying:(AVAudioPlayer *)player successfully:(BOOL)flag {
-    // Post END_OF_MEDIA event to input queue
-    j2me_input_post_key(J2ME_AUDIO_END_OF_MEDIA, 0);
+    MiniJVM *owner = self.owner;
+    uint64_t generation = self.generation;
+    // The Java input ring is SPSC: route completion onto the same iOS main
+    // producer queue as physical input, and require the old binding generation.
+    dispatch_async(dispatch_get_main_queue(), ^{
+        j2me_input_post_key_to_vm(owner, generation, J2ME_AUDIO_END_OF_MEDIA, 0);
+    });
 }
 @end
 
-static J2MEAudioDelegate *g_audioDelegate = nil;
+static NSMutableSet<AVAudioPlayer *> *g_active_audio_players;
+static NSMutableSet<AVMIDIPlayer *> *g_active_midi_players;
+static NSMutableDictionary<NSValue *, NSValue *> *g_audio_owners;
+static NSMutableDictionary<NSValue *, NSValue *> *g_midi_owners;
+static NSMutableDictionary<NSValue *, J2MEAudioDelegate *> *g_player_delegates;
 
-static J2MEAudioDelegate *getAudioDelegate(void) {
-    if (!g_audioDelegate) {
-        g_audioDelegate = [[J2MEAudioDelegate alloc] init];
-    }
-    return g_audioDelegate;
+static NSValue *audio_key(const void *pointer) {
+    return [NSValue valueWithPointer:pointer];
 }
 
-// ============================================================
-// Active player tracking (for cleanup between game sessions)
-// ============================================================
+static BOOL audio_owned_by_vm(MiniJVM *vm, const void *player, BOOL midi) {
+    if (!vm || !player) return NO;
+    @synchronized ([AVAudioSession class]) {
+        NSValue *key = audio_key(player);
+        NSValue *owner = midi ? g_midi_owners[key] : g_audio_owners[key];
+        return owner != nil && [owner pointerValue] == vm;
+    }
+}
 
-static NSMutableSet *g_active_audio_players = nil;
-static NSMutableSet *g_active_midi_players = nil;
-
-static void track_audio_player(AVAudioPlayer *player) {
+static void track_audio_player(AVAudioPlayer *player, MiniJVM *owner) {
     @synchronized ([AVAudioSession class]) {
         if (!g_active_audio_players) g_active_audio_players = [NSMutableSet new];
+        if (!g_audio_owners) g_audio_owners = [NSMutableDictionary new];
+        if (!g_player_delegates) g_player_delegates = [NSMutableDictionary new];
+        J2MEAudioDelegate *delegate = [[J2MEAudioDelegate alloc] init];
+        delegate.owner = owner;
+        delegate.generation = j2me_input_binding_generation(owner);
+        player.delegate = delegate;
+        NSValue *key = audio_key((__bridge const void *)player);
         [g_active_audio_players addObject:player];
+        g_audio_owners[key] = audio_key(owner);
+        g_player_delegates[key] = delegate;
     }
 }
 
-static void untrack_audio_player(AVAudioPlayer *player) {
+// Exactly one close/teardown path wins ownership of the CF-retained handle.
+static BOOL untrack_audio_player(AVAudioPlayer *player, MiniJVM *owner) {
     @synchronized ([AVAudioSession class]) {
+        if (!audio_owned_by_vm(owner, (__bridge const void *)player, NO)) return NO;
+        NSValue *key = audio_key((__bridge const void *)player);
+        player.delegate = nil;
         [g_active_audio_players removeObject:player];
+        [g_audio_owners removeObjectForKey:key];
+        [g_player_delegates removeObjectForKey:key];
+        return YES;
     }
 }
 
-static void track_midi_player(AVMIDIPlayer *player) {
+static void track_midi_player(AVMIDIPlayer *player, MiniJVM *owner) {
     @synchronized ([AVAudioSession class]) {
         if (!g_active_midi_players) g_active_midi_players = [NSMutableSet new];
+        if (!g_midi_owners) g_midi_owners = [NSMutableDictionary new];
         [g_active_midi_players addObject:player];
+        g_midi_owners[audio_key((__bridge const void *)player)] = audio_key(owner);
     }
 }
 
-static void untrack_midi_player(AVMIDIPlayer *player) {
+static BOOL untrack_midi_player(AVMIDIPlayer *player, MiniJVM *owner) {
     @synchronized ([AVAudioSession class]) {
+        if (!audio_owned_by_vm(owner, (__bridge const void *)player, YES)) return NO;
         [g_active_midi_players removeObject:player];
+        [g_midi_owners removeObjectForKey:audio_key((__bridge const void *)player)];
+        return YES;
     }
+}
+
+static void stop_owned_audio_players(MiniJVM *vm) {
+    NSMutableArray<AVAudioPlayer *> *audio = [NSMutableArray new];
+    NSMutableArray<AVMIDIPlayer *> *midi = [NSMutableArray new];
+    @synchronized ([AVAudioSession class]) {
+        for (AVAudioPlayer *p in [g_active_audio_players copy]) {
+            NSValue *key = audio_key((__bridge const void *)p);
+            NSValue *owner = g_audio_owners[key];
+            if (vm == NULL || [owner pointerValue] == vm) {
+                p.delegate = nil;
+                [audio addObject:p];
+                [g_active_audio_players removeObject:p];
+                [g_audio_owners removeObjectForKey:key];
+                [g_player_delegates removeObjectForKey:key];
+            }
+        }
+        for (AVMIDIPlayer *p in [g_active_midi_players copy]) {
+            NSValue *key = audio_key((__bridge const void *)p);
+            NSValue *owner = g_midi_owners[key];
+            if (vm == NULL || [owner pointerValue] == vm) {
+                [midi addObject:p];
+                [g_active_midi_players removeObject:p];
+                [g_midi_owners removeObjectForKey:key];
+            }
+        }
+    }
+    for (AVAudioPlayer *p in audio) {
+        [p stop];
+        CFRelease((__bridge CFTypeRef)p);
+    }
+    if (midi.count) {
+        // AVMIDIPlayer's AUGraph must be stopped/deallocated on main.
+        void (^releaseMIDI)(void) = ^{
+            for (AVMIDIPlayer *p in midi) {
+                [p stop];
+                CFRelease((__bridge CFTypeRef)p);
+            }
+        };
+        if ([NSThread isMainThread]) releaseMIDI();
+        else dispatch_sync(dispatch_get_main_queue(), releaseMIDI);
+    }
+    printf("[J2ME Audio] Stopped owned players (wav=%lu midi=%lu)\n",
+           (unsigned long)audio.count, (unsigned long)midi.count);
+}
+
+void j2me_audio_stop_for_vm(MiniJVM *vm) {
+    if (vm) stop_owned_audio_players(vm);
 }
 
 void j2me_audio_stop_all(void) {
-    NSSet *midiSnapshot = nil;
-
-    @synchronized ([AVAudioSession class]) {
-        if (g_active_audio_players) {
-            for (AVAudioPlayer *p in [g_active_audio_players copy]) {
-                [p stop];
-                CFRelease((__bridge CFTypeRef)p);
-            }
-            [g_active_audio_players removeAllObjects];
-        }
-        if (g_active_midi_players) {
-            // Take a snapshot and clear the tracking set while holding the lock.
-            // Actual stop+release of MIDI players must happen on the main thread
-            // because AVMIDIPlayer's internal AUGraph asserts during dealloc if
-            // the AudioUnit is still in a render callback on another thread.
-            midiSnapshot = [g_active_midi_players copy];
-            [g_active_midi_players removeAllObjects];
-        }
-    }
-
-    if (midiSnapshot.count > 0) {
-        if ([NSThread isMainThread]) {
-            for (AVMIDIPlayer *p in midiSnapshot) {
-                [p stop];
-                CFRelease((__bridge CFTypeRef)p);
-            }
-        } else {
-            dispatch_sync(dispatch_get_main_queue(), ^{
-                for (AVMIDIPlayer *p in midiSnapshot) {
-                    [p stop];
-                    CFRelease((__bridge CFTypeRef)p);
-                }
-            });
-        }
-    }
-
-    printf("[J2ME Audio] All players stopped and released\n");
+    // Explicit global emergency teardown only; ordinary JVM cleanup must
+    // call j2me_audio_stop_for_vm, never touch other games' sound.
+    stop_owned_audio_players(NULL);
 }
 
 // ============================================================
@@ -181,11 +228,10 @@ static s32 n_audioCreatePlayer(Runtime *runtime, JClass *clazz) {
         return RUNTIME_STATUS_NORMAL;
     }
 
-    player.delegate = getAudioDelegate();
     [player prepareToPlay];
     // Prevent ARC from releasing — bridge retain
     CFRetain((__bridge CFTypeRef)player);
-    track_audio_player(player);
+    track_audio_player(player, runtime->jvm);
     env->push_long(runtime->stack, (s64)(intptr_t)(__bridge void *)player);
     return RUNTIME_STATUS_NORMAL;
 }
@@ -215,9 +261,10 @@ static s32 n_audioClose(Runtime *runtime, JClass *clazz) {
     s64 handle = env->localvar_getLong_2slot(runtime->localvar, 0);
     if (handle) {
         AVAudioPlayer *player = (__bridge AVAudioPlayer *)(void *)(intptr_t)handle;
-        [player stop];
-        untrack_audio_player(player);
-        CFRelease((__bridge CFTypeRef)player);
+        if (untrack_audio_player(player, runtime->jvm)) {
+            [player stop];
+            CFRelease((__bridge CFTypeRef)player);
+        }
     }
     return RUNTIME_STATUS_NORMAL;
 }
@@ -300,7 +347,7 @@ static s32 n_audioCreateMidiPlayer(Runtime *runtime, JClass *clazz) {
 
     [player prepareToPlay];
     CFRetain((__bridge CFTypeRef)player);
-    track_midi_player(player);
+    track_midi_player(player, runtime->jvm);
     env->push_long(runtime->stack, (s64)(intptr_t)(__bridge void *)player);
     return RUNTIME_STATUS_NORMAL;
 }
@@ -330,9 +377,10 @@ static s32 n_audioMidiClose(Runtime *runtime, JClass *clazz) {
     s64 handle = env->localvar_getLong_2slot(runtime->localvar, 0);
     if (handle) {
         AVMIDIPlayer *player = (__bridge AVMIDIPlayer *)(void *)(intptr_t)handle;
-        [player stop];
-        untrack_midi_player(player);
-        CFRelease((__bridge CFTypeRef)player);
+        if (untrack_midi_player(player, runtime->jvm)) {
+            [player stop];
+            CFRelease((__bridge CFTypeRef)player);
+        }
     }
     return RUNTIME_STATUS_NORMAL;
 }
