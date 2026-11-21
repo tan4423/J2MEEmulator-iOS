@@ -1141,6 +1141,7 @@ static inline s32 _optimize_inline_setter(JClass *clazz, s32 cfrIdx, Runtime *ru
  * Called only by this JAR's constructor/first-paint or exact setter.
  */
 extern void jvm_bridge_note_nso_init_trace(const char *detail);
+extern _Atomic int treo_nso_init_target_active;
 static void treo_nso_inspect_delegate(Runtime *rt, const char *stage,
                                        Instance *canvas_override, Instance *arg) {
     JClass *ek = classes_get_c(rt->jvm, NULL, "Class_ek");
@@ -1396,17 +1397,19 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
     int nso_init_probe = 0;
     Instance *nso_init_receiver = NULL;
     Instance *nso_init_argument = NULL;
-    if (utf8_equals_c(method->name, "<init>")) {
-        if (utf8_equals_c(clazz->name, "Class_cu")) nso_init_probe = 1;
-        else if (utf8_equals_c(clazz->name, "GameMidlet")) nso_init_probe = 2;
-    } else if (utf8_equals_c(clazz->name, "Class_ek")) {
-        if (utf8_equals_c(method->name, "paint") &&
-            utf8_equals_c(method->descriptor,
-                          "(Ljavax/microedition/lcdui/Graphics;)V"))
-            nso_init_probe = 3;
-        else if (utf8_equals_c(method->name, "a") &&
-                 utf8_equals_c(method->descriptor, "(LClass_bv;)V"))
-            nso_init_probe = 4; // non-inlined setter path
+    if (atomic_load_explicit(&treo_nso_init_target_active, memory_order_relaxed)) {
+        if (utf8_equals_c(method->name, "<init>")) {
+            if (utf8_equals_c(clazz->name, "Class_cu")) nso_init_probe = 1;
+            else if (utf8_equals_c(clazz->name, "GameMidlet")) nso_init_probe = 2;
+        } else if (utf8_equals_c(clazz->name, "Class_ek")) {
+            if (utf8_equals_c(method->name, "paint") &&
+                utf8_equals_c(method->descriptor,
+                              "(Ljavax/microedition/lcdui/Graphics;)V"))
+                nso_init_probe = 3;
+            else if (utf8_equals_c(method->name, "a") &&
+                     utf8_equals_c(method->descriptor, "(LClass_bv;)V"))
+                nso_init_probe = 4; // non-inlined setter path
+        }
     }
 #endif
     while (clazz->status < CLASS_STATUS_CLINITING) {

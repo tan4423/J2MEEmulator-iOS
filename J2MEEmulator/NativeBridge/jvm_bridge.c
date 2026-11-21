@@ -17,6 +17,10 @@
 #endif
 
 static atomic_int treo_exact_ninja_verified;
+// Per-JAR launch diagnostic gate (NOT a Deep Treo optimization flag).
+// Check exact Java class paths once in the archive; avoid name probing on
+// 10,000s of VM calls/sec for other JARs, including original NSO.
+_Atomic int treo_nso_init_target_active;
 int treo_ninja_deep_verified(void) {
     return atomic_load_explicit(&treo_exact_ninja_verified, memory_order_acquire);
 }
@@ -60,8 +64,20 @@ static int treo_is_nso_family(const char *jar_path) {
             if (i >= 4) has_sprite = 1;
         }
     }
+    const int family = matched >= 5 && has_map && has_sprite;
+    if (family) {
+        const char *const target_classes[] = {
+            "GameMidlet.class", "Class_cu.class", "Class_ek.class"
+        };
+        int found = 0;
+        for (unsigned i = 0; i < sizeof(target_classes) / sizeof(target_classes[0]); ++i)
+            found += mz_zip_reader_locate_file(&archive, target_classes[i], NULL,
+                                              MZ_ZIP_FLAG_CASE_SENSITIVE) >= 0;
+        atomic_store_explicit(&treo_nso_init_target_active, found == 3,
+                              memory_order_release);
+    }
     mz_zip_reader_end(&archive);
-    return matched >= 5 && has_map && has_sprite;
+    return family;
 }
 
 #endif
@@ -85,12 +101,12 @@ static pthread_mutex_t g_bridge_lifecycle_lock = PTHREAD_MUTEX_INITIALIZER;
 static char g_bridge_last_error[1536];
 // Bounded launch-only JVM field trace. Never used for normal Treo telemetry.
 static pthread_mutex_t g_bridge_nso_trace_lock = PTHREAD_MUTEX_INITIALIZER;
-static char g_bridge_nso_init_trace[2048];
+static char g_bridge_nso_init_trace[4096];
 static unsigned g_bridge_nso_init_trace_count;
 void jvm_bridge_note_nso_init_trace(const char *detail) {
     if (!detail || !detail[0]) return;
     pthread_mutex_lock(&g_bridge_nso_trace_lock);
-    if (g_bridge_nso_init_trace_count < 12) {
+    if (g_bridge_nso_init_trace_count < 20) {
         size_t len = strlen(g_bridge_nso_init_trace);
         size_t avail = sizeof(g_bridge_nso_init_trace) - len - 1;
         if (avail >= 4) {
@@ -187,6 +203,7 @@ int jvm_bridge_init(const char *res_root, const char *save_root, const char *mid
         return -1;
     }
     atomic_store_explicit(&treo_exact_ninja_verified, 0, memory_order_release);
+    atomic_store_explicit(&treo_nso_init_target_active, 0, memory_order_release);
     treo_nso_probe_reset();
 #if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__ && !defined(TREO_NINJA_DEEP_DISABLED)
     int ninja_match = treo_is_nso_family(midlet_jar);
