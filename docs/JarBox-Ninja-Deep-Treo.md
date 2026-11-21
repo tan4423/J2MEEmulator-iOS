@@ -426,3 +426,71 @@ enter/exit game cleanly. If it still fails with the same stack, inspect
 the object's constructor execution and field identity separately, and
 consider more precise `Class_ek` bytecode field-write instrumentation.
 Do not suppress/ignore NPE or silently skip the entire game paint.
+
+
+## 2026-11-21: Persistent TrungDucTV first-paint NPE; VM layout fix and UI
+
+User re-tested after disabling reference-setter inlining: the failure was **identical**:
+`Game execution failed (1); phase=Display.runEventLoop;
+java.lang.NullPointerException at Class_ek.paint -> Canvas.doPaint ->
+Display.runEventLoop`. Thus the reference-setter shortcut experiment was
+ineffective and has been **reverted**, avoiding uncertain performance loss
+to other NSO/game code.
+
+A more fundamental **general miniJVM correctness bug** was found in
+`class.c:class_prepar`. It previously calculated
+`clazz->field_instance_start = clazz->superclass->field_instance_len`
+without ensuring the superclass had been prepared. A lazily loaded parent
+may still have `field_instance_len=0`, causing class fields to overlap
+inherited instance storage. Different JAR class initialization orders
+can expose the bug. Fixed by recursively **preparing the superclass field
+layout first** (without prematurely executing Java static initializers)
+before laying out subclass fields. The existing PREPARING guard handles
+reentrant preparation. This is a standards-aligned miniJVM fix, not a
+hard-coded `Class_ek` workaround. It is a **candidate cause** for the
+observed null delegate in paint, not yet device-confirmed.
+
+Offline disassembly of the supplied `217_TrungDucTV_51026.jar`:
+- `GameMidlet.<init>()` constructs `Class_ek`, stores it in
+  `Class_ek.a`, then constructs `Class_cu`.
+- `Class_cu.<init>()` calls `Class_ek.a.a(this)`.
+- `Class_ek.a(Class_bv)` does `aload_0, aload_1, putfield b,
+  return`; `Class_ek.paint` reads `b` and invokes `b.a(g)`.
+- `GameMidlet.startApp` sets `Display.setCurrent(Class_ek.a)`.
+- Only one external bytecode `putstatic Class_ek.a` was found among
+  24 JAR classes mentioning `Class_ek` (GameMidlet constructor).
+- Repeated first-paint NPE therefore indicates a missing/overwritten
+  delegate by the time Canvas paint runs. The observed stack alone
+  cannot distinguish incorrect field layout, missing setter invocation,
+  or an unexpected class initialization/concurrency problem.
+
+### Long-press game menu changes
+
+`AppsListViewController.swift` now displays per-game menu item
+`Đổi tên`, with an alert to save a **display-only** alias in
+`UserDefaults` by stable JAR filename-derived game ID. The list sorts
+and displays using this alias. Neither JAR path nor `Games Data` path
+is renamed, so RMS/user save state is unchanged. Removing a JAR clears
+the alias. Rename length is validated (1–80 visible characters).
+
+The per-game long-press `Nâng cao` submenu contains the 3D
+Enhancement toggle and FPS Limit menu; Screen Resolution remains
+visible at the top level. **New per-game defaults** when no stored
+preference exists: 3D disabled (render scale 1), FPS Unlimited (0).
+Existing explicit preferences persist; FPS Unlimited does not disable
+a game's own tick/pacing logic.
+
+### Acceptance / caveats
+
+Build from `loader-ios-jit-probe` using the one existing
+`J2ME Treo JIT probe unsigned` Codemagic workflow. Test the original
+NSO first, TrungDucTV second, and close/reopen games several times.
+On failure, copy the unchanged/changed `phase` and full Java stack.
+If first-paint `Class_ek` NPE persists after parent-before-child
+field layout fix, next step is targeted **write/read instrumentation**
+of the `Class_ek.b` field on the JVM thread to distinguish setter not
+executed from field offset or object identity corruption. Do not hide
+NPE, fabricate a delegate, or skip real paint to make the menu appear.
+
+Source-level checks done; no on-iPhone or Codemagic build was run
+during this change. Do not claim that the mod opens until verified.
