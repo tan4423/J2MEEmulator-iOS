@@ -379,8 +379,15 @@ int jvm_bridge_init(const char *res_root, const char *save_root, const char *mid
         atomic_store_explicit(&treo_exact_ninja_verified, 0, memory_order_release);
         return -4;
     }
+    if (!j2me_ui_reg_natives(g_bridge_vm.jvm)) {
+        printf("[JarBoxVM][Lifecycle] cannot reserve independent LCDUI context\n");
+        j2me_input_release_vm(g_bridge_vm.jvm);
+        jvm_destroy(g_bridge_vm.jvm);
+        g_bridge_vm.jvm = NULL;
+        atomic_store_explicit(&treo_exact_ninja_verified, 0, memory_order_release);
+        return -6;
+    }
     j2me_render_reg_natives(g_bridge_vm.jvm);
-    j2me_ui_reg_natives(g_bridge_vm.jvm);
     j2me_audio_reg_natives(g_bridge_vm.jvm);
     j2me_micro3d_gl_reg_natives(g_bridge_vm.jvm);
     j2me_m3g_reg_natives(g_bridge_vm.jvm);
@@ -482,6 +489,9 @@ void jvm_bridge_destroy(void) {
         // Note: force-zombied pthreads may still execute briefly — class_clinit
         // and print_exception have is_stop / jvm_state guards to avoid crashes.
         jvm_destroy(g_bridge_vm.jvm);
+        // The JVM address remains the registration key until this release;
+        // no code dereferences it after jvm_destroy.
+        j2me_ui_release_vm(g_bridge_vm.jvm);
         g_bridge_vm.jvm = NULL;
 
         // Step 6: Clean up other native subsystems — safe because:
