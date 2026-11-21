@@ -524,6 +524,8 @@ on-screen launch failure alert as `NSOInit:`, copyable with the existing
 - `setter_bytecode_entry` / `setter_bytecode_exit`: the corresponding
   ordinary bytecode-execution path if miniJVM did not inline the setter.
   One pair or the other should appear if the intended setter executed
+- `before_gc` / `after_gc`: delegate state immediately before and after
+  `System.gc()` in the `Class_cu` constructor (without disabling GC)
 - `cu_ctor_exit`: after constructor initialization including `System.gc()`
 - `midlet_ctor_exit`: after creating and initializing `Class_cu`
 - `paint_entry`: the Canvas object and delegate immediately before the
