@@ -46,6 +46,13 @@ const char *jvm_bridge_net_trace(void);
 // cheaper and safer than polling/walking live Java threads or their stack.
 void jvm_bridge_mod_popup_tick(void);
 uint64_t jvm_bridge_mod_popup_tick_count(void);
+// Four exact method-call-site counters in the known mod's game-loop thread.
+// 1: modal update, 2: repaint, 3: serviceRepaints, 4: Thread.sleep.
+void jvm_bridge_mod_loop_note_stage(int stage);
+uint64_t jvm_bridge_mod_loop_stage_count(int stage);
+int jvm_bridge_mod_loop_last_stage(void);
+// Bound exception notes to the first 12 per session; no Java heap access.
+int jvm_bridge_mod_loop_exception_log_slot(void);
 
 /// Initialize miniJVM with the given resource and save directories.
 /// @param res_root         Path to directory containing runtime JARs

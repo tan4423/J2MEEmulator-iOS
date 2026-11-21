@@ -1095,3 +1095,38 @@ a cause-localizing source change, NOT a claim of fixed login.
 
 No modification to JAR, network packets, Deep Treo fast paths, `main`,
 Codemagic workflow count, session-token stop safeguards, or clone behavior.
+
+
+## 2026-11-21 Frozen mod popup: no user keypress required
+
+User clarified the game itself becomes unresponsive as soon as the
+self-drawn mod message panel appears. Do **not** ask user to press OK,
+change soft-key mapping, or assume TCP is broken. Confirmed earlier
+device log: matching build, TCP first send/receive, clean close,
+`game_popup:configured`, `popup_update_count=31`,
+`display_poll_count=626`. These cumulative counts do not prove whether
+the loops are still advancing at snapshot time.
+
+Directly inspected the unmodified game's bytecode. `Class_cu.run()`
+is a dedicated game loop. Its bytecode PCs 11..454 are covered by a
+generic `Exception` handler at PC457; on every exception it sleeps
+1000 ms then prints a stack trace and retries. Such an exception is
+invisible in the old in-app network diagnosis and can look like
+a frozen game. The loop calls `Class_cc.a()` (modal update) at PC270,
+then `Class_ek.repaint()` at PC406 and
+`Class_ek.serviceRepaints()` at PC412, and `Thread.sleep` at
+PC439/446. A blocking paint/native call is another possible cause;
+neither is confirmed yet.
+
+Added exception-only capture (`mod_ui_exception` with
+class/method/PC/type, first 12 per session) for `Class_cu.run/l`,
+`Class_em.a`, `Class_cc.a`, `Class_ek.paint`. Added four
+per-call-site *atomic counters* (popup, repaint, serviceRepaints,
+sleep) and a last-call marker, scoped to this JAR's existing
+`treo_nso_init_target_active` gate. These are shown in the existing
+**Chẩn đoán kết nối** copied report. The displayed last call is a
+breadcrumb, **not a suspended Java thread's stack trace**. No
+auto-pressing OK, no JAR modification, network retries, loop polling
+timers, new Codemagic workflows, or changes to the session token
+lifecyle. Test a single screenshot/report after game freezes; users
+need not press the unresponsive game controls.

@@ -630,6 +630,8 @@ void _op_notsupport(u8 *opCode, Runtime *runtime) {
 #if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__
 extern void jvm_bridge_note_net_trace(const char *detail);
 extern void jvm_bridge_mod_popup_tick(void);
+extern void jvm_bridge_mod_loop_note_stage(int stage);
+extern int jvm_bridge_mod_loop_exception_log_slot(void);
 #endif
 
 s32 exception_handle(RuntimeStack *stack, Runtime *runtime) {
@@ -690,6 +692,29 @@ s32 exception_handle(RuntimeStack *stack, Runtime *runtime) {
                  utf8_cstr(runtime->clazz->name), offset,
                  utf8_cstr(ins->mb.clazz->name));
         jvm_bridge_note_net_trace(event);
+    } else if (ins && ins->mb.clazz && runtime->clazz && runtime->method &&
+               atomic_load_explicit(&treo_nso_init_target_active, memory_order_relaxed) &&
+               ((utf8_equals_c(runtime->clazz->name, "Class_cu") &&
+                 (utf8_equals_c(runtime->method->name, "run") ||
+                  utf8_equals_c(runtime->method->name, "l"))) ||
+                (utf8_equals_c(runtime->clazz->name, "Class_em") &&
+                 utf8_equals_c(runtime->method->name, "a")) ||
+                (utf8_equals_c(runtime->clazz->name, "Class_cc") &&
+                 utf8_equals_c(runtime->method->name, "a")) ||
+                (utf8_equals_c(runtime->clazz->name, "Class_ek") &&
+                 utf8_equals_c(runtime->method->name, "paint")))) {
+        // Class_cu.run catches Exception at PC11..454 then sleeps one
+        // second and repeats, hiding the first *real* Java error. This
+        // snapshot is exception-only, never the game loop hot path.
+        if (jvm_bridge_mod_loop_exception_log_slot()) {
+            char event[192];
+            snprintf(event, sizeof(event),
+                     "mod_ui_exception:class=%s,method=%s,pc=%d,type=%s",
+                     utf8_cstr(runtime->clazz->name),
+                     utf8_cstr(runtime->method->name), offset,
+                     utf8_cstr(ins->mb.clazz->name));
+            jvm_bridge_note_net_trace(event);
+        }
     }
 #endif
     s32 i;
@@ -1264,6 +1289,32 @@ static inline void treo_nso_trace_cu_invokespecial(Runtime *rt, int probe,
 #endif
 s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
 #if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__
+    // Non-invasive mod-specific call-site breadcrumbs. These four
+    // counters let one frozen-screen snapshot distinguish being stuck
+    // inside popup update, repaint, serviceRepaints or game-thread sleep.
+    // No Java state or packet is read and there is no per-frame text log.
+    if (atomic_load_explicit(&treo_nso_init_target_active, memory_order_relaxed) &&
+        pruntime && pruntime->clazz && pruntime->method &&
+        utf8_equals_c(pruntime->clazz->name, "Class_cu") &&
+        utf8_equals_c(pruntime->method->name, "run")) {
+        int game_stage = 0;
+        if (utf8_equals_c(method->name, "a") &&
+            utf8_equals_c(method->descriptor, "()V") &&
+            (utf8_equals_c(method->_this_class->name, "Class_em") ||
+             utf8_equals_c(method->_this_class->name, "Class_cc")))
+            game_stage = 1;
+        else if (utf8_equals_c(method->name, "repaint") &&
+                 utf8_equals_c(method->descriptor, "()V"))
+            game_stage = 2;
+        else if (utf8_equals_c(method->name, "serviceRepaints") &&
+                 utf8_equals_c(method->descriptor, "()V"))
+            game_stage = 3;
+        else if (utf8_equals_c(method->name, "sleep") &&
+                 utf8_equals_c(method->descriptor, "(J)V") &&
+                 utf8_equals_c(method->_this_class->name, "java/lang/Thread"))
+            game_stage = 4;
+        if (game_stage) jvm_bridge_mod_loop_note_stage(game_stage);
+    }
     // Retain game logic inside paint(). For a headless *Canvas* Graphics,
     // certain bundled draw wrappers are already a no-op. Skip only those
     // resolved void calls at the VM boundary, preserving evaluation of args.

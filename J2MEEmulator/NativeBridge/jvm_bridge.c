@@ -114,6 +114,25 @@ static pthread_mutex_t g_bridge_net_trace_lock = PTHREAD_MUTEX_INITIALIZER;
 static char g_bridge_net_trace[8192];
 static unsigned g_bridge_net_trace_count;
 static _Atomic uint64_t g_mod_popup_update_ticks;
+static _Atomic uint64_t g_mod_loop_stage_counts[5];
+static atomic_int g_mod_loop_last_stage;
+static atomic_int g_mod_loop_exception_notes;
+void jvm_bridge_mod_loop_note_stage(int stage) {
+    if (stage < 1 || stage > 4) return;
+    atomic_store_explicit(&g_mod_loop_last_stage, stage, memory_order_relaxed);
+    atomic_fetch_add_explicit(&g_mod_loop_stage_counts[stage], 1, memory_order_relaxed);
+}
+uint64_t jvm_bridge_mod_loop_stage_count(int stage) {
+    if (stage < 1 || stage > 4) return 0;
+    return atomic_load_explicit(&g_mod_loop_stage_counts[stage], memory_order_relaxed);
+}
+int jvm_bridge_mod_loop_last_stage(void) {
+    return atomic_load_explicit(&g_mod_loop_last_stage, memory_order_relaxed);
+}
+int jvm_bridge_mod_loop_exception_log_slot(void) {
+    return atomic_fetch_add_explicit(&g_mod_loop_exception_notes, 1,
+                                     memory_order_relaxed) < 12;
+}
 void jvm_bridge_mod_popup_tick(void) {
     atomic_fetch_add_explicit(&g_mod_popup_update_ticks, 1, memory_order_relaxed);
 }
@@ -200,6 +219,10 @@ int jvm_bridge_try_begin_session(void) {
     g_bridge_net_trace_count = 0;
     pthread_mutex_unlock(&g_bridge_net_trace_lock);
     atomic_store_explicit(&g_mod_popup_update_ticks, 0, memory_order_release);
+    for (int j = 1; j <= 4; ++j)
+        atomic_store_explicit(&g_mod_loop_stage_counts[j], 0, memory_order_relaxed);
+    atomic_store_explicit(&g_mod_loop_last_stage, 0, memory_order_release);
+    atomic_store_explicit(&g_mod_loop_exception_notes, 0, memory_order_release);
     atomic_store_explicit(&g_bridge_phase, BRIDGE_STARTING, memory_order_release);
     // Visible from the first frame in Chẩn đoán kết nối, regardless of
     // which Java network API the game calls. Detects an older installed IPA.

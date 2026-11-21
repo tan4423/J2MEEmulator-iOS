@@ -977,6 +977,11 @@ class GameViewController: UIViewController {
             "vm_start_probe=" + (hasStartupProbe ? "seen" : "missing") + "\n" +
             "display_poll_count=" + String(treo_display_poll_calls()) + "\n" +
             "popup_update_count=" + String(jvm_bridge_mod_popup_tick_count()) + "\n" +
+            "game_loop_last_call=" + String(jvm_bridge_mod_loop_last_stage()) + "\n" +
+            "game_loop_calls=popup:" + String(jvm_bridge_mod_loop_stage_count(1)) +
+            ",repaint:" + String(jvm_bridge_mod_loop_stage_count(2)) +
+            ",serviceRepaints:" + String(jvm_bridge_mod_loop_stage_count(3)) +
+            ",sleep:" + String(jvm_bridge_mod_loop_stage_count(4)) + "\n" +
             (trace.isEmpty
                 ? "Chưa ghi nhận TCP hoặc exception mạng của game."
                 : trace)
