@@ -55,6 +55,11 @@ workflows:
             J2MEEmulator/RuntimePatches/java/lang/VerifyError.java \
             J2MEEmulator/RuntimePatches/java/util/Base64.java \
             J2MEEmulator/RuntimePatches/java/util/Objects.java \
+            J2MEEmulator/RuntimePatches/java/util/Optional.java \
+            J2MEEmulator/RuntimePatches/java/util/function/Supplier.java \
+            J2MEEmulator/RuntimePatches/java/util/function/Consumer.java \
+            J2MEEmulator/RuntimePatches/java/util/function/Function.java \
+            J2MEEmulator/RuntimePatches/java/util/function/Predicate.java \
             J2MEEmulator/RuntimePatches/com/sun/cldc/i18n/j2me/UTF_8_Reader.java
           jar uf "$jars/minijvm_rt.jar" -C "$core_classes" .
           # Verify the classes that will be packaged, NOT the host JDK
@@ -68,6 +73,9 @@ workflows:
             java/time/Duration.class java/lang/VerifyError.class \
             java/util/Base64.class 'java/util/Base64$Encoder.class' \
             'java/util/Base64$Decoder.class' java/util/Objects.class \
+            java/util/Optional.class java/util/function/Supplier.class \
+            java/util/function/Consumer.class java/util/function/Function.class \
+            java/util/function/Predicate.class \
             com/sun/cldc/i18n/j2me/UTF_8_Reader.class)
           javap "$core_verify/java/nio/charset/StandardCharsets.class" > "$RUNNER_TEMP/utf8-class.txt"
           javap "$core_verify/java/io/OutputStreamWriter.class" > "$RUNNER_TEMP/writer-class.txt"
@@ -115,7 +123,19 @@ workflows:
           javap "$core_verify/java/util/Objects.class" > "$RUNNER_TEMP/objects-signatures.txt"
           grep -Fq 'public static boolean deepEquals(java.lang.Object, java.lang.Object);' "$RUNNER_TEMP/objects-signatures.txt"
           grep -Fq 'public static <T> T requireNonNull(T, java.lang.String);' "$RUNNER_TEMP/objects-signatures.txt"
-          echo "[JarBoxNET][BUILD] java8_core_utf8=present localtime=present localdate=present localdatetime=present instant=present duration=present verifyerror=present base64=present objects=present boot_jar=patched short_read=enabled"
+          javap "$core_verify/java/util/Optional.class" > "$RUNNER_TEMP/optional-signatures.txt"
+          grep -Fq 'public static <T> java.util.Optional<T> ofNullable(T);' "$RUNNER_TEMP/optional-signatures.txt"
+          grep -Fq 'public <U> java.util.Optional<U> flatMap(java.util.function.Function<? super T, java.util.Optional<U>>);' "$RUNNER_TEMP/optional-signatures.txt"
+          javap "$core_verify/java/util/function/Function.class" > "$RUNNER_TEMP/function-signatures.txt"
+          grep -Fq 'public default <V> java.util.function.Function<T, V> andThen(java.util.function.Function<? super R, ? extends V>);' "$RUNNER_TEMP/function-signatures.txt"
+          javap "$core_verify/java/util/function/Predicate.class" > "$RUNNER_TEMP/predicate-signatures.txt"
+          grep -Fq 'public default java.util.function.Predicate<T> negate();' "$RUNNER_TEMP/predicate-signatures.txt"
+          # Default methods produce helper classes; ensure they made it into the
+          # boot JAR instead of validating only the interface classfiles.
+          jar tf "$jars/minijvm_rt.jar" | grep -Fqx 'java/util/function/Function$1.class'
+          jar tf "$jars/minijvm_rt.jar" | grep -Fqx 'java/util/function/Consumer$1.class'
+          jar tf "$jars/minijvm_rt.jar" | grep -Fqx 'java/util/function/Predicate$4.class'
+          echo "[JarBoxNET][BUILD] java8_core_utf8=present localtime=present localdate=present localdatetime=present instant=present duration=present verifyerror=present base64=present objects=present optional=present function=present boot_jar=patched short_read=enabled"
           classes="$RUNNER_TEMP/lcdui-classes"
           mkdir -p "$classes"
           javac --release 8 -sourcepath '' -cp "$jars/j2me_api.jar:$jars/minijvm_rt.jar" \
@@ -249,7 +269,7 @@ workflows:
           build_commit="$(git rev-parse --verify HEAD)"
           test "${#build_commit}" -eq 40
           /usr/libexec/PlistBuddy -c "Add :JarBoxBuildCommit string $build_commit" "$app/Info.plist"
-          /usr/libexec/PlistBuddy -c 'Add :JarBoxBootPatch string java8_utf8_localtime_instant_duration_v6' "$app/Info.plist"
+          /usr/libexec/PlistBuddy -c 'Add :JarBoxBootPatch string java8_optional_function_v7' "$app/Info.plist"
           actual_commit="$(/usr/libexec/PlistBuddy -c 'Print :JarBoxBuildCommit' "$app/Info.plist")"
           test "$actual_commit" = "$build_commit"
           echo "[JarBoxNET][BUILD] final_ipa_commit=$build_commit"
@@ -264,7 +284,7 @@ workflows:
           ipa_plist="$RUNNER_TEMP/packaged-Info.plist"
           unzip -p "$GITHUB_WORKSPACE/J2ME-Treo-jar-cpu-audit-unsigned.ipa" "Payload/*.app/Info.plist" > "$ipa_plist"
           test "$(/usr/libexec/PlistBuddy -c 'Print :JarBoxBuildCommit' "$ipa_plist")" = "$build_commit"
-          test "$(/usr/libexec/PlistBuddy -c 'Print :JarBoxBootPatch' "$ipa_plist")" = "java8_utf8_localtime_instant_duration_v6"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :JarBoxBootPatch' "$ipa_plist")" = "java8_optional_function_v7"
           echo "[JarBoxNET][BUILD] stamped IPA archive verified"
     artifacts: &jarbox_ipa_shared_artifacts
       - J2ME-Treo-jar-cpu-audit-unsigned.ipa
