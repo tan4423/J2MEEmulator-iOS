@@ -344,12 +344,23 @@ void class_clinit(JClass *clazz, Runtime *runtime) {
             FieldInfo *fi = find_fieldInfo_by_fieldref(clazz, cfr->item.index, runtime);
             cfr->fieldInfo = fi;
             if (!fi) {
-                jvm_printf("field not found %s.%s \n", utf8_cstr(class_get_constant_classref(clazz, cfr->classIndex)->name), utf8_cstr(class_get_constant_utf8(clazz, class_get_constant_name_and_type(clazz, cfr->nameAndTypeIndex)->nameIndex)->utfstr));
-                fi = find_fieldInfo_by_fieldref(clazz, cfr->item.index, runtime);
+                /*
+                 * Some re-obfuscated MIDlets have symbolic references to
+                 * Java SE-only fields inside unreachable/dead code. Eager
+                 * resolution must NOT dereference a NULL FieldInfo or abort
+                 * class initialization. The interpreter already retries
+                 * unresolved getstatic/putstatic/getfield/putfield references
+                 * and throws NoSuchFieldError if an instruction is executed.
+                 *
+                 * In particular, NSO TrungDucTV has a reference to
+                 * java/nio/charset/StandardCharsets.UTF_8 in GameMidlet.
+                 * Do not manufacture a field value or change game semantics.
+                 */
+                continue;
             }
-            if (fi->_this_class->status < CLASS_STATUS_CLINITED) {
-                //class_clinit(fi->_this_class, runtime); //init here would too early
-            }
+            // The declaring class may still need <clinit> at the first real
+            // field access; never initialize it during eager pre-link.
+
         }
         //find finalize method, but not process java.lang.Object.finalize()
         clazz->finalizeMethod = find_methodInfo_by_name_c(utf8_cstr(clazz->name), STR_METHOD_FINALIZE, "()V", clazz->jloader, runtime);
