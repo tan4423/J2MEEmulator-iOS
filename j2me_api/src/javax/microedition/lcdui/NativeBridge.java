@@ -77,6 +77,8 @@ public class NativeBridge {
 
     // Lifecycle — check if native side requested MIDlet stop
     public static native boolean isStopRequested();
+    // Called only by MIDletRunner on startup/lifecycle failure, never per tick.
+    public static native void reportLaunchError(String detail);
 
     // Event wake generation is taken before polling input, to avoid lost
     // signals in the diagnostic idle Display sleep path.

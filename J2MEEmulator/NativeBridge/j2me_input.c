@@ -157,6 +157,19 @@ static s32 n_pollInputEvent(Runtime *runtime, JClass *clazz) {
     return RUNTIME_STATUS_NORMAL;
 }
 
+// Java launcher exception bridge. A failed MIDlet should display the real
+// Java exception name/message rather than only "game execution failed (1)".
+static s32 n_reportLaunchError(Runtime *runtime, JClass *clazz) {
+    Instance *message = runtime->jnienv->localvar_getRefer(runtime->localvar, 0);
+    if (message) {
+        Utf8String *str = utf8_create();
+        runtime->jnienv->jstring_2_utf8(message, str, runtime);
+        jvm_bridge_set_launch_error(utf8_cstr(str));
+        utf8_destroy(str);
+    }
+    return RUNTIME_STATUS_NORMAL;
+}
+
 // ============================================================
 // Native method: NativeBridge.isStopRequested() → boolean
 // ============================================================
@@ -249,6 +262,7 @@ void j2me_input_reset(void) {
 static java_native_method j2me_input_methods[] = {
     {CLS, "pollInputEvent", "()[I", n_pollInputEvent},
     {CLS, "isStopRequested", "()Z", n_isStopRequested},
+    {CLS, "reportLaunchError", "(Ljava/lang/String;)V", n_reportLaunchError},
     {CLS, "displayWaitEnabled", "()Z", n_displayWaitEnabled},
     {CLS, "displayWaitVersion", "()I", n_displayWaitVersion},
     {CLS, "displayWaitIfUnchanged", "(II)I", n_displayWaitIfUnchanged},

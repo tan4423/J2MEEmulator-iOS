@@ -80,6 +80,24 @@ static atomic_int g_bridge_phase = BRIDGE_IDLE;
 // Protect the JVM pointer/phase while the cancellation watchdog interrupts
 // Java threads; normal VM execution never takes this mutex.
 static pthread_mutex_t g_bridge_lifecycle_lock = PTHREAD_MUTEX_INITIALIZER;
+// Java launcher reports a specific error BEFORE the native runner unwinds.
+// One session owns this buffer, and only the owning Swift worker reads it.
+static char g_bridge_last_error[640];
+static atomic_int g_bridge_last_error_ready;
+void jvm_bridge_set_launch_error(const char *message) {
+    if (!message) return;
+    size_t n = strlen(message);
+    if (n >= sizeof(g_bridge_last_error)) n = sizeof(g_bridge_last_error) - 1;
+    memcpy(g_bridge_last_error, message, n);
+    g_bridge_last_error[n] = '\0';
+    atomic_store_explicit(&g_bridge_last_error_ready, 1, memory_order_release);
+    printf("[JarBoxVM][LaunchError] %s\n", g_bridge_last_error);
+}
+const char *jvm_bridge_last_error(void) {
+    return atomic_load_explicit(&g_bridge_last_error_ready, memory_order_acquire)
+        ? g_bridge_last_error : "";
+}
+
 
 int jvm_bridge_try_begin_session(void) {
     int expected = 0;
@@ -87,6 +105,8 @@ int jvm_bridge_try_begin_session(void) {
             &expected, 1, memory_order_acq_rel, memory_order_acquire))
         return 0;
     atomic_store_explicit(&g_jvm_stop_requested, 0, memory_order_release);
+    atomic_store_explicit(&g_bridge_last_error_ready, 0, memory_order_release);
+    g_bridge_last_error[0] = '\0';
     atomic_store_explicit(&g_bridge_phase, BRIDGE_STARTING, memory_order_release);
     printf("[JarBoxVM][Lifecycle] session=acquired phase=starting\n");
     return 1;

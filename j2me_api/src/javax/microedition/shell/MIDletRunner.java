@@ -11,6 +11,7 @@ import javax.microedition.midlet.MIDlet;
 import javax.microedition.midlet.MIDletStateChangeException;
 import javax.microedition.lcdui.Canvas;
 import javax.microedition.lcdui.Display;
+import javax.microedition.lcdui.NativeBridge;
 import java.io.BufferedReader;
 import java.io.InputStream;
 import java.io.InputStreamReader;
@@ -86,6 +87,7 @@ public class MIDletRunner {
             System.out.println("[MIDletRunner] LAUNCH FAILURE: "
                 + e.getClass().getName() + ": " + e.getMessage());
             e.printStackTrace();
+            NativeBridge.reportLaunchError(e.getClass().getName() + ": " + e.getMessage());
             throw new RuntimeException("MIDlet launch failed: " + e.toString());
         }
     }
@@ -206,11 +208,13 @@ public class MIDletRunner {
 
         } catch (MIDletStateChangeException e) {
             System.out.println("[MIDletRunner] MIDletStateChangeException: " + e.getMessage());
+            NativeBridge.reportLaunchError(e.getClass().getName() + ": " + e.getMessage());
             throw new RuntimeException("MIDlet lifecycle failed: " + e.toString());
         } catch (Throwable e) {
             System.out.println("[MIDletRunner] ERROR in lifecycle: " + e.getClass().getName()
                     + ": " + e.getMessage());
             e.printStackTrace();
+            NativeBridge.reportLaunchError(e.getClass().getName() + ": " + e.getMessage());
             throw new RuntimeException("MIDlet lifecycle failed: " + e.toString());
         }
     }

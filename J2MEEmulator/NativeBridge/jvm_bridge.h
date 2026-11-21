@@ -21,6 +21,11 @@ void jvm_bridge_finish_session(void);
 /// Returns 1 when active Java threads were interrupted, 0 otherwise.
 int jvm_bridge_interrupt_active_threads(void);
 
+/// Record a Java launcher failure and return its UTF-8 diagnostic to Swift.
+/// The message persists across JVM teardown until the next session begins.
+void jvm_bridge_set_launch_error(const char *message);
+const char *jvm_bridge_last_error(void);
+
 /// Initialize miniJVM with the given resource and save directories.
 /// @param res_root         Path to directory containing runtime JARs
 /// @param save_root        Path to writable directory for app data
