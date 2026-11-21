@@ -628,6 +628,7 @@ void _op_notsupport(u8 *opCode, Runtime *runtime) {
 
 
 #if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__
+extern _Atomic int treo_nso_init_target_active;
 extern void jvm_bridge_note_net_trace(const char *detail);
 extern void jvm_bridge_mod_popup_tick(void);
 extern void jvm_bridge_mod_loop_note_stage(int stage);
@@ -1214,7 +1215,6 @@ static inline s32 _optimize_inline_setter(JClass *clazz, s32 cfrIdx, Runtime *ru
  * Called only by this JAR's constructor/first-paint or exact setter.
  */
 extern void jvm_bridge_note_nso_init_trace(const char *detail);
-extern _Atomic int treo_nso_init_target_active;
 static void treo_nso_inspect_delegate(Runtime *rt, const char *stage,
                                        Instance *canvas_override, Instance *arg) {
     JClass *ek = classes_get_c(rt->jvm, NULL, "Class_ek");
