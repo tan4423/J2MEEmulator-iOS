@@ -9,7 +9,6 @@ workflows:
         # Ready-to-build defaults. No settings need to be entered in Codemagic.
         JARBOX_VM_SWITCH_BASELINE: "0"
         JARBOX_VM_PAINT_BRIDGE_BASELINE: "0"
-        JARBOX_BG_ANIM_BASELINE: "0"
         JARBOX_PAINT_SAMPLE_DISABLED: "1"
         JARBOX_VM_UTF16_BASELINE: "0"
         JARBOX_VM_IMAGE_CACHE_BASELINE: "1" # OFF by default: measured ~0 hits in 188.7s
@@ -83,15 +82,6 @@ workflows:
           else
             echo "[JarBoxVM][BUILD] paint_bridge=on (candidate)"
           fi
-          # A/B for main-thread springboard animation lifecycle, using
-          # identical JARs, JVM interpreter and Paint Bridge options.
-          bg_flag=""
-          if [[ "${JARBOX_BG_ANIM_BASELINE:-0}" == "1" ]]; then
-            bg_flag="JARBOX_BG_ANIM_BASELINE"
-            echo "[JarBoxBG][BUILD] springboard-animation=baseline-keep"
-          else
-            echo "[JarBoxBG][BUILD] springboard-animation=pause-when-hidden"
-          fi
           # Matched build for profiling overhead: same code, with sampler disabled.
           paint_sample_flag=""
           if [[ "${JARBOX_PAINT_SAMPLE_DISABLED:-0}" == "1" ]]; then
@@ -138,7 +128,6 @@ workflows:
             -derivedDataPath "$RUNNER_TEMP/jarbox-build" \
             "OTHER_LDFLAGS=\$(inherited) $RUNNER_TEMP/TreoSLJIT.o $RUNNER_TEMP/TreoJITProbe.o -framework UIKit -framework Foundation -framework Metal" \
             "TREO_GAME_JIT_CFLAGS=-DTREO_IOS_GAME_JIT=1 -I$sljit $vm_dispatch_flag $vm_paint_bridge_flag $paint_sample_flag $utf16_flag $image_cache_flag $array_lookup_flag $array_lookup_diagnostic_flag" \
-            "SWIFT_ACTIVE_COMPILATION_CONDITIONS=\$(inherited) $bg_flag" \
             PRODUCT_BUNDLE_IDENTIFIER=app.j2metreo.personal \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build
           

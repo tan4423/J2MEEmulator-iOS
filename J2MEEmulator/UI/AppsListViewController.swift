@@ -19,23 +19,14 @@ class AppsListViewController: UIViewController,
     private weak var animatedBackground: AnimatedBackgroundView?
     private var springboardVisible = false
 
-    // SceneDelegate controls activity explicitly. A covered or inactive
-    // springboard is never allowed to schedule perpetual animations.
+    // Keep lifecycle diagnostics but do not restart any decorative work.
     func sceneActivityChanged(_ active: Bool) {
         guard springboardVisible else { return }
         setSpringboardMotion(active, reason: active ? "scene active" : "scene inactive")
     }
 
-    // A fullscreen game hides the springboard. Do not continue animating
-    // the six blurred blobs behind it. The build flag provides an exact
-    // same-source baseline that retains the old background behavior.
     private func setSpringboardMotion(_ enabled: Bool, reason: String) {
-        guard let bg = animatedBackground else { return }
-#if JARBOX_BG_ANIM_BASELINE
-        bg.logAnimationState("baseline retained; \(reason)")
-#else
-        bg.setAnimationsActive(enabled, reason: reason)
-#endif
+        animatedBackground?.setAnimationsActive(enabled, reason: reason)
     }
 
     /// Directory where imported JARs are stored
