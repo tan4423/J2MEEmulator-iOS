@@ -5081,6 +5081,17 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         case op_invokestatic_fast: TREO_VM_HANDLER(op_invokestatic_fast) {
                             cmr = class_get_constant_method_ref(clazz, *((u16 *) (runtime->pc + 1)));
                             m = cmr->methodInfo;
+#if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__
+                            // The mod's Class_cu constructor calls System.gc()
+                            // AFTER assigning Class_ek.b. Distinguish GC from
+                            // later initialization without altering GC policy.
+                            const int nso_constructor_gc = nso_init_probe == 1 &&
+                                m && utf8_equals_c(m->_this_class->name, "java/lang/System") &&
+                                utf8_equals_c(m->name, "gc") &&
+                                utf8_equals_c(m->descriptor, "()V");
+                            if (nso_constructor_gc)
+                                treo_nso_inspect_delegate(runtime, "before_gc", NULL, NULL);
+#endif
 #if _JVM_DEBUG_PROFILE
                             spent = nanoTime() - start_at;
 #endif
@@ -5090,6 +5101,10 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                             if (ret) {
                                 goto label_exception_handle;
                             }
+#if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__
+                            if (nso_constructor_gc)
+                                treo_nso_inspect_delegate(runtime, "after_gc", NULL, NULL);
+#endif
                             runtime->pc += 3;
                             break;
                         }
