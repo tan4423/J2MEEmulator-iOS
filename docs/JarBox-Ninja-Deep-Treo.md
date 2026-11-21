@@ -192,3 +192,59 @@ already-measured presentation bypass.
 
 **Source code is committed but has not been built/tested on iPhone in
 this environment.**
+
+
+## TrungDucTV mod JAR startup resilience fix (2026-11-21)
+
+User reported tapping `217_TrungDucTV_51026.jar` exits JarBox's game screen
+immediately. Direct offline examination of the **uploaded binary** established:
+
+- Valid ZIP (no compression/CRC errors), `521` entries, `184` classfiles.
+- Manifest `MIDlet-1: TrungDucTV,/icon.png,GameMidlet`; `GameMidlet`
+  really extends `javax.microedition.midlet.MIDlet`.
+- Every classfile has major version `52` (Java 8), unlike the original
+  NSO 251 whose classes use version `45`. All 184 classfiles parse
+  successfully with the host JDK `javap`.
+- **162/184** classes, including `GameMidlet`, `Class_ek`, `Class_ep`,
+  and `Class_cu`, contain a symbolic
+  `java/nio/charset/StandardCharsets.UTF_8` field reference; many have
+  injected Java SE-only method references (`java/net/Socket`, etc.).
+  A reference in a constant pool does not prove its method is executed.
+
+Concrete miniJVM robustness bug:
+`minijvm/jvm/class.c:class_clinit` eagerly resolves **every** field
+reference in a loaded class before running its static initializer.
+When `find_fieldInfo_by_fieldref` returns `NULL`, the previous code
+attempted the lookup a second time and then unconditionally dereferenced
+`fi->_this_class` => native crash. It did so even for a field used only
+in obfuscation/dead code. This is a **likely** launch crash mechanism;
+there is not yet an iPhone native stack trace tying the report to it.
+
+Fix: cache `NULL` for missing eager field references and continue
+class initialization. Do not manufacture `StandardCharsets.UTF_8`,
+silently replace I/O functions, or alter the JAR. Existing interpreter
+`getstatic/putstatic/getfield/putfield` instructions already retry
+unresolved fields at first **real** execution and throw Java
+`NoSuchFieldError` if unavailable. Valid field references still use
+the same eager prelink logic.
+
+Second fix: `MIDletRunner.main` no longer catches a Java exception
+and returns normally (which previously made `call_main` appear to
+succeed and the Swift game screen dismiss). Startup and lifecycle
+failures now print their Java throwable and propagate a
+`RuntimeException`; native `call_main` reports a nonzero return and
+Swift shows the existing launch failure alert. Missing MIDlet manifest
+class also produces a failure rather than a silent normal exit.
+`codemagic.yaml`'s **existing single workflow** now recompiles this
+updated `MIDletRunner.java` into the bundled `j2me_api.jar`; adding
+Java source without this step would have been ineffective.
+
+**Tests performed:** ZIP integrity and all 184 classfiles parsed by
+`javap`; source audit of eager field linking and native interpreter
+`NoSuchFieldError` fallback; static GitHub branch/workflow checks.
+**Not performed:** running this JAR under iOS miniJVM, validating the
+original SIGSEGV root with a device stack trace, proving the mod reaches
+its menu/network flow, or proving no other Java SE incompatibility.
+If the mod still fails, send new `[MIDletRunner]` / `[JVM Bridge]`
+startup logs or crash stack so the next unsupported operation can be
+located. Avoid touching optimized NSO paint/render paths until confirmed.
