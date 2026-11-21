@@ -3424,12 +3424,22 @@ class GameViewController: UIViewController {
 
     private func showLaunchFailure(_ message: String) {
         NSLog("[J2ME Treo] Launch failed: %@", message)
-        let alert = UIAlertController(title: "Game could not start", message: message,
+        guard view.window != nil else { return }
+        let alert = UIAlertController(title: "Không thể mở game", message: message,
                                       preferredStyle: .alert)
-        alert.addAction(UIAlertAction(title: "Back", style: .default) { [weak self] _ in
+        alert.addAction(UIAlertAction(title: "Về thư viện", style: .default) { [weak self] _ in
             self?.dismiss(animated: true)
         })
-        present(alert, animated: true)
+        // A startup-timeout alert may still be open when the Java worker
+        // fails; dismiss it first so the real Java error is not hidden.
+        if let existing = presentedViewController {
+            existing.dismiss(animated: false) { [weak self] in
+                guard let self, self.view.window != nil else { return }
+                self.present(alert, animated: true)
+            }
+        } else {
+            present(alert, animated: true)
+        }
     }
 
     nonisolated private static func runMIDlet(resRoot: String, jarPath: String,
