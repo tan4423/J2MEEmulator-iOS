@@ -37,6 +37,12 @@ def audit(root=ROOT):
         "g_audio_owners", "g_midi_owners",
         "j2me_audio_stop_for_vm(MiniJVM *vm)",
         "audio_owned_by_vm(runtime->jvm", "j2me_input_post_key_to_vm"))
+    native_heap_owned = all(x in src["gc"] for x in (
+        "jarbox_native_heap_register_vm(MiniJVM *jvm)",
+        "jarbox_native_heap_for_vm(collector->jvm)",
+        "slot->key == key")) and all(x in src["render"] for x in (
+        "uint64_t heap_key;", "jarbox_native_heap_key_for_vm(owner)",
+        "native_heap_sub(rc->heap_key, pixels)"))
     ui_owned = all(x in src["lcd_ui"] for x in (
         "JarBoxUIScreenContext", "ui_slot_for_vm(runtime ? runtime->jvm : NULL)",
         "j2me_ui_release_vm(MiniJVM *vm)",
@@ -53,6 +59,8 @@ def audit(root=ROOT):
             "_Atomic int treo_afk_mode" in src["render"],
         "gc_single_native_memory_account":
             "s64 g_native_extra_heap = 0" in src["gc"],
+        "gc_single_smart_treo_scheduler":
+            "static int treo_gc_smart_enabled, treo_gc_smart_fallback" in src["gc"],
         "3d_single_supersampling":
             "int g_render_3d_scale = 1" in src["3d"],
     }
@@ -70,6 +78,7 @@ def audit(root=ROOT):
             "input_queue_display_wait": bool(input_owned),
             "wav_midi_players": bool(audio_owned),
             "lcd_ui_screen_buffers": bool(ui_owned),
+            "gc_native_graphics_accounting": bool(native_heap_owned),
         },
         "unisolated_native_blockers": {
             name: found for name, found in sorted(blockers.items()) if found
