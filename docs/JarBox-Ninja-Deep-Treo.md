@@ -519,8 +519,11 @@ on-screen launch failure alert as `NSOInit:`, copyable with the existing
 
 - `cu_ctor_entry`: Class_ek canvas and delegate before constructor
   initialization
-- `setter_before` / `setter_after`: the **actual inlined**
+- `setter_before` / `setter_after`: the **inlined**
   `Class_ek.a(Class_bv)` operation, its receiver, argument and field value
+- `setter_bytecode_entry` / `setter_bytecode_exit`: the corresponding
+  ordinary bytecode-execution path if miniJVM did not inline the setter.
+  One pair or the other should appear if the intended setter executed
 - `cu_ctor_exit`: after constructor initialization including `System.gc()`
 - `midlet_ctor_exit`: after creating and initializing `Class_cu`
 - `paint_entry`: the Canvas object and delegate immediately before the
