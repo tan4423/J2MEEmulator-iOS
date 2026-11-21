@@ -1095,30 +1095,66 @@ class AppsListViewController: UIViewController,
         FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!.path
     }
 
+    private func presentSaveOperationError(_ error: Error) {
+        let alert = UIAlertController(title: "Không thể thay đổi dữ liệu lưu",
+                                      message: error.localizedDescription,
+                                      preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "Đóng", style: .default))
+        present(alert, animated: true)
+    }
+
     private func confirmClearGameData(for app: AppInfo) {
-        let alert = UIAlertController(title: "Clear Game Data",
-                                       message: "Delete all save data for \(app.name)?",
-                                       preferredStyle: .alert)
-        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
-        alert.addAction(UIAlertAction(title: "Clear", style: .destructive) { _ in
-            let gid = Self.gameId(for: app)
-            try? FileManager.default.removeItem(atPath: Self.documentsDirectory + "/Games Data/" + gid)
+        let alert = UIAlertController(title: "Xóa save game",
+                                      message: "Xóa toàn bộ dữ liệu RMS của \(app.name)? Không thể hoàn tác.",
+                                      preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "Hủy", style: .cancel))
+        alert.addAction(UIAlertAction(title: "Xóa save", style: .destructive) { [weak self] _ in
+            guard let self else { return }
+            // No active Java thread may race with an external RMS deletion.
+            guard jvm_bridge_session_is_active() == 0 else {
+                self.presentSaveOperationError(NSError(domain: "JarBox.GameStorage", code: 3,
+                    userInfo: [NSLocalizedDescriptionKey: "Hãy dừng các phiên JVM trước khi xóa save."]))
+                return
+            }
+            do {
+                let root = try JarBoxGameStorage.prepareRoot(
+                    jarPath: app.path, documents: Self.documentsDirectory)
+                try FileManager.default.removeItem(atPath: root)
+            } catch {
+                self.presentSaveOperationError(error)
+            }
         })
         present(alert, animated: true)
     }
 
     private func confirmDeleteApp(at indexPath: IndexPath) {
         let app = apps[indexPath.item]
-        let alert = UIAlertController(title: "Delete Game",
-                                       message: "Delete \(app.name) and all its save data?",
-                                       preferredStyle: .alert)
-        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
-        alert.addAction(UIAlertAction(title: "Delete", style: .destructive) { [weak self] _ in
+        let alert = UIAlertController(title: "Xóa game",
+                                      message: "Xóa \(app.name), RMS và cài đặt riêng của JAR này?",
+                                      preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "Hủy", style: .cancel))
+        alert.addAction(UIAlertAction(title: "Xóa game", style: .destructive) { [weak self] _ in
             guard let self else { return }
+            guard jvm_bridge_session_is_active() == 0 else {
+                self.presentSaveOperationError(NSError(domain: "JarBox.GameStorage", code: 4,
+                    userInfo: [NSLocalizedDescriptionKey: "Hãy dừng các phiên JVM trước khi xóa JAR."]))
+                return
+            }
+            do {
+                let root = try JarBoxGameStorage.prepareRoot(
+                    jarPath: app.path, documents: Self.documentsDirectory)
+                // Keep JAR intact if RMS cleanup fails; never silently orphan
+                // live data behind a success-looking delete animation.
+                try FileManager.default.removeItem(atPath: root)
+                try FileManager.default.removeItem(atPath: app.path)
+            } catch {
+                self.presentSaveOperationError(error)
+                return
+            }
             let gid = Self.gameId(for: app)
-            try? FileManager.default.removeItem(atPath: Self.documentsDirectory + "/Games Data/" + gid)
-            try? FileManager.default.removeItem(atPath: app.path)
-            UserDefaults.standard.removeObject(forKey: "displayName_\(gid)")
+            for prefix in ["displayName_", "ss3d_", "resW_", "resH_", "fpsLimit_"] {
+                UserDefaults.standard.removeObject(forKey: prefix + gid)
+            }
             self.springboardCollectionView.performBatchUpdates {
                 self.apps.remove(at: indexPath.item)
                 self.springboardCollectionView.deleteItems(at: [indexPath])
