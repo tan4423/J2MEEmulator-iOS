@@ -20,6 +20,13 @@ typedef void (*j2me_flush_callback)(void *cgImage, int width, int height);
 /// Set the callback for receiving rendered frames.
 void j2me_render_set_flush_callback(j2me_flush_callback callback);
 
+/// Owning JVM generation accompanies every frame all the way to the UIKit
+/// main-thread drain. This prevents stale queued frames after a tab switch.
+typedef void (*j2me_flush_callback_owned)(void *cgImage, int width, int height,
+                                          uint64_t owner_key);
+void j2me_render_set_owned_flush_callback(j2me_flush_callback_owned callback);
+uint64_t j2me_render_visible_owner_key(void);
+
 // Select which *owned JVM generation* may publish Canvas frames to UIKit.
 // Both original and clone tabs run the same JAR, so identity is by VM.
 // Selecting focus never starts or stops a JVM.
