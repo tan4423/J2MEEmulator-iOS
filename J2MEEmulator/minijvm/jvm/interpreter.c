@@ -376,8 +376,7 @@ const char *treo_vm_paint_sample_report(void) {
             const char *path = paint_paths[kind][variant];
             if (!path[0] || used < 0 || (size_t)used >= sizeof(paint_report)) continue;
             used += snprintf(paint_report + used, sizeof(paint_report) - (size_t)used,
-                             "
-[JarBoxVM][PaintPath] %s path%u: %s",
+                             "\n[JarBoxVM][PaintPath] %s path%u: %s",
                              path_names[kind], variant + 1, path);
         }
     }
