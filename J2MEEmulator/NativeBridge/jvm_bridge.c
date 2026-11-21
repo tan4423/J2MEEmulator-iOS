@@ -272,6 +272,12 @@ int jvm_bridge_park_session(uint64_t token) {
     if (!token || !atomic_load_explicit(&g_bridge_vm.active, memory_order_acquire) ||
         atomic_load_explicit(&g_bridge_vm.token, memory_order_acquire) != token)
         return 0;
+    // Park revokes the native foreground framebuffer immediately, so
+    // already-queued Canvas and MIDP callbacks cannot paint into the library.
+    // Do not clear the input context here: deep NSO Treo's Display waiter
+    // still needs its owning context until resume/stop.
+    MiniJVM *owner = atomic_load_explicit(&g_bridge_vm.jvm, memory_order_acquire);
+    if (owner) j2me_render_release_vm(owner);
     jarbox_focus_park_all(&g_bridge_focus);
     return jarbox_focus_is_parked(&g_bridge_focus, token) == 1;
 }
