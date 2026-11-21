@@ -3373,26 +3373,47 @@ class GameViewController: UIViewController {
                 height: height, scale: scale, fps: fps
             )
             DispatchQueue.main.async { [weak self] in
-                if let self {
-                    self.stopJarAudit()
-                    self.finishStartupWatchdog()
-                    self.discardCPUProfile()
-                    self.hideBlackout()
-                    for code in Array(self.heldDirections) { self.releaseDirection(code) }
-                }
-                if let failure {
-                    self?.showLaunchFailure(failure)
+                guard let self else { return }
+                self.ownsJVMSession = false
+                self.stopEscalationWork?.cancel()
+                self.stopEscalationWork = nil
+                self.stopRescueWork?.cancel()
+                self.stopRescueWork = nil
+                self.stopJarAudit()
+                self.finishStartupWatchdog()
+                self.discardCPUProfile()
+                self.hideBlackout()
+                for code in Array(self.heldDirections) { self.releaseDirection(code) }
+                if self.gameStopRequested {
+                    self.dismiss(animated: true)
+                } else if let failure {
+                    self.showLaunchFailure(failure)
                 } else {
-                    self?.dismiss(animated: true)
+                    self.dismiss(animated: true)
                 }
             }
         }
         let watchdog = DispatchWorkItem { [weak self] in
-            guard let self, let icon = self.placeholderIconView, !icon.isHidden else { return }
-            NSLog("[J2ME Treo] Startup: no game frame or native screen after 15 seconds")
+            guard let self, self.ownsJVMSession, !self.gameStopRequested,
+                  !self.startupTimeoutShown,
+                  let icon = self.placeholderIconView, !icon.isHidden else { return }
+            self.startupTimeoutShown = true
+            NSLog("[JarBoxVM][Lifecycle] startup_no_frame=20s phase=%d",
+                  jvm_bridge_session_phase())
+            guard self.presentedViewController == nil else { return }
+            let alert = UIAlertController(
+                title: "Game khởi động lâu",
+                message: "Sau 20 giây JarBox chưa nhận được hình. " +
+                         "Bạn có thể tiếp tục chờ hoặc hủy an toàn mà không phải tắt ứng dụng.",
+                preferredStyle: .alert)
+            alert.addAction(UIAlertAction(title: "Tiếp tục chờ", style: .cancel))
+            alert.addAction(UIAlertAction(title: "Hủy game", style: .destructive) {
+                [weak self] _ in self?.requestGameStop(reason: "startup_timeout")
+            })
+            self.present(alert, animated: true)
         }
         startupWatchdog = watchdog
-        DispatchQueue.main.asyncAfter(deadline: .now() + 15, execute: watchdog)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 20, execute: watchdog)
         DispatchQueue.global(qos: .userInitiated).async(execute: worker)
     }
 
@@ -3447,13 +3468,49 @@ class GameViewController: UIViewController {
         return runResult == 0 ? nil : "Game execution failed (\(runResult))."
     }
 
-    @objc private func backTapped() {
-        stopJarAudit()
-        backButton.isEnabled = false
-        discardCPUProfile()
+    private func requestGameStop(reason: String) {
+        guard ownsJVMSession else {
+            dismiss(animated: true)
+            return
+        }
+        guard !gameStopRequested else { return }
+        gameStopRequested = true
+        NSLog("[JarBoxVM][Lifecycle] cancel_requested reason=%@ phase=%d",
+              reason, jvm_bridge_session_phase())
         finishStartupWatchdog()
+        stopJarAudit()
+        discardCPUProfile()
         for code in Array(heldDirections) { releaseDirection(code) }
+        if blackout != nil { hideBlackout() }
+        backButton.isEnabled = false
         jvm_bridge_request_stop()
+
+        // Cooperative stop first; interrupt the still-running Java threads
+        // only after a grace period, on a background queue.
+        let escalate = DispatchWorkItem { [weak self] in
+            guard let self, self.gameStopRequested, self.ownsJVMSession else { return }
+            DispatchQueue.global(qos: .userInitiated).async {
+                let interrupted = jvm_bridge_interrupt_active_threads()
+                NSLog("[JarBoxVM][Lifecycle] cancel_escalation result=%d", interrupted)
+            }
+        }
+        stopEscalationWork = escalate
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2, execute: escalate)
+
+        // Rescue navigation UI, NOT the JVM memory. The owning worker must
+        // finish cleanup before any subsequent game may acquire a VM slot.
+        let rescue = DispatchWorkItem { [weak self] in
+            guard let self, self.gameStopRequested, self.ownsJVMSession else { return }
+            NSLog("[JarBoxVM][Lifecycle] cancel_ui_rescue phase=%d",
+                  jvm_bridge_session_phase())
+            self.dismiss(animated: true)
+        }
+        stopRescueWork = rescue
+        DispatchQueue.main.asyncAfter(deadline: .now() + 7, execute: rescue)
+    }
+
+    @objc private func backTapped() {
+        requestGameStop(reason: "user_back")
     }
 
     // ============================================================
