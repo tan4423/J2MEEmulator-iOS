@@ -930,6 +930,7 @@ class AppsListViewController: UIViewController,
         let version: String?
         let vendor: String?
         let icon: UIImage
+        let cloneCount: Int
     }
     private var apps: [AppInfo] = []
 
@@ -965,7 +966,9 @@ class AppsListViewController: UIViewController,
             let scannedApps = unsorted.enumerated().map { (index, t) in
                 AppInfo(name: t.0, path: t.1, fileName: t.2,
                         version: t.3, vendor: t.4,
-                        icon: Self.springboardIcon(t.5, name: t.0, index: index))
+                        icon: Self.springboardIcon(t.5, name: t.0, index: index),
+                        cloneCount: (try? JarBoxGameStorage.registeredClones(
+                            jarPath: t.1, documents: Self.documentsDirectory).count) ?? 0)
             }
 
             DispatchQueue.main.async { [weak self] in
@@ -1035,9 +1038,10 @@ class AppsListViewController: UIViewController,
         let cell = collectionView.dequeueReusableCell(
             withReuseIdentifier: SpringboardCell.reuseID, for: indexPath) as! SpringboardCell
         let app = apps[indexPath.item]
-        let count = (try? JarBoxGameStorage.registeredClones(
-            jarPath: app.path, documents: Self.documentsDirectory).count) ?? 0
-        let groupTitle = count == 0 ? app.name : app.name + " · " + String(count + 1) + " tab"
+        // Clone count was resolved during the existing background JAR scan.
+        // Cell reuse and scrolling do no filesystem I/O or timer polling.
+        let groupTitle = app.cloneCount == 0 ? app.name :
+            app.name + " · " + String(app.cloneCount + 1) + " tab"
         cell.configure(name: groupTitle, icon: app.icon,
                        running: parkedGameController?.ownsLiveGameSession(for: app.path) == true)
         return cell
