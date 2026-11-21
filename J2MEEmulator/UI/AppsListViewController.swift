@@ -56,7 +56,8 @@ enum JarBoxGameStorage {
         var clones: [CloneRecord]
     }
 
-    private static let cloneRegistryLock = NSLock()
+    // Save registry mutations run from both the main UI and a JVM worker.
+    nonisolated private static let cloneRegistryLock = NSLock()
 
     nonisolated private static func cloneRegistryPath(jarPath: String,
                                                        documents: String) -> String {
