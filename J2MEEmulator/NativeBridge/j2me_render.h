@@ -19,6 +19,14 @@ typedef void (*j2me_flush_callback)(void *cgImage, int width, int height);
 
 /// Set the callback for receiving rendered frames.
 void j2me_render_set_flush_callback(j2me_flush_callback callback);
+
+// Select which *owned JVM generation* may publish Canvas frames to UIKit.
+// Both original and clone tabs run the same JAR, so identity is by VM.
+// Selecting focus never starts or stops a JVM.
+int j2me_render_focus_vm(MiniJVM *vm);
+// Suppress later foreground flushes from a JVM that is shutting down.
+// Native CoreGraphics resources are still cleaned by the VM owner.
+void j2me_render_release_vm(MiniJVM *vm);
 void j2me_render_set_afk_suspended(int enabled);
 int j2me_render_is_afk_suspended(void);
 // 0: visible, 1: legacy blackout, 2: native suppression, 3: headless Graphics,
