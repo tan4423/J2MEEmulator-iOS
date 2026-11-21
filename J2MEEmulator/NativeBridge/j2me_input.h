@@ -15,8 +15,17 @@ extern "C" {
 #define J2ME_INPUT_KEY_RELEASED     4
 #define J2ME_INPUT_KEY_REPEATED     5
 
-/// Register input-related native methods with the JVM.
-void j2me_input_reg_natives(MiniJVM *jvm);
+/// Register a dedicated per-JVM input ring and Display wait context.
+/// Returns 1 on success, 0 if no context could be reserved.
+int j2me_input_reg_natives(MiniJVM *jvm);
+
+/// Bind physical iOS input focus to this already-registered JVM.
+/// Does not create, start or resume any JVM.
+int j2me_input_focus_vm(MiniJVM *jvm);
+
+/// Unbind and clear only this JVM's input and wake condition, during
+/// its own shutdown. Must never reset another still-running JVM.
+void j2me_input_release_vm(MiniJVM *jvm);
 
 /// Post a touch event from iOS (called from main thread).
 /// @param type  J2ME_INPUT_POINTER_PRESSED/DRAGGED/RELEASED
