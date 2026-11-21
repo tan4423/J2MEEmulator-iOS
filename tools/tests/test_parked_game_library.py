@@ -72,8 +72,11 @@ class ParkedGameLibraryTest(unittest.TestCase):
         self.assertIn('UIAction(title: "Về thư viện · tự động Treo"', self.game)
         self.assertIn('requestGameStop(reason: "menu_stop")', self.game)
         self.assertIn('requestGameStop(reason: "library_stop")', self.game)
-        self.assertRegex(self.game,
-            r'func stopParkedGame\(\)\s*\{[^{}]*stopParkedTreo\(\)[^{}]*requestGameStop\(reason: "library_stop"\)')
+        stop = re.search(r'func stopParkedGame\(\)\s*\{(.*?)\n    \}',
+                         self.game, re.DOTALL)
+        self.assertIsNotNone(stop)
+        self.assertLess(stop.group(1).index('stopParkedTreo()'),
+                        stop.group(1).index('requestGameStop(reason: "library_stop")'))
         self.assertIn('self.stopParkedTreo()', self.game)
 
     def test_library_shows_running_state_and_blocks_second_game(self):
