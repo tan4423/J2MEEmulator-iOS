@@ -329,3 +329,42 @@ See [the complete static analysis](JarBox-Legacy-Three-Tab-Loader-Analysis.md)
 and its concrete concurrent-session acceptance tests. Reference JAR
 contents are not checked into this repository. Two independently safe
 JVMs are still not enabled.
+
+
+## Multi-JVM native separation — follow-on implementation
+
+The native branch now isolates MIDP Form/List/Alert **screen data**
+per `MiniJVM*` using reserved `JarBoxUIScreenContext` slots. A
+stale Java thread with an unregistered owner is sent to an empty
+context, never to another session's visible Form. Each UI context
+owns text staging, list icons, commands and revision; when focus
+changes the latest owning screen action can be reissued. UIKit's
+physical presentation callback is still shared and must be separately
+assigned to each `GameViewController` before concurrent execution.
+
+CoreGraphics `RenderContext` and `RenderImage` now carry a native
+heap-accounting generation key captured from their creating JVM.
+The shared `g_native_extra_heap` counter was replaced by a
+generation-keyed eight-slot ledger in `garbage.c`. The collector
+queries only the active JVM's native allocation total. Late resource
+release from an old session cannot debit the replacement JVM after
+a pointer address is reused. The ledger is reserved at JVM startup
+and unregistered after native renderer teardown; failed startup paths
+release their own reservation. The ordinary Java heap/classloader
+remains per JVM as before.
+
+New test files `test_multivm_ui_isolation.py` and
+`test_multivm_native_heap_ledger.py` guard these contracts.
+The latter compiles the **actual ledger C functions** extracted from
+`garbage.c` and stresses two independent owners and a recycled owner
+pointer. These are host checks, **not** iOS dual-game benchmarks.
+
+**Outstanding before real multi-JVM can be activated:** render
+framebuffer ownership, global `g_render_stopped`, `g_flush_callback`
+and render resource cleanup; UIKit controller routing; per-VM
+Deep Treo and GC scheduling controls; 3D native contexts, socket and
+callback ownership; isolated shutdown/restart and on-device
+thread-sanitizer/stress tests. `jvm_bridge_supported_concurrent_sessions()`
+continues to return **1** and the native exclusive acquisition
+CAS remains in place. Do not present this source stage as functional
+2+ game execution until these items are implemented and verified.
