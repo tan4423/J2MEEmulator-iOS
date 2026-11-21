@@ -253,7 +253,7 @@ static s32 n_reportLaunchError(Runtime *runtime, JClass *clazz) {
 // ============================================================
 
 static s32 n_isStopRequested(Runtime *runtime, JClass *clazz) {
-    push_int(runtime->stack, jvm_bridge_is_stop_requested() ? 1 : 0);
+    push_int(runtime->stack, jvm_bridge_is_stop_requested_for_vm(runtime->jvm) ? 1 : 0);
     return RUNTIME_STATUS_NORMAL;
 }
 
