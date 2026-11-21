@@ -1157,3 +1157,45 @@ notes per session (independent of UI exception log), only enabled for
 this mod. This should differentiate an invalid receiver from a deeper
 method-resolution failure with one device run. No JAR, network, UI key,
 Deep Treo or workflow changes. iOS build is not yet verified.
+
+
+## 2026-11-21 Missing java.time.LocalTime for current TrungDucTV mod
+
+On actual iPhone build `2c83530`, repeated failures:
+`mod_method_throw:caller=Class_fn.a,pc=230,op=184,ref=java/time/LocalTime.now()Ljava/time/LocalTime;`
+and caught `NoSuchMethodException` at `Class_cu.run PC306`.
+The method dispatch `Class_gr.a()V` correctly resolved receivers
+`Class_es` and `Class_er`; J2ME FIRE -5 reached the game's handler;
+the game was not frozen due to lost key input. Successful native TCP I/O
+was already confirmed.
+
+The user explicitly states this same, *current* mod JAR runs normally
+in desktop MicroEmulator. Do NOT attribute the frozen login to an old
+or disabled server version or attempt to bypass server checks.
+
+Original unmodified JAR constant-pool scan shows java.time references
+in only `Class_fn`, `Class_fu`, `Class_bx`, with exact method
+descriptors `LocalTime.now()L...;`, `LocalTime.of(II)L...;`,
+`withSecond(I)L...;`, `withNano(I)L...;`.
+Java 8 `LocalTime` does not exist in miniJVM's upstream CLDC runtime.
+Add an immutable, focused `java.time.LocalTime` value object to the
+**boot** JAR at build time, implementing the methods used, immutable
+hour/minute/second/nano storage, value-based `equals/hashCode` (the
+mod invokes `List.contains`), plus `compareTo` and basic getters.
+`now()` uses `Calendar.getInstance()` and the device-local time zone.
+Do NOT hardcode a timezone, time value, web response, server state, or
+the game JAR itself. `Calendar` on the miniJVM boot side uses the CLDC
+calendar implementation; device confirmation is still required.
+The class is a deliberately limited Java-8 API subset.
+
+The one Codemagic workflow compiles it to the boot runtime, extracts
+and checks the CLASS FILE by path (not the host JVM's java.time class),
+validates now/of/withSecond/withNano/equals and Calendar call bytecode,
+and stamps the IPA as `boot_patch=java8_utf8_localtime_v2`.
+A companion trace marker `probe:java8_localtime_boot_patch=v1` appears
+at JVM acquisition. The existing UTF-8 probe marker is unchanged.
+
+Local `javac --release 8` produced the LocalTime class successfully.
+A separate renamed-package Java fixture passed now, of, withSecond,
+withNano, equals/hashCode, List.contains, compareTo, toString and invalid
+range checks. This is NOT an iOS build/runtime test.
