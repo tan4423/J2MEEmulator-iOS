@@ -49,3 +49,43 @@ compiled into the boot runtime and checked by classfile path during build.
 This does **not** make that opcode supported or fix all possible native
 crashes; it allows the normal Java error path to run without calling
 `exit(2)`. Other OS builds retain the original interpreter path.
+
+
+## Java 8 boot utility compatibility (2026-11-21)
+
+JarBox patches the **boot** `minijvm_rt.jar` at build time with two
+dependency-light Java utility classes. The shipped game JARs remain byte-for-byte
+unchanged; there is no mod-specific runtime bypass.
+
+- `java.util.Base64`: Basic, URL-safe and MIME array/String encode/decode,
+  optional padding, MIME line wrapping, custom MIME separators, and
+  encode/decode into caller-provided byte arrays. Output and invalid-input
+  handling follow the Java 8 Base64 conventions.
+- `java.util.Objects`: `equals`, `deepEquals` (object and primitive arrays),
+  `hashCode`, `hash`, `toString`, `isNull`, `nonNull`,
+  `requireNonNull` (plain and String message), and `compare`.
+
+**Subset boundaries:** Base64 ByteBuffer conversions, InputStream/OutputStream
+wrappers, and the `Objects.requireNonNull(T, Supplier<String>)` overload are
+not yet implemented. This is **not** full Java SE 8 compatibility; libraries
+that depend on other classes or Java language features may still fail.
+Neither class is a network protocol workaround.
+
+Run `python3 -m unittest discover -s tools/tests -p 'test_*.py'` to
+exercise the host-JDK comparison fixture. Codemagic compiles the original
+`java.util` sources at `--release 8`, inserts *all* their classfiles into
+the boot JAR, and inspects extracted bytecode signatures by exact file path
+(including `Base64$Encoder` and `Base64$Decoder`). The packaged IPA records
+`boot_patch=java8_utf8_localtime_verify_util_v4`; compare the
+`build_commit` fingerprint when reporting iPhone results.
+
+Local `javac --release 8` compilation and comparison against the host JDK
+passed for 256 randomized lengths plus 9 fixed vectors over Basic, URL,
+unpadded, MIME, and custom-line-break cases, alongside invalid input checks
+and null/deep-equality helpers. This is a host-only regression result,
+**not** an iOS build or real iPhone execution result.
+
+Next validation: use the existing single Codemagic workflow and verify that
+the original Ninja School and the working TrungDucTV mod still open and play,
+then test a separately supplied Java 8 utility-using JAR. Avoid claiming that
+all Java 8 JARs are supported based only on one working mod.
