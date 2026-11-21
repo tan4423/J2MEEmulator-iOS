@@ -474,6 +474,7 @@ void jvm_bridge_destroy(void) {
     atomic_store_explicit(&g_bridge_vm.phase, BRIDGE_CLEANUP, memory_order_release);
     pthread_mutex_unlock(&g_bridge_lifecycle_lock);
     if (g_bridge_vm.jvm) {
+        MiniJVM *const destroyed_owner = g_bridge_vm.jvm;
         printf("[JVM Bridge] Destroying JVM\n");
 
         // Step 1: Stop render subsystem first — zombie threads calling native
@@ -515,7 +516,7 @@ void jvm_bridge_destroy(void) {
         j2me_render_cleanup(); // also resets render_stopped flag
         // The C native ledger is independent of the freed Java heap pointer.
         // Dereference is never required; compare identity and invalidate key.
-        jarbox_native_heap_unregister_vm(g_bridge_vm.jvm);
+        jarbox_native_heap_unregister_vm(destroyed_owner);
         // Keep cancellation asserted until the owning Swift worker releases
         // the session. A late Back click must not bleed into the next launch.
         atomic_store_explicit(&treo_exact_ninja_verified, 0, memory_order_release);
