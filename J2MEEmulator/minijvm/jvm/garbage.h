@@ -82,6 +82,16 @@ void gc_dump_runtime(GcCollector *collector);
 
 s64 gc_sum_heap(GcCollector *collector);
 
+// Native CoreGraphics allocation ownership, independent of JVM heap storage.
+// A generation key is retained by each native handle, so a late release from
+// an old session cannot debit a newly allocated JVM at the same address.
+// Register only after jvm_init; unregister after native render cleanup.
+int jarbox_native_heap_register_vm(MiniJVM *jvm);
+uint64_t jarbox_native_heap_key_for_vm(MiniJVM *jvm);
+void jarbox_native_heap_account(uint64_t key, s64 delta_bytes);
+s64 jarbox_native_heap_for_vm(MiniJVM *jvm);
+void jarbox_native_heap_unregister_vm(MiniJVM *jvm);
+
 
 #ifdef __cplusplus
 }
