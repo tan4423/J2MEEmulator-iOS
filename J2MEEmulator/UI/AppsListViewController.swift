@@ -279,7 +279,7 @@ enum JarBoxGameStorage {
         do {
             let root = try prepareRoot(jarPath: jarPath, documents: documents,
                                        cloneID: cloneID)
-            let logPath = (root as NSString).appendingPathComponent("save-events.log")
+            let logPath = (root as NSString).appendingPathComponent("settings-events.log")
             let fm = FileManager.default
             if !fm.fileExists(atPath: logPath) {
                 _ = fm.createFile(atPath: logPath, contents: nil)
@@ -1193,27 +1193,38 @@ class AppsListViewController: UIViewController,
     /// It contains no saved record bodies; the user can inspect or copy it.
     private func showSaveLog(for app: AppInfo, cloneID: UUID? = nil,
                              tabName: String = "Tab gốc") {
-        let log = (JarBoxGameStorage.rootPath(
-            jarPath: app.path, documents: Self.documentsDirectory,
-            cloneID: cloneID) as NSString)
-            .appendingPathComponent("save-events.log")
+        let root = JarBoxGameStorage.rootPath(
+            jarPath: app.path, documents: Self.documentsDirectory, cloneID: cloneID)
+        // The JVM and Swift use different append files to avoid cross-thread
+        // seek/write races. Both files belong only to this instance.
         let fm = FileManager.default
-        var lines = "Chưa có nhật ký. Nhật ký chỉ ghi các thao tác RMS và cài đặt kể từ phiên bản hỗ trợ."
-        if let attr = try? fm.attributesOfItem(atPath: log),
-           let size = attr[.size] as? NSNumber,
-           size.intValue <= 128 * 1024,
-           let contents = try? String(contentsOfFile: log, encoding: .utf8) {
-            let entries = contents.split(separator: "\n", omittingEmptySubsequences: true)
-            lines = entries.isEmpty
-                ? "Chưa có thao tác nào."
-                : entries.suffix(24).joined(separator: "\n")
-            if entries.count > 24 {
-                lines = "24 sự kiện gần nhất / " + String(entries.count) + " sự kiện\n\n" + lines
+        var entries: [String] = []
+        for file in ["rms-events.log", "settings-events.log"] {
+            let path = (root as NSString).appendingPathComponent(file)
+            guard let attr = try? fm.attributesOfItem(atPath: path),
+                  let size = attr[.size] as? NSNumber,
+                  size.intValue <= 128 * 1024,
+                  let contents = try? String(contentsOfFile: path, encoding: .utf8)
+            else { continue }
+            for row in contents.split(separator: "\n", omittingEmptySubsequences: true) {
+                entries.append(String(row))
             }
         }
+        // Both sources start with Unix milliseconds. Nothing is polled
+        // while a game is in Treo; this sorts only on user request.
+        entries.sort {
+            let left = Int64($0.split(separator: "\t").first ?? "") ?? 0
+            let right = Int64($1.split(separator: "\t").first ?? "") ?? 0
+            return left < right
+        }
+        var lines = entries.isEmpty
+            ? "Chưa có nhật ký. Chỉ ghi thao tác RMS và cài đặt từ bản hỗ trợ."
+            : entries.suffix(24).joined(separator: "\n")
+        if entries.count > 24 {
+            lines = "24 sự kiện gần nhất / " + String(entries.count) + " sự kiện\n\n" + lines
+        }
         let alert = UIAlertController(title: "Save & cài đặt · " + app.name + " · " + tabName,
-                                      message: lines,
-                                      preferredStyle: .alert)
+                                      message: lines, preferredStyle: .alert)
         alert.addAction(UIAlertAction(title: "Sao chép", style: .default) { _ in
             UIPasteboard.general.string = lines
         })
