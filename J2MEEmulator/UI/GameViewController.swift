@@ -3753,6 +3753,13 @@ class GameViewController: UIViewController {
 
     @objc private func backTapped() {
         openLibraryKeepingGame()
+        // Back must remain an escape hatch if launch failed before we
+        // acquired a JVM token, or if an earlier Stop is still pending.
+        if !ownsJVMSession {
+            dismiss(animated: true)
+        } else if gameStopRequested {
+            showStuckSessionRecovery()
+        }
     }
 
     // ============================================================
