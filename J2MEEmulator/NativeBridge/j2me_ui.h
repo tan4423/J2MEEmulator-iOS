@@ -41,6 +41,12 @@ typedef void (*j2me_ui_callback)(int action, int revision);
 /// Set the UI callback.
 void j2me_ui_set_callback(j2me_ui_callback callback);
 
+// Every native MIDP UI event carries the creating JVM generation to its
+// eventual UIKit dispatch. Prevents queued Form/Alert from a previous tab
+// appearing after focus has moved to a different JVM with the same JAR.
+typedef void (*j2me_ui_callback_owned)(int action, int revision, uint64_t owner_key);
+void j2me_ui_set_owned_callback(j2me_ui_callback_owned callback);
+
 // UI actions for the callback
 #define J2ME_UI_ACTION_SHOW_CANVAS    1
 #define J2ME_UI_ACTION_SHOW_FORM      2
