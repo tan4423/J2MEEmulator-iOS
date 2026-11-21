@@ -56,10 +56,19 @@ workflows:
             J2MEEmulator/RuntimePatches/java/util/Base64.java \
             J2MEEmulator/RuntimePatches/java/util/Objects.java \
             J2MEEmulator/RuntimePatches/java/util/Optional.java \
+            J2MEEmulator/RuntimePatches/java/util/OptionalInt.java \
+            J2MEEmulator/RuntimePatches/java/util/OptionalLong.java \
+            J2MEEmulator/RuntimePatches/java/util/OptionalDouble.java \
             J2MEEmulator/RuntimePatches/java/util/function/Supplier.java \
             J2MEEmulator/RuntimePatches/java/util/function/Consumer.java \
             J2MEEmulator/RuntimePatches/java/util/function/Function.java \
             J2MEEmulator/RuntimePatches/java/util/function/Predicate.java \
+            J2MEEmulator/RuntimePatches/java/util/function/IntConsumer.java \
+            J2MEEmulator/RuntimePatches/java/util/function/IntSupplier.java \
+            J2MEEmulator/RuntimePatches/java/util/function/LongConsumer.java \
+            J2MEEmulator/RuntimePatches/java/util/function/LongSupplier.java \
+            J2MEEmulator/RuntimePatches/java/util/function/DoubleConsumer.java \
+            J2MEEmulator/RuntimePatches/java/util/function/DoubleSupplier.java \
             J2MEEmulator/RuntimePatches/com/sun/cldc/i18n/j2me/UTF_8_Reader.java
           jar uf "$jars/minijvm_rt.jar" -C "$core_classes" .
           # Verify the classes that will be packaged, NOT the host JDK
@@ -73,7 +82,12 @@ workflows:
             java/time/Duration.class java/lang/VerifyError.class \
             java/util/Base64.class 'java/util/Base64$Encoder.class' \
             'java/util/Base64$Decoder.class' java/util/Objects.class \
-            java/util/Optional.class java/util/function/Supplier.class \
+            java/util/Optional.class java/util/OptionalInt.class \
+            java/util/OptionalLong.class java/util/OptionalDouble.class \
+            java/util/function/Supplier.class \
+            java/util/function/IntConsumer.class java/util/function/IntSupplier.class \
+            java/util/function/LongConsumer.class java/util/function/LongSupplier.class \
+            java/util/function/DoubleConsumer.class java/util/function/DoubleSupplier.class \
             java/util/function/Consumer.class java/util/function/Function.class \
             java/util/function/Predicate.class \
             com/sun/cldc/i18n/j2me/UTF_8_Reader.class)
@@ -130,13 +144,31 @@ workflows:
           grep -Fq 'public default <V> java.util.function.Function<T, V> andThen(java.util.function.Function<? super R, ? extends V>);' "$RUNNER_TEMP/function-signatures.txt"
           javap "$core_verify/java/util/function/Predicate.class" > "$RUNNER_TEMP/predicate-signatures.txt"
           grep -Fq 'public default java.util.function.Predicate<T> negate();' "$RUNNER_TEMP/predicate-signatures.txt"
+          javap "$core_verify/java/util/OptionalInt.class" > "$RUNNER_TEMP/optional-int-signatures.txt"
+          javap "$core_verify/java/util/OptionalLong.class" > "$RUNNER_TEMP/optional-long-signatures.txt"
+          javap "$core_verify/java/util/OptionalDouble.class" > "$RUNNER_TEMP/optional-double-signatures.txt"
+          grep -Fq 'public int getAsInt();' "$RUNNER_TEMP/optional-int-signatures.txt"
+          grep -Fq 'public long getAsLong();' "$RUNNER_TEMP/optional-long-signatures.txt"
+          grep -Fq 'public double getAsDouble();' "$RUNNER_TEMP/optional-double-signatures.txt"
+          grep -Fq 'public <X extends java.lang.Throwable> int orElseThrow(java.util.function.Supplier<? extends X>) throws X;' "$RUNNER_TEMP/optional-int-signatures.txt"
+          grep -Fq 'public <X extends java.lang.Throwable> long orElseThrow(java.util.function.Supplier<? extends X>) throws X;' "$RUNNER_TEMP/optional-long-signatures.txt"
+          grep -Fq 'public <X extends java.lang.Throwable> double orElseThrow(java.util.function.Supplier<? extends X>) throws X;' "$RUNNER_TEMP/optional-double-signatures.txt"
+          for kind in Int Long Double; do
+            javap "$core_verify/java/util/function/${kind}Consumer.class" > "$RUNNER_TEMP/${kind}-consumer-signatures.txt"
+            javap "$core_verify/java/util/function/${kind}Supplier.class" > "$RUNNER_TEMP/${kind}-supplier-signatures.txt"
+            grep -Fq "public default java.util.function.${kind}Consumer andThen(java.util.function.${kind}Consumer);" "$RUNNER_TEMP/${kind}-consumer-signatures.txt"
+            grep -Fq "public abstract $(echo "$kind" | tr '[:upper:]' '[:lower:]') getAs${kind}();" "$RUNNER_TEMP/${kind}-supplier-signatures.txt"
+          done
           # Default methods produce helper classes; ensure they made it into the
           # boot JAR instead of validating only the interface classfiles.
           jar tf "$jars/minijvm_rt.jar" > "$RUNNER_TEMP/java8-boot-entries.txt"
           grep -Fqx 'java/util/function/Function$1.class' "$RUNNER_TEMP/java8-boot-entries.txt"
           grep -Fqx 'java/util/function/Consumer$1.class' "$RUNNER_TEMP/java8-boot-entries.txt"
           grep -Fqx 'java/util/function/Predicate$4.class' "$RUNNER_TEMP/java8-boot-entries.txt"
-          echo "[JarBoxNET][BUILD] java8_core_utf8=present localtime=present localdate=present localdatetime=present instant=present duration=present verifyerror=present base64=present objects=present optional=present function=present boot_jar=patched short_read=enabled"
+          for kind in Int Long Double; do
+            grep -Fqx "java/util/function/${kind}Consumer\$1.class" "$RUNNER_TEMP/java8-boot-entries.txt"
+          done
+          echo "[JarBoxNET][BUILD] java8_core_utf8=present localtime=present localdate=present localdatetime=present instant=present duration=present verifyerror=present base64=present objects=present optional=present primitive_optional=present function=present boot_jar=patched short_read=enabled"
           classes="$RUNNER_TEMP/lcdui-classes"
           mkdir -p "$classes"
           javac --release 8 -sourcepath '' -cp "$jars/j2me_api.jar:$jars/minijvm_rt.jar" \
@@ -270,7 +302,7 @@ workflows:
           build_commit="$(git rev-parse --verify HEAD)"
           test "${#build_commit}" -eq 40
           /usr/libexec/PlistBuddy -c "Add :JarBoxBuildCommit string $build_commit" "$app/Info.plist"
-          /usr/libexec/PlistBuddy -c 'Add :JarBoxBootPatch string java8_optional_function_v7' "$app/Info.plist"
+          /usr/libexec/PlistBuddy -c 'Add :JarBoxBootPatch string java8_primitive_optional_v8' "$app/Info.plist"
           actual_commit="$(/usr/libexec/PlistBuddy -c 'Print :JarBoxBuildCommit' "$app/Info.plist")"
           test "$actual_commit" = "$build_commit"
           echo "[JarBoxNET][BUILD] final_ipa_commit=$build_commit"
@@ -285,7 +317,7 @@ workflows:
           ipa_plist="$RUNNER_TEMP/packaged-Info.plist"
           unzip -p "$GITHUB_WORKSPACE/J2ME-Treo-jar-cpu-audit-unsigned.ipa" "Payload/*.app/Info.plist" > "$ipa_plist"
           test "$(/usr/libexec/PlistBuddy -c 'Print :JarBoxBuildCommit' "$ipa_plist")" = "$build_commit"
-          test "$(/usr/libexec/PlistBuddy -c 'Print :JarBoxBootPatch' "$ipa_plist")" = "java8_optional_function_v7"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :JarBoxBootPatch' "$ipa_plist")" = "java8_primitive_optional_v8"
           echo "[JarBoxNET][BUILD] stamped IPA archive verified"
     artifacts: &jarbox_ipa_shared_artifacts
       - J2ME-Treo-jar-cpu-audit-unsigned.ipa
