@@ -6,7 +6,7 @@ JarBox runtime JARs. It does not execute any game code and never edits JARs.
 
 Use Java 17+ for the optional test fixtures, Python 3.9+ for the tool.
 
-\`\`\`sh
+```sh
 python3 tools/jar_api_audit.py \
   --boot J2MEEmulator/Resources/jars/minijvm_rt.jar \
   --api J2MEEmulator/Resources/jars/j2me_api.jar \
@@ -14,12 +14,12 @@ python3 tools/jar_api_audit.py \
   /path/to/game.jar
 
 python3 -m unittest discover -s tools/tests -p test_jar_api_audit.py
-\`\`\`
+```
 
 Run against the **post-patch JARs** to include compatibility classes inserted by
 Codemagic, such as StandardCharsets and LocalTime. A report against bundled
 pre-patch files will overestimate missing APIs. To generate a post-patch report
-inside the existing workflow, optionally set \`JARBOX_COMPAT_AUDIT_JAR\` to
+inside the existing workflow, optionally set `JARBOX_COMPAT_AUDIT_JAR` to
 an existing **local file path** available to the build, not an external URL.
 No user JAR is uploaded and the report is not a build gate.
 
@@ -39,13 +39,13 @@ Deep Treo behavior or session-token lifecycle to satisfy an audit warning.
 ## iOS VM containment for unsupported instructions
 
 The upstream interpreter's fallback for unknown/unsupported JVM opcodes
-invokes \`exit(2)\`; a game encountering one would terminate JarBox itself.
-On iOS only, both the ordinary opcode and the \`wide\` sub-opcode fallback
-now push \`java.lang.VerifyError\` onto the Java operand stack and unwind
+invokes `exit(2)`; a game encountering one would terminate JarBox itself.
+On iOS only, both the ordinary opcode and the `wide` sub-opcode fallback
+now push `java.lang.VerifyError` onto the Java operand stack and unwind
 through the existing exception handler instead. A trace note records
-\`vm_unsupported_opcode:class=...,method=...,pc=...,opcode=...\`
+`vm_unsupported_opcode:class=...,method=...,pc=...,opcode=...`
 without disclosing network content. A compatible VerifyError class is
 compiled into the boot runtime and checked by classfile path during build.
 This does **not** make that opcode supported or fix all possible native
 crashes; it allows the normal Java error path to run without calling
-\`exit(2)\`. Other OS builds retain the original interpreter path.
+`exit(2)`. Other OS builds retain the original interpreter path.
