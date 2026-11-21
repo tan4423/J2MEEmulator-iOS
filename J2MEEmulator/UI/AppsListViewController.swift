@@ -171,6 +171,7 @@ enum JarBoxGameStorage {
         // On a registry failure we can restore the save untouched.
         let tomb = target + ".deleting-" + UUID().uuidString
         try fm.moveItem(atPath: target, toPath: tomb)
+        let originalGroup = group
         group.clones.removeAll(where: { $0.id == cloneID })
         do {
             try writeCloneGroup(group, jarPath: jarPath, documents: documents)
@@ -184,10 +185,7 @@ enum JarBoxGameStorage {
             // The user must not see a successful deletion when save bytes
             // were not actually removed.
             try? fm.moveItem(atPath: tomb, toPath: target)
-            var restore = group
-            restore.clones = try readCloneGroupForRollback(jarPath: jarPath,
-                documents: documents, cloneID: cloneID, group: group)
-            try? writeCloneGroup(restore, jarPath: jarPath, documents: documents)
+            try? writeCloneGroup(originalGroup, jarPath: jarPath, documents: documents)
             throw error
         }
         let defaults = UserDefaults.standard
@@ -195,19 +193,6 @@ enum JarBoxGameStorage {
         for prefix in ["displayName_", "ss3d_", "resW_", "resH_", "fpsLimit_"] {
             defaults.removeObject(forKey: prefix + instance)
         }
-    }
-
-    nonisolated private static func readCloneGroupForRollback(jarPath: String,
-                                                                documents: String,
-                                                                cloneID: UUID,
-                                                                group: CloneGroup) throws -> [CloneRecord] {
-        // Keep failed deletion visible as a recoverable group entry.
-        var entries = group.clones
-        if !entries.contains(where: { $0.id == cloneID }) {
-            entries.append(CloneRecord(id: cloneID, label: "Tab cần khôi phục",
-                                       createdAt: Date()))
-        }
-        return entries
     }
 
     /// Never combine two colliding legacy saves or launch against the wrong
