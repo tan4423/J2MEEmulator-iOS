@@ -25,6 +25,10 @@ workflows:
           export JAVA_HOME
           export PATH="$JAVA_HOME/bin:$PATH"
           export J2ME_PROJECT=J2MEEmulator.xcodeproj
+
+          # Exercise the class/method/field API-surface auditor against
+          # small Java-8 fixtures. No untrusted game code is executed.
+          PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tools/tests -p test_jar_api_audit.py
           
           # GameViewController controls idleTimerDisabled only while its
           # game UI is visible. The library must allow iOS auto-lock;
@@ -84,6 +88,13 @@ workflows:
           javap -classpath "$jars/j2me_api.jar:$jars/minijvm_rt.jar" -c javax.microedition.io.MicroCompatibleSocketConnection > "$RUNNER_TEMP/socket-bytecode.txt"
           grep -Fq 'java/net/Socket.getInputStream' "$RUNNER_TEMP/socket-bytecode.txt"
           echo "[JarBoxNET][BUILD] socket=micro_compatible http/https=standard_dispatch"
+
+          # Optional analysis only. Build normally if no game JAR is
+          # available locally on the Codemagic builder; never fetch one.
+          if [[ -n "${JARBOX_COMPAT_AUDIT_JAR:-}" && -f "${JARBOX_COMPAT_AUDIT_JAR}" ]]; then
+            python3 tools/jar_api_audit.py               --boot "$jars/minijvm_rt.jar"               --api "$jars/j2me_api.jar"               --output "$RUNNER_TEMP/jarbox-api-audit.json"               "$JARBOX_COMPAT_AUDIT_JAR"
+            echo "[JarBoxCompat] report=$RUNNER_TEMP/jarbox-api-audit.json"
+          fi
           
           # Use only the pinned SLJIT source; do not build or run upstream scripts.
           git init -q "$RUNNER_TEMP/sljit-upstream"
