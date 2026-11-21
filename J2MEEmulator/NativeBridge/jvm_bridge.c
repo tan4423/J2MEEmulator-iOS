@@ -91,7 +91,7 @@ static int treo_is_nso_family(const char *jar_path) {
 enum { BRIDGE_IDLE = 0, BRIDGE_STARTING = 1, BRIDGE_RUNNING = 2,
        BRIDGE_CLEANUP = 3 };
 typedef struct {
-    MiniJVM *jvm;
+    _Atomic(MiniJVM *) jvm;
     atomic_int stop_requested;
     atomic_int active;
     atomic_int phase;
@@ -509,5 +509,14 @@ void jvm_bridge_request_stop(void) {
 }
 
 int jvm_bridge_is_stop_requested(void) {
-    return atomic_load(&g_bridge_vm.stop_requested);
+    return atomic_load_explicit(&g_bridge_vm.stop_requested, memory_order_acquire);
+}
+
+// Java native polling must read the stop flag of the JVM that made the
+// call, never another foreground game. An unbound/tearing-down JVM is
+// instructed to stop instead of accidentally inheriting a later session.
+int jvm_bridge_is_stop_requested_for_vm(const void *vm) {
+    MiniJVM *owner = atomic_load_explicit(&g_bridge_vm.jvm, memory_order_acquire);
+    if (!vm || owner != vm) return 1;
+    return atomic_load_explicit(&g_bridge_vm.stop_requested, memory_order_acquire);
 }
