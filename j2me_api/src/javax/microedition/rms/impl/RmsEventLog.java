@@ -33,6 +33,7 @@ public final class RmsEventLog {
             !"DELETE_STORE".equals(operation) &&
             !"SAVE".equals(operation) &&
             !"DELETE_RECORD".equals(operation) &&
+            !"READ_ERROR".equals(operation) &&
             !"SAVE_ERROR".equals(operation) &&
             !"DELETE_ERROR".equals(operation)) return;
         File log = new File(root, "rms-events.log");
