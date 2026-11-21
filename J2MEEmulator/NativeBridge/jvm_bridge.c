@@ -193,6 +193,9 @@ int jvm_bridge_try_begin_session(void) {
     g_bridge_net_trace_count = 0;
     pthread_mutex_unlock(&g_bridge_net_trace_lock);
     atomic_store_explicit(&g_bridge_phase, BRIDGE_STARTING, memory_order_release);
+    // Visible from the first frame in Chẩn đoán kết nối, regardless of
+    // which Java network API the game calls. Detects an older installed IPA.
+    jvm_bridge_note_net_trace("probe:java8_utf8_boot_patch=v1");
     printf("[JarBoxVM][Lifecycle] session=acquired phase=starting\n");
     return 1;
 }

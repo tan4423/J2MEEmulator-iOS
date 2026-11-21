@@ -956,3 +956,38 @@ last `api_stage` event with `tcp_connect`, `tcp_close` and
 
 If later adding cloned or concurrent games, move this bounded trace to the
 session's own diagnostic context; current app still enforces one JVM slot.
+
+
+## 2026-11-21 No api_stage: direct Java socket + missing Java8 boot API
+
+User's latest iPhone trace shows six successful TCP connects to port 2024,
+each closing with zero recorded Java/native read/write events, and **no**
+`api_stage` despite the previous Connector instrumentation. The uploaded
+unaltered game JAR bytecode reveals why: `Class_fq.d()` bytecode PC443
+calls `Class_gv.a(String,int)` to open **java.net.Socket directly**,
+then calls `OutputStreamWriter(OutputStream,Charset)` with
+`java/nio/charset/StandardCharsets.UTF_8` at PCs465-468. The mod also
+has this direct-socket/UTF8 sequence in `Class_gv.g()` at PCs60-63.
+Both are **outside** `javax.microedition.io.Connector`; earlier API-stage
+logs were instrumented at the wrong call site. This does not imply the
+phone installed an old IPA.
+
+Checked the miniJVM upstream Java sources: `StandardCharsets.java` is
+not present and its `OutputStreamWriter` supports only the default and
+String encoding constructors, not the Charset-object overload.
+The bundled miniJVM `Charset.forName("UTF-8")` does exist, as does its
+CLDC UTF-8 stream converter. This is a concrete Java API compatibility
+mismatch. Add `StandardCharsets.UTF_8` and the
+`OutputStreamWriter(OutputStream,Charset)` overload to a **build-time
+patched minijvm_rt.jar boot runtime**, preserving the original upstream
+writer implementation and license. The Codemagic build extracts the exact
+class files from the patched boot JAR and inspects them by path to avoid
+accidentally checking desktop JDK `java.base`. No game JAR changes.
+
+Also log caught exceptions in the direct-socket methods
+`Class_fq.d()` / `Class_gv.g()` (type+PC only) and a visible
+`probe:java8_utf8_boot_patch=v1` diagnostic version marker at session
+acquisition. This patch targets missing VM API, not external server
+responses; real server success and any further Java-8 API gaps must still
+be validated on iPhone. One Codemagic workflow and session-token lifecycle
+controls remain intact.

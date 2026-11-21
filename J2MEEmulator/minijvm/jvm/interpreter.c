@@ -676,6 +676,19 @@ s32 exception_handle(RuntimeStack *stack, Runtime *runtime) {
                  utf8_cstr(runtime->clazz->name), offset,
                  utf8_cstr(ins->mb.clazz->name));
         jvm_bridge_note_net_trace(event);
+    } else if (ins && ins->mb.clazz && runtime->clazz && runtime->method &&
+               ((utf8_equals_c(runtime->clazz->name, "Class_fq") &&
+                 utf8_equals_c(runtime->method->name, "d")) ||
+                (utf8_equals_c(runtime->clazz->name, "Class_gv") &&
+                 utf8_equals_c(runtime->method->name, "g")))) {
+        // The mod's private-server prelude uses java.net.Socket directly.
+        // Exception class + bytecode PC exposes the actual Java-8 API gap.
+        char event[192];
+        snprintf(event, sizeof(event),
+                 "mod_prelude_exception:class=%s,pc=%d,type=%s",
+                 utf8_cstr(runtime->clazz->name), offset,
+                 utf8_cstr(ins->mb.clazz->name));
+        jvm_bridge_note_net_trace(event);
     }
 #endif
     s32 i;
