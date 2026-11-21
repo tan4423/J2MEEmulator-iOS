@@ -56,7 +56,7 @@ public final class Base64 {
         private final int lineLength;
         private final byte[] separator;
 
-        private Encoder(boolean url, boolean padding, int lineLength, byte[] separator) {
+        Encoder(boolean url, boolean padding, int lineLength, byte[] separator) {
             this.url = url;
             this.padding = padding;
             this.lineLength = lineLength;
@@ -119,7 +119,7 @@ public final class Base64 {
         private final boolean url;
         private final boolean mime;
 
-        private Decoder(boolean url, boolean mime) {
+        Decoder(boolean url, boolean mime) {
             this.url = url;
             this.mime = mime;
         }
