@@ -160,6 +160,13 @@ class AppsListViewController: UIViewController,
                     target: self, action: #selector(resumeParkedGame))
                 return
             }
+            if jvm_bridge_session_is_active() != 0 {
+                navigationItem.title = "Đang dừng game..."
+                navigationItem.leftBarButtonItem = UIBarButtonItem(
+                    title: "Xử lý phiên kẹt", style: .plain,
+                    target: self, action: #selector(openStuckSessionRecovery))
+                return
+            }
             navigationItem.title = "Thư viện"
             navigationItem.leftBarButtonItem = nil
             return
@@ -191,6 +198,7 @@ class AppsListViewController: UIViewController,
         })
         alert.addAction(UIAlertAction(title: "Dừng game đang chạy", style: .destructive) { [weak self] _ in
             self?.parkedGameController?.stopParkedGame()
+            self?.updateStuckSessionButton()
         })
         alert.addAction(UIAlertAction(title: "Ở lại thư viện", style: .cancel))
         present(alert, animated: true)
@@ -298,6 +306,7 @@ class AppsListViewController: UIViewController,
                         didPickDocumentsAt urls: [URL]) {
         let fm = FileManager.default
         var imported = 0
+        var blockedRunningJAR = false
 
         for url in urls {
             guard url.pathExtension.lowercased() == "jar" else { continue }
@@ -306,6 +315,12 @@ class AppsListViewController: UIViewController,
 
             let destURL = URL(fileURLWithPath: Self.gamesDirectory)
                 .appendingPathComponent(url.lastPathComponent)
+
+            // Never overwrite the JAR that the still-running JVM owns.
+            if parkedGameController?.ownsLiveGameSession(for: destURL.path) == true {
+                blockedRunningJAR = true
+                continue
+            }
 
             // If file with same name exists, remove it (overwrite)
             try? fm.removeItem(at: destURL)
@@ -320,6 +335,14 @@ class AppsListViewController: UIViewController,
 
         if imported > 0 {
             scanApps()
+        }
+        if blockedRunningJAR {
+            let alert = UIAlertController(
+                title: "Game đang chạy",
+                message: "Hãy dừng game trước khi thay thế JAR của phiên đó.",
+                preferredStyle: .alert)
+            alert.addAction(UIAlertAction(title: "OK", style: .default))
+            present(alert, animated: true)
         }
     }
 
@@ -458,6 +481,7 @@ class AppsListViewController: UIViewController,
                     UIAction(title: "Dừng game hoàn toàn", image: UIImage(systemName: "stop.fill"),
                              attributes: .destructive) { [weak self] _ in
                         self?.parkedGameController?.stopParkedGame()
+                        self?.updateStuckSessionButton()
                     }
                 ]
             }
