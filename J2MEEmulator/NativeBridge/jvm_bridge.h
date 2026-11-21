@@ -21,6 +21,9 @@ int jvm_bridge_session_is_active(void);
 /// Used to reject callbacks from a previously closed game instance.
 uint64_t jvm_bridge_session_token(void);
 int jvm_bridge_request_stop_for_token(uint64_t token);
+/// Stop state as seen by one concrete native JVM. Foreign/stale JVMs must
+/// not see a subsequent game's stop state; they report stop requested.
+int jvm_bridge_is_stop_requested_for_vm(const void *vm);
 int jvm_bridge_interrupt_active_threads_for_token(uint64_t token);
 /// Must only be called by the owning worker AFTER native cleanup.
 void jvm_bridge_finish_session(void);
