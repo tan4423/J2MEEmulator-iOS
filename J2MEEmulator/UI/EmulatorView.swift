@@ -12,14 +12,14 @@ import UIKit
 // UIKit is only touched by the main-queue drain.
 nonisolated private final class LatestGameFrame: @unchecked Sendable {
     private let lock = NSLock()
-    private var pending: CGImage?
+    private var pending: (image: CGImage, ownerKey: UInt64)?
     private var scheduled = false
 
-    func submit(_ frame: CGImage) -> Bool {
+    func submit(_ frame: CGImage, ownerKey: UInt64) -> Bool {
         lock.lock()
         defer { lock.unlock() }
         if pending != nil { treo_render_profile_replaced() }
-        pending = frame
+        pending = (frame, ownerKey)
         if scheduled { return false }
         scheduled = true
         return true
@@ -32,7 +32,7 @@ nonisolated private final class LatestGameFrame: @unchecked Sendable {
         lock.unlock()
     }
 
-    func take() -> CGImage? {
+    func take() -> (image: CGImage, ownerKey: UInt64)? {
         lock.lock()
         defer { lock.unlock() }
         let frame = pending
@@ -77,15 +77,20 @@ class EmulatorView: UIView {
     /// Update the displayed image from a CGImage.
     func clearPendingGameFrame() { latestFrame.clearPending() }
 
-    nonisolated func displayImage(_ cgImage: CGImage) {
+    nonisolated func displayImage(_ cgImage: CGImage, ownerKey: UInt64 = 0) {
+        // With independently running games, even a frame that was correctly
+        // routed at native flush time can arrive *after* focus switches.
         guard j2me_render_is_afk_suspended() == 0,
-              latestFrame.submit(cgImage) else { return }
+              (ownerKey == 0 || j2me_render_visible_owner_key() == ownerKey),
+              latestFrame.submit(cgImage, ownerKey: ownerKey) else { return }
         DispatchQueue.main.async { [weak self] in
-            guard let self, let cgImage = self.latestFrame.take() else { return }
-            guard j2me_render_is_afk_suspended() == 0 else { return }
-            self.layer.contents = cgImage
+            guard let self, let frame = self.latestFrame.take() else { return }
+            guard j2me_render_is_afk_suspended() == 0,
+                  (frame.ownerKey == 0 ||
+                   j2me_render_visible_owner_key() == frame.ownerKey) else { return }
+            self.layer.contents = frame.image
             treo_render_profile_submitted()
-            self.onFrame?(cgImage)
+            self.onFrame?(frame.image)
             if let cb = self.onFirstFrame {
                 self.onFirstFrame = nil
                 cb()
@@ -174,4 +179,15 @@ let flushCallback: @convention(c) (UnsafeMutableRawPointer?, Int32, Int32) -> Vo
     guard let ptr = cgImagePtr else { return }
     let cgImage = Unmanaged<CGImage>.fromOpaque(ptr).takeRetainedValue()
     globalEmulatorView?.displayImage(cgImage)
+}
+
+// Frame ownership is checked twice: once before enqueuing and again when
+// UIKit actually drains the frame. A delayed image from Tab A can never
+// replace Tab B's display after an asynchronous focus switch.
+let ownedFlushCallback: @convention(c) (UnsafeMutableRawPointer?, Int32, Int32, UInt64) -> Void = {
+    cgImagePtr, width, height, ownerKey in
+    guard let ptr = cgImagePtr else { return }
+    let cgImage = Unmanaged<CGImage>.fromOpaque(ptr).takeRetainedValue()
+    guard ownerKey != 0, j2me_render_visible_owner_key() == ownerKey else { return }
+    globalEmulatorView?.displayImage(cgImage, ownerKey: ownerKey)
 }
