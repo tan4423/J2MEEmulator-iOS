@@ -525,6 +525,9 @@ class GameViewController: UIViewController {
     // Explicitly undone on resume, Stop and JVM termination.
     private var parkedTreoActive = false
     private var parkedNSODeepIdle = false
+    // Event-based measurements only: no library timer or CPU poller.
+    private var parkedStartedAt: TimeInterval?
+    private var parkedCPUStart: Double?
     // A game may request an MIDP Alert while the library covers the game.
     // Present it only after returning to the game, not atop the library.
     private var deferredGameAlert = false
@@ -3714,6 +3717,8 @@ class GameViewController: UIViewController {
     private func startParkedTreo() {
         guard ownsLiveGameSession(), !parkedTreoActive else { return }
         parkedTreoActive = true
+        parkedStartedAt = ProcessInfo.processInfo.systemUptime
+        parkedCPUStart = treo_process_cpu_seconds()
         treo_afk_guard_auto_set(1)
         treo_gc_smart_set(1)
         treo_render_set_afk_mode(8)
@@ -3729,6 +3734,19 @@ class GameViewController: UIViewController {
     private func stopParkedTreo() {
         guard parkedTreoActive else { return }
         parkedTreoActive = false
+        let fallback = treo_afk_guard_auto_fell_back() != 0
+        let elapsed = parkedStartedAt.map {
+            max(0.001, ProcessInfo.processInfo.systemUptime - $0)
+        } ?? 0
+        let cpuAtEnd = treo_process_cpu_seconds()
+        let percent: String
+        if let start = parkedCPUStart, start >= 0, cpuAtEnd >= start, elapsed > 0 {
+            percent = String(format: "%.1f", 100 * (cpuAtEnd - start) / elapsed)
+        } else {
+            percent = "?"
+        }
+        parkedStartedAt = nil
+        parkedCPUStart = nil
         // Restore the Display waiter before waking/refreshing the Canvas.
         if parkedNSODeepIdle {
             treo_display_wait_set(0)
@@ -3737,7 +3755,8 @@ class GameViewController: UIViewController {
         treo_afk_guard_auto_set(0)
         treo_gc_smart_set(0)
         treo_render_set_afk_mode(0)
-        NSLog("[JarBoxVM][ParkTreo] disabled")
+        NSLog("[JarBoxVM][ParkTreo] disabled elapsed=%.1fs process_CPU=%@%% canvas_fallback=%d",
+              elapsed, percent, fallback ? 1 : 0)
     }
 
     /// Safe one-slot library multitasking. The game keeps its Java state,
