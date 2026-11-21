@@ -37,6 +37,9 @@ public class MIDletRunner {
         String classNameOverride = (args.length > 1) ? args[1] : null;
 
         System.out.println("[MIDletRunner] Loading MIDlet JAR: " + jarPath);
+        // runLifecycle catches/reports the *original* throwable. Do not
+        // overwrite that detail with the wrapper thrown to signal exit code 1.
+        boolean enteredLifecycle = false;
 
         try {
             // 1. Read manifest
@@ -78,6 +81,7 @@ public class MIDletRunner {
             MIDlet midlet = (MIDlet) clazz.newInstance();
 
             // 5. Run lifecycle
+            enteredLifecycle = true;
             runLifecycle(midlet);
 
         } catch (Throwable e) {
@@ -87,9 +91,36 @@ public class MIDletRunner {
             System.out.println("[MIDletRunner] LAUNCH FAILURE: "
                 + e.getClass().getName() + ": " + e.getMessage());
             e.printStackTrace();
-            NativeBridge.reportLaunchError(e.getClass().getName() + ": " + e.getMessage());
+            if (!enteredLifecycle) {
+                NativeBridge.reportLaunchError(launcherDiagnostic("load/constructor", e));
+            }
             throw new RuntimeException("MIDlet launch failed: " + e.toString());
         }
+    }
+
+    /**
+     * Only invoked on a Java startup failure; no allocations on game ticks.
+     * The miniJVM runtime may expose incomplete exception traces, so a trace
+     * retrieval error is safely ignored and the original failure preserved.
+     */
+    private static String launcherDiagnostic(String stage, Throwable failure) {
+        StringBuilder result = new StringBuilder(256);
+        result.append("phase=").append(stage);
+        result.append("; ").append(failure.getClass().getName());
+        if (failure.getMessage() != null)
+            result.append(": ").append(failure.getMessage());
+        try {
+            StackTraceElement[] stack = failure.getStackTrace();
+            if (stack != null) {
+                for (int i = 0; i < stack.length && i < 6; ++i) {
+                    if (stack[i] != null)
+                        result.append(" | ").append(stack[i].toString());
+                }
+            }
+        } catch (Throwable ignored) {
+            result.append(" | stack_unavailable");
+        }
+        return result.toString();
     }
 
     /**
@@ -178,6 +209,7 @@ public class MIDletRunner {
      * Run the MIDlet lifecycle: startApp → (wait) → pauseApp → destroyApp
      */
     private static void runLifecycle(MIDlet midlet) {
+        String stage = "startApp";
         try {
             // startApp
             System.out.println("[MIDletRunner] >>> Calling startApp()");
@@ -189,17 +221,20 @@ public class MIDletRunner {
             // asynchronously from its own thread (e.g. Gravity Defied).
             // If native stop was already requested (user pressed Back during init/startApp),
             // the loop will detect it on the first iteration and exit immediately.
+            stage = "Display.runEventLoop";
             Display display = Display.getDisplay(midlet);
             display.runEventLoop();
 
             // pauseApp
             if (!MIDlet.isDestroyRequested()) {
+                stage = "pauseApp";
                 System.out.println("[MIDletRunner] >>> Calling pauseApp()");
                 midlet.callPauseApp();
                 System.out.println("[MIDletRunner] <<< pauseApp() returned");
             }
 
             // destroyApp
+            stage = "destroyApp";
             System.out.println("[MIDletRunner] >>> Calling destroyApp(true)");
             midlet.callDestroyApp(true);
             System.out.println("[MIDletRunner] <<< destroyApp() returned");
@@ -208,14 +243,14 @@ public class MIDletRunner {
 
         } catch (MIDletStateChangeException e) {
             System.out.println("[MIDletRunner] MIDletStateChangeException: " + e.getMessage());
-            NativeBridge.reportLaunchError(e.getClass().getName() + ": " + e.getMessage());
-            throw new RuntimeException("MIDlet lifecycle failed: " + e.toString());
+            NativeBridge.reportLaunchError(launcherDiagnostic(stage, e));
+            throw new RuntimeException("MIDlet lifecycle failed at " + stage + ": " + e.toString());
         } catch (Throwable e) {
             System.out.println("[MIDletRunner] ERROR in lifecycle: " + e.getClass().getName()
                     + ": " + e.getMessage());
             e.printStackTrace();
-            NativeBridge.reportLaunchError(e.getClass().getName() + ": " + e.getMessage());
-            throw new RuntimeException("MIDlet lifecycle failed: " + e.toString());
+            NativeBridge.reportLaunchError(launcherDiagnostic(stage, e));
+            throw new RuntimeException("MIDlet lifecycle failed at " + stage + ": " + e.toString());
         }
     }
 }
