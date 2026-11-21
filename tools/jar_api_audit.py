@@ -168,6 +168,21 @@ def resolve_member(owner, signature, field, universe):
         visited.add(key)
         cl = universe.get(key)
         if cl is None:
+            # Ignore nothing: a missing non-Object superclass may supply
+            # members; but java/lang/Object is a known leaf of the hierarchy
+            # and cannot define arbitrary game-specific methods.
+            if key == "java/lang/Object":
+                known_object_methods = {
+                    ("<init>", "()V"), ("equals", "(Ljava/lang/Object;)Z"),
+                    ("hashCode", "()I"), ("toString", "()Ljava/lang/String;"),
+                    ("getClass", "()Ljava/lang/Class;"),
+                    ("notify", "()V"), ("notifyAll", "()V"),
+                    ("wait", "()V"), ("wait", "(J)V"), ("wait", "(JI)V"),
+                    ("clone", "()Ljava/lang/Object;"), ("finalize", "()V"),
+                }
+                if not field and signature in known_object_methods:
+                    return True
+                continue
             incomplete = True
             continue
         if signature in cl["fields" if field else "methods"]:

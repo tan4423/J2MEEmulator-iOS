@@ -96,7 +96,7 @@ workflows:
           # Optional analysis only. Build normally if no game JAR is
           # available locally on the Codemagic builder; never fetch one.
           if [[ -n "${JARBOX_COMPAT_AUDIT_JAR:-}" && -f "${JARBOX_COMPAT_AUDIT_JAR}" ]]; then
-            python3 tools/jar_api_audit.py               --boot "$jars/minijvm_rt.jar"               --api "$jars/j2me_api.jar"               --output "$RUNNER_TEMP/jarbox-api-audit.json"               "$JARBOX_COMPAT_AUDIT_JAR"
+            python3 tools/jar_api_audit.py --boot "$jars/minijvm_rt.jar" --api "$jars/j2me_api.jar" --output "$RUNNER_TEMP/jarbox-api-audit.json" "$JARBOX_COMPAT_AUDIT_JAR"
             echo "[JarBoxCompat] report=$RUNNER_TEMP/jarbox-api-audit.json"
           fi
           
