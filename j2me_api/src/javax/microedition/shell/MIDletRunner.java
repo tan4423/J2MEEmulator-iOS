@@ -54,9 +54,8 @@ public class MIDletRunner {
                 className = parseMIDletClassName(manifestAttrs);
             }
 
-            if (className == null) {
-                System.out.println("[MIDletRunner] ERROR: No MIDlet class found in manifest");
-                return;
+            if (className == null || className.length() == 0) {
+                throw new IllegalArgumentException("No MIDlet class found in JAR manifest");
             }
             System.out.println("[MIDletRunner] MIDlet class: " + className);
 
@@ -80,9 +79,14 @@ public class MIDletRunner {
             // 5. Run lifecycle
             runLifecycle(midlet);
 
-        } catch (Exception e) {
-            System.out.println("[MIDletRunner] ERROR: " + e.getClass().getName() + ": " + e.getMessage());
+        } catch (Throwable e) {
+            // Never report a startup failure as an apparently normal app exit.
+            // Propagate through call_main() so native runMIDlet returns a
+            // nonzero status and iOS shows a launch-failure alert.
+            System.out.println("[MIDletRunner] LAUNCH FAILURE: "
+                + e.getClass().getName() + ": " + e.getMessage());
             e.printStackTrace();
+            throw new RuntimeException("MIDlet launch failed: " + e.toString());
         }
     }
 
@@ -202,10 +206,12 @@ public class MIDletRunner {
 
         } catch (MIDletStateChangeException e) {
             System.out.println("[MIDletRunner] MIDletStateChangeException: " + e.getMessage());
-        } catch (Exception e) {
+            throw new RuntimeException("MIDlet lifecycle failed: " + e.toString());
+        } catch (Throwable e) {
             System.out.println("[MIDletRunner] ERROR in lifecycle: " + e.getClass().getName()
                     + ": " + e.getMessage());
             e.printStackTrace();
+            throw new RuntimeException("MIDlet lifecycle failed: " + e.toString());
         }
     }
 }

@@ -59,7 +59,8 @@ workflows:
           classes="$RUNNER_TEMP/lcdui-classes"
           mkdir -p "$classes"
           javac --release 8 -sourcepath '' -cp "$jars/j2me_api.jar:$jars/minijvm_rt.jar" \
-            -d "$classes" j2me_api/src/javax/microedition/lcdui/{Display,Canvas,Graphics,Image,TextBox,NativeBridge,Form,ChoiceGroup,List}.java
+            -d "$classes" j2me_api/src/javax/microedition/lcdui/{Display,Canvas,Graphics,Image,TextBox,NativeBridge,Form,ChoiceGroup,List}.java \
+            j2me_api/src/javax/microedition/shell/MIDletRunner.java
           jar uf "$jars/j2me_api.jar" -C "$classes" .
           
           # Use only the pinned SLJIT source; do not build or run upstream scripts.
