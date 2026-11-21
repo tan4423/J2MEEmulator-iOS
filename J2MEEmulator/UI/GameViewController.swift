@@ -354,6 +354,10 @@ class GameViewController: UIViewController {
     private var blackoutLastCPUText = "CPU: đang đo"
     private var blackoutBatteryMonitoringWasEnabled: Bool?
     private var blackoutHUDUpdates = 0
+    private var blackoutRequestedMode: Int32 = 0
+    // Capture the 8-second live NSO repaint-request cadence BEFORE Treo.
+    // -1 means unavailable; this is a heartbeat proxy, not a proven game tick.
+    private var blackoutNSOLiveHz: Double = -1
     private var blackoutScreen: UIScreen?
     private var previousBrightness: CGFloat?
     private var jarBoxSmartTreo = false
@@ -1474,6 +1478,22 @@ class GameViewController: UIViewController {
     }
 
 
+    // Labels name the ACTUAL recognized mode, never just the ZIP resource hit.
+    // The VM checks the active Canvas's small paint-forwarding shape before
+    // enabling NSO-specific skips.
+    private func blackoutModeName() -> String {
+        if blackoutRequestedMode == 8 && treo_ninja_deep_verified() != 0 &&
+           treo_nso_canvas_recognized() != 0 {
+            return "Chuyên biệt (NSO)"
+        }
+        return "Chuẩn"
+    }
+
+    private func blackoutModeTitle() -> String {
+        return "Chế độ treo: " + blackoutModeName() +
+            "\nChạm nút tròn giữa màn hình để trở lại"
+    }
+
     // CPU here is the preceding ~15-second process average, not instantaneous.
     // This uses existing monotonic counters and never instruments Java calls.
     private func updateBlackoutDashboard() {
@@ -1486,6 +1506,13 @@ class GameViewController: UIViewController {
                 format: "CPU: %.1f%%", 100.0 * (cpu - last.cpu) / (now - last.time))
         }
         blackoutLastCPUSample = (now, cpu)
+        // Do not overwrite the detailed title used by legacy audit sessions.
+        if let cover = blackout,
+           let oldTitle = cover.title(for: .normal),
+           oldTitle.hasPrefix("Chế độ treo:") {
+            let newTitle = blackoutModeTitle()
+            if oldTitle != newTitle { cover.setTitle(newTitle, for: .normal) }
+        }
         let charge = UIDevice.current.batteryLevel
         let chargeText = charge >= 0 ? String(format: "%.0f%%", Double(charge) * 100) : "không rõ"
         let heat = Self.treoThermalDisplayLabel(ProcessInfo.processInfo.thermalState)
@@ -1526,6 +1553,8 @@ class GameViewController: UIViewController {
         let ninjaRepaints = treo_ninja_deep_skipped(0)
         let ninjaServices = treo_ninja_deep_skipped(1)
         let ninjaPaints = treo_ninja_deep_skipped(2)
+        let nsoRequests = treo_nso_repaint_requests()
+        let nsoCanvasSeen = treo_nso_canvas_recognized()
         let imageHits = treo_image_cache_hits()
         let imageStores = treo_image_cache_stores()
         let imageStoredBytes = treo_image_cache_stored_bytes()
@@ -1542,11 +1571,12 @@ class GameViewController: UIViewController {
                               deepPaint: Bool = false) {
         guard blackout == nil, jarAuditID == nil else { return }
         discardCPUProfile()
+        blackoutRequestedMode = mode
+        blackoutNSOLiveHz = treo_nso_prior_repaint_hz()
         for code in Array(heldDirections) { releaseDirection(code) }
         let cover = UIButton(type: .custom)
         cover.backgroundColor = .black
-        cover.setTitle(smartGC ? "Treo JarBox · chạm nút tròn giữa màn hình để trở lại" :
-                                      "Chạm nút tròn giữa màn hình để hiện game", for: .normal)
+        cover.setTitle(blackoutModeTitle(), for: .normal)
         cover.setTitleColor(UIColor(white: 0.48, alpha: 1), for: .normal)
         cover.titleLabel?.font = .systemFont(ofSize: 14)
         cover.titleLabel?.numberOfLines = 0
@@ -1708,9 +1738,48 @@ class GameViewController: UIViewController {
                     thermalPeak.rawValue >= start.thermal.rawValue ? thermalPeak : start.thermal),
                 thermalEvents, hudUpdates)
         }
+        let pulseLog: String? = vmTreoProbeStart.map { start in
+            let end = VMTreoProbe()
+            let dt = max(0.001, end.time - start.time)
+            let requests = end.nsoRequests &- start.nsoRequests
+            let skips = (end.ninjaRepaints &- start.ninjaRepaints) +
+                        (end.ninjaServices &- start.ninjaServices) +
+                        (end.ninjaPaints &- start.ninjaPaints)
+            let specialized = blackoutRequestedMode == 8 &&
+                              end.ninjaMatched != 0 && end.nsoCanvasSeen != 0 &&
+                              skips > 0
+            let mode = specialized ? "chuyen_biet_NSO" : "chuan"
+            let pulseHz = Double(requests) / dt
+            let baseline = blackoutNSOLiveHz
+            let gapMs = treo_nso_last_repaint_gap_ms()
+            func rateText(_ rate: Double) -> String {
+                return rate >= 0 && rate.isFinite
+                    ? String(format: "%.2f", rate) : "?"
+            }
+            let ratio = baseline > 0
+                ? String(format: "%.1f%%", 100.0 * pulseHz / baseline) : "?"
+            let status: String
+            if !specialized {
+                status = "khong_co_tin_hieu_chuyen_biet"
+            } else if requests == 0 || (gapMs >= 5000) {
+                status = "nghi_ngung_nhip"
+            } else if baseline <= 0 {
+                status = "chua_co_moc_truoc_treo"
+            } else if pulseHz < baseline * 0.85 {
+                status = "nghi_cham_nhip"
+            } else {
+                status = "nhip_yeu_cau_khung_hinh_on"
+            }
+            return "[JarBoxVM][GamePulse] mode=\(mode) · source=NSO_Canvas.repaint_requests" +
+                " · pre_8s_hz=\(rateText(baseline)) · treo_hz=\(rateText(pulseHz))" +
+                " · rate_ratio=\(ratio) · requests=\(requests)" +
+                " · last_request_gap_ms=\(rateText(gapMs)) · status=\(status)." +
+                " Đây chỉ là nhịp yêu cầu vẽ từ vòng game, không xác nhận logic/auto/mạng/server vẫn tiến triển."
+        }
         vmTreoProbeStart = nil
         let paintHotReport = String(cString: treo_vm_paint_sample_report())
         if let vmLog { NSLog("%@", vmLog) }
+        if let pulseLog { NSLog("%@", pulseLog) }
         let arrayLookupDiag = String(cString: treo_vm_array_lookup_diag_report())
         if arrayLookupDiag.hasPrefix("[JarBoxVM][ArrayLookupDiag] enabled=1") {
             NSLog("%@", arrayLookupDiag)
@@ -1774,11 +1843,14 @@ class GameViewController: UIViewController {
         previousBrightness = nil
         blackout?.removeFromSuperview()
         blackout = nil
+        blackoutRequestedMode = 0
+        blackoutNSOLiveHz = -1
         if let vmLog {
             if let report = lastMeasurement {
-                lastMeasurement = (report.title, report.message + "\n\n" + vmLog + "\n\n" + paintHotReport)
+                lastMeasurement = (report.title, report.message + "\n\n" + vmLog +
+                    (pulseLog.map { "\n\n" + $0 } ?? "") + "\n\n" + paintHotReport)
             } else {
-                lastMeasurement = ("JarBoxVM · hiệu năng", vmLog + "\n\n" + paintHotReport)
+                lastMeasurement = ("JarBoxVM · hiệu năng", vmLog + (pulseLog.map { "\n\n" + $0 } ?? "") + "\n\n" + paintHotReport)
             }
         }
         applyPadMode()
