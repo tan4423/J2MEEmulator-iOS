@@ -629,6 +629,7 @@ void _op_notsupport(u8 *opCode, Runtime *runtime) {
 
 #if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__
 extern void jvm_bridge_note_net_trace(const char *detail);
+extern void jvm_bridge_mod_popup_tick(void);
 #endif
 
 s32 exception_handle(RuntimeStack *stack, Runtime *runtime) {
