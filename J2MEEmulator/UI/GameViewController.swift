@@ -901,7 +901,9 @@ class GameViewController: UIViewController {
         let canvasIsVisible = !emulatorView.isHidden
         let padIsVisible = canvasIsVisible && padMode != .hidden
         panel.isHidden = !padIsVisible
-        screenMenu.isHidden = !canvasIsVisible
+        // Keep Stop and Back-to-Library reachable on MIDP Forms/Lists too.
+        // A hidden canvas is not the same as a finished JVM session.
+        screenMenu.isHidden = false
         directionalPad?.isHidden = padMode != .directions
         numpadView?.isHidden = padMode != .numbers
         portraitControlsHeight?.constant = padIsVisible ? 198 : 0
