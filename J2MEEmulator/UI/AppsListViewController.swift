@@ -691,11 +691,26 @@ class AppsListViewController: UIViewController,
     func collectionView(_ collectionView: UICollectionView,
                         didSelectItemAt indexPath: IndexPath) {
         let app = apps[indexPath.item]
-        if let parked = parkedGameController, parked.ownsLiveGameSession() {
-            if parked.jarPath == app.path {
-                resumeParkedGame()
+        // Never launch a second view hierarchy from the *parked* overlay,
+        // even in the brief gap after the native slot becomes idle but before
+        // the old owner finishes its UIKit teardown.
+        if let parked = parkedGameController {
+            if parked.ownsLiveGameSession() {
+                if parked.jarPath == app.path {
+                    resumeParkedGame()
+                } else {
+                    showAnotherGameBlocked(app)
+                }
+            } else if jvm_bridge_session_is_active() != 0 {
+                updateStuckSessionButton()
+                openStuckSessionRecovery()
             } else {
-                showAnotherGameBlocked(app)
+                let alert = UIAlertController(
+                    title: "Đang đóng phiên cũ",
+                    message: "Hãy chờ JarBox quay lại thư viện chính trước khi mở game tiếp theo.",
+                    preferredStyle: .alert)
+                alert.addAction(UIAlertAction(title: "OK", style: .default))
+                present(alert, animated: true)
             }
             return
         }
