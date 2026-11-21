@@ -68,6 +68,11 @@ int treo_main_qos_expected(int mode);
 int treo_main_qos_apply(int mode);
 int treo_main_qos_finish(void);
 uint64_t treo_afk_paint_count(void);
+// Experimental bounded JAR resource-byte cache, mode 8 only.
+int treo_image_cache_build(void);
+uint64_t treo_image_cache_hits(void);
+uint64_t treo_image_cache_stores(void);
+uint64_t treo_image_cache_stored_bytes(void);
 // Opt-in safety fallback for JarBox's generic guarded Java Canvas AFK.
 void treo_afk_guard_auto_set(int enabled);
 int treo_afk_guard_auto_fell_back(void);

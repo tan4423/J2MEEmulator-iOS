@@ -321,6 +321,42 @@ uint64_t treo_afk_guarded_real(void) { return atomic_load_explicit(&treo_guarded
 uint64_t treo_afk_guarded_late(void) { return atomic_load_explicit(&treo_guarded_late, memory_order_relaxed); }
 uint64_t treo_afk_layer_frames(void) { return atomic_load_explicit(&treo_layer_frames, memory_order_relaxed); }
 
+
+/* Native A/B switch + batched counters for the headless JAR image-byte cache. */
+#if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__ && !defined(TREO_VM_IMAGE_CACHE_DISABLED)
+#define TREO_VM_IMAGE_CACHE 1
+#else
+#define TREO_VM_IMAGE_CACHE 0
+#endif
+int treo_image_cache_build(void) { return TREO_VM_IMAGE_CACHE; }
+static _Atomic uint64_t g_image_cache_hits, g_image_cache_stores, g_image_cache_stored_bytes;
+uint64_t treo_image_cache_hits(void) {
+    return atomic_load_explicit(&g_image_cache_hits, memory_order_relaxed);
+}
+uint64_t treo_image_cache_stores(void) {
+    return atomic_load_explicit(&g_image_cache_stores, memory_order_relaxed);
+}
+uint64_t treo_image_cache_stored_bytes(void) {
+    return atomic_load_explicit(&g_image_cache_stored_bytes, memory_order_relaxed);
+}
+static s32 n_afkImageCacheEnabled(Runtime *runtime, JClass *clazz) {
+    push_int(runtime->stack, TREO_VM_IMAGE_CACHE &&
+        atomic_load_explicit(&treo_afk_mode, memory_order_acquire) == 8);
+    return RUNTIME_STATUS_NORMAL;
+}
+static s32 n_imageCacheNote(Runtime *runtime, JClass *clazz) {
+    int hits = runtime->jnienv->localvar_getInt(runtime->localvar, 0);
+    int bytes = runtime->jnienv->localvar_getInt(runtime->localvar, 1);
+    if (hits > 0)
+        atomic_fetch_add_explicit(&g_image_cache_hits, (uint64_t)hits, memory_order_relaxed);
+    if (bytes > 0) {
+        atomic_fetch_add_explicit(&g_image_cache_stores, 1, memory_order_relaxed);
+        atomic_fetch_add_explicit(&g_image_cache_stored_bytes, (uint64_t)bytes,
+                                  memory_order_relaxed);
+    }
+    return RUNTIME_STATUS_NORMAL;
+}
+
 static s32 n_afkPaintPolicy(Runtime *runtime, JClass *clazz) {
     push_int(runtime->stack, atomic_load_explicit(&treo_afk_mode, memory_order_acquire));
     return RUNTIME_STATUS_NORMAL;
@@ -3842,6 +3878,8 @@ static java_native_method j2me_render_methods[] = {
     {CLS, "afkSuspended",     "()Z", n_afkSuspended},
     {CLS, "takeAfkRefresh",   "()I", n_takeAfkRefresh},
     {CLS, "afkPaintPolicy", "()I", n_afkPaintPolicy},
+    {CLS, "afkImageCacheEnabled", "()Z", n_afkImageCacheEnabled},
+    {CLS, "imageCacheNote", "(II)V", n_imageCacheNote},
     {CLS, "afkCanvasResult", "(I)V", n_afkCanvasResult},
     {CLS, "afkBypassPaint", "()Z", n_afkBypassPaint},
     {CLS, "beginAfkPaint", "(JZ)J", n_beginAfkPaint},
