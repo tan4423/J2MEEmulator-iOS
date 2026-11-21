@@ -313,6 +313,9 @@ enum GameLayoutMode {
 class GameViewController: UIViewController {
 
     let jarPath: String
+    // nil is the original installation; non-nil is an independent tab
+    // using the same immutable JAR bytes but its own RMS and settings.
+    let cloneID: UUID?
     let appName: String
     let appIcon: UIImage
     let canvasWidth: Int
@@ -378,8 +381,10 @@ class GameViewController: UIViewController {
     init(jarPath: String, appName: String, appIcon: UIImage,
          canvasWidth: Int = 240, canvasHeight: Int = 320,
          render3dScale: Int = 3, fpsLimit: Int = 0,
-         layoutMode: GameLayoutMode = .portrait) {
+         layoutMode: GameLayoutMode = .portrait,
+         cloneID: UUID? = nil) {
         self.jarPath = jarPath
+        self.cloneID = cloneID
         self.appName = appName
         self.appIcon = appIcon
         self.canvasWidth = canvasWidth
@@ -3492,6 +3497,7 @@ class GameViewController: UIViewController {
 
         // Copy plain values on the main actor; the VM worker never reads the view controller.
         let gamePath = jarPath
+        let instanceCloneID = cloneID
         let width = Int32(canvasWidth)
         let height = Int32(canvasHeight)
         let scale = Int32(render3dScale)
@@ -3499,7 +3505,8 @@ class GameViewController: UIViewController {
         let worker = DispatchWorkItem { [weak self] in
             let failure = GameViewController.runMIDlet(
                 resRoot: resRoot, jarPath: gamePath, width: width,
-                height: height, scale: scale, fps: fps
+                height: height, scale: scale, fps: fps,
+                cloneID: instanceCloneID
             )
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
@@ -3618,7 +3625,8 @@ class GameViewController: UIViewController {
 
     nonisolated private static func runMIDlet(resRoot: String, jarPath: String,
                                               width: Int32, height: Int32,
-                                              scale: Int32, fps: Int32) -> String? {
+                                              scale: Int32, fps: Int32,
+                                              cloneID: UUID? = nil) -> String? {
         // Only the owning worker releases the exclusive JVM slot after
         // native cleanup, including startup errors and cancellations.
         defer { jvm_bridge_finish_session() }
@@ -3626,14 +3634,15 @@ class GameViewController: UIViewController {
             .documentDirectory, .userDomainMask, true).first ?? NSTemporaryDirectory()
         let saveRoot: String
         do {
-            saveRoot = try JarBoxGameStorage.prepareRoot(jarPath: jarPath, documents: docs)
+            saveRoot = try JarBoxGameStorage.prepareRoot(jarPath: jarPath,
+                                                         documents: docs, cloneID: cloneID)
         } catch {
             NSLog("[JarBoxStorage] save root preparation failed: %@", error.localizedDescription)
             return "Không thể mở dữ liệu lưu an toàn: " + error.localizedDescription
         }
         // Metadata-only audit. The RMS records themselves remain unchanged.
         JarBoxGameStorage.appendSettingEvent(jarPath: jarPath, documents: docs,
-                                            event: "SESSION_START")
+                                            event: "SESSION_START", cloneID: cloneID)
 
         NSLog("[J2ME Treo] Entering JVM initialization")
         let initResult = jvm_bridge_init(resRoot, saveRoot, jarPath, width, height, scale, fps)
@@ -3652,7 +3661,8 @@ class GameViewController: UIViewController {
         let nsoInitTrace = String(cString: jvm_bridge_nso_init_trace())
         jvm_bridge_destroy()
         JarBoxGameStorage.appendSettingEvent(jarPath: jarPath, documents: docs,
-                                            event: "SESSION_END", value: String(runResult))
+                                            event: "SESSION_END", value: String(runResult),
+                                            cloneID: cloneID)
         NSLog("[J2ME Treo] JVM cleanup complete")
         if runResult == 0 { return nil }
         return "Game execution failed (\(runResult))." +
@@ -3715,6 +3725,11 @@ class GameViewController: UIViewController {
         jvm_bridge_session_is_active() != 0 &&
         jvm_bridge_session_token() == gameSessionToken &&
         (path == nil || path == jarPath)
+    }
+
+    /// Path alone does not identify a tab: clones share one original JAR.
+    func ownsLiveInstance(for path: String, cloneID candidate: UUID?) -> Bool {
+        ownsLiveGameSession(for: path) && candidate == cloneID
     }
 
     // The same proven mode-8 headless Canvas + smart GC path as Treo.
