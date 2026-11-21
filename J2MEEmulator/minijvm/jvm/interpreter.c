@@ -1373,14 +1373,18 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
 #if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__
     int nso_init_probe = 0;
     Instance *nso_init_receiver = NULL;
+    Instance *nso_init_argument = NULL;
     if (utf8_equals_c(method->name, "<init>")) {
         if (utf8_equals_c(clazz->name, "Class_cu")) nso_init_probe = 1;
         else if (utf8_equals_c(clazz->name, "GameMidlet")) nso_init_probe = 2;
-    } else if (utf8_equals_c(clazz->name, "Class_ek") &&
-               utf8_equals_c(method->name, "paint") &&
-               utf8_equals_c(method->descriptor,
-                             "(Ljavax/microedition/lcdui/Graphics;)V")) {
-        nso_init_probe = 3;
+    } else if (utf8_equals_c(clazz->name, "Class_ek")) {
+        if (utf8_equals_c(method->name, "paint") &&
+            utf8_equals_c(method->descriptor,
+                          "(Ljavax/microedition/lcdui/Graphics;)V"))
+            nso_init_probe = 3;
+        else if (utf8_equals_c(method->name, "a") &&
+                 utf8_equals_c(method->descriptor, "(LClass_bv;)V"))
+            nso_init_probe = 4; // non-inlined setter path
     }
 #endif
     while (clazz->status < CLASS_STATUS_CLINITING) {
@@ -1420,6 +1424,11 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                     treo_nso_inspect_delegate(runtime, "cu_ctor_entry", NULL, nso_init_receiver);
                 else if (nso_init_probe == 3)
                     treo_nso_inspect_delegate(runtime, "paint_entry", nso_init_receiver, NULL);
+                else if (nso_init_probe == 4) {
+                    nso_init_argument = localvar_getRefer(runtime->localvar, 1);
+                    treo_nso_inspect_delegate(runtime, "setter_bytecode_entry",
+                                              nso_init_receiver, nso_init_argument);
+                }
             }
 #endif
 
@@ -5297,6 +5306,9 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
         treo_nso_inspect_delegate(runtime, "cu_ctor_exit", NULL, nso_init_receiver);
     else if (nso_init_probe == 2)
         treo_nso_inspect_delegate(runtime, "midlet_ctor_exit", NULL, nso_init_receiver);
+    else if (nso_init_probe == 4)
+        treo_nso_inspect_delegate(runtime, "setter_bytecode_exit",
+                                  nso_init_receiver, nso_init_argument);
 #endif
     runtime_destroy_inl(runtime);
     pruntime->son = NULL;  //must clear , required for getLastSon()
