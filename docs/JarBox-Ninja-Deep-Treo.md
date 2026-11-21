@@ -332,3 +332,44 @@ was on a build *before* the latest launch-error/ownership/interface
 metadata fixes. The newest build should report the actual Java error
 name/message if execution still fails. A successful compile or
 classfile parse does not imply a modded JAR will run.
+
+
+### TrungDucTV lifecycle NPE from 2026-11-21 device screenshot
+
+The device alert now says:
+`Game execution failed (1)` and
+`Lỗi Java: java.lang.RuntimeException: MIDlet lifecycle failed: java.lang.NullPointerException`.
+This is **not** a proven iOS native crash, and the previous classloader
+fixes did not make the JAR launch successfully. The Java `runLifecycle`
+error handler catches exceptions from any of:
+`GameMidlet.startApp()`, `Display.runEventLoop()`,
+`pauseApp()`, or `destroyApp(true)`. The original alert
+did not preserve stage or stack frames.
+
+Direct static disassembly of the uploaded JAR shows:
+`GameMidlet.startApp()` simply calls
+`Display.getDisplay(this).setCurrent(Class_ek.a)`.
+`GameMidlet.<init>()` constructs `Class_ek` and `Class_cu`,
+which links the paint delegate; a later rendering/lifecycle failure is
+therefore plausible. `Class_cu.<init>()` also calls
+`System.getProperty(...).indexOf(...)` without a NULL guard,
+but **its obfuscated property key was decoded offline** from
+`Class_fj.a(String)`: `microedition.platform` (test string
+`RIM`). The native bridge already provides
+`microedition.platform=Apple/iPhone`. Do NOT falsely claim that
+this property is missing or patch it to an empty string.
+
+The next build now adds `launcherDiagnostic(stage, failure)`:
+`phase=startApp`, `phase=Display.runEventLoop`,
+`phase=pauseApp`, `phase=destroyApp`, or
+`phase=load/constructor`, plus Java exception class/message
+and up to 6 source stack frames if supported. It retains the original
+diagnostic when the Java launcher subsequently catches the wrapper
+`RuntimeException`; before this fix it overwrote the useful inner
+failure with `MIDlet lifecycle failed`. The existing error bridge and
+Codemagic workflow transport this into the on-screen error alert.
+
+This instrumentation does **not** itself fix the Java NPE, which
+still requires a proven failing call site before making a targeted
+compatibility change. Use the next screenshot's full `Lỗi Java`
+line and the `[MIDletRunner]` stack trace for that.
