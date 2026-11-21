@@ -10,6 +10,17 @@ extern "C" {
 /// Set by jvm_bridge_init, read by j2me_m3g_jni.c and MC3D via system property.
 extern int g_render_3d_scale;
 
+/// Acquire the sole in-process JVM slot BEFORE dispatching the worker.
+/// Returns 1 if acquired, 0 if another game is launching/running/tearing down.
+int jvm_bridge_try_begin_session(void);
+/// 0 idle, 1 starting, 2 running, 3 tearing down.
+int jvm_bridge_session_phase(void);
+/// Must only be called by the owning worker AFTER native cleanup.
+void jvm_bridge_finish_session(void);
+/// After user cancellation grace period, interrupt Java wait/sleep/loops.
+/// Returns 1 when active Java threads were interrupted, 0 otherwise.
+int jvm_bridge_interrupt_active_threads(void);
+
 /// Initialize miniJVM with the given resource and save directories.
 /// @param res_root         Path to directory containing runtime JARs
 /// @param save_root        Path to writable directory for app data
@@ -39,7 +50,7 @@ void jvm_bridge_request_stop(void);
 /// Check if stop has been requested. Called from native methods on JVM thread.
 int jvm_bridge_is_stop_requested(void);
 
-// Set by exact-JAR SHA-256 verification before executing the MIDlet.
+// Set by NSO family-resource matching; Canvas structure is checked separately.
 int treo_ninja_deep_verified(void);
 
 // Passive verification for code-signed interpreter fast dispatch.
