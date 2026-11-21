@@ -215,9 +215,16 @@ workflows:
           javac --release 8 -sourcepath '' -cp "$jars/j2me_api.jar:$jars/minijvm_rt.jar" \
             -d "$classes" j2me_api/src/javax/microedition/lcdui/{Display,Canvas,Graphics,Image,TextBox,NativeBridge,Form,ChoiceGroup,List}.java \
             j2me_api/src/javax/microedition/shell/MIDletRunner.java \
+            j2me_api/src/javax/microedition/rms/impl/AndroidRecordStoreManager.java \
+            j2me_api/src/javax/microedition/rms/impl/RmsEventLog.java \
             j2me_api/src/javax/microedition/io/Connector.java \
             j2me_api/src/javax/microedition/io/MicroCompatibleSocketConnection.java
           jar uf "$jars/j2me_api.jar" -C "$classes" .
+          jar tf "$jars/j2me_api.jar" | grep -Fxq 'javax/microedition/rms/impl/RmsEventLog.class'
+          javap -classpath "$jars/j2me_api.jar:$jars/minijvm_rt.jar" -c \
+            javax.microedition.rms.impl.AndroidRecordStoreManager > "$RUNNER_TEMP/jarbox-rms-manager.txt"
+          grep -Fq 'RmsEventLog.note' "$RUNNER_TEMP/jarbox-rms-manager.txt"
+          echo "[JarBoxStorage][BUILD] rms_metadata_log=present corrupted_save_preservation=enabled"
           # The shipped Connector.class was the unsupported-transport stub.
           # Require the actual Java ME protocol dispatcher in the built JAR.
           javap -classpath "$jars/j2me_api.jar:$jars/minijvm_rt.jar" -c javax.microedition.io.Connector > "$RUNNER_TEMP/connector-bytecode.txt"
