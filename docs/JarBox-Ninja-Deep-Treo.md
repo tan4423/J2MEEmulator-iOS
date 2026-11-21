@@ -809,3 +809,40 @@ TCP handshake and login against its configured server. If it still shows
 the server error, obtain the `[JarBoxNET]` logs; do not invent a server
 address or claim that an unavailable external server can be fixed locally.
 A GitHub source commit is not a successful Codemagic build or device test.
+
+
+## 2026-11-21 MicroEmulator 2.0.4 binary reference and socket behavior
+
+User supplied `MicroEmulator.jar.jar` (MicroEmulator 2.0.4 build 62).
+Direct `javap -c -p` bytecode inspection found that
+`org.microemu.cldc.socket.SocketConnection` wraps the standard
+`java.net.Socket` and returns its `getInputStream()` and
+`getOutputStream()` directly. The client game `Class_bn.run()`
+uses `Connector.open(String)`, then `SocketConnection.openDataOutputStream()`
+and `openDataInputStream()` before the initial handshake.
+
+By contrast, miniJVM upstream `org.mini.net.socket.Protocol` uses
+`PrivateInputStream.read(byte[], off, len)` which loops until
+**len** bytes arrive (or EOF), unlike the standard TCP InputStream
+that can return a short read. This can block packet-oriented game
+reads unnecessarily. The prior Connector dispatcher patch restored
+protocol lookup, but user reports the server dialog still appears.
+
+Fix: on default `socket://host:port` outgoing connections, use the
+new `MicroCompatibleSocketConnection` wrapper around miniJVM's
+`java.net.Socket` to match MicroEmulator's stream semantics and
+avoid protocol-handler reflection for TCP. Other protocols and
+server-socket forms retain their previous dispatch. No extra
+polling, frame work, retry loops or new workflow. Native connect
+now logs only one `[JarBoxNET] tcp_connect=` result per attempt
+with numeric mbedTLS result and destination port, not hostname or
+credentials. Codemagic compiles and verifies the new class in its
+generated `j2me_api.jar`. Game JAR and `main` remain unchanged.
+
+Local control check: compiled a Java 8 stream-wrapper harness and
+used a localhost TCP server sending 3 bytes while keeping the
+connection open; a read requesting 128 bytes returned 3 immediately.
+This verifies Java Socket short-read behavior on desktop, **not**
+miniJVM/iOS compatibility or real server connectivity. Rebuild
+branch, test Micro-compatible TCP and send `[JarBoxNET]` logs if
+connection still fails. No confirmed iPhone success yet.

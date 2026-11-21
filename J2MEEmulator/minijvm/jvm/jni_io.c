@@ -377,6 +377,14 @@ s32 org_mini_net_SocketNative_connect0(Runtime *runtime, JClass *clazz) {
         ret = mbedtls_net_connect(ctx, host->arr_body, port->arr_body, proto);
         jthread_block_exit(runtime);
 #if defined(__APPLE__)
+        // Only one line per actual connect attempt, never per frame/packet.
+        // Log native result code and port, not hostname/credentials.
+        if (proto == MBEDTLS_NET_PROTO_TCP) {
+            fprintf(stderr, "[JarBoxNET] tcp_connect=%s native_code=%d port=%s\n",
+                    ret == 0 ? "ok" : "failed", ret, (const char *)port->arr_body);
+        }
+#endif
+#if defined(__APPLE__)
         // Apply only to successfully connected outbound TCP sockets. Keep the
         // original connection usable if the OS rejects the latency option.
         if (ret == 0 && proto == MBEDTLS_NET_PROTO_TCP) {

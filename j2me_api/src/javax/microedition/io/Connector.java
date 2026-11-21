@@ -45,6 +45,45 @@ public final class Connector {
             throw new IllegalArgumentException("URL has no protocol: " + name);
         }
         String protocol = name.substring(0, colon).replace('-', '_').toLowerCase();
+
+        // MicroEmulator 2.0.4 uses java.net.Socket directly. The stock
+        // miniJVM org.mini.net.socket.Protocol instead waits for the entire
+        // requested read(byte[],off,len) buffer, which can stall packet
+        // protocols expecting partial TCP reads. This route deliberately
+        // matches MicroEmulator for outgoing sockets only.
+        if ("socket".equals(protocol) && "org.mini.net".equals(protocolRoot)) {
+            String authority = name.substring(colon + 1);
+            if (authority.startsWith("//")) {
+                authority = authority.substring(2);
+                int separator = authority.lastIndexOf(':');
+                if (separator > 0 && separator + 1 < authority.length()
+                        && authority.indexOf('/') < 0) {
+                    String host = authority.substring(0, separator);
+                    if (host.startsWith("[") && host.endsWith("]")) {
+                        host = host.substring(1, host.length() - 1);
+                    }
+                    final int port;
+                    try {
+                        port = Integer.parseInt(authority.substring(separator + 1));
+                    } catch (NumberFormatException error) {
+                        throw new IOException("Invalid TCP socket port");
+                    }
+                    if (port < 1 || port > 65535 || host.length() == 0) {
+                        throw new IOException("Invalid TCP socket destination");
+                    }
+                    try {
+                        Connection connected = new MicroCompatibleSocketConnection(host, port);
+                        System.out.println("[JarBoxNET] socket_mode=micro_compatible connect=ok");
+                        return connected;
+                    } catch (IOException error) {
+                        System.err.println("[JarBoxNET] socket_mode=micro_compatible connect=failed type="
+                                + error.getClass().getName());
+                        throw error;
+                    }
+                }
+            }
+        }
+
         String className = protocolRoot + "." + protocol + ".Protocol";
         try {
             Class type = Class.forName(className);

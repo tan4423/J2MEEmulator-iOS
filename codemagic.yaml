@@ -37,13 +37,17 @@ workflows:
           javac --release 8 -sourcepath '' -cp "$jars/j2me_api.jar:$jars/minijvm_rt.jar" \
             -d "$classes" j2me_api/src/javax/microedition/lcdui/{Display,Canvas,Graphics,Image,TextBox,NativeBridge,Form,ChoiceGroup,List}.java \
             j2me_api/src/javax/microedition/shell/MIDletRunner.java \
-            j2me_api/src/javax/microedition/io/Connector.java
+            j2me_api/src/javax/microedition/io/Connector.java \
+            j2me_api/src/javax/microedition/io/MicroCompatibleSocketConnection.java
           jar uf "$jars/j2me_api.jar" -C "$classes" .
           # The shipped Connector.class was the unsupported-transport stub.
           # Require the actual Java ME protocol dispatcher in the built JAR.
           javap -classpath "$jars/j2me_api.jar:$jars/minijvm_rt.jar" -c javax.microedition.io.Connector > "$RUNNER_TEMP/connector-bytecode.txt"
           grep -Fq 'ConnectionBaseInterface.openPrim' "$RUNNER_TEMP/connector-bytecode.txt"
-          echo "[JarBoxNET][BUILD] Connector socket/http/https dispatch=enabled"
+          grep -Fq 'MicroCompatibleSocketConnection' "$RUNNER_TEMP/connector-bytecode.txt"
+          javap -classpath "$jars/j2me_api.jar:$jars/minijvm_rt.jar" -c javax.microedition.io.MicroCompatibleSocketConnection > "$RUNNER_TEMP/socket-bytecode.txt"
+          grep -Fq 'java/net/Socket.getInputStream' "$RUNNER_TEMP/socket-bytecode.txt"
+          echo "[JarBoxNET][BUILD] socket=micro_compatible http/https=standard_dispatch"
           
           # Use only the pinned SLJIT source; do not build or run upstream scripts.
           git init -q "$RUNNER_TEMP/sljit-upstream"
