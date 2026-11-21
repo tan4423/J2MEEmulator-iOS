@@ -420,7 +420,13 @@ class GameViewController: UIViewController {
             if parkedTreoActive &&
                 (jvm_bridge_session_token() == gameSessionToken ||
                  jvm_bridge_session_is_active() == 0) {
-                stopParkedTreo()
+                // deinit may not be actor-isolated under strict Swift checks.
+                // Keep this last-resort native reset direct, without
+                // invoking an actor-isolated instance method from deinit.
+                if parkedNSODeepIdle { treo_display_wait_set(0) }
+                treo_afk_guard_auto_set(0)
+                treo_gc_smart_set(0)
+                treo_render_set_afk_mode(0)
             }
             treo_afk_buffer_audit_set(0, 0)
             if jarBoxSmartTreo { treo_gc_smart_set(0) }
