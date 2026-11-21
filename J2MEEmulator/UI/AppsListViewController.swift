@@ -14,32 +14,145 @@ import CryptoKit
 // runner, library settings and RMS diagnostics. A copied JAR with a distinct
 // filename gets distinct data; changing only its display alias does not.
 enum JarBoxGameStorage {
-    static func exactFileName(for path: String) -> String {
+    nonisolated static func exactFileName(for path: String) -> String {
         URL(fileURLWithPath: path).lastPathComponent
     }
 
-    static func installId(for path: String) -> String {
+    nonisolated static func installId(for path: String) -> String {
         let name = exactFileName(for: path)
         let digest = SHA256.hash(data: Data(name.utf8))
         return digest.map { String(format: "%02x", $0) }.joined()
     }
 
-    static func legacyId(for path: String) -> String {
+    nonisolated static func legacyId(for path: String) -> String {
         URL(fileURLWithPath: path).deletingPathExtension().lastPathComponent
             .replacingOccurrences(of: "[^a-zA-Z0-9._-]", with: "_",
                                   options: .regularExpression)
     }
 
-    static func rootPath(jarPath: String, documents: String) -> String {
-        (documents as NSString).appendingPathComponent("Games Data/inst-" + installId(for: jarPath))
+    /// The original keeps its current save directory for backward compatibility.
+    /// Every clone gets a sibling directory, never a child of the original:
+    /// deleting the original must never delete another instance's RMS.
+    nonisolated static func rootPath(jarPath: String, documents: String,
+                                     cloneID: UUID? = nil) -> String {
+        let group = installId(for: jarPath)
+        let suffix = cloneID.map { "-clone-" + $0.uuidString.lowercased() } ?? ""
+        return (documents as NSString).appendingPathComponent("Games Data/inst-" + group + suffix)
     }
 
-    private static func isSymbolicLink(_ path: String) -> Bool {
+    nonisolated static func settingsId(jarPath: String, cloneID: UUID? = nil) -> String {
+        let group = installId(for: jarPath)
+        return cloneID.map { group + "_clone_" + $0.uuidString.lowercased() } ?? group
+    }
+
+    struct CloneRecord: Codable, Equatable {
+        let id: UUID
+        let label: String
+        let createdAt: Date
+    }
+
+    private struct CloneGroup: Codable {
+        let sourceJARFileName: String
+        var clones: [CloneRecord]
+    }
+
+    private static let cloneRegistryLock = NSLock()
+
+    nonisolated private static func cloneRegistryPath(jarPath: String,
+                                                       documents: String) -> String {
+        (documents as NSString).appendingPathComponent(
+            "Game Instances/" + installId(for: jarPath) + ".json")
+    }
+
+    /// Read-only group metadata. Malformed JSON fails loudly instead of
+    /// pretending clones do not exist. No action touches save payloads.
+    nonisolated static func registeredClones(jarPath: String,
+                                             documents: String) throws -> [CloneRecord] {
+        cloneRegistryLock.lock()
+        defer { cloneRegistryLock.unlock() }
+        return try readCloneGroup(jarPath: jarPath, documents: documents).clones
+    }
+
+    nonisolated private static func readCloneGroup(jarPath: String,
+                                                    documents: String) throws -> CloneGroup {
+        let path = cloneRegistryPath(jarPath: jarPath, documents: documents)
+        let name = exactFileName(for: jarPath)
+        guard FileManager.default.fileExists(atPath: path) else {
+            return CloneGroup(sourceJARFileName: name, clones: [])
+        }
+        let group = try JSONDecoder().decode(CloneGroup.self,
+                                      from: Data(contentsOf: URL(fileURLWithPath: path)))
+        guard group.sourceJARFileName == name else {
+            throw NSError(domain: "JarBox.GameStorage", code: 5,
+                userInfo: [NSLocalizedDescriptionKey: "Nhóm bản nhân không khớp JAR gốc."])
+        }
+        return group
+    }
+
+    /// Stage a private snapshot of the source save, then publish clone
+    /// metadata atomically. This API is deliberately not offered in UI
+    /// until the Multi-JVM coordinator can reserve a quiescent snapshot.
+    /// A clone starts with identical save/settings but diverges immediately.
+    nonisolated static func createCloneWhileAllVMsStopped(jarPath: String,
+                                                           documents: String,
+                                                           label: String) throws -> CloneRecord {
+        cloneRegistryLock.lock()
+        defer { cloneRegistryLock.unlock() }
+        guard jvm_bridge_active_session_count() == 0 else {
+            throw NSError(domain: "JarBox.GameStorage", code: 6,
+                userInfo: [NSLocalizedDescriptionKey: "Không thể sao chép save khi JVM đang chạy."])
+        }
+        let title = label.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !title.isEmpty && title.count <= 80 else {
+            throw NSError(domain: "JarBox.GameStorage", code: 7,
+                userInfo: [NSLocalizedDescriptionKey: "Tên phiên nhân không hợp lệ."])
+        }
+        // Preserve the original's on-disk RMS, including old-file migration.
+        let source = try prepareRoot(jarPath: jarPath, documents: documents)
+        var group = try readCloneGroup(jarPath: jarPath, documents: documents)
+        let record = CloneRecord(id: UUID(), label: title, createdAt: Date())
+        let target = rootPath(jarPath: jarPath, documents: documents, cloneID: record.id)
+        let pending = target + ".pending-" + UUID().uuidString
+        let fm = FileManager.default
+        guard !fm.fileExists(atPath: target) else {
+            throw NSError(domain: "JarBox.GameStorage", code: 8,
+                userInfo: [NSLocalizedDescriptionKey: "Phiên nhân đã tồn tại."])
+        }
+        try fm.copyItem(atPath: source, toPath: pending)
+        do {
+            let oldLog = (pending as NSString).appendingPathComponent("save-events.log")
+            if fm.fileExists(atPath: oldLog) { try fm.removeItem(atPath: oldLog) }
+            try fm.moveItem(atPath: pending, toPath: target)
+            group.clones.append(record)
+            let registryPath = cloneRegistryPath(jarPath: jarPath, documents: documents)
+            try fm.createDirectory(atPath: (registryPath as NSString).deletingLastPathComponent,
+                                   withIntermediateDirectories: true)
+            let encoded = try JSONEncoder().encode(group)
+            try encoded.write(to: URL(fileURLWithPath: registryPath), options: .atomic)
+        } catch {
+            try? fm.removeItem(atPath: pending)
+            try? fm.removeItem(atPath: target)
+            throw error
+        }
+        // Duplicate configuration values; do not copy the source display alias.
+        let defaults = UserDefaults.standard
+        let original = settingsId(jarPath: jarPath)
+        let clone = settingsId(jarPath: jarPath, cloneID: record.id)
+        for prefix in ["ss3d_", "resW_", "resH_", "fpsLimit_"] {
+            if let value = defaults.object(forKey: prefix + original) {
+                defaults.set(value, forKey: prefix + clone)
+            }
+        }
+        return record
+    }
+
+
+    nonisolated private static func isSymbolicLink(_ path: String) -> Bool {
         let values = try? URL(fileURLWithPath: path).resourceValues(forKeys: [.isSymbolicLinkKey])
         return values?.isSymbolicLink ?? false
     }
 
-    private static func legacyOwners(jarPath: String, documents: String) -> [String] {
+    nonisolated private static func legacyOwners(jarPath: String, documents: String) -> [String] {
         let directory = (documents as NSString).appendingPathComponent("games")
         let slug = legacyId(for: jarPath)
         let filenames = (try? FileManager.default.contentsOfDirectory(atPath: directory)) ?? []
@@ -52,7 +165,24 @@ enum JarBoxGameStorage {
     /// Never combine two colliding legacy saves or launch against the wrong
     /// legacy directory. A same-filesystem move preserves RMS bytes intact.
     /// Failure leaves the original untouched and stops launch, not a blank save.
-    static func prepareRoot(jarPath: String, documents: String) throws -> String {
+    nonisolated static func prepareRoot(jarPath: String, documents: String,
+                                        cloneID: UUID? = nil) throws -> String {
+        // Clone startup must never migrate or fall back to the original RMS.
+        if let cloneID {
+            let clones = try registeredClones(jarPath: jarPath, documents: documents)
+            guard clones.contains(where: { $0.id == cloneID }) else {
+                throw NSError(domain: "JarBox.GameStorage", code: 9,
+                    userInfo: [NSLocalizedDescriptionKey: "Không tìm thấy bản nhân đã đăng ký."])
+            }
+            let privateRoot = rootPath(jarPath: jarPath, documents: documents, cloneID: cloneID)
+            var isDirectory: ObjCBool = false
+            guard FileManager.default.fileExists(atPath: privateRoot, isDirectory: &isDirectory),
+                  isDirectory.boolValue, !isSymbolicLink(privateRoot) else {
+                throw NSError(domain: "JarBox.GameStorage", code: 10,
+                    userInfo: [NSLocalizedDescriptionKey: "Save của bản nhân bị thiếu hoặc không an toàn."])
+            }
+            return privateRoot
+        }
         let fm = FileManager.default
         let root = rootPath(jarPath: jarPath, documents: documents)
         if fm.fileExists(atPath: root) {
@@ -91,7 +221,7 @@ enum JarBoxGameStorage {
 
     /// Retain user settings from before install-ID migration only when the
     /// legacy sanitized JAR name has one unambiguous owner on disk.
-    static func migratePreferencesIfUnique(for path: String, documents: String) {
+    nonisolated static func migratePreferencesIfUnique(for path: String, documents: String) {
         let old = legacyId(for: path)
         let new = installId(for: path)
         guard legacyOwners(jarPath: path, documents: documents) == [exactFileName(for: path)]
@@ -108,12 +238,14 @@ enum JarBoxGameStorage {
 
     // Metadata only: never save RMS bodies, passwords or arbitrary game text.
     // Records are bounded and appended only on lifecycle/settings actions.
-    static func appendSettingEvent(jarPath: String, documents: String,
-                                   event: String, value: String = "") {
+    nonisolated static func appendSettingEvent(jarPath: String, documents: String,
+                                   event: String, value: String = "",
+                                   cloneID: UUID? = nil) {
         let safeEvent = event.filter { $0.isASCII && ($0.isLetter || $0 == "_") }
         guard !safeEvent.isEmpty else { return }
         do {
-            let root = try prepareRoot(jarPath: jarPath, documents: documents)
+            let root = try prepareRoot(jarPath: jarPath, documents: documents,
+                                       cloneID: cloneID)
             let logPath = (root as NSString).appendingPathComponent("save-events.log")
             let fm = FileManager.default
             if !fm.fileExists(atPath: logPath) {
