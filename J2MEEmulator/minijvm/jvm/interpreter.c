@@ -5228,6 +5228,27 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
 
                     label_nosuchmethod_throw:
                     {
+#if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__
+                        if (nso_init_probe == 2) {
+                            // The original "NoSuchMethodException: a" omitted
+                            // the owner and descriptor. Capture the unresolved
+                            // bytecode method reference, not a guess about
+                            // java.lang.reflect.Class.getDeclaredMethod().
+                            // This runs only during this JAR's MIDlet startup.
+                            const uintptr_t start = ca && ca->code ? (uintptr_t)ca->code : 0;
+                            const uintptr_t pos = (uintptr_t)runtime->pc;
+                            const long offset = start && pos >= start &&
+                                pos - start < ca->code_length ? (long)(pos - start) : -1L;
+                            char detail[256];
+                            snprintf(detail, sizeof(detail),
+                                     "midlet_missing_method:pc=%ld,op=%u,ref=%s.%s%s",
+                                     offset, offset >= 0 ? (unsigned)(u8)*runtime->pc : 0u,
+                                     cmr && cmr->clsName ? utf8_cstr(cmr->clsName) : "?",
+                                     cmr && cmr->name ? utf8_cstr(cmr->name) : "?",
+                                     cmr && cmr->descriptor ? utf8_cstr(cmr->descriptor) : "?");
+                            jvm_bridge_note_nso_init_trace(detail);
+                        }
+#endif
                         stack->sp = sp;
                         push_ref(stack, (__refer) exception_create_str(JVM_EXCEPTION_NOSUCHMETHOD, runtime, err_msg));
                         goto label_exception_handle;
@@ -5374,6 +5395,17 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                  nso_init_probe == 2 ? "midlet_ctor_result" : "cu_ctor_result",
                  ret, bytecode_pc, method_code ? (int)method_code->code_length : -1);
         jvm_bridge_note_nso_init_trace(init_status);
+        if (nso_init_probe == 2 && ret == RUNTIME_STATUS_EXCEPTION &&
+            bytecode_pc >= 0 && bytecode_pc < method_code->code_length) {
+            // If the exception was created by a nested native/Java helper
+            // rather than by the direct resolver above, still report the
+            // exact caller opcode at the unwind site.
+            char failed_opcode[96];
+            snprintf(failed_opcode, sizeof(failed_opcode),
+                     "midlet_failed_opcode:pc=%ld,op=%u",
+                     bytecode_pc, (unsigned)(u8)*runtime->pc);
+            jvm_bridge_note_nso_init_trace(failed_opcode);
+        }
     }
     if (nso_init_probe == 1)
         treo_nso_inspect_delegate(runtime, "cu_ctor_exit", NULL, nso_init_receiver);
