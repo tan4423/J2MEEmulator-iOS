@@ -24,13 +24,13 @@ PREAMBLE = r"""
 #include <stdlib.h>
 typedef long long s64;
 typedef struct { int id; } MiniJVM;
-typedef struct { atomic_flag flag; int unused1, unused2; } spinlock_t;
+typedef struct { atomic_int held; int unused1, unused2; } spinlock_t;
 static void spin_lock(spinlock_t *l) {
-    while (atomic_flag_test_and_set_explicit(&l->flag, memory_order_acquire))
+    while (atomic_exchange_explicit(&l->held, 1, memory_order_acquire))
         sched_yield();
 }
 static void spin_unlock(spinlock_t *l) {
-    atomic_flag_clear_explicit(&l->flag, memory_order_release);
+    atomic_store_explicit(&l->held, 0, memory_order_release);
 }
 """
 
