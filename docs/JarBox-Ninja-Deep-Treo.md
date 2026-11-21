@@ -248,3 +248,62 @@ its menu/network flow, or proving no other Java SE incompatibility.
 If the mod still fails, send new `[MIDletRunner]` / `[JVM Bridge]`
 startup logs or crash stack so the next unsupported operation can be
 located. Avoid touching optimized NSO paint/render paths until confirmed.
+
+
+## Game startup/exit resilience after "Game execution failed (1)" (2026-11-21)
+
+**Observed from user device:** the previous field-linking fix stopped the
+silent close but did **not** make the TrungDucTV mod launch successfully.
+The iOS screen now reports `Game could not start — Game execution failed
+(1)`. This means `MIDletRunner.main()` (or a nested startup call)
+unwound with an exception. **The actual Java exception and its line are
+not known yet**. Do not claim the JAR is now compatible.
+
+The current follow-up change provides safer ownership and actionable errors:
+
+1. **Exclusive process-wide JVM session.** A main-thread
+   `jvm_bridge_try_begin_session()` gate is acquired before dispatching
+   the worker; native screen/view callbacks are installed only after this
+   gate is granted. The worker is the only owner allowed to release
+   `jvm_bridge_finish_session()`, via a `defer` that runs after native
+   cleanup on all error paths. New launches during an old JVM's startup,
+   run or cleanup are rejected with a user-visible message rather than
+   overlapping one non-reentrant global `g_jvm`.
+2. **Startup timeout with user choice.** At 20s without a first game
+   frame/native screen (if the placeholder remains), show **Continue
+   waiting** or **Cancel game**, not just a log line.
+3. **Graceful stop plus bounded UI rescue.** Back/Cancel sets the
+   stop flag, signals Display to wake, and (after a 2s grace period)
+   calls `thread_stop_all()` from a background queue only while the
+   native session phase is running. If cleanup is still stuck after
+   7s, the UI can dismiss. Crucially the JVM is **not freed** by that
+   timeout: ownership remains with its worker and the gate blocks any
+   new JVM until it safely tears down. If the native VM never returns,
+   the app may still require a full process restart before launching
+   another game; fabricating a "safe force reset" would risk UAF.
+4. **Avoid unbounded forced shutdown hooks.** miniJVM
+   `jvm_destroy()` previously unconditionally started Java shutdown
+   hook threads and `thrd_join`ed them, even if the host had already
+   asserted `collector->exit_flag` for shutdown. That can hang
+   indefinitely. In this forced path it skips starting new hooks; the
+   ordinary graceful path still runs them.
+5. **Show actual Java failure.** A launcher-only native method
+   `NativeBridge.reportLaunchError(String)` records the caught
+   Java throwable class+message in a session-owned UTF-8 buffer and
+   logs `[JarBoxVM][LaunchError]`. `GameViewController.runMIDlet()`
+   now reads it **before** JVM destroy and includes
+   `Lỗi Java: <class>: <message>` in the user-facing failure dialog,
+   not just `Game execution failed (1)`. The launcher remains
+   recompiled into `j2me_api.jar` by the **single existing**
+   Codemagic workflow. Existing startup-timeout alerts are dismissed
+   before presenting the final JVM error.
+
+**Verification:** GitHub source checks for native/Swift/Java signature
+consistency and exactly one Codemagic workflow. No actual iOS compile,
+runtime execution or real crash stack trace verified. Next test:
+rebuild newest branch commit; try the original NSO (to ensure no
+regression), TrungDucTV, and repeated quick open/cancel/open. For a
+`Game execution failed (1)` report, copy the new **Java error text**
+and console `[MIDletRunner]`, `[JarBoxVM][LaunchError]` and
+`[JarBoxVM][Lifecycle]`. Further Java SE API compatibility work must
+be driven by that actual exception rather than arbitrary stubs.
