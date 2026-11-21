@@ -8,6 +8,133 @@
 import UIKit
 import UniformTypeIdentifiers
 import Darwin
+import CryptoKit
+
+// Stable, collision-resistant per-install data paths shared by the game
+// runner, library settings and RMS diagnostics. A copied JAR with a distinct
+// filename gets distinct data; changing only its display alias does not.
+enum JarBoxGameStorage {
+    static func exactFileName(for path: String) -> String {
+        URL(fileURLWithPath: path).lastPathComponent
+    }
+
+    static func installId(for path: String) -> String {
+        let name = exactFileName(for: path)
+        let digest = SHA256.hash(data: Data(name.utf8))
+        return digest.map { String(format: "%02x", $0) }.joined()
+    }
+
+    static func legacyId(for path: String) -> String {
+        URL(fileURLWithPath: path).deletingPathExtension().lastPathComponent
+            .replacingOccurrences(of: "[^a-zA-Z0-9._-]", with: "_",
+                                  options: .regularExpression)
+    }
+
+    static func rootPath(jarPath: String, documents: String) -> String {
+        (documents as NSString).appendingPathComponent("Games Data/inst-" + installId(for: jarPath))
+    }
+
+    private static func isSymbolicLink(_ path: String) -> Bool {
+        let values = try? URL(fileURLWithPath: path).resourceValues(forKeys: [.isSymbolicLinkKey])
+        return values?.isSymbolicLink ?? false
+    }
+
+    private static func legacyOwners(jarPath: String, documents: String) -> [String] {
+        let directory = (documents as NSString).appendingPathComponent("games")
+        let slug = legacyId(for: jarPath)
+        let filenames = (try? FileManager.default.contentsOfDirectory(atPath: directory)) ?? []
+        return filenames.filter {
+            $0.lowercased().hasSuffix(".jar") &&
+            legacyId(for: (directory as NSString).appendingPathComponent($0)) == slug
+        }
+    }
+
+    /// Never combine two colliding legacy saves or launch against the wrong
+    /// legacy directory. A same-filesystem move preserves RMS bytes intact.
+    /// Failure leaves the original untouched and stops launch, not a blank save.
+    static func prepareRoot(jarPath: String, documents: String) throws -> String {
+        let fm = FileManager.default
+        let root = rootPath(jarPath: jarPath, documents: documents)
+        if fm.fileExists(atPath: root) {
+            var directory: ObjCBool = false
+            guard fm.fileExists(atPath: root, isDirectory: &directory),
+                  directory.boolValue, !isSymbolicLink(root) else {
+                throw NSError(domain: "JarBox.GameStorage", code: 1,
+                              userInfo: [NSLocalizedDescriptionKey: "Thư mục save không an toàn."])
+            }
+            return root
+        }
+        let base = (documents as NSString).appendingPathComponent("Games Data")
+        try fm.createDirectory(atPath: base, withIntermediateDirectories: true)
+        let legacyName = legacyId(for: jarPath)
+        // Avoid accessing Games Data or its parent for unusual dot-only names.
+        if legacyName != "." && legacyName != ".." && !legacyName.isEmpty {
+            let legacy = (base as NSString).appendingPathComponent(legacyName)
+            if fm.fileExists(atPath: legacy) {
+                let owners = legacyOwners(jarPath: jarPath, documents: documents)
+                guard owners.count == 1,
+                      owners[0] == exactFileName(for: jarPath),
+                      !isSymbolicLink(legacy) else {
+                    throw NSError(domain: "JarBox.GameStorage", code: 2,
+                                  userInfo: [NSLocalizedDescriptionKey:
+                                    "Save cũ có thể thuộc nhiều JAR. Không tự di chuyển để tránh ghi đè."])
+                }
+                // Atomic rename on the same Documents volume: no partial copy,
+                // no loss of legacy RMS state if the operation fails.
+                try fm.moveItem(atPath: legacy, toPath: root)
+                return root
+            }
+        }
+        try fm.createDirectory(atPath: root, withIntermediateDirectories: false)
+        return root
+    }
+
+    /// Retain user settings from before install-ID migration only when the
+    /// legacy sanitized JAR name has one unambiguous owner on disk.
+    static func migratePreferencesIfUnique(for path: String, documents: String) {
+        let old = legacyId(for: path)
+        let new = installId(for: path)
+        guard legacyOwners(jarPath: path, documents: documents) == [exactFileName(for: path)]
+              else { return }
+        let defaults = UserDefaults.standard
+        let prefix = ["displayName_", "ss3d_", "resW_", "resH_", "fpsLimit_"]
+        for key in prefix {
+            if defaults.object(forKey: key + new) == nil,
+               let value = defaults.object(forKey: key + old) {
+                defaults.set(value, forKey: key + new)
+            }
+        }
+    }
+
+    // Metadata only: never save RMS bodies, passwords or arbitrary game text.
+    // Records are bounded and appended only on lifecycle/settings actions.
+    static func appendSettingEvent(jarPath: String, documents: String,
+                                   event: String, value: String = "") {
+        let safeEvent = event.filter { $0.isASCII && ($0.isLetter || $0 == "_") }
+        guard !safeEvent.isEmpty else { return }
+        do {
+            let root = try prepareRoot(jarPath: jarPath, documents: documents)
+            let logPath = (root as NSString).appendingPathComponent("save-events.log")
+            let fm = FileManager.default
+            if !fm.fileExists(atPath: logPath) {
+                _ = fm.createFile(atPath: logPath, contents: nil)
+            }
+            let attributes = try fm.attributesOfItem(atPath: logPath)
+            guard (attributes[.size] as? NSNumber)?.intValue ?? 0 < 128 * 1024
+                else { return }
+            let safeValue = value.filter { $0.isASCII && ($0.isNumber || $0 == "x" || $0 == "_") }
+            let row = "\(Int64(Date().timeIntervalSince1970 * 1000))\tSETTINGS_\(safeEvent)\t\(safeValue)\n"
+            guard let bytes = row.data(using: .utf8) else { return }
+            let handle = try FileHandle(forWritingTo: URL(fileURLWithPath: logPath))
+            defer { handle.closeFile() }
+            handle.seekToEndOfFile()
+            handle.write(bytes)
+        } catch {
+            // Optional diagnostics cannot alter user settings or game logic.
+            NSLog("[JarBoxStorage] metadata audit unavailable: %@", error.localizedDescription)
+        }
+    }
+}
 
 // The parked library always uses portrait, even over an N-Gage game.
 final class JarBoxLibraryNavigationController: UINavigationController {
