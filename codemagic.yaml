@@ -12,7 +12,7 @@ workflows:
         JARBOX_BG_ANIM_BASELINE: "0"
         JARBOX_PAINT_SAMPLE_DISABLED: "1"
         JARBOX_VM_UTF16_BASELINE: "0"
-        JARBOX_VM_IMAGE_CACHE_BASELINE: "0"
+        JARBOX_VM_IMAGE_CACHE_BASELINE: "1" # OFF by default: measured ~0 hits in 188.7s
     scripts: &jarbox_ipa_shared_scripts
       - name: Build and package unsigned iPhone IPA
         script: |
@@ -183,22 +183,41 @@ workflows:
         JARBOX_BG_ANIM_BASELINE: "0"
         JARBOX_PAINT_SAMPLE_DISABLED: "1"
         JARBOX_VM_UTF16_BASELINE: "1"
-        JARBOX_VM_IMAGE_CACHE_BASELINE: "0"
+        JARBOX_VM_IMAGE_CACHE_BASELINE: "1"
     scripts: *jarbox_ipa_shared_scripts
     artifacts: *jarbox_ipa_shared_artifacts
 
-  jit-probe-unsigned-image-cache-baseline:
-    name: J2ME Treo Image Cache OFF baseline unsigned
+  jit-probe-unsigned-image-cache-candidate:
+    name: J2ME Treo Image Cache ON experimental unsigned
     instance_type: mac_mini_m2
     max_build_duration: 25
     environment:
       xcode: "26.3"
       vars:
-        # Same JAR, source, HUD, UTF-16 and paint. Image-byte cache alone off.
+        # Optional regression comparison. Image-byte cache alone ON.
         JARBOX_VM_SWITCH_BASELINE: "0"
         JARBOX_VM_PAINT_BRIDGE_BASELINE: "0"
         JARBOX_BG_ANIM_BASELINE: "0"
         JARBOX_PAINT_SAMPLE_DISABLED: "1"
+        JARBOX_VM_UTF16_BASELINE: "0"
+        JARBOX_VM_IMAGE_CACHE_BASELINE: "0"
+    scripts: *jarbox_ipa_shared_scripts
+    artifacts: *jarbox_ipa_shared_artifacts
+
+  jit-probe-unsigned-paintpath-diagnostic:
+    name: J2ME Treo PaintPath diagnostic unsigned
+    instance_type: mac_mini_m2
+    max_build_duration: 25
+    environment:
+      xcode: "26.3"
+      vars:
+        # Self-contained diagnostic. No game/JAR/UI edits.
+        # Sample 1/32 paints: method-level timestamps add observer overhead.
+        # Compare only source call paths, NOT CPU % against normal builds.
+        JARBOX_VM_SWITCH_BASELINE: "0"
+        JARBOX_VM_PAINT_BRIDGE_BASELINE: "0"
+        JARBOX_BG_ANIM_BASELINE: "0"
+        JARBOX_PAINT_SAMPLE_DISABLED: "0"
         JARBOX_VM_UTF16_BASELINE: "0"
         JARBOX_VM_IMAGE_CACHE_BASELINE: "1"
     scripts: *jarbox_ipa_shared_scripts
