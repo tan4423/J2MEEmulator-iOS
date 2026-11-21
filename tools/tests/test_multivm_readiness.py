@@ -16,6 +16,11 @@ class MultiVMReadinessTest(unittest.TestCase):
         self.assertTrue(report["owned_native_components"]["wav_midi_players"])
         self.assertTrue(report["enforced_single_active_jvm"])
         self.assertFalse(report["concurrent_jvms_safe_to_enable"])
+        bridge = (ROOT / "J2MEEmulator/NativeBridge/jvm_bridge.c").read_text()
+        ui = (ROOT / "J2MEEmulator/UI/AppsListViewController.swift").read_text()
+        self.assertIn('int jvm_bridge_supported_concurrent_sessions(void) {\n    return 1;', bridge)
+        self.assertIn('jvm_bridge_active_session_count()', ui)
+        self.assertIn('jvm_bridge_supported_concurrent_sessions()', ui)
         blockers = report["unisolated_native_blockers"]
         for item in (
             "render_single_flush_callback",
