@@ -88,10 +88,10 @@ public abstract class Canvas extends Displayable {
      */
     protected abstract void paint(Graphics g);
 
-    // NSO resource signature + short, side-effect-free Canvas.paint()
-    // forwarding shape. Native checks both the class and active mode 8.
+    // NSO resource + tiny paint-forwarder recognition in native. Even while
+    // visible, count repaint requests to build a pre-Treo pacing baseline.
+    // The native gate only skips work in mode 8.
     private boolean ninjaDeepSkip(int stage) {
-        if (!NativeBridge.ninjaDeepActive()) return false;
         return NativeBridge.ninjaDeepSkip(this, stage);
     }
 

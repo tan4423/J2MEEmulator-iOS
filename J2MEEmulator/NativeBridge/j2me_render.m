@@ -364,6 +364,82 @@ uint64_t treo_ninja_deep_skipped(int stage) {
     if (stage < 0 || stage > 2) return 0;
     return atomic_load_explicit(&treo_ninja_skips[stage], memory_order_relaxed);
 }
+
+/*
+ * Low-impact NSO game-loop heartbeat *proxy*. All three inspected NSO run()
+ * loops request a repaint per iteration. Counting these requests measures
+ * loop cadence, NOT actual progress, server activity, or auto correctness.
+ * Use 16 one-second atomic bins to sample the ~8s immediately before Treo,
+ * without a foreground UI timer, per-bytecode instrumentation or game-JAR edit.
+ */
+enum { TREO_NSO_BINS = 16 };
+static _Atomic int treo_nso_canvas_seen;
+static _Atomic uint64_t treo_nso_request_count;
+static _Atomic uint64_t treo_nso_last_request_ns;
+static _Atomic uint64_t treo_nso_request_bins[TREO_NSO_BINS];
+
+void treo_nso_probe_reset(void) {
+    atomic_store_explicit(&treo_nso_canvas_seen, 0, memory_order_relaxed);
+    atomic_store_explicit(&treo_nso_request_count, 0, memory_order_relaxed);
+    atomic_store_explicit(&treo_nso_last_request_ns, 0, memory_order_relaxed);
+    for (unsigned i = 0; i < TREO_NSO_BINS; ++i)
+        atomic_store_explicit(&treo_nso_request_bins[i], 0, memory_order_relaxed);
+    for (unsigned i = 0; i < 3; ++i)
+        atomic_store_explicit(&treo_ninja_skips[i], 0, memory_order_relaxed);
+}
+int treo_nso_canvas_recognized(void) {
+    return treo_ninja_deep_verified() &&
+           atomic_load_explicit(&treo_nso_canvas_seen, memory_order_acquire);
+}
+uint64_t treo_nso_repaint_requests(void) {
+    return atomic_load_explicit(&treo_nso_request_count, memory_order_relaxed);
+}
+static void treo_nso_note_request(void) {
+    const uint64_t ns = treo_afk_now_ns();
+    atomic_fetch_add_explicit(&treo_nso_request_count, 1, memory_order_relaxed);
+    if (!ns) return;
+    atomic_store_explicit(&treo_nso_last_request_ns, ns, memory_order_relaxed);
+    const uint64_t epoch = ns / 1000000000ULL;
+    const unsigned slot = (unsigned)(epoch % TREO_NSO_BINS);
+    const uint64_t fresh = (epoch << 32) | 1ULL;
+    uint64_t current = atomic_load_explicit(&treo_nso_request_bins[slot],
+                                            memory_order_relaxed);
+    while ((current >> 32) != epoch) {
+        if (atomic_compare_exchange_weak_explicit(&treo_nso_request_bins[slot],
+                &current, fresh, memory_order_relaxed, memory_order_relaxed))
+            return;
+    }
+    atomic_fetch_add_explicit(&treo_nso_request_bins[slot], 1,
+                              memory_order_relaxed);
+}
+// A rolling *pre-Treo* baseline: full prior seconds only, minimum six
+// observed active seconds out of eight, otherwise return unknown (-1).
+double treo_nso_prior_repaint_hz(void) {
+    if (!treo_nso_canvas_recognized()) return -1.0;
+    const uint64_t ns = treo_afk_now_ns();
+    if (ns < 9000000000ULL) return -1.0;
+    const uint64_t epoch = ns / 1000000000ULL;
+    uint64_t sum = 0;
+    unsigned live = 0;
+    for (unsigned age = 1; age <= 8; ++age) {
+        const uint64_t wanted = epoch - age;
+        const uint64_t packed = atomic_load_explicit(
+            &treo_nso_request_bins[wanted % TREO_NSO_BINS],
+            memory_order_relaxed);
+        if ((packed >> 32) == wanted && (uint32_t)packed > 0) {
+            sum += (uint32_t)packed;
+            live++;
+        }
+    }
+    return live >= 6 && sum >= 12 ? (double)sum / 8.0 : -1.0;
+}
+double treo_nso_last_repaint_gap_ms(void) {
+    const uint64_t last = atomic_load_explicit(&treo_nso_last_request_ns,
+                                               memory_order_relaxed);
+    const uint64_t now = treo_afk_now_ns();
+    if (!treo_nso_canvas_recognized() || !last || now < last) return -1.0;
+    return (double)(now - last) / 1000000.0;
+}
 static inline int ninja_deep_active(void) {
     return treo_ninja_deep_verified() &&
            atomic_load_explicit(&treo_afk_mode, memory_order_acquire) == 8;
@@ -418,9 +494,17 @@ static s32 n_ninjaDeepActive(Runtime *runtime, JClass *clazz) {
 static s32 n_ninjaDeepSkip(Runtime *runtime, JClass *clazz) {
     Instance *canvas = runtime->jnienv->localvar_getRefer(runtime->localvar, 0);
     int stage = runtime->jnienv->localvar_getInt(runtime->localvar, 1);
-    const int skip = stage >= 0 && stage <= 2 && ninja_deep_active() &&
-        canvas && (canvas->mb.type & MEM_TYPE_INS) &&
+    // Recognition is allowed while visible, for a pre-Treo heartbeat
+    // baseline. Only mode 8 may skip any actual rendering operation.
+    const int qualified = stage >= 0 && stage <= 2 &&
+        treo_ninja_deep_verified() && canvas &&
+        (canvas->mb.type & MEM_TYPE_INS) &&
         treo_nso_simple_canvas_paint(canvas->mb.clazz);
+    if (qualified) {
+        atomic_store_explicit(&treo_nso_canvas_seen, 1, memory_order_release);
+        if (stage == 0) treo_nso_note_request();
+    }
+    const int skip = qualified && ninja_deep_active();
     if (skip)
         atomic_fetch_add_explicit(&treo_ninja_skips[stage], 1,
                                   memory_order_relaxed);

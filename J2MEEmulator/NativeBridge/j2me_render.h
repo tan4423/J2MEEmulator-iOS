@@ -72,6 +72,12 @@ uint64_t treo_afk_paint_count(void);
 int treo_image_cache_build(void);
 uint64_t treo_image_cache_hits(void);
 uint64_t treo_ninja_deep_skipped(int stage);
+// Repaint request cadence is only a game-loop heartbeat proxy, not a real tick.
+void treo_nso_probe_reset(void);
+int treo_nso_canvas_recognized(void);
+uint64_t treo_nso_repaint_requests(void);
+double treo_nso_prior_repaint_hz(void);
+double treo_nso_last_repaint_gap_ms(void);
 uint64_t treo_image_cache_stores(void);
 uint64_t treo_image_cache_stored_bytes(void);
 // Opt-in safety fallback for JarBox's generic guarded Java Canvas AFK.

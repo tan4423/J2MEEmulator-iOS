@@ -80,6 +80,7 @@ int jvm_bridge_init(const char *res_root, const char *save_root, const char *mid
         return -1;
     }
     atomic_store_explicit(&treo_exact_ninja_verified, 0, memory_order_release);
+    treo_nso_probe_reset();
 #if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__ && !defined(TREO_NINJA_DEEP_DISABLED)
     int ninja_match = treo_is_nso_family(midlet_jar);
     atomic_store_explicit(&treo_exact_ninja_verified, ninja_match, memory_order_release);
