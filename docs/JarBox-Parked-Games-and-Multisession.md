@@ -141,3 +141,60 @@ a process restart and no UI claims a dead session is alive.
 No changes were made to `main`, the existing one Codemagic workflow,
 Java game JAR files, Deep Treo interpreter optimizations, or the native
 JVM singleton ownership rule.
+
+
+## JarBox-wide black **Màn hình Treo** overlay and information menus (v1 UI)
+
+The JarBox library's **⋯ → Màn hình Treo** is a separate screen-cover
+function, modeled after the previous in-game Treo black HUD. It covers
+the entire navigation controller, including the library toolbar; a single
+**centered round wake button** returns to the exact existing library.
+All other taps are intercepted by an opaque black, non-animated view.
+
+The global HUD displays **total JarBox process CPU**, the iOS battery
+percentage, the system's thermal-pressure category (not temperature in
+Celsius), Low Power Mode, the count of live JVM tabs (currently 0 or 1),
+the name of the one parked game if it exists, and elapsed overlay time.
+It does not invent per-game CPU or claim to list independent JVMs not
+yet supported by the native runtime.
+
+**Resource management:** A 15-second timer with 3 seconds of tolerance
+only exists while this black HUD is visible **and the JarBox scene is in
+the foreground**. Its readings use the existing native process-CPU
+counter. The timer is invalidated on wake, library view disappearance,
+or app/scene deactivation; on reactivation, the sample baseline is
+reset rather than showing stale CPU as a fresh interval. Battery
+monitoring is restored to its previous system setting when closing.
+The ordinary library without this overlay retains its zero-polling
+design: no background HUD timer is created for the global menu.
+
+The black overlay is **display-only**. It does not adjust global
+screen brightness or start/stop another Treo mode, JVM, timer thread
+in Java or network connection. If a game was parked by Back, its own
+automatic mode-8 Treo + Smart GC continues throughout this overlay.
+If no game is running, the overlay does not create a game session.
+Closing it resumes the library, **not** the game; the user explicitly
+taps the parked icon or the "Tiếp tục" control to resume gameplay.
+Because this is an opaque UI cover rather than a hardware power-off,
+display, GPU, and system power savings require device measurements,
+not an assumed percentage. iOS system-background suspension rules
+are unchanged.
+
+The separate JarBox-wide **⋯ → Thông tin chung** is the extensible
+home for general metrics. **Long-press a game icon → Thông tin trò
+chơi** shows game metadata (JAR name/size, vendor/version, resolution
+and FPS setting) plus session-specific Treo counters if that game
+owns the current live JVM. Those counters are read on demand, never
+polled continuously. Process CPU, battery and thermal state are
+not incorrectly displayed as if they belonged to an individual JAR.
+
+**Test on iPhone:** Park Avatar via Back, open ⋯ → Màn hình Treo,
+observe several 15-second samples, wake, verify session still runs,
+then resume Avatar without relaunch. Repeat with no running game and
+confirm baseline CPU remains close to idle when the cover is closed.
+Confirm the cover responds to iPhone scene/background transitions
+without restarting its sample timer while inactive.
+
+The new global menu and cover are regular UIKit source changes,
+not yet built/tested on an iPhone. The existing one Codemagic workflow
+and native singleton ownership safeguards remain unchanged.
