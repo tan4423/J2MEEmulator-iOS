@@ -373,3 +373,56 @@ This instrumentation does **not** itself fix the Java NPE, which
 still requires a proven failing call site before making a targeted
 compatibility change. Use the next screenshot's full `Lỗi Java`
 line and the `[MIDletRunner]` stack trace for that.
+
+
+### Reference-setter inlining compatibility experiment after precise NPE stack
+
+The user's on-device failure is now located:
+`phase=Display.runEventLoop; java.lang.NullPointerException |
+Class_ek.paint(Class_ek:-1) | Canvas.doPaint(Canvas.java:268) |
+Display.runEventLoop(Display.java:241)`.
+
+Offline `javap -c -p` on the uploaded
+`217_TrungDucTV_51026.jar` shows:
+
+```java
+Class_ek.paint(Graphics g) {
+    this.b.a(g);  // NPE when Class_ek.b is null
+}
+Class_ek.a(Class_bv delegate) {
+    this.b = delegate;
+}
+GameMidlet.<init>() {
+    Class_ek.a = new Class_ek();
+    ...;
+    new Class_cu().d();
+}
+Class_cu.<init>() {
+    ...;
+    Class_ek.a.a(this); // calls 6-byte reference-field setter
+    ...;
+}
+GameMidlet.startApp() {
+    Display.getDisplay(this).setCurrent(Class_ek.a);
+}
+```
+
+The `Class_ek.a(Class_bv)` method is **exactly** the 6-byte
+`aload_0 aload_1 putfield return` form that miniJVM's
+`class_load.c:_changeBytesOrder` previously tagged as `is_setter`
+and short-circuited with `_optimize_inline_setter`. The current
+experiment makes **all reference-object setters** run through the
+ordinary `invokevirtual` + `putfield_ref` bytecode machinery,
+without touching primitive setter fast paths, Canvas semantics, NSO
+Deep Treo mode 8, GC timing or the single Codemagic workflow.
+
+This test isolates a possible discrepancy between miniJVM's inline
+field-write shortcut and normal Java reference-field initialization.
+The NPE definitively indicates that the delegate was null at first
+paint, but **does not prove** the setter inliner was the cause. Do not
+represent this patch as device-validated until the user builds a new
+IPA and confirms that this exact mod draws its first frame and can
+enter/exit game cleanly. If it still fails with the same stack, inspect
+the object's constructor execution and field identity separately, and
+consider more precise `Class_ek` bytecode field-write instrumentation.
+Do not suppress/ignore NPE or silently skip the entire game paint.
