@@ -283,3 +283,31 @@ shared-state blocker and test two live JVMs performing independent
 rendering, input, network/auto, RMS writes, audio, Treo, GC, stop,
 restart, and repeated foreground/background switches. Preserve the
 exclusive guard until that criterion is met.
+
+
+## Clone group architecture: one icon, independent default tabs
+
+As of 2026-11-22, the group management and storage path have been
+implemented in source. See [JarBox clone tabs](JarBox-Clone-Tabs.md) for
+user-facing **+ Tab / − Tab** controls, independent RMS/save directories,
+independent user settings and per-tab metadata logs.
+
+The **group key** identifies the source JAR binary. It is NOT the JVM
+identity. The original tab has a null clone UUID; each additional tab
+has a freshly generated, persisted UUID. The launch path passes that
+instance UUID through the UIKit controller and worker to the exact
+`app.save.root` set on that miniJVM. Session selection checks both
+the original JAR path and clone UUID: two tabs sharing a JAR are never
+treated as the same running JVM session.
+
+**Default clone semantics:** `+ Tab` shares the JAR's code but creates
+an **empty save root and fresh default settings**. It never copies RMS,
+password/account, settings values, log or RAM state from Tab gốc.
+`− Tab` deletes only the selected clone's private save/log/settings
+after shutdown, with an explicit confirmation and rollback handling.
+
+This grouping layer does **not** bypass the one-active-miniJVM native
+guard. The 2+ JVM goal still depends on per-instance renderer, MIDP
+UI, Treo/GC, 3D and network/IO callback isolation. The group abstraction
+allows future sessions to be independent from the start without
+reworking save paths or user-facing organization.
