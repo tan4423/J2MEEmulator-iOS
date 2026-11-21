@@ -110,3 +110,21 @@ measurement retains its earlier log format until rebuilt.
 
 **Verification:** source/static checks only, no Codemagic compiler output or
 on-device NSO pace measurements have been received yet.
+
+
+## Same-thread compute speed / QoS before-vs-during Treo (2026-11-21)
+
+A device log reporting 13.1% app CPU and 25.5 NSO repaint requests/s is evidence of early paint elimination and ongoing loop request cadence, **not** a hardware E-core/P-core reading. Low CPU by itself does not mean game computation became slower or faster. iOS may reduce CPU frequency or change scheduling when a thread does less work.
+
+To test the specific user's hypothesis **without switching Codemagic workflows**, JarBox now collects `[JarBoxVM][NSOCompute]`:
+
+- Sampled in the very same eligible non-main NSO repaint-requesting pthread before and during JarBox mode 8, with an identity gate; a new JAR resets the gate.
+- At most one fixed **60,000 dependent integer operations** benchmark per **5 seconds** per phase. No thread is created and no busy-loop runs continuously. No PaintHot method profiler is enabled.
+- `samples_pre` and `samples_treo` (at least 3/6 needed), `cpu_ns_per_step` (CPU clock excluding sleep/wait), `wall_ns_per_step` (includes preemption), `cpu_slowdown` and `wall_slowdown` (during/pre), `thread_qos` (raw Darwin QoS values) and `status`.
+- `nghi_giam_toc_tinh_toan` when CPU time per fixed step increases >30%; `nghi_tang_do_tre_lap_lich` when wall time increases >35% but CPU time increase <=15%; otherwise `khong_thay_giam_toc_ro`, with `chua_du_mau` if insufficient.
+
+Interpretation: an increased CPU ns/step suggests lower effective compute throughput for this fixed-work probe; an increased wall/CPU ratio suggests scheduling delays. QoS changes describe **requested scheduler class**, not actual physical P-core/E-core assignment. The iOS app cannot reliably obtain real core type, MHz, or watts using these log counters. A valid game-loop `[JarBoxVM][GamePulse]` rate plus unchanged compute speed is more reassuring, but server tasks, inventory or auto still need to be checked directly.
+
+### Next on-device check
+
+Build the exact same **`J2ME Treo JIT probe unsigned`** workflow from the latest commit on `loader-ios-jit-probe` (one workflow). Launch one of the three NSO JARs. Let normal gameplay and auto run for **at least 25–30 seconds** before JarBox mode 8 to collect >=3 pre samples; Treo 3–5 minutes. Send `[JarBoxVM][NSOCompute]`, `[JarBoxVM][GamePulse]`, and `[JarBoxVM][Treo]`. Perform a follow-up run under comparable temperature, charging state, same scene and network. Do not assume a new native log field is present in an IPA compiled before this commit. Source-only instrumented; no claim that actual iPhone QoS or core assignment has been measured yet.
