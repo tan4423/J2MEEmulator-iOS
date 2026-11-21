@@ -37,6 +37,11 @@ def audit(root=ROOT):
         "g_audio_owners", "g_midi_owners",
         "j2me_audio_stop_for_vm(MiniJVM *vm)",
         "audio_owned_by_vm(runtime->jvm", "j2me_input_post_key_to_vm"))
+    ui_owned = all(x in src["lcd_ui"] for x in (
+        "JarBoxUIScreenContext", "ui_slot_for_vm(runtime ? runtime->jvm : NULL)",
+        "j2me_ui_release_vm(MiniJVM *vm)",
+        "j2me_ui_focus_vm(MiniJVM *vm)",
+    ))
     blockers = {
         "render_single_flush_callback":
             "static j2me_flush_callback g_flush_callback" in src["render"],
@@ -64,13 +69,14 @@ def audit(root=ROOT):
             "vm_lifecycle": bool(lifecycle),
             "input_queue_display_wait": bool(input_owned),
             "wav_midi_players": bool(audio_owned),
+            "lcd_ui_screen_buffers": bool(ui_owned),
         },
         "unisolated_native_blockers": {
             name: found for name, found in sorted(blockers.items()) if found
         },
         "notes": [
             "Input contexts (capacity four) are not four working JVM sessions.",
-            "Renderer, UI, Treo, native heap and 3D state must be made per-JVM.",
+            "LCDUI Form/List buffers are VM-owned, but UIKit callbacks and native renderer remain shared.",
             "Network, classloader, JIT, sockets, native image handles, and teardown still need device validation.",
             "Do not enable another JVM while there are unisolated native blockers.",
         ],
