@@ -1476,11 +1476,19 @@ class AppsListViewController: UIViewController,
         let menu = UIAlertController(title: app.name + " · " + String(clones.count + 1) + " tab",
                                      message: "Chọn tab cần mở. Các tab dùng chung JAR, không chung dữ liệu.",
                                      preferredStyle: .actionSheet)
-        menu.addAction(UIAlertAction(title: "Tab gốc", style: .default) { [weak self] _ in
+        let originalRunning = parkedGameController?.ownsLiveInstance(
+            for: app.path, cloneID: nil) == true
+        menu.addAction(UIAlertAction(
+            title: originalRunning ? "● Tab gốc · đang chạy" : "Tab gốc",
+            style: .default) { [weak self] _ in
             self?.launchGameTab(app, cloneID: nil, tabTitle: app.name)
         })
         for clone in clones {
-            menu.addAction(UIAlertAction(title: clone.label, style: .default) { [weak self] _ in
+            let running = parkedGameController?.ownsLiveInstance(
+                for: app.path, cloneID: clone.id) == true
+            menu.addAction(UIAlertAction(
+                title: running ? "● " + clone.label + " · đang chạy" : clone.label,
+                style: .default) { [weak self] _ in
                 self?.launchGameTab(app, cloneID: clone.id, tabTitle: app.name + " · " + clone.label)
             })
         }
