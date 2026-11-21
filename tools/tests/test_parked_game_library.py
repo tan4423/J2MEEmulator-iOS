@@ -51,6 +51,9 @@ class ParkedGameLibraryTest(unittest.TestCase):
         self.assertIn('libraryIsPresented', self.game)
         self.assertIn('overlay.dismiss(animated: false)', self.game)
         self.assertIn('JarBoxLibraryNavigationController(rootViewController: library)', self.game)
+        self.assertIn('if libraryIsPresented {\n            deferredGameAlert = true', self.game)
+        self.assertIn('if self.deferredGameAlert', self.game)
+        self.assertIn('self.showAlert()', self.game)
 
     def test_library_shows_running_state_and_blocks_second_game(self):
         self.assertIn('weak var parkedGameController: GameViewController?', self.library)
