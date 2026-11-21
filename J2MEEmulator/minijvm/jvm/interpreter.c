@@ -1191,6 +1191,28 @@ static void treo_nso_inspect_delegate(Runtime *rt, const char *stage,
 }
 #endif
 
+
+#if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__
+static inline void treo_nso_trace_cu_invokespecial(Runtime *rt, int probe,
+                               ConstantMethodRef *ref, MethodInfo *selected,
+                               const char *phase) {
+    if (probe != 2 || !ref || !ref->clsName || !ref->name ||
+        !utf8_equals_c(ref->clsName, "Class_cu") ||
+        !utf8_equals_c(ref->name, "<init>")) return;
+    char msg[260];
+    snprintf(msg, sizeof(msg),
+             "%s:cp_cls=%s,actual_cls=%s,method=%s,code_len=%d,pc=%ld",
+             phase, utf8_cstr(ref->clsName),
+             selected && selected->_this_class ?
+                 utf8_cstr(selected->_this_class->name) : "NULL",
+             selected && selected->name ? utf8_cstr(selected->name) : "NULL",
+             selected && selected->converted_code ?
+                 (int)selected->converted_code->code_length : -1,
+             rt->pc && rt->method && rt->method->converted_code ?
+                 (long)(rt->pc - rt->method->converted_code->code) : -1L);
+    jvm_bridge_note_nso_init_trace(msg);
+}
+#endif
 s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
 #if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__
     // Retain game logic inside paint(). For a headless *Canvas* Graphics,
@@ -4246,7 +4268,10 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         case op_invokespecial: TREO_VM_HANDLER(op_invokespecial) {
                             cmr = class_get_constant_method_ref(clazz, *((u16 *) (runtime->pc + 1)));
                             m = cmr->methodInfo;
-
+#if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__
+                            treo_nso_trace_cu_invokespecial(runtime, nso_init_probe,
+                                                             cmr, m, "special_resolve");
+#endif
                             if (!m) {
                                 err_msg = utf8_cstr(cmr->name);
                                 goto label_nosuchmethod_throw;
@@ -4338,7 +4363,16 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                                 ins = instance_create(runtime, other);
                             }
                             sp = stack->sp;
-
+#if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__
+                            if (nso_init_probe == 2 && other &&
+                                utf8_equals_c(other->name, "Class_cu")) {
+                                char msg[140];
+                                snprintf(msg, sizeof(msg),
+                                         "new_cu:instance=%p,clazz=%p", (void *)ins,
+                                         (void *)other);
+                                jvm_bridge_note_nso_init_trace(msg);
+                            }
+#endif
                             (sp++)->rvalue = ins;
 
 #if _JVM_DEBUG_LOG_LEVEL > 5
@@ -5064,6 +5098,10 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         case op_invokespecial_fast: TREO_VM_HANDLER(op_invokespecial_fast) {
                             cmr = class_get_constant_method_ref(clazz, *((u16 *) (runtime->pc + 1)));
                             m = cmr->methodInfo;
+#if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__
+                            treo_nso_trace_cu_invokespecial(runtime, nso_init_probe,
+                                                             cmr, m, "special_execute");
+#endif
 #if _JVM_DEBUG_PROFILE
                             spent = nanoTime() - start_at;
 #endif
