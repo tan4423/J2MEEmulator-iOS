@@ -459,12 +459,16 @@ void jvm_bridge_destroy(void) {
         g_bridge_vm.jvm->collector->exit_flag = 1;
         thread_stop_all(g_bridge_vm.jvm);
 
-        // Step 3: Unbind only this JVM's physical input and Display wait.
+        // Step 3: Close only the audio players owned by this JVM. An
+        // unrelated JVM's players must not stop just because A exits.
+        j2me_audio_stop_for_vm(g_bridge_vm.jvm);
+
+        // Step 4: Unbind only this JVM's physical input and Display wait.
         // Release makes any late native poll return empty, and signals its
         // own condition variable without waking or modifying another VM.
         j2me_input_release_vm(g_bridge_vm.jvm);
 
-        // Step 4: jvm_destroy waits up to 3s for threads, then force-zombies.
+        // Step 5: jvm_destroy waits up to 3s for threads, then force-zombies.
         // After this, threads either exited or are zombie (status only — pthread
         // may still be running but render_stop prevents them touching freed resources).
         // Note: force-zombied pthreads may still execute briefly — class_clinit
@@ -472,11 +476,10 @@ void jvm_bridge_destroy(void) {
         jvm_destroy(g_bridge_vm.jvm);
         g_bridge_vm.jvm = NULL;
 
-        // Step 5: Clean up other native subsystems — safe because:
+        // Step 6: Clean up other native subsystems — safe because:
         // - render_stop blocks all render acquire calls
         // - jvm_destroy gave threads 3s to exit
         // Input reset is no longer global; that JVM was released above.
-        j2me_audio_stop_all();
         j2me_micro3d_gl_cleanup();
         j2me_m3g_cleanup();
         j2me_render_cleanup(); // also resets render_stopped flag
