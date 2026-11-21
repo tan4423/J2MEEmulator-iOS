@@ -342,6 +342,11 @@ class GameViewController: UIViewController {
     private var portraitPadBottomPins: [NSLayoutConstraint] = []
     private let screenMenu = UIButton(type: .system)
     private var blackout: UIButton?
+    // Black cover swallows all touches; only the small centered child button
+    // can wake the game. Neither touchesMoved nor taps outside it end Treo.
+    private var blackoutThermalObserver: NSObjectProtocol?
+    private var blackoutWorstThermal: ProcessInfo.ThermalState?
+    private var blackoutThermalEvents = 0
     private var blackoutScreen: UIScreen?
     private var previousBrightness: CGFloat?
     private var jarBoxSmartTreo = false
@@ -385,6 +390,9 @@ class GameViewController: UIViewController {
         genericTreoWork?.cancel()
         gameCanvasBlitAuditWork?.cancel()
         mainStackAuditWork?.cancel()
+        if let blackoutThermalObserver {
+            NotificationCenter.default.removeObserver(blackoutThermalObserver)
+        }
         if mainStackAuditID != nil { treo_afk_main_trace_cancel() }
         treo_afk_buffer_audit_set(0, 0)
         if jarBoxSmartTreo { treo_gc_smart_set(0) }
@@ -1421,8 +1429,30 @@ class GameViewController: UIViewController {
 
     // Reads cumulative monotonic counters only. No per-frame clock, timer,
     // UI observer, or instrumentation is added to the game hot loop.
+    private static func treoThermalLabel(_ state: ProcessInfo.ThermalState) -> String {
+        switch state {
+        case .nominal: return "nominal"
+        case .fair: return "fair"
+        case .serious: return "serious"
+        case .critical: return "critical"
+        @unknown default: return "unknown"
+        }
+    }
+
+    private func recordTreoThermalChange() {
+        guard blackout != nil else { return }
+        let state = ProcessInfo.processInfo.thermalState
+        blackoutThermalEvents &+= 1
+        if let previous = blackoutWorstThermal {
+            if state.rawValue > previous.rawValue { blackoutWorstThermal = state }
+        } else {
+            blackoutWorstThermal = state
+        }
+    }
+
     private struct VMTreoProbe {
         let time = ProcessInfo.processInfo.systemUptime
+        let thermal = ProcessInfo.processInfo.thermalState
         let appCPU = treo_process_cpu_seconds()
         let mainCPU = treo_afk_current_thread_cpu()
         let direct = treo_vm_fast_method_calls()
@@ -1447,19 +1477,44 @@ class GameViewController: UIViewController {
         for code in Array(heldDirections) { releaseDirection(code) }
         let cover = UIButton(type: .custom)
         cover.backgroundColor = .black
-        cover.setTitle(smartGC ? "Treo JarBox · chạm để trở lại game" : "Chạm để hiện game",
-                       for: .normal)
-        cover.setTitleColor(UIColor(white: 0.36, alpha: 1), for: .normal)
+        cover.setTitle(smartGC ? "Treo JarBox · chạm nút tròn giữa màn hình để trở lại" :
+                                      "Chạm nút tròn giữa màn hình để hiện game", for: .normal)
+        cover.setTitleColor(UIColor(white: 0.48, alpha: 1), for: .normal)
         cover.titleLabel?.font = .systemFont(ofSize: 14)
-        cover.accessibilityLabel = "Hiện lại game"
+        cover.titleLabel?.numberOfLines = 0
+        cover.titleLabel?.textAlignment = .center
+        // Place status above the center. Do not animate or update it every frame.
+        cover.titleEdgeInsets = UIEdgeInsets(top: 0, left: 16, bottom: 142, right: 16)
+        cover.isAccessibilityElement = false
         cover.translatesAutoresizingMaskIntoConstraints = false
-        cover.addTarget(self, action: #selector(hideBlackout), for: .touchUpInside)
+        // Intentionally do NOT attach hideBlackout to the full-screen cover.
+        // It absorbs touches outside the explicit wake button so the JAR
+        // never sees them and moving a finger cannot accidentally dismiss.
         view.addSubview(cover)
         NSLayoutConstraint.activate([
             cover.topAnchor.constraint(equalTo: view.topAnchor),
             cover.bottomAnchor.constraint(equalTo: view.bottomAnchor),
             cover.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             cover.trailingAnchor.constraint(equalTo: view.trailingAnchor)
+        ])
+        let wake = UIButton(type: .custom)
+        wake.setImage(UIImage(systemName: "arrow.uturn.backward"), for: .normal)
+        wake.tintColor = UIColor(white: 0.88, alpha: 1)
+        wake.backgroundColor = UIColor(white: 0.18, alpha: 1)
+        wake.layer.cornerRadius = 36
+        wake.layer.borderColor = UIColor(white: 0.40, alpha: 1).cgColor
+        wake.layer.borderWidth = 1
+        wake.accessibilityLabel = "Thoát Treo và trở lại game"
+        wake.accessibilityHint = "Chỉ nút tròn ở giữa mới thoát chế độ Treo"
+        wake.accessibilityIdentifier = "jarbox-treo-wake"
+        wake.translatesAutoresizingMaskIntoConstraints = false
+        wake.addTarget(self, action: #selector(hideBlackout), for: .touchUpInside)
+        cover.addSubview(wake)
+        NSLayoutConstraint.activate([
+            wake.centerXAnchor.constraint(equalTo: cover.centerXAnchor),
+            wake.centerYAnchor.constraint(equalTo: cover.centerYAnchor),
+            wake.widthAnchor.constraint(equalToConstant: 72),
+            wake.heightAnchor.constraint(equalToConstant: 72)
         ])
         blackout = cover
         // Reset sampling before AFK starts. The springboard animation fix is untouched.
@@ -1479,12 +1534,33 @@ class GameViewController: UIViewController {
             previousBrightness = screen.brightness
             screen.brightness = 0
         }
+        // iOS provides coarse device thermal pressure, not a chip temperature
+        // in Celsius. Read the state before registering (Apple requirement).
+        // Notification-based: no recurring timer or CPU sampling work.
+        blackoutWorstThermal = ProcessInfo.processInfo.thermalState
+        blackoutThermalEvents = 0
+        blackoutThermalObserver = NotificationCenter.default.addObserver(
+            forName: ProcessInfo.thermalStateDidChangeNotification,
+            object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.recordTreoThermalChange() }
+        }
         NotificationCenter.default.addObserver(self, selector: #selector(hideBlackout), name: UIApplication.willResignActiveNotification, object: nil)
         vmTreoProbeStart = VMTreoProbe()
     }
 
     @objc private func hideBlackout() {
         guard blackout != nil else { return }
+        if let blackoutThermalObserver {
+            NotificationCenter.default.removeObserver(blackoutThermalObserver)
+            self.blackoutThermalObserver = nil
+        }
+        let thermalEnd = ProcessInfo.processInfo.thermalState
+        let thermalPeak = [blackoutWorstThermal, thermalEnd].compactMap { $0 }
+            .max { $0.rawValue < $1.rawValue } ?? thermalEnd
+        let thermalEvents = blackoutThermalEvents
+        blackoutWorstThermal = nil
+        blackoutThermalEvents = 0
 
         let vmLog: String? = vmTreoProbeStart.map { start in
             let end = VMTreoProbe()
@@ -1509,12 +1585,16 @@ class GameViewController: UIViewController {
             let utf16Build = treo_vm_utf16_fast_build() != 0 ? "on" : "off"
             let paintCPUmsPerSecond = Double(end.paintCPU &- start.paintCPU) / dt / 1_000_000
             return String(format:
-                "[JarBoxVM][Treo] %.1fs · dispatch=%@ · paint_bridge=%@ · bridge_elided_draw_calls=%llu · utf16_fast=%@ · utf16_fast_calls~%llu · paint_CPU=%.2fms/s · direct_methods~%llu · switch_methods~%llu · monitor_contended=%llu · monitor_failed_acquires=%llu · app_CPU=%@%% · main_CPU=%@%% · paint=%.2f/s · layer_frames=%llu · smart_GC=%llu · springboard_motion=%@ · springboard_layers_at_pause=%d · springboard_loops_during_treo=%llu. Counts batched/64; paint is not game ticks; CPU is not watts.",
+                "[JarBoxVM][Treo] %.1fs · dispatch=%@ · paint_bridge=%@ · bridge_elided_draw_calls=%llu · utf16_fast=%@ · utf16_fast_calls~%llu · paint_CPU=%.2fms/s · direct_methods~%llu · switch_methods~%llu · monitor_contended=%llu · monitor_failed_acquires=%llu · app_CPU=%@%% · main_CPU=%@%% · paint=%.2f/s · layer_frames=%llu · smart_GC=%llu · springboard_motion=%@ · springboard_layers_at_pause=%d · springboard_loops_during_treo=%llu · thermal_start=%@ · thermal_end=%@ · thermal_peak=%@ · thermal_changes=%d. Counts batched/64; paint is not game ticks; CPU is not watts; thermal state is not degrees Celsius.",
                 dt, backend, bridge, elided, utf16Build, utf16Fast, paintCPUmsPerSecond,
                 direct, fallback, monitors, retries,
                 percent(start.appCPU, end.appCPU), percent(start.mainCPU, end.mainCPU),
                 paintsHz, frames, gc,
-                springboardMotion, end.springboardPauseLayers, springboardLoops)
+                springboardMotion, end.springboardPauseLayers, springboardLoops,
+                Self.treoThermalLabel(start.thermal), Self.treoThermalLabel(thermalEnd),
+                Self.treoThermalLabel(
+                    thermalPeak.rawValue >= start.thermal.rawValue ? thermalPeak : start.thermal),
+                thermalEvents)
         }
         vmTreoProbeStart = nil
         let paintHotReport = String(cString: treo_vm_paint_sample_report())
