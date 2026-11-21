@@ -109,7 +109,8 @@ public class AndroidRecordStoreManager implements RecordStoreManager {
 		}
 
 		recordStores.remove(recordStoreName);
-		System.out.println("RecordStore " + recordStoreName + " deleted");
+		RmsEventLog.note("DELETE_STORE", recordStoreName, -1, -1);
+		System.out.println("[RMS] Store deleted");
 	}
 
 	@Override
@@ -121,9 +122,11 @@ public class AndroidRecordStoreManager implements RecordStoreManager {
 		Object value = recordStores.get(recordStoreName);
 		if (value instanceof RecordStoreImpl && ((RecordStoreImpl) value).isOpen()) {
 			((RecordStoreImpl) value).setOpen();
+			RmsEventLog.note("OPEN", recordStoreName, -1, -1);
 			return (RecordStoreImpl) value;
 		}
 
+		boolean created = false;
 		RecordStoreImpl recordStoreImpl;
 		String headerName = getHeaderFileName(recordStoreName);
 		File headerFile = new File(getDataDir(), headerName);
@@ -138,21 +141,24 @@ public class AndroidRecordStoreManager implements RecordStoreManager {
 			recordStoreImpl = new RecordStoreImpl(this, recordStoreName);
 			recordStoreImpl.setOpen();
 			saveToDisk(recordStoreImpl, -1);
+			created = true;
 		} catch (IOException e) {
 			// miniJVM's FileInputStream throws IOException (not FileNotFoundException)
 			// when the file doesn't exist.  Check if the header file actually exists
 			// to distinguish "file not found" from "truly broken header".
-			if (!headerFile.exists()) {
-				if (!createIfNecessary) {
-					throw new RecordStoreNotFoundException(recordStoreName);
-				}
+			if (headerFile.exists()) {
+				// A broken existing header must never be rewritten with a new
+				// empty store. Preserve save bytes for user recovery.
+				RmsEventLog.note("READ_ERROR", recordStoreName, -1, -1);
+				throw new RecordStoreException("RMS header unreadable; original save preserved");
 			}
-			System.out.println("openRecordStore: " +
-				(headerFile.exists() ? "broken header " : "not found ") +
-				headerFile + ": " + e.getMessage());
+			if (!createIfNecessary) {
+				throw new RecordStoreNotFoundException(recordStoreName);
+			}
 			recordStoreImpl = new RecordStoreImpl(this, recordStoreName);
 			recordStoreImpl.setOpen();
 			saveToDisk(recordStoreImpl, -1);
+			created = true;
 		}
 
 		recordStores.put(recordStoreName, recordStoreImpl);
@@ -167,18 +173,10 @@ public class AndroidRecordStoreManager implements RecordStoreManager {
 						try (DataInputStream dis = new DataInputStream(new FileInputStream(file))) {
 							recordStoreImpl.readRecord(dis);
 						} catch (IOException e) {
-							System.out.println("loadFromDisk: broken record " + file + ": " + e.getMessage());
-							int pLen = prefix.length();
-							int sLen = RECORD_STORE_RECORD_SUFFIX.length();
-							int nLen = name.length();
-							if (pLen + sLen < nLen) {
-								try {
-									int recordId = Integer.parseInt(name.substring(pLen, nLen - sLen));
-									recordStoreImpl.records.put(recordId, new byte[0]);
-								} catch (NumberFormatException numberFormatException) {
-									System.out.println("loadFromDisk: ERROR stubbing broken record " + file);
-								}
-							}
+							// No fake zero-byte records. Keep the original disk data
+							// unchanged; report an actual RMS failure to the MIDlet.
+							RmsEventLog.note("READ_ERROR", recordStoreName, -1, -1);
+							throw new RecordStoreException("RMS record unreadable; original save preserved");
 						}
 					}
 				}
@@ -186,7 +184,8 @@ public class AndroidRecordStoreManager implements RecordStoreManager {
 
 		}
 
-		System.out.println("RecordStore " + recordStoreName + " opened");
+		RmsEventLog.note(created ? "CREATE" : "OPEN", recordStoreName, -1, -1);
+		System.out.println("[RMS] Store opened");
 		return recordStoreImpl;
 	}
 
@@ -218,7 +217,8 @@ public class AndroidRecordStoreManager implements RecordStoreManager {
 		} catch (FileNotFoundException e) {
 			throw new InvalidRecordIDException();
 		} catch (IOException e) {
-			System.out.println("RecordStore.loadFromDisk: ERROR reading " + recordName + ": " + e.getMessage());
+			RmsEventLog.note("READ_ERROR", recordStoreImpl.getName(), recordId, -1);
+			throw new RecordStoreException("RMS record read failed; original save preserved");
 		}
 	}
 
@@ -238,7 +238,12 @@ public class AndroidRecordStoreManager implements RecordStoreManager {
 			throw new RecordStoreException(e.getMessage());
 		}
 
-		new File(getDataDir(), getRecordFileName(recordStore.getName(), recordId)).delete();
+		File target = new File(getDataDir(), getRecordFileName(recordStore.getName(), recordId));
+		if (target.exists() && !target.delete()) {
+			RmsEventLog.note("DELETE_ERROR", recordStore.getName(), recordId, -1);
+			throw new RecordStoreException("RMS delete failed; record file preserved");
+		}
+		RmsEventLog.note("DELETE_RECORD", recordStore.getName(), recordId, -1);
 	}
 
 	/**
@@ -250,8 +255,8 @@ public class AndroidRecordStoreManager implements RecordStoreManager {
 		try (DataOutputStream dos = new DataOutputStream(new FileOutputStream(new File(getDataDir(), headerName)))) {
 			recordStore.writeHeader(dos);
 		} catch (IOException e) {
-			System.out.println("RecordStore.saveToDisk: ERROR writing object to " + headerName + ": " + e.getMessage());
-			throw new RecordStoreException(e.getMessage());
+			RmsEventLog.note("SAVE_ERROR", recordStore.getName(), -1, -1);
+			throw new RecordStoreException("RMS header write failed");
 		}
 
 		if (recordId != -1) {
@@ -259,9 +264,12 @@ public class AndroidRecordStoreManager implements RecordStoreManager {
 			try (DataOutputStream dos = new DataOutputStream(new FileOutputStream(new File(getDataDir(), recordName)))) {
 				recordStore.writeRecord(dos, recordId);
 			} catch (IOException e) {
-				System.out.println("RecordStore.saveToDisk: ERROR writing object to " + recordName + ": " + e.getMessage());
-				throw new RecordStoreException(e.getMessage());
+				RmsEventLog.note("SAVE_ERROR", recordStore.getName(), recordId, -1);
+				throw new RecordStoreException("RMS record write failed");
 			}
+			byte[] data = recordStore.records.get(recordId);
+			RmsEventLog.note("SAVE", recordStore.getName(), recordId,
+				data == null ? -1 : data.length);
 		}
 	}
 
