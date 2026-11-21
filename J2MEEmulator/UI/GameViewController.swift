@@ -3494,6 +3494,7 @@ class GameViewController: UIViewController {
         j2me_render_set_flush_callback(flushCallback)
         j2me_render_set_owned_flush_callback(ownedFlushCallback)
         j2me_ui_set_callback(gameUICallback)
+        j2me_ui_set_owned_callback(ownedGameUICallback)
         activeGameViewController = self
 
         // Copy plain values on the main actor; the VM worker never reads the view controller.
@@ -3979,11 +3980,20 @@ class GameViewController: UIViewController {
 
 private(set) weak var activeGameViewController: GameViewController?
 
-let gameUICallback: @convention(c) (Int32, Int32) -> Void = { action, revision in
+// UIKit rendering happens asynchronously. Validate the *same JVM generation*
+// after the main-thread hop; a queued MIDP Alert from Tab A must never appear
+// on Tab B even when their JAR path and screen revision happen to coincide.
+private func dispatchMIDPScreenAction(_ action: Int32, _ revision: Int32,
+                                      ownerKey: UInt64 = 0) {
     DispatchQueue.main.async {
+        if ownerKey != 0 {
+            guard j2me_render_visible_owner_key() == ownerKey else { return }
+        }
         j2me_ui_lock_screen()
         defer { j2me_ui_unlock_screen() }
-        guard revision == j2me_ui_revision(), let vc = activeGameViewController else { return }
+        guard revision == j2me_ui_revision(),
+              (ownerKey == 0 || j2me_render_visible_owner_key() == ownerKey),
+              let vc = activeGameViewController else { return }
         switch action {
         case Int32(J2ME_UI_ACTION_SHOW_FORM), Int32(J2ME_UI_ACTION_SHOW_TEXTBOX),
              Int32(J2ME_UI_ACTION_SHOW_LIST), Int32(J2ME_UI_ACTION_SHOW_ALERT):
@@ -4001,4 +4011,14 @@ let gameUICallback: @convention(c) (Int32, Int32) -> Void = { action, revision i
         }
         vc.keepBlackoutOnTop()
     }
+}
+
+let gameUICallback: @convention(c) (Int32, Int32) -> Void = { action, revision in
+    dispatchMIDPScreenAction(action, revision)
+}
+
+let ownedGameUICallback: @convention(c) (Int32, Int32, UInt64) -> Void = {
+    action, revision, ownerKey in
+    guard ownerKey != 0 else { return }
+    dispatchMIDPScreenAction(action, revision, ownerKey: ownerKey)
 }
