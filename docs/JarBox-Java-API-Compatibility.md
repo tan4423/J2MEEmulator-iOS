@@ -193,3 +193,51 @@ Codemagic and iPhone execution for this commit are **not yet verified**.
 Retest original Ninja School and TrungDucTV gameplay and restart behavior
 before treating the new IPA as a stable baseline. No changes to `main`,
 Deep Treo, game JARs, network packets, or the session-token lifecycle.
+
+
+## Java 8 Optional and functional interfaces (2026-11-21)
+
+The user confirmed that the prior `Instant`/`Duration` v6 build still plays
+their tested games normally. Preserve that device result as the baseline.
+
+The v7 boot patch adds **generic library APIs**, not game-specific behavior:
+`java.util.Optional<T>`, `java.util.function.Function<T,R>`,
+`Predicate<T>`, `Consumer<T>` and `Supplier<T>`.
+
+- Optional implements Java 8 `empty/of/ofNullable/get/isPresent/ifPresent`,
+  `filter/map/flatMap`, `orElse/orElseGet/orElseThrow(Supplier)`,
+  and Java 8 value equality, hashing and display. Null arguments follow
+  the respective Java 8 method's lazy/eager validation semantics.
+- Function supports `apply/compose/andThen/identity`; Predicate supports
+  `test/and/or/negate/isEqual`, with short-circuit evaluation; Consumer
+  supports `accept/andThen`; Supplier supports `get`.
+- Java 8 interface `default` methods use ordinary anonymous helper
+  classes rather than lambdas, making these boot classes themselves free of
+  the `invokedynamic` instruction. The build includes and checks the
+  helper `.class` files; they must not be omitted from the boot JAR.
+
+**Limitations:** This is not a complete `java.util.function` package,
+`java.util.stream` API, or `OptionalInt/OptionalLong/OptionalDouble`.
+The Java 9+ no-argument `Optional.orElseThrow()` and other post-Java-8
+methods are not included. The presence of these interfaces does not prove
+that the miniJVM runtime can execute arbitrary Java 8 lambda expressions,
+method references, or all interface-default-method dispatch paths on iOS.
+Those JVM instruction/dispatch capabilities require separate device testing.
+
+**Validation:** The original sources compile with `javac --release 8`.
+Host JDK comparison tests use package-renamed sources so the host's
+`java.base` classes cannot silently substitute for the new classes.
+`tools/tests/test_java8_boot_optional.py` exercises 2,003 Optional
+null/non-null string vectors, mapping, flat-mapping, fallback, exceptions,
+equality/hashing, function composition, predicate short-circuiting, and
+consumer ordering. This test is included in the existing single Codemagic
+workflow's `test_*.py` discovery. The final IPA boot JAR includes exact
+classfile checks, including anonymous helper classes.
+
+`boot_patch=java8_optional_function_v7`; Git build SHA is still stamped
+independently into the IPA. There is **no new workflow** and no change to
+`main`, Deep Treo fast paths, session tokens, game JARs, or packet/network
+logic. Codemagic/iPhone verification for v7 has not yet been performed.
+Retest launch/play/restart on original NSO and TrungDucTV; ideally also run a
+small MIDlet that uses `Optional.map` and `Function.andThen` to validate
+the miniJVM's on-device interface dispatch.
