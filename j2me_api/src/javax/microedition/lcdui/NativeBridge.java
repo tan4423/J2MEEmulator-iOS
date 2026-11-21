@@ -23,6 +23,8 @@ public class NativeBridge {
     static native boolean afkSuspended();
     static native int takeAfkRefresh();
     static native int afkPaintPolicy();
+    static native boolean ninjaDeepActive();
+    static native boolean ninjaDeepSkip(int stage);
     // Native build switch: only deep Treo (mode 8) can use byte caching.
     static native boolean afkImageCacheEnabled();
     static native void imageCacheNote(int batchedHits, int storedSourceBytes);

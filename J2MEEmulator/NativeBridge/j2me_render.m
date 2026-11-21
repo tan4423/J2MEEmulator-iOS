@@ -357,6 +357,28 @@ static s32 n_imageCacheNote(Runtime *runtime, JClass *clazz) {
     return RUNTIME_STATUS_NORMAL;
 }
 
+// 0 = repaint, 1 = serviceRepaints, 2 = doPaint.
+// Suppress only for exact Ninja JAR in mode 8; Canvas.java also checks Class_hef.
+static _Atomic uint64_t treo_ninja_skips[3];
+uint64_t treo_ninja_deep_skipped(int stage) {
+    if (stage < 0 || stage > 2) return 0;
+    return atomic_load_explicit(&treo_ninja_skips[stage], memory_order_relaxed);
+}
+static inline int ninja_deep_active(void) {
+    return treo_ninja_deep_verified() &&
+           atomic_load_explicit(&treo_afk_mode, memory_order_acquire) == 8;
+}
+static s32 n_ninjaDeepActive(Runtime *runtime, JClass *clazz) {
+    push_int(runtime->stack, ninja_deep_active());
+    return RUNTIME_STATUS_NORMAL;
+}
+static s32 n_ninjaDeepSkip(Runtime *runtime, JClass *clazz) {
+    int stage = runtime->jnienv->localvar_getInt(runtime->localvar, 0);
+    const int skip = stage >= 0 && stage <= 2 && ninja_deep_active();
+    if (skip) atomic_fetch_add_explicit(&treo_ninja_skips[stage], 1, memory_order_relaxed);
+    push_int(runtime->stack, skip);
+    return RUNTIME_STATUS_NORMAL;
+}
 static s32 n_afkPaintPolicy(Runtime *runtime, JClass *clazz) {
     push_int(runtime->stack, atomic_load_explicit(&treo_afk_mode, memory_order_acquire));
     return RUNTIME_STATUS_NORMAL;
@@ -3878,6 +3900,8 @@ static java_native_method j2me_render_methods[] = {
     {CLS, "afkSuspended",     "()Z", n_afkSuspended},
     {CLS, "takeAfkRefresh",   "()I", n_takeAfkRefresh},
     {CLS, "afkPaintPolicy", "()I", n_afkPaintPolicy},
+    {CLS, "ninjaDeepActive", "()Z", n_ninjaDeepActive},
+    {CLS, "ninjaDeepSkip", "(I)Z", n_ninjaDeepSkip},
     {CLS, "afkImageCacheEnabled", "()Z", n_afkImageCacheEnabled},
     {CLS, "imageCacheNote", "(II)V", n_imageCacheNote},
     {CLS, "afkCanvasResult", "(I)V", n_afkCanvasResult},

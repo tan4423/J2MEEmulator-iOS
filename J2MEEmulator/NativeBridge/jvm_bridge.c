@@ -11,6 +11,39 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdatomic.h>
+#if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__ && !defined(TREO_NINJA_DEEP_DISABLED)
+#include <CommonCrypto/CommonDigest.h>
+#endif
+
+static atomic_int treo_exact_ninja_verified;
+int treo_ninja_deep_verified(void) {
+    return atomic_load_explicit(&treo_exact_ninja_verified, memory_order_acquire);
+}
+#if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__ && !defined(TREO_NINJA_DEEP_DISABLED)
+static int treo_is_exact_ninja_jar(const char *path) {
+    static const unsigned char expected[32] = {
+        0x7e, 0x1c, 0xff, 0x13, 0x50, 0x8f, 0x0c, 0x43,
+        0xad, 0x2f, 0xee, 0x30, 0xe7, 0x5b, 0x38, 0xd8,
+        0x07, 0xa1, 0x81, 0x1a, 0x21, 0xff, 0xf8, 0xfb,
+        0xbe, 0x3c, 0xe6, 0xf7, 0x02, 0x15, 0xf0, 0xa1
+    };
+    if (!path) return 0;
+    FILE *in = fopen(path, "rb");
+    if (!in) return 0;
+    CC_SHA256_CTX ctx;
+    int ok = CC_SHA256_Init(&ctx) == 1;
+    unsigned char chunk[8192];
+    size_t n;
+    while (ok && (n = fread(chunk, 1, sizeof(chunk), in)) != 0)
+        ok = CC_SHA256_Update(&ctx, chunk, (CC_LONG)n) == 1;
+    if (ferror(in)) ok = 0;
+    fclose(in);
+    unsigned char digest[32];
+    if (!ok || CC_SHA256_Final(digest, &ctx) != 1) return 0;
+    return memcmp(digest, expected, sizeof(expected)) == 0;
+}
+#endif
+
 
 static MiniJVM *g_jvm = NULL;
 static atomic_int g_jvm_stop_requested = 0;
@@ -25,6 +58,13 @@ int jvm_bridge_init(const char *res_root, const char *save_root, const char *mid
         printf("[JVM Bridge] JVM already initialized\n");
         return -1;
     }
+    atomic_store_explicit(&treo_exact_ninja_verified, 0, memory_order_release);
+#if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__ && !defined(TREO_NINJA_DEEP_DISABLED)
+    int ninja_match = treo_is_exact_ninja_jar(midlet_jar);
+    atomic_store_explicit(&treo_exact_ninja_verified, ninja_match, memory_order_release);
+    printf("[JarBoxVM][NinjaDeep] profile=%s (exact SHA-256)\n",
+           ninja_match ? "matched" : "generic");
+#endif
     // Note: g_jvm_stop_requested is NOT reset here — it is reset in
     // jvm_bridge_destroy() after the previous session.  Resetting it here
     // would race with backTapped() which may have already set the flag
@@ -60,6 +100,7 @@ int jvm_bridge_init(const char *res_root, const char *save_root, const char *mid
         printf("[JVM Bridge] ERROR: jvm_init() failed with code %d\n", ret);
         jvm_destroy(g_jvm);
         g_jvm = NULL;
+        atomic_store_explicit(&treo_exact_ninja_verified, 0, memory_order_release);
         return -3;
     }
 
@@ -156,6 +197,7 @@ void jvm_bridge_destroy(void) {
         j2me_m3g_cleanup();
         j2me_render_cleanup(); // also resets render_stopped flag
         atomic_store(&g_jvm_stop_requested, 0);
+        atomic_store_explicit(&treo_exact_ninja_verified, 0, memory_order_release);
 
         printf("[JVM Bridge] JVM destroyed, native state cleaned up\n");
     }

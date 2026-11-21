@@ -88,6 +88,14 @@ public abstract class Canvas extends Displayable {
      */
     protected abstract void paint(Graphics g);
 
+    // Exact game SHA and Class_hef type gate. Native checks mode 8 again
+    // on each committed skip to avoid stale state across wake.
+    private boolean ninjaDeepSkip(int stage) {
+        if (!NativeBridge.ninjaDeepActive()) return false;
+        if (!"Class_hef".equals(getClass().getName())) return false;
+        return NativeBridge.ninjaDeepSkip(stage);
+    }
+
     /**
      * Request a repaint of the entire canvas.
      */
@@ -96,7 +104,8 @@ public abstract class Canvas extends Displayable {
     }
 
     public void repaint(int x, int y, int w, int h) {
-        limitFps();
+        limitFps(); // preserve configured frame pacing
+        if (ninjaDeepSkip(0)) return;
         if (!Display.isCurrentCanvas(this)) return;
         if (!repaintPending) {
             // First repaint request — set clip to this rect
@@ -127,6 +136,7 @@ public abstract class Canvas extends Displayable {
      * to ensure serialized access (matching J2ME-Loader behavior).
      */
     public void serviceRepaints() {
+        if (ninjaDeepSkip(1)) return;
         if (repaintPending && Display.isCurrentCanvas(this)) {
             doPaint();
         }
@@ -224,6 +234,12 @@ public abstract class Canvas extends Displayable {
         synchronized (paintLock) {
             // Hidden Canvas instances must not run paint or present their buffer.
             if (!Display.isCurrentCanvas(this)) return;
+            if (ninjaDeepSkip(2)) {
+                repaintPending = false;
+                fullRepaint = true;
+                clipX = 0; clipY = 0; clipW = width; clipH = height;
+                return;
+            }
             // Diagnostic only: consume the repaint without running game paint code.
             if (NativeBridge.afkBypassPaint()) {
                 repaintPending = false;
