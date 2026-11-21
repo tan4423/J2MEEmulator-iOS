@@ -89,3 +89,52 @@ Next validation: use the existing single Codemagic workflow and verify that
 the original Ninja School and the working TrungDucTV mod still open and play,
 then test a separately supplied Java 8 utility-using JAR. Avoid claiming that
 all Java 8 JARs are supported based only on one working mod.
+
+
+## ISO LocalDate / LocalDateTime boot compatibility (2026-11-21)
+
+User confirmed the previous Java 8 Base64/Objects IPA still runs the tested
+games normally. Preserve that working build as a regression baseline.
+
+Two additional immutable Java 8 **subset** classes are now compiled into
+`minijvm_rt.jar` at build time:
+
+- `java.time.LocalDate`: `now()` (device-local Calendar),
+  `of(year,month,day)`, `ofYearDay`, ISO `parse(CharSequence)`,
+  `ofEpochDay`, `toEpochDay`, month/year lengths, leap years,
+  `getYear/getMonthValue/getDayOfMonth/getDayOfYear`,
+  `plus/minusDays/Weeks/Months/Years`, selected `with...` methods,
+  ordering, value equality, hashing and ISO output.
+- `java.time.LocalDateTime`: `now()` from one Calendar snapshot,
+  `of` component overloads and `of(LocalDate,LocalTime)`, ISO
+  `parse(CharSequence)`, date/time component getters, date/time
+  `with...` methods, `plus/minusDays/Weeks/Months/Years` and
+  `plus/minusHours/Minutes/Seconds/Nanos`, ordering, equality,
+  hashing and ISO output.
+
+The subset deliberately **supports ISO years 0001–9999 only**; Java SE 8
+accepts a larger range. It has no `java.time.temporal` framework, timezone
+rules, `Instant`, `ZoneId`, `DateTimeFormatter` overloads, or full
+JDK exception taxonomy. Invalid date/time operations currently throw
+`IllegalArgumentException` or `NullPointerException` where appropriate;
+this is not exact JDK exception-class equivalence. `LocalDateTime` is a
+zone-free wall-clock value. Neither type forges clocks, adjusts server
+packets, or changes any game JAR.
+
+Offline verification: `javac --release 8` compiled the source classes
+with Java 8 classfile signatures. An isolated, package-renamed host fixture
+compared 3,004 ISO date examples and 3,002 date-time examples (including
+randomized dates/times, leap-year/month rollover, epoch-day conversions,
+parsing, addition/subtraction, equality and hashes) against the host Java
+implementation; the checks passed. The host fixture uses JDK `LocalTime`
+for the renamed `LocalDateTime` class, not a real miniJVM runtime.
+Codemagic now executes `test_java8_boot_dates.py` via the existing
+`test_*.py` discovery, compiles the actual `java.time` classes to the
+boot JAR, extracts them by exact classfile path, and verifies method
+signatures and use of CLDC `Calendar.getInstance()`.
+
+IPA version stamp: `boot_patch=java8_utf8_localtime_date_v5`.
+Do not claim an actual iPhone result until this exact build is installed
+and tested. Recheck original NSO and TrungDucTV launch, gameplay, session
+stop/restart, and background behavior. No changes to the single Codemagic
+workflow count, `main`, Deep Treo, JVM session token, or game content.
