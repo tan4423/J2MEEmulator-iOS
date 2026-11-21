@@ -637,6 +637,16 @@ instrumentation follows the actual GameMidlet bytecode path and logs:
   before calling `execute_method_impl`
 - `cu_ctor_entry` and the setter / GC probes as before.
 
+To limit costs in all other games and in normal NSO Deep Treo, these
+launch diagnostics activate **only** when the JAR contains all three
+specific class paths (`GameMidlet.class`, `Class_cu.class`,
+`Class_ek.class`) and matches the NSO resource family. The check
+uses the already-open JAR ZIP reader at launch, never in game ticks.
+The bounded trace now retains up to 20 short events in 4 KiB, and
+the native method-entry path tests only one atomic flag when
+instrumentation is off. On the next failure use **Sao chép lỗi** to
+send the `NSOInit` section.
+
 If `new_cu` is absent, GameMidlet's constructor control flow is
 unexpected; if `new_cu` exists but `special_resolve` / `execute`
 do not, investigate the invocation instruction transformation; if
