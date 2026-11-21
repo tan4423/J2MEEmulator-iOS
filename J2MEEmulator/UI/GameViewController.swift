@@ -3492,6 +3492,7 @@ class GameViewController: UIViewController {
         setGlobalEmulatorView(emulatorView)
         j2me_render_set_afk_suspended(0)
         j2me_render_set_flush_callback(flushCallback)
+        j2me_render_set_owned_flush_callback(ownedFlushCallback)
         j2me_ui_set_callback(gameUICallback)
         activeGameViewController = self
 
