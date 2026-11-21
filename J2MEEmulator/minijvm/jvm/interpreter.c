@@ -664,6 +664,18 @@ s32 exception_handle(RuntimeStack *stack, Runtime *runtime) {
                  "game_net_exception:stage=%s,pc=%d,type=%s",
                  stage, offset, utf8_cstr(ins->mb.clazz->name));
         jvm_bridge_note_net_trace(event);
+    } else if (ins && ins->mb.clazz && runtime->clazz && runtime->method &&
+               utf8_equals_c(runtime->method->name, "run") &&
+               (utf8_equals_c(runtime->clazz->name, "Class_bq") ||
+                utf8_equals_c(runtime->clazz->name, "Class_bj"))) {
+        // Game packet-reader and packet-writer threads swallow exceptions.
+        // Capture only the original exception type/PC, never packet data.
+        char event[192];
+        snprintf(event, sizeof(event),
+                 "game_net_exception:thread=%s,pc=%d,type=%s",
+                 utf8_cstr(runtime->clazz->name), offset,
+                 utf8_cstr(ins->mb.clazz->name));
+        jvm_bridge_note_net_trace(event);
     }
 #endif
     s32 i;

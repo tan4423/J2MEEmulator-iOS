@@ -892,3 +892,18 @@ not a normal JVM shutdown and is not invoked automatically. Clearing the
 single-owner flag while a JVM lives would be unsafe due to use-after-free
 and is explicitly avoided. No game JAR, Deep Treo NSO fast paths, main
 branch, or workflow changes. Build and iPhone test still required.
+
+
+## 2026-11-21 TCP 2024 first packet diagnostics
+
+User reports four `tcp_connect:ok,code=0,errno=0,port=2024` events on
+TrungDucTV and still a server-connect dialog. TCP handshake succeeded
+in those attempts; application handshake remains unverified.
+Direct original-JAR bytecode confirms `Class_bq.run` reads the packet
+header/length and body, and `Class_bj.run` writes queued packets.
+Now SocketNative captures at most the first successful read and first
+successful write per socket, first read/write errors, and close state,
+with only byte counts/result codes (never payloads). Capture swallowed
+exceptions in `Class_bq.run` and `Class_bj.run` as type/PC.
+The existing **Chẩn đoán kết nối** menu exposes the bounded trace.
+This is a diagnostic change and does not claim login is fixed.

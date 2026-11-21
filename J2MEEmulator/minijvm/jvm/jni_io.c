@@ -96,7 +96,32 @@ typedef struct _VmSock {
     u8 reuseaddr;
     char hostname[256]; //domain name length max 253
     char hostport[6];  //port the max is 65535
+#if defined(__APPLE__)
+    // One-shot diagnostics stored per TCP socket rather than per VM.
+    u8 net_sent_once;
+    u8 net_read_once;
+    u8 net_send_error_once;
+    u8 net_read_error_once;
+#endif
 } VmSock;
+
+#if defined(__APPLE__)
+static void jarbox_socket_note_io(VmSock *sock, int reading, int wanted, int result, int byte_mode) {
+    u8 *success = reading ? &sock->net_read_once : &sock->net_sent_once;
+    u8 *failure = reading ? &sock->net_read_error_once : &sock->net_send_error_once;
+    if (result > 0 && !__atomic_exchange_n(success, 1, __ATOMIC_RELAXED)) {
+        char event[128];
+        snprintf(event, sizeof(event), "tcp_first_%s:kind=%s,wanted=%d,actual=%d",
+                 reading ? "read" : "write", byte_mode ? "byte" : "buffer", wanted, result);
+        jvm_bridge_note_net_trace(event);
+    } else if (result < 0 && !__atomic_exchange_n(failure, 1, __ATOMIC_RELAXED)) {
+        char event[96];
+        snprintf(event, sizeof(event), "tcp_%s_error:kind=%s,result=%d",
+                 reading ? "read" : "write", byte_mode ? "byte" : "buffer", result);
+        jvm_bridge_note_net_trace(event);
+    }
+}
+#endif
 
 //=================================  socket  ====================================
 s32 sock_option(VmSock *vmsock, s32 opType, s32 opValue, s32 opValue2) {
@@ -472,6 +497,9 @@ s32 org_mini_net_SocketNative_readBuf(Runtime *runtime, JClass *clazz) {
         jthread_block_enter(runtime);
         ret = sock_recv(vmsock, (u8 *) jbyte_arr->arr_body + offset, count, runtime);
         jthread_block_exit(runtime);
+#if defined(__APPLE__)
+        jarbox_socket_note_io(vmsock, 1, count, ret, 0);
+#endif
     }
     push_int(runtime->stack, ret);
 #if _JVM_DEBUG_LOG_LEVEL > 5
@@ -490,6 +518,9 @@ s32 org_mini_net_SocketNative_readByte(Runtime *runtime, JClass *clazz) {
         jthread_block_enter(runtime);
         ret = sock_recv(vmsock, &b, 1, runtime);
         jthread_block_exit(runtime);
+#if defined(__APPLE__)
+        jarbox_socket_note_io(vmsock, 1, 1, ret, 1);
+#endif
     }
     push_int(runtime->stack, ret < 0 ? ret : (u8) b);
 
@@ -518,6 +549,9 @@ s32 org_mini_net_SocketNative_writeBuf(Runtime *runtime, JClass *clazz) {
         } else if (ret < 0) {
             ret = -1;
         }
+#if defined(__APPLE__)
+        jarbox_socket_note_io(vmsock, 0, count, ret, 0);
+#endif
     }
     push_int(runtime->stack, ret);
 #if _JVM_DEBUG_LOG_LEVEL > 5
@@ -543,6 +577,9 @@ s32 org_mini_net_SocketNative_writeByte(Runtime *runtime, JClass *clazz) {
         } else if (ret < 0) {
             ret = -1;
         }
+#if defined(__APPLE__)
+        jarbox_socket_note_io(vmsock, 0, 1, ret, 1);
+#endif
     }
 #if _JVM_DEBUG_LOG_LEVEL > 5
     invoke_deepth(runtime);
@@ -565,6 +602,14 @@ s32 org_mini_net_SocketNative_close0(Runtime *runtime, JClass *clazz) {
     Instance *vmarr = localvar_getRefer(runtime->localvar, 0);
     VmSock *vmsock = (VmSock *) vmarr->arr_body;
     mbedtls_net_context *ctx = &vmsock->contex;
+#if defined(__APPLE__)
+    char event[120];
+    snprintf(event, sizeof(event),
+             "tcp_close:sent=%u,received=%u,send_error=%u,read_error=%u",
+             (unsigned)vmsock->net_sent_once, (unsigned)vmsock->net_read_once,
+             (unsigned)vmsock->net_send_error_once, (unsigned)vmsock->net_read_error_once);
+    jvm_bridge_note_net_trace(event);
+#endif
     mbedtls_net_free(ctx);
 #if _JVM_DEBUG_LOG_LEVEL > 5
     invoke_deepth(runtime);
