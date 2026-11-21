@@ -657,3 +657,63 @@ events distinguish the actual failure.
 
 No generic constructor or field semantics were changed in this
 diagnostic patch. No on-device run of this version yet.
+
+
+## 2026-11-21 repeated Class_ek NPE: underlying swallowed constructor exception discovered
+
+The user's new run reproduced the **identical** Java NPE and NSOInit states:
+`midlet_ctor_exit:canvas=static,b=0,off=112,len=136,valid=1`;
+`paint_entry:canvas=static,b=0,...`, with **no**
+`new_cu`, `special_resolve`, `special_execute`,
+`cu_ctor_entry` or setter events. This confirms the Canvas is consistent
+and the expected `GameMidlet.<init>` bytecode (which must reach
+`new Class_cu` at offset 27, `invokespecial` at 31, `d()` at 34)
+has **not been observed**. The old `midlet_ctor_exit` event logged
+every function exit, including exception unwinding, and was misleading.
+
+A **confirmed JVM correctness bug**, directly relevant to this pattern,
+was found via native source audit:
+
+- `jni_std.c:java_lang_Class_newInstance` called
+  `instance_init(ins,runtime)` then **always pushed and returned the new
+  instance**, even if its Java `<init>` threw.
+- `jvm_util.c:instance_init_with_para` called
+  `execute_method_impl(<init>)` and then only
+  `print_exception(runtime)` when it failed; its `void` wrapper did
+  **not return the exception status**.
+- `MIDletRunner.main` uses `clazz.newInstance()`. If
+  `GameMidlet.<init>` fails at an early class initializer, network
+  setup, method resolution or unsupported Java API, this swallowed
+  exception can result in an apparently created MIDlet with
+  `Class_ek.a` already set and `Class_ek.b` still null; the secondary
+  NPE then happens during `Display.runEventLoop`.
+
+A generic miniJVM **semantic fix** was committed:
+`instance_init_checked` runs the Java default constructor and returns
+`RUNTIME_STATUS_EXCEPTION` with the **original Java Throwable still on
+the operand stack**. `java_lang_Class_newInstance` now propagates that
+status instead of returning a partially initialized object. Existing
+legacy `instance_init/instance_init_with_para` APIs are not changed in
+this patch. If a zero-argument constructor cannot be found,
+`NoSuchMethodError` is propagated instead of dereferencing null.
+
+The launch diagnostics now also include
+`midlet_ctor_result:status=N,pc=OFFSET,code_len=L` and
+`cu_ctor_result:status=N,pc=OFFSET,code_len=L`.
+`pc` is the actual converted-method bytecode offset when in range;
+a constructor returning via an exception can now be distinguished from
+normal return. The expected next failure report is likely
+`phase=load/constructor` with the **original Throwable and stack**,
+not another first-paint `Class_ek.b` NPE. If so, debug the exact
+constructor failure; do NOT blindly stub the implicated Java API.
+
+**Important honesty:** this is a verified flaw in generic JVM
+constructor exception propagation, and it is consistent with the
+observed early-null Canvas state. It is not yet proven to be the *only*
+or final reason the TrungDucTV mod cannot start; a new on-device build
+is required to identify the original thrown error (or to confirm a
+constructor dispatch bug if status/PC do not show an exception).
+
+No JAR contents, game loop, paint/Deep Treo semantics, general-purpose
+class layout, library background optimization, 3D/FPS preference,
+rename, or Codemagic workflow count was changed by this fix.
