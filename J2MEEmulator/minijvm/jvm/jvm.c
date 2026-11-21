@@ -364,20 +364,26 @@ s32 jvm_init(MiniJVM *jvm, c8 *p_bootclasspath, c8 *p_classpath) {
 }
 
 void jvm_destroy(MiniJVM *jvm) {
-    Runtime *parent = runtime_create(jvm);
-
-    while (parent && jvm->shutdown_hook->length) {
-        Instance *inst = arraylist_get_value(jvm->shutdown_hook, 0);
-        arraylist_remove_at(jvm->shutdown_hook, 0);
-
-        //there is an week is that the hook thread is serialized execution,
-        // because the hook thread may be not inserted into the thread list,
-        // then vm is destroyed
-        thrd_t t = jthread_start(inst, parent);
-        thrd_join(t, NULL);
+    /*
+     * A forced host shutdown (collector->exit_flag) must never start new
+     * Java shutdown-hook threads and then thrd_join() them forever.
+     * JarBox's native stop path sets exit_flag before calling this method.
+     * Existing healthy normal shutdowns can still execute registered hooks.
+     * The hooks collection itself is disposed by the cleanup below.
+     */
+    if (!jvm->collector->exit_flag) {
+        Runtime *parent = runtime_create(jvm);
+        while (parent && jvm->shutdown_hook->length) {
+            Instance *inst = arraylist_get_value(jvm->shutdown_hook, 0);
+            arraylist_remove_at(jvm->shutdown_hook, 0);
+            thrd_t t = jthread_start(inst, parent);
+            thrd_join(t, NULL);
+        }
+        if (parent) runtime_destroy(parent);
+    } else if (jvm->shutdown_hook->length) {
+        jvm_printf("[JarBoxVM][Lifecycle] shutdown_hooks_skipped=%d (forced host cleanup)\n",
+                   jvm->shutdown_hook->length);
     }
-    runtime_destroy(parent);
-    parent = NULL;
     while (threadlist_count_none_daemon(jvm) > 0 && !jvm->collector->exit_flag) {//wait for other thread over ,
         threadSleep(20);
     }
