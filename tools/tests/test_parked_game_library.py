@@ -61,6 +61,10 @@ class ParkedGameLibraryTest(unittest.TestCase):
         self.assertIn('running: parkedGameController?.ownsLiveGameSession(for: app.path)', self.library)
         self.assertIn('liveDot.isHidden = !running', self.cell)
         self.assertIn('accessibilityValue = running', self.cell)
+        self.assertIn('navigationItem.rightBarButtonItems = [importBarButton, stop].compactMap', self.library)
+        self.assertIn('action: #selector(stopRunningGameFromLibrary)', self.library)
+        self.assertIn('if parkedGameController?.ownsLiveGameSession(for: destURL.path) == true', self.library)
+        self.assertIn('action: #selector(openStuckSessionRecovery)', self.library)
         self.assertIn('attributes: isRunning ? [.destructive, .disabled]', self.library)
 
     def test_does_not_claim_ios_background_execution(self):
