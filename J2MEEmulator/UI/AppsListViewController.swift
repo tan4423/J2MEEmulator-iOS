@@ -1498,6 +1498,9 @@ class AppsListViewController: UIViewController,
         menu.addAction(UIAlertAction(title: "− Tab", style: .destructive) { [weak self] _ in
             self?.presentTabDeletion(for: app)
         })
+        menu.addAction(UIAlertAction(title: "⚙ Cài đặt các tab", style: .default) { [weak self] _ in
+            self?.showTabSettingsPicker(for: app, clones: clones)
+        })
         menu.addAction(UIAlertAction(title: "ⓘ Thông tin các tab", style: .default) { [weak self] _ in
             self?.showTabInformationPicker(for: app, clones: clones)
         })
@@ -1522,6 +1525,98 @@ class AppsListViewController: UIViewController,
         for clone in clones {
             picker.addAction(UIAlertAction(title: clone.label, style: .default) { [weak self] _ in
                 self?.showGameInformation(app, cloneID: clone.id, tabName: clone.label)
+            })
+        }
+        picker.addAction(UIAlertAction(title: "Hủy", style: .cancel))
+        if let popover = picker.popoverPresentationController {
+            popover.sourceView = springboardCollectionView
+            popover.sourceRect = CGRect(x: springboardCollectionView.bounds.midX,
+                                        y: springboardCollectionView.bounds.midY,
+                                        width: 1, height: 1)
+        }
+        present(picker, animated: true)
+    }
+
+    private func showTabSettingsPicker(for app: AppInfo,
+                                       clones: [JarBoxGameStorage.CloneRecord]) {
+        let picker = UIAlertController(title: "Cài đặt riêng · " + app.name,
+                                       message: "Mỗi tab có cài đặt độc lập. Thay đổi có hiệu lực khi khởi động tab.",
+                                       preferredStyle: .actionSheet)
+        picker.addAction(UIAlertAction(title: "Tab gốc", style: .default) { [weak self] _ in
+            self?.showTabSettings(for: app, cloneID: nil, tabName: "Tab gốc")
+        })
+        for clone in clones {
+            picker.addAction(UIAlertAction(title: clone.label, style: .default) { [weak self] _ in
+                self?.showTabSettings(for: app, cloneID: clone.id, tabName: clone.label)
+            })
+        }
+        picker.addAction(UIAlertAction(title: "Hủy", style: .cancel))
+        if let popover = picker.popoverPresentationController {
+            popover.sourceView = springboardCollectionView
+            popover.sourceRect = CGRect(x: springboardCollectionView.bounds.midX,
+                                        y: springboardCollectionView.bounds.midY,
+                                        width: 1, height: 1)
+        }
+        present(picker, animated: true)
+    }
+
+    private func showTabSettings(for app: AppInfo, cloneID: UUID?, tabName: String) {
+        let res = Self.resolution(for: app, cloneID: cloneID)
+        let fps = Self.fpsLimit(for: app, cloneID: cloneID)
+        let enhanced3D = Self.is3DSupersampling(for: app, cloneID: cloneID)
+        let picker = UIAlertController(title: app.name + " · " + tabName,
+                                       message: "Cài đặt áp dụng khi tab khởi động lần tiếp theo.",
+                                       preferredStyle: .actionSheet)
+        picker.addAction(UIAlertAction(title: "Màn hình: " + String(res.w) + "×" + String(res.h),
+                                       style: .default) { [weak self] _ in
+            self?.showTabResolutionOptions(for: app, cloneID: cloneID, tabName: tabName)
+        })
+        picker.addAction(UIAlertAction(title: "FPS: " + (fps == 0 ? "Không giới hạn" : String(fps)),
+                                       style: .default) { [weak self] _ in
+            self?.showTabFPSOptions(for: app, cloneID: cloneID, tabName: tabName)
+        })
+        picker.addAction(UIAlertAction(title: enhanced3D ? "Tắt nâng chất lượng 3D" :
+                                        "Bật nâng chất lượng 3D", style: .default) { _ in
+            Self.set3DSupersampling(!enhanced3D, for: app, cloneID: cloneID)
+        })
+        picker.addAction(UIAlertAction(title: "Hủy", style: .cancel))
+        if let popover = picker.popoverPresentationController {
+            popover.sourceView = springboardCollectionView
+            popover.sourceRect = CGRect(x: springboardCollectionView.bounds.midX,
+                                        y: springboardCollectionView.bounds.midY,
+                                        width: 1, height: 1)
+        }
+        present(picker, animated: true)
+    }
+
+    private func showTabResolutionOptions(for app: AppInfo, cloneID: UUID?,
+                                          tabName: String) {
+        let picker = UIAlertController(title: "Độ phân giải · " + tabName,
+                                       message: "Chỉ đổi cấu hình của tab đã chọn.",
+                                       preferredStyle: .actionSheet)
+        for option in Self.resolutionOptions {
+            picker.addAction(UIAlertAction(title: option.label, style: .default) { _ in
+                Self.setResolution(w: option.w, h: option.h, for: app, cloneID: cloneID)
+            })
+        }
+        picker.addAction(UIAlertAction(title: "Hủy", style: .cancel))
+        if let popover = picker.popoverPresentationController {
+            popover.sourceView = springboardCollectionView
+            popover.sourceRect = CGRect(x: springboardCollectionView.bounds.midX,
+                                        y: springboardCollectionView.bounds.midY,
+                                        width: 1, height: 1)
+        }
+        present(picker, animated: true)
+    }
+
+    private func showTabFPSOptions(for app: AppInfo, cloneID: UUID?,
+                                   tabName: String) {
+        let picker = UIAlertController(title: "FPS · " + tabName,
+                                       message: "Chỉ đổi cấu hình của tab đã chọn.",
+                                       preferredStyle: .actionSheet)
+        for option in Self.fpsLimitOptions {
+            picker.addAction(UIAlertAction(title: option.label, style: .default) { _ in
+                Self.setFpsLimit(option.value, for: app, cloneID: cloneID)
             })
         }
         picker.addAction(UIAlertAction(title: "Hủy", style: .cancel))
