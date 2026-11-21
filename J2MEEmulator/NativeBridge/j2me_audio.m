@@ -239,7 +239,7 @@ static s32 n_audioCreatePlayer(Runtime *runtime, JClass *clazz) {
 static s32 n_audioStart(Runtime *runtime, JClass *clazz) {
     JniEnv *env = runtime->jnienv;
     s64 handle = env->localvar_getLong_2slot(runtime->localvar, 0);
-    if (handle) {
+    if (handle && audio_owned_by_vm(runtime->jvm, (void *)(intptr_t)handle, NO)) {
         AVAudioPlayer *player = (__bridge AVAudioPlayer *)(void *)(intptr_t)handle;
         [player play];
     }
@@ -249,7 +249,7 @@ static s32 n_audioStart(Runtime *runtime, JClass *clazz) {
 static s32 n_audioStop(Runtime *runtime, JClass *clazz) {
     JniEnv *env = runtime->jnienv;
     s64 handle = env->localvar_getLong_2slot(runtime->localvar, 0);
-    if (handle) {
+    if (handle && audio_owned_by_vm(runtime->jvm, (void *)(intptr_t)handle, NO)) {
         AVAudioPlayer *player = (__bridge AVAudioPlayer *)(void *)(intptr_t)handle;
         [player pause];
     }
@@ -259,7 +259,7 @@ static s32 n_audioStop(Runtime *runtime, JClass *clazz) {
 static s32 n_audioClose(Runtime *runtime, JClass *clazz) {
     JniEnv *env = runtime->jnienv;
     s64 handle = env->localvar_getLong_2slot(runtime->localvar, 0);
-    if (handle) {
+    if (handle && audio_owned_by_vm(runtime->jvm, (void *)(intptr_t)handle, NO)) {
         AVAudioPlayer *player = (__bridge AVAudioPlayer *)(void *)(intptr_t)handle;
         if (untrack_audio_player(player, runtime->jvm)) {
             [player stop];
@@ -273,7 +273,7 @@ static s32 n_audioSetLoop(Runtime *runtime, JClass *clazz) {
     JniEnv *env = runtime->jnienv;
     s64 handle = env->localvar_getLong_2slot(runtime->localvar, 0);
     s32 count = env->localvar_getInt(runtime->localvar, 2);
-    if (handle) {
+    if (handle && audio_owned_by_vm(runtime->jvm, (void *)(intptr_t)handle, NO)) {
         AVAudioPlayer *player = (__bridge AVAudioPlayer *)(void *)(intptr_t)handle;
         player.numberOfLoops = count; // -1 = infinite, 0 = play once
     }
@@ -287,7 +287,7 @@ static s32 n_audioSetVolume(Runtime *runtime, JClass *clazz) {
     s32 bits = env->localvar_getInt(runtime->localvar, 2);
     float volume;
     memcpy(&volume, &bits, sizeof(float));
-    if (handle) {
+    if (handle && audio_owned_by_vm(runtime->jvm, (void *)(intptr_t)handle, NO)) {
         AVAudioPlayer *player = (__bridge AVAudioPlayer *)(void *)(intptr_t)handle;
         player.volume = volume;
     }
@@ -298,7 +298,7 @@ static s32 n_audioGetDuration(Runtime *runtime, JClass *clazz) {
     JniEnv *env = runtime->jnienv;
     s64 handle = env->localvar_getLong_2slot(runtime->localvar, 0);
     s64 duration = -1;
-    if (handle) {
+    if (handle && audio_owned_by_vm(runtime->jvm, (void *)(intptr_t)handle, NO)) {
         AVAudioPlayer *player = (__bridge AVAudioPlayer *)(void *)(intptr_t)handle;
         duration = (s64)(player.duration * 1000000.0); // microseconds
     }
@@ -310,7 +310,7 @@ static s32 n_audioGetTime(Runtime *runtime, JClass *clazz) {
     JniEnv *env = runtime->jnienv;
     s64 handle = env->localvar_getLong_2slot(runtime->localvar, 0);
     s64 time = 0;
-    if (handle) {
+    if (handle && audio_owned_by_vm(runtime->jvm, (void *)(intptr_t)handle, NO)) {
         AVAudioPlayer *player = (__bridge AVAudioPlayer *)(void *)(intptr_t)handle;
         time = (s64)(player.currentTime * 1000000.0); // microseconds
     }
@@ -355,7 +355,7 @@ static s32 n_audioCreateMidiPlayer(Runtime *runtime, JClass *clazz) {
 static s32 n_audioMidiStart(Runtime *runtime, JClass *clazz) {
     JniEnv *env = runtime->jnienv;
     s64 handle = env->localvar_getLong_2slot(runtime->localvar, 0);
-    if (handle) {
+    if (handle && audio_owned_by_vm(runtime->jvm, (void *)(intptr_t)handle, YES)) {
         AVMIDIPlayer *player = (__bridge AVMIDIPlayer *)(void *)(intptr_t)handle;
         [player play:nil];
     }
@@ -365,7 +365,7 @@ static s32 n_audioMidiStart(Runtime *runtime, JClass *clazz) {
 static s32 n_audioMidiStop(Runtime *runtime, JClass *clazz) {
     JniEnv *env = runtime->jnienv;
     s64 handle = env->localvar_getLong_2slot(runtime->localvar, 0);
-    if (handle) {
+    if (handle && audio_owned_by_vm(runtime->jvm, (void *)(intptr_t)handle, YES)) {
         AVMIDIPlayer *player = (__bridge AVMIDIPlayer *)(void *)(intptr_t)handle;
         [player stop];
     }
@@ -375,7 +375,7 @@ static s32 n_audioMidiStop(Runtime *runtime, JClass *clazz) {
 static s32 n_audioMidiClose(Runtime *runtime, JClass *clazz) {
     JniEnv *env = runtime->jnienv;
     s64 handle = env->localvar_getLong_2slot(runtime->localvar, 0);
-    if (handle) {
+    if (handle && audio_owned_by_vm(runtime->jvm, (void *)(intptr_t)handle, YES)) {
         AVMIDIPlayer *player = (__bridge AVMIDIPlayer *)(void *)(intptr_t)handle;
         if (untrack_midi_player(player, runtime->jvm)) {
             [player stop];
