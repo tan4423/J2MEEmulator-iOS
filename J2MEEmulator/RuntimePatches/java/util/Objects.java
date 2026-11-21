@@ -95,6 +95,13 @@ public final class Objects {
         if (obj == null) throw new NullPointerException(message);
         return obj;
     }
+    /** Java 8 lazy diagnostic message; evaluated only when obj is null. */
+    public static <T> T requireNonNull(T obj,
+                                       java.util.function.Supplier<String> messageSupplier) {
+        if (obj == null) throw new NullPointerException(messageSupplier.get());
+        return obj;
+    }
+
     public static <T> int compare(T a, T b, Comparator<? super T> c) {
         return a == b ? 0 : c.compare(a, b);
     }
