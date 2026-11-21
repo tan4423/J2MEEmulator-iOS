@@ -1450,6 +1450,18 @@ class GameViewController: UIViewController {
         }
     }
 
+    // Localized labels are for the tiny on-screen HUD only.
+    // Keep stable English thermal categories in diagnostic log fields.
+    private static func treoThermalDisplayLabel(_ state: ProcessInfo.ThermalState) -> String {
+        switch state {
+        case .nominal: return "Bình thường"
+        case .fair: return "Tăng nhẹ"
+        case .serious: return "Cao"
+        case .critical: return "Rất cao"
+        @unknown default: return "Không rõ"
+        }
+    }
+
     private func recordTreoThermalChange() {
         guard blackout != nil else { return }
         let state = ProcessInfo.processInfo.thermalState
@@ -1471,14 +1483,15 @@ class GameViewController: UIViewController {
         if let last = blackoutLastCPUSample, last.cpu >= 0, cpu >= last.cpu,
            now > last.time {
             blackoutLastCPUText = String(
-                format: "CPU app (15s): %.1f%%", 100.0 * (cpu - last.cpu) / (now - last.time))
+                format: "CPU: %.1f%%", 100.0 * (cpu - last.cpu) / (now - last.time))
         }
         blackoutLastCPUSample = (now, cpu)
         let charge = UIDevice.current.batteryLevel
         let chargeText = charge >= 0 ? String(format: "%.0f%%", Double(charge) * 100) : "không rõ"
-        let heat = Self.treoThermalLabel(ProcessInfo.processInfo.thermalState)
-        let newText = blackoutLastCPUText + "  ·  Pin: " + chargeText
-            + "\nNhiệt iOS: " + heat + " (không phải °C)"
+        let heat = Self.treoThermalDisplayLabel(ProcessInfo.processInfo.thermalState)
+        let newText = blackoutLastCPUText
+            + "\nPin: " + chargeText
+            + "\nNhiệt: " + heat
         if label.text != newText {
             label.text = newText
             blackoutHUDUpdates &+= 1
@@ -1566,12 +1579,12 @@ class GameViewController: UIViewController {
             wake.widthAnchor.constraint(equalToConstant: 72),
             wake.heightAnchor.constraint(equalToConstant: 72)
         ])
-        // A tiny, non-interactive HUD below the centered wake control.
+        // Three separate, non-interactive status lines below the wake control.
         let stats = UILabel()
         stats.font = .monospacedDigitSystemFont(ofSize: 12, weight: .medium)
         stats.textColor = UIColor(white: 0.62, alpha: 1)
         stats.textAlignment = .center
-        stats.numberOfLines = 2
+        stats.numberOfLines = 3
         stats.isUserInteractionEnabled = false
         stats.translatesAutoresizingMaskIntoConstraints = false
         cover.addSubview(stats)
