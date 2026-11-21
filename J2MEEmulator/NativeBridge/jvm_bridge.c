@@ -82,7 +82,7 @@ static atomic_int g_bridge_phase = BRIDGE_IDLE;
 static pthread_mutex_t g_bridge_lifecycle_lock = PTHREAD_MUTEX_INITIALIZER;
 // Java launcher reports a specific error BEFORE the native runner unwinds.
 // One session owns this buffer, and only the owning Swift worker reads it.
-static char g_bridge_last_error[640];
+static char g_bridge_last_error[1536];
 static atomic_int g_bridge_last_error_ready;
 void jvm_bridge_set_launch_error(const char *message) {
     if (!message) return;
