@@ -1389,13 +1389,19 @@ void _changeBytesOrder(MethodInfo *method) {
             method->is_getter = 1;
             //jvm_printf(" getter %s.%s  %d \n", utf8_cstr(method->_this_class->name), utf8_cstr(method->name), method->_this_class->status);
         }
-    } else if (ca->code_length == 6) {//optimize setter eg: void setSize(int size){this.size=size;}
+    } else if (ca->code_length == 6) {//optimize primitive setter eg: void setSize(int size){this.size=size;}
         u8 mc1 = mc[1];
         if (method->para_count_with_this == 2
             && mc[5] == op_return
             && mc[0] == op_aload_0
             && mc[2] == op_putfield
-            && (mc1 == op_aload_1 || mc1 == op_dload_1 || mc1 == op_lload_1 || mc1 == op_iload_1 || mc1 == op_fload_1)) {
+            // Object-reference setters (aload_1; putfield) must execute the
+            // normal Java bytecode path. The inliner bypasses the ordinary
+            // invokevirtual/putfield sequence; a modded NSO's very short
+            // Class_ek.a(Class_bv) field initializer is an example. Preserve
+            // reference write semantics even on obfuscated Java 8 classes.
+            // Primitive setters retain their existing fast path.
+            && (mc1 == op_dload_1 || mc1 == op_lload_1 || mc1 == op_iload_1 || mc1 == op_fload_1)) {
             method->is_setter = 1;
             //jvm_printf(" setter %s.%s  %d \n", utf8_cstr(method->_this_class->name), utf8_cstr(method->name), method->_this_class->status);
         }
