@@ -29,9 +29,9 @@ Accept if only the center button wakes from *touch*, screen touches don't reach 
 
 ## Integrated, low-refresh Treo dashboard (next combined build)
 
-The next combined experimental iPhone build includes a passive two-line HUD **below the 72×72-point center wake control**, without changing the wake target, original game JAR, JIT, GC, or Canvas policy.
+The next combined experimental iPhone build includes a passive three-line HUD **below the 72×72-point center wake control**, without changing the wake target, original game JAR, JIT, GC, or Canvas policy.
 
-- **CPU app (15s):** percent of *one logical core* from differences in `treo_process_cpu_seconds()` and `ProcessInfo.systemUptime` over the preceding ~15 s. The first display reads "đang đo" until a full interval has elapsed. This is **not instantaneous CPU**; a process may show more than 100% if multiple cores are active.
+- **CPU (display label has no 15s suffix):** percent of *one logical core* from differences in `treo_process_cpu_seconds()` and `ProcessInfo.systemUptime` over the preceding ~15 s. The first display reads "đang đo" until a full interval has elapsed. This is **not instantaneous CPU**; a process may show more than 100% if multiple cores are active.
 - **Pin:** `UIDevice.current.batteryLevel` in percentage. Battery monitoring is enabled only while Treo is active and its prior state is restored on exit and deinit. If unknown (<0) the display says "không rõ". Short sessions cannot estimate useful battery drain.
 - **Nhiệt iOS:** system-wide `ProcessInfo.thermalState` (`nominal/fair/serious/critical`). This is not a temperature in °C and not a heat sensor API.
 - One main-run-loop timer at **15 seconds**, tolerance **3 seconds**, no animation or CPU polling thread. The UILabel only changes if its text changes. `hud_updates=N` is appended to the standard Treo exit log so device measurements can attribute display work. The timer is invalidated immediately on exit and on controller deinit. This **does incur some wakeups and screen composites**, unlike the earlier static blackout. Do not claim zero power cost.
@@ -42,7 +42,7 @@ The next combined experimental iPhone build includes a passive two-line HUD **be
 
 1. Build the then-current `loader-ios-jit-probe` HEAD with Codemagic workflow **`J2ME Treo JIT probe unsigned`**. Install the newly generated IPA by the usual unsigned-IPA procedure.
 2. Load the same JAR and scene, turn in-JAR Treo OFF, then enter **Treo tiết kiệm**. Verify only the central round icon exits Treo; tapping outside it and swiping do not.
-3. Expect a 2-line CPU/battery/thermal label **below the center button**. The CPU value must change from "đang đo" after about 15–18 s; no transitions faster than once per ~15 s. The battery percentage can remain unchanged throughout. A `nominal` temperature category is normal and does not indicate degrees Celsius.
+3. Expect three separate lines — **CPU: ...**, **Pin: ...**, **Nhiệt: ...** — **below the center button**. The CPU value must change from "đang đo" after about 15–18 s; no transitions faster than once per ~15 s. The battery percentage can remain unchanged throughout. The UI maps iOS pressure levels to Vietnamese: nominal = Bình thường, fair = Tăng nhẹ, serious = Cao, critical = Rất cao; it omits a Celsius disclaimer. The log keeps machine-readable English categories.
 4. Hold the session 120–180 s, then touch the center icon. Confirm screen brightness, game input, auto/network and Smart GC all restore. Copy the `[JarBoxVM][Treo]` log including `hud_updates`, `app_CPU`, `main_CPU`, and `thermal_start/end/peak`. Both standard workflow builds contain the same HUD; compare only matched sessions and don't attribute CPU changes from older builds solely to other optimizations.
 5. **Reject and fix** if the HUD refreshes rapidly, touches outside the center icon end Treo, battery monitoring stays enabled when it was previously disabled, brightness fails to restore, main CPU rises materially, or the view gets stuck. The animation fix and JAR semantics must not regress.
 
