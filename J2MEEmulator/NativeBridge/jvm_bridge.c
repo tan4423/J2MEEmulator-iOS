@@ -259,6 +259,14 @@ int jvm_bridge_session_phase(void) {
 int jvm_bridge_session_is_active(void) {
     return atomic_load_explicit(&g_bridge_vm.active, memory_order_acquire);
 }
+// Real runtime capacity, not the number of preallocated input contexts.
+// Raise this only after rendering/UI/Treo/GC/3D isolation is proven.
+int jvm_bridge_supported_concurrent_sessions(void) {
+    return 1;
+}
+int jvm_bridge_active_session_count(void) {
+    return atomic_load_explicit(&g_bridge_vm.active, memory_order_acquire) ? 1 : 0;
+}
 uint64_t jvm_bridge_session_token(void) {
     return atomic_load_explicit(&g_bridge_vm.token, memory_order_acquire);
 }
