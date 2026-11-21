@@ -14,19 +14,6 @@ class SpringboardCell: UICollectionViewCell {
     let iconView = UIImageView()
     let nameLabel = UILabel()
 
-    // Pre-built attributes with NSShadow (avoids expensive layer shadow)
-    private static let labelAttributes: [NSAttributedString.Key: Any] = {
-        let shadow = NSShadow()
-        shadow.shadowColor = UIColor.black.withAlphaComponent(0.6)
-        shadow.shadowOffset = CGSize(width: 0, height: 0.5)
-        shadow.shadowBlurRadius = 1.5
-        return [
-            .font: UIFont.systemFont(ofSize: 11.5, weight: .medium),
-            .foregroundColor: UIColor.white,
-            .shadow: shadow,
-        ]
-    }()
-
     override init(frame: CGRect) {
         super.init(frame: frame)
 
@@ -37,7 +24,9 @@ class SpringboardCell: UICollectionViewCell {
         iconView.translatesAutoresizingMaskIntoConstraints = false
         contentView.addSubview(iconView)
 
-        // App name label — shadow via NSShadow in attributed text (no layer shadow)
+        // Static text: no shadow blur or offscreen text effect.
+        nameLabel.font = .systemFont(ofSize: 11.5, weight: .medium)
+        nameLabel.textColor = .white
         nameLabel.textAlignment = .center
         nameLabel.numberOfLines = 2
         nameLabel.lineBreakMode = .byTruncatingTail
@@ -63,23 +52,16 @@ class SpringboardCell: UICollectionViewCell {
     override func prepareForReuse() {
         super.prepareForReuse()
         iconView.image = nil
-        nameLabel.attributedText = nil
+        nameLabel.text = nil
     }
 
-    // Springboard-style press animation
+    // Instant touch feedback. No animation transaction or scaling.
     override var isHighlighted: Bool {
-        didSet {
-            UIView.animate(withDuration: 0.15) {
-                self.iconView.alpha = self.isHighlighted ? 0.6 : 1.0
-                self.iconView.transform = self.isHighlighted
-                    ? CGAffineTransform(scaleX: 0.9, y: 0.9) : .identity
-            }
-        }
+        didSet { iconView.alpha = isHighlighted ? 0.7 : 1.0 }
     }
 
     func configure(name: String, icon: UIImage) {
         iconView.image = icon
-        nameLabel.attributedText = NSAttributedString(string: name,
-                                                      attributes: Self.labelAttributes)
+        nameLabel.text = name
     }
 }

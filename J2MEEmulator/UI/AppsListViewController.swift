@@ -48,9 +48,9 @@ class AppsListViewController: UIViewController,
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        view.backgroundColor = .black
+        view.backgroundColor = AnimatedBackgroundView.backgroundGray
 
-        // Animated blob background
+        // Single opaque gray view; no raster or animation work
         let bg = AnimatedBackgroundView()
         animatedBackground = bg
         bg.translatesAutoresizingMaskIntoConstraints = false
@@ -289,25 +289,6 @@ class AppsListViewController: UIViewController,
 
     private static let iconSize: CGFloat = SpringboardCell.iconSize
 
-    private static let placeholderGradients: [(UIColor, UIColor)] = [
-        (UIColor(red: 0.20, green: 0.40, blue: 0.90, alpha: 1),
-         UIColor(red: 0.35, green: 0.60, blue: 1.00, alpha: 1)),
-        (UIColor(red: 0.00, green: 0.68, blue: 0.63, alpha: 1),
-         UIColor(red: 0.20, green: 0.85, blue: 0.60, alpha: 1)),
-        (UIColor(red: 0.95, green: 0.55, blue: 0.15, alpha: 1),
-         UIColor(red: 1.00, green: 0.75, blue: 0.28, alpha: 1)),
-        (UIColor(red: 0.88, green: 0.22, blue: 0.28, alpha: 1),
-         UIColor(red: 1.00, green: 0.42, blue: 0.48, alpha: 1)),
-        (UIColor(red: 0.58, green: 0.28, blue: 0.85, alpha: 1),
-         UIColor(red: 0.72, green: 0.48, blue: 1.00, alpha: 1)),
-        (UIColor(red: 0.22, green: 0.30, blue: 0.80, alpha: 1),
-         UIColor(red: 0.38, green: 0.48, blue: 0.95, alpha: 1)),
-        (UIColor(red: 0.90, green: 0.28, blue: 0.52, alpha: 1),
-         UIColor(red: 1.00, green: 0.48, blue: 0.68, alpha: 1)),
-        (UIColor(red: 0.15, green: 0.65, blue: 0.42, alpha: 1),
-         UIColor(red: 0.28, green: 0.82, blue: 0.55, alpha: 1)),
-    ]
-
     private static func springboardIcon(_ jarIcon: UIImage?, name: String, index: Int) -> UIImage {
         let size = CGSize(width: iconSize, height: iconSize)
         let renderer = UIGraphicsImageRenderer(size: size)
@@ -321,15 +302,10 @@ class AppsListViewController: UIViewController,
                 UIBezierPath(rect: rect).fill()
                 img.draw(in: rect)
             } else {
-                let pair = placeholderGradients[index % placeholderGradients.count]
-                let cgCtx = ctx.cgContext
-                let colorSpace = CGColorSpaceCreateDeviceRGB()
-                if let gradient = CGGradient(colorsSpace: colorSpace,
-                                              colors: [pair.0.cgColor, pair.1.cgColor] as CFArray,
-                                              locations: [0, 1]) {
-                    cgCtx.drawLinearGradient(gradient, start: .zero,
-                                             end: CGPoint(x: iconSize, y: iconSize), options: [])
-                }
+                // Missing-icon fallback: one muted gray fill, drawn only
+                // when the library icon is prepared, not per frame.
+                UIColor(white: 0.29, alpha: 1).setFill()
+                ctx.fill(rect)
                 let letter = String(name.prefix(1)).uppercased()
                 let attrs: [NSAttributedString.Key: Any] = [
                     .foregroundColor: UIColor.white.withAlphaComponent(0.9),

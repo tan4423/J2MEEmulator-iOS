@@ -26,9 +26,12 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         let nav = OrientationNavigationController(rootViewController: vc)
         nav.navigationBar.prefersLargeTitles = false
 
-        // Transparent navigation bar over black springboard
+        // Opaque navigation bar in the same neutral gray, avoiding
+        // transparent-bar backdrop blending over the library.
         let appearance = UINavigationBarAppearance()
-        appearance.configureWithTransparentBackground()
+        appearance.configureWithOpaqueBackground()
+        appearance.backgroundColor = AnimatedBackgroundView.backgroundGray
+        appearance.shadowColor = .clear
         appearance.titleTextAttributes = [.foregroundColor: UIColor.white]
         nav.navigationBar.standardAppearance = appearance
         nav.navigationBar.scrollEdgeAppearance = appearance

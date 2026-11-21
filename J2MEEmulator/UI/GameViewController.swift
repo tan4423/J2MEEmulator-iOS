@@ -321,8 +321,6 @@ class GameViewController: UIViewController {
     let layoutMode: GameLayoutMode
 
     private let emulatorView = EmulatorView()
-    private let glowContainer = UIView()
-    private let glowContentView = UIView()
     private lazy var formView = FormView()
     private lazy var listView = J2MEListView()
     private let backButton = UIButton(type: .system)
@@ -540,23 +538,13 @@ class GameViewController: UIViewController {
         placeholderIconView = iconIV
         view.bringSubviewToFront(backButton)
 
-        // Fade out placeholder on first rendered frame
+        // Remove the startup placeholder immediately; no fade animation
+        // and no second per-frame game-image copy behind the canvas.
         emulatorView.onFirstFrame = { [weak self] in
             NSLog("[J2ME Treo] First game frame displayed")
             self?.finishStartupWatchdog()
-            guard let icon = self?.placeholderIconView else { return }
-            UIView.animate(withDuration: 0.2) {
-                icon.alpha = 0
-            } completion: { _ in
-                icon.removeFromSuperview()
-                self?.placeholderIconView = nil
-            }
-        }
-
-        if layoutMode == .ngage {
-            emulatorView.onFrame = { [weak self] cgImage in
-                self?.glowContentView.layer.contents = cgImage
-            }
+            self?.placeholderIconView?.removeFromSuperview()
+            self?.placeholderIconView = nil
         }
 
         // Register native callbacks only after acquiring the exclusive
@@ -597,29 +585,9 @@ class GameViewController: UIViewController {
         self.joystickView = joystick
         self.numpadView = numpad
 
-        // Glow: container with game content mirror + NeutralBlurView on top
-        glowContainer.isUserInteractionEnabled = false
-        glowContainer.clipsToBounds = true
-
-        glowContentView.layer.magnificationFilter = .trilinear
-        glowContentView.layer.minificationFilter = .trilinear
-        glowContentView.alpha = 0.6
-        glowContainer.addSubview(glowContentView)
-
-        // glowContentView fills glowContainer
-        glowContentView.translatesAutoresizingMaskIntoConstraints = false
-        NSLayoutConstraint.activate([
-            glowContentView.topAnchor.constraint(equalTo: glowContainer.topAnchor),
-            glowContentView.leadingAnchor.constraint(equalTo: glowContainer.leadingAnchor),
-            glowContentView.trailingAnchor.constraint(equalTo: glowContainer.trailingAnchor),
-            glowContentView.bottomAnchor.constraint(equalTo: glowContainer.bottomAnchor),
-        ])
-
-        // Full-screen blur over the glow (no hard edge)
-        let glowBlur = NeutralBlurView(radius: 100)
-        glowBlur.isUserInteractionEnabled = false
-
-        for v: UIView in [glowContainer, glowBlur, joystick, emulatorView, numpad, lskButton, rskButton, formView, listView, backButton] {
+        // The game Canvas is the only rendered game image.
+        // Do not instantiate the GPU-heavy glow mirror/backdrop blur.
+        for v: UIView in [joystick, emulatorView, numpad, lskButton, rskButton, formView, listView, backButton] {
             v.translatesAutoresizingMaskIntoConstraints = false
             view.addSubview(v)
         }
@@ -670,8 +638,6 @@ class GameViewController: UIViewController {
                 control.translatesAutoresizingMaskIntoConstraints = false
             }
             joystick.isHidden = true
-            glowContainer.isHidden = true
-            glowBlur.isHidden = true
             emulatorView.layer.contentsGravity = .resizeAspect
             emulatorView.clipsToBounds = true
             screenMenu.translatesAutoresizingMaskIntoConstraints = false
@@ -749,18 +715,6 @@ class GameViewController: UIViewController {
 
             rightArea.leadingAnchor.constraint(equalTo: emulatorView.trailingAnchor),
             rightArea.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor),
-            // Glow content: slightly larger than emulator, sits behind it
-            glowContainer.centerXAnchor.constraint(equalTo: view.centerXAnchor),
-            glowContainer.centerYAnchor.constraint(equalTo: view.centerYAnchor),
-            glowContainer.widthAnchor.constraint(equalTo: emulatorView.widthAnchor),
-            glowContainer.heightAnchor.constraint(equalTo: emulatorView.heightAnchor),
-
-            // Blur: full screen (no hard edge at glow boundary)
-            glowBlur.topAnchor.constraint(equalTo: view.topAnchor),
-            glowBlur.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            glowBlur.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            glowBlur.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-
             // Emulator: centered, aspect ratio, full height with padding
             emulatorView.centerXAnchor.constraint(equalTo: view.centerXAnchor),
             emulatorView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: pad),
