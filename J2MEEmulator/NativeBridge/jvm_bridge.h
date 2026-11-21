@@ -48,6 +48,7 @@ int treo_vm_utf16_fast_build(void);
 uint64_t treo_vm_utf16_fast_calls(void);
 int treo_vm_array_lookup_build(void);
 uint64_t treo_vm_array_lookup_fast_calls(void);
+const char *treo_vm_array_lookup_diag_report(void);
 uint64_t treo_vm_switch_method_calls(void);
 uint64_t treo_vm_monitor_contentions(void);
 uint64_t treo_vm_monitor_retries(void);

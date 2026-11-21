@@ -4,6 +4,7 @@
 #include "garbage.h"
 #include <stdatomic.h>
 #include <stdint.h>
+#include <stdio.h>
 
 /*
  * JarBox no-dynamic-JIT interpreter. Clang's labels-as-values point only
@@ -153,6 +154,71 @@ static inline int treo_vm_matches_array_lookup(MethodInfo *m) {
 #else
 uint64_t treo_vm_array_lookup_fast_calls(void) { return 0; }
 #endif
+
+
+#if TREO_VM_ARRAY_LOOKUP && defined(TREO_VM_ARRAY_LOOKUP_DIAGNOSTIC)
+#define TREO_VM_ARRAY_LOOKUP_DIAG 1
+#else
+#define TREO_VM_ARRAY_LOOKUP_DIAG 0
+#endif
+#if TREO_VM_ARRAY_LOOKUP_DIAG
+// Lightweight staged gate counters, only in the dedicated diagnostic build.
+// Batches of 64; cannot be used to compare CPU with normal A/B builds.
+static _Atomic uint64_t treo_array_diag_counts[8];
+static _Thread_local unsigned treo_array_diag_pending[8];
+static _Atomic int treo_array_diag_sample_taken;
+static char treo_array_diag_sample[256];
+static inline void treo_array_diag_note(int stage) {
+    if (++treo_array_diag_pending[stage] == 64) {
+        atomic_fetch_add_explicit(&treo_array_diag_counts[stage], 64,
+                                  memory_order_relaxed);
+        treo_array_diag_pending[stage] = 0;
+    }
+}
+// A single readout, not a per-method print. Low cost on the game thread.
+static inline void treo_array_diag_capture(MethodInfo *m, const u8 *code) {
+    if (atomic_exchange_explicit(&treo_array_diag_sample_taken, 1,
+                                 memory_order_relaxed) == 0) {
+        const CodeAttribute *ca = m->converted_code;
+        const ExceptionTable *e = ca->exception_table;
+        snprintf(treo_array_diag_sample, sizeof(treo_array_diag_sample),
+                 "%s.%s b0=%02x b3=%02x b4=%02x b7=%02x b8=%02x "
+                 "b9=%02x b10=%02x b11=%02x b12=%02x b13=%02x "
+                 "b14=%02x b15=%02x b16=%02x et=%u %u-%u->%u",
+                 utf8_cstr(m->_this_class->name), utf8_cstr(m->name),
+                 code[0], code[3], code[4], code[7], code[8],
+                 code[9], code[10], code[11], code[12], code[13],
+                 code[14], code[15], code[16],
+                 ca->exception_table_length,
+                 e ? e->start_pc : 0, e ? e->end_pc : 0,
+                 e ? e->handler_pc : 0);
+    }
+}
+#endif
+const char *treo_vm_array_lookup_diag_report(void) {
+#if TREO_VM_ARRAY_LOOKUP_DIAG
+    static char report[700];
+    snprintf(report, sizeof(report),
+             "[JarBoxVM][ArrayLookupDiag] enabled=1 "
+             "shape_calls~%llu loose_calls~%llu match_calls~%llu "
+             "entered_calls~%llu fields_resolved~%llu "
+             "types_ok~%llu array_ok~%llu inbounds_fast~%llu "
+             "sample={%s}. Counts batched/64, cumulative per process; "
+             "diagnostic CPU is not a valid A/B measurement.",
+             (unsigned long long)atomic_load_explicit(&treo_array_diag_counts[0], memory_order_relaxed),
+             (unsigned long long)atomic_load_explicit(&treo_array_diag_counts[1], memory_order_relaxed),
+             (unsigned long long)atomic_load_explicit(&treo_array_diag_counts[2], memory_order_relaxed),
+             (unsigned long long)atomic_load_explicit(&treo_array_diag_counts[3], memory_order_relaxed),
+             (unsigned long long)atomic_load_explicit(&treo_array_diag_counts[4], memory_order_relaxed),
+             (unsigned long long)atomic_load_explicit(&treo_array_diag_counts[5], memory_order_relaxed),
+             (unsigned long long)atomic_load_explicit(&treo_array_diag_counts[6], memory_order_relaxed),
+             (unsigned long long)atomic_load_explicit(&treo_array_diag_counts[7], memory_order_relaxed),
+             treo_array_diag_sample_taken ? treo_array_diag_sample : "none");
+    return report;
+#else
+    return "[JarBoxVM][ArrayLookupDiag] enabled=0";
+#endif
+}
 
 /* Sampled PaintHot attribution. No Java work is omitted; no bytecode hooks. */
 #if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__ && !defined(TREO_VM_PAINT_SAMPLE_DISABLED)
@@ -1099,6 +1165,26 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
 #endif
 
 #if TREO_VM_ARRAY_LOOKUP
+
+#if TREO_VM_ARRAY_LOOKUP_DIAG
+    // Track candidate calls even if the fast-path safety preconditions reject
+    // the method before the exact bytecode matcher is ever reached.
+    if (treo_paint_mode == 8 && method->para_slots == 2 &&
+        method->return_slots == 1 && method->is_static &&
+        method->converted_code && method->converted_code->code &&
+        method->converted_code->code_length == 17) {
+        const u8 *diagnostic_code = method->converted_code->code;
+        treo_array_diag_note(0); // plausible 17-byte static (II)->int
+        if (diagnostic_code[3] == op_iload_1 &&
+            diagnostic_code[7] == op_imul &&
+            diagnostic_code[10] == op_iaload) {
+            treo_array_diag_note(1); // loose signature (preserves actual bytes)
+            treo_array_diag_capture(method, diagnostic_code);
+        }
+        if (treo_vm_matches_array_lookup(method))
+            treo_array_diag_note(2); // complete structural and handler match
+    }
+#endif
     // Only a fully initialized, resolved, in-bounds int[] read takes the fast
     // path. Null/OOB, uninitialized fields, debugger, suspension and other
     // rare conditions retain the original exception and Java semantics.
@@ -1109,6 +1195,9 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
         !pruntime->jvm->jdwp_enable && !pruntime->thrd_info->is_stop &&
         !pruntime->thrd_info->suspend_count &&
         treo_vm_matches_array_lookup(method)) {
+#if TREO_VM_ARRAY_LOOKUP_DIAG
+        treo_array_diag_note(3); // exact candidate plus debugger/thread safety
+#endif
         const u8 *code = method->converted_code->code;
         const u16 array_cp = *((const u16 *)(code + 1));
         const u16 width_cp = *((const u16 *)(code + 5));
@@ -1118,6 +1207,11 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
             class_get_constant_fieldref(method->_this_class, width_cp);
         FieldInfo *array_field = array_ref ? array_ref->fieldInfo : NULL;
         FieldInfo *width_field = width_ref ? width_ref->fieldInfo : NULL;
+        if (array_field && width_field) {
+#if TREO_VM_ARRAY_LOOKUP_DIAG
+            treo_array_diag_note(4);
+#endif
+        }
         if (array_field && width_field &&
             array_field->_this_class == method->_this_class &&
             width_field->_this_class == method->_this_class &&
@@ -1126,8 +1220,14 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
             width_field->datatype_bytes == 4 &&
             utf8_equals_c(array_field->descriptor, "[I") &&
             utf8_equals_c(width_field->descriptor, "I")) {
+#if TREO_VM_ARRAY_LOOKUP_DIAG
+            treo_array_diag_note(5);
+#endif
             Instance *array = *((__refer *)getStaticFieldPtr(array_field));
             if (array && (array->mb.type & MEM_TYPE_ARR)) {
+#if TREO_VM_ARRAY_LOOKUP_DIAG
+                treo_array_diag_note(6);
+#endif
                 const s32 width = *((s32 *)getStaticFieldPtr(width_field));
                 RuntimeStack *caller = pruntime->stack;
                 StackEntry *args = caller->sp - 2;
@@ -1135,6 +1235,9 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                                  (u32)args[0].ivalue;
                 const s32 index = (s32)bits;
                 if (index >= 0 && index < array->arr_length) {
+#if TREO_VM_ARRAY_LOOKUP_DIAG
+                    treo_array_diag_note(7);
+#endif
                     const s32 value = ((s32 *)array->arr_body)[index];
                     caller->sp = args;
                     push_int(caller, value);

@@ -1702,6 +1702,10 @@ class GameViewController: UIViewController {
         vmTreoProbeStart = nil
         let paintHotReport = String(cString: treo_vm_paint_sample_report())
         if let vmLog { NSLog("%@", vmLog) }
+        let arrayLookupDiag = String(cString: treo_vm_array_lookup_diag_report())
+        if arrayLookupDiag.hasPrefix("[JarBoxVM][ArrayLookupDiag] enabled=1") {
+            NSLog("%@", arrayLookupDiag)
+        }
         NSLog("%@", paintHotReport)
         afkMeasure?.cancel()
         genericTreoWork?.cancel()

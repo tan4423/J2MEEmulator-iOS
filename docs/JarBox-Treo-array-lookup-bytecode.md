@@ -58,3 +58,13 @@ Build script prints `[JarBoxVM][BUILD] array_lookup=on/off`. After leaving Treo,
 5. Keep only if measured CPU savings replicate, and never claim watt/energy reduction without power evidence. Restore the OFF default if crash, save corruption, game logic regression, or CPU neutral/worse.
 
 Important: No code in the *game JARs* is changed, and branch `main` remains untouched. No new build or device A/B result is claimed by this document.
+
+## ON build 100.1s, measured 2026-11-21
+
+Correct experimental IPA (`array_lookup=on`, PaintHot disabled) ran 100.1s, `app_CPU=36.1%`, `paint_CPU=205.05ms/s`, `main_CPU=0.1%`, `array_lookup_fast_calls~0` (64-call batching), `paint=25.12/s`, `smart_GC=53`, GC 16.19ms/s, heap 19.7MiB. 2,514 Canvas raster skips, zero fallback, thermal state nominal and GC 500ms restored. This **does not** demonstrate improved performance; a feature compiled ON is not proof it matched and executed. Do not make a candidate-vs-baseline CPU claim yet.
+
+Rechecked the uploaded Ninja JAR with `javap -c -p Class_hii`: `q3(II)I` really has 17 code bytes, `getstatic; iload_1; getstatic; imul; iload_0; iadd; iaload; ireturn; astore_2; sipush 1000; ireturn`, with exception table `0..11 -> 12 java/lang/Exception`. Yet the VM may transform opcodes/exception metadata at runtime, or one of the method/field guards may reject the method. Those are hypotheses, **not** known causes. Do not loosen guards or bypass exceptions blindly.
+
+Added **`J2ME Treo Array Lookup path diagnostic unsigned`**, PaintHot OFF with compile-time experimental stage counters. This workflow reports `[JarBoxVM][ArrayLookupDiag]` on Treo exit: `shape_calls` means 17-byte static two-argument/int-return methods observed, `loose_calls` matches three characteristic instruction positions, `match_calls` meets all bytecode/exception-table guards, `entered_calls` passes thread/debugger guards, `fields_resolved`, `types_ok`, `array_ok`, and `inbounds_fast` isolate remaining guard stages. A one-time sample shows the actual 17-byte candidate's selected opcode positions and handler range; it is **not** a raw JAR modification or hot-loop printf. Counts are batched/64 and cumulative over the process. This diagnostic has observer overhead; do **not** use its app CPU as A/B speed evidence.
+
+**Next device action:** build only the diagnostic workflow on `loader-ios-jit-probe`, run the same Ninja map in JarBox mode 8 ~100–150s, and send `[JarBoxVM][ArrayLookupDiag]`, full `[JarBoxVM][Treo]`, and Canvas/GC summaries. Decide if the matcher is too strict or if the actual game execution differs from the supplied JAR, then fix the specific cause and return to ON/OFF workflows. No need to run OFF again until the candidate proves it executes.
