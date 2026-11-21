@@ -3477,12 +3477,14 @@ class GameViewController: UIViewController {
         let runResult = jvm_bridge_run_midlet(jarPath)
         NSLog("[J2ME Treo] MIDlet runner returned %d; cleaning up", runResult)
         let javaError = String(cString: jvm_bridge_last_error())
+        let nsoInitTrace = String(cString: jvm_bridge_nso_init_trace())
         jvm_bridge_destroy()
         NSLog("[J2ME Treo] JVM cleanup complete")
         if runResult == 0 { return nil }
         return "Game execution failed (\(runResult))." +
             (javaError.isEmpty ? " Xem [MIDletRunner] trong log để xác định lỗi." :
-                "\n\nLỗi Java: " + javaError)
+                "\n\nLỗi Java: " + javaError) +
+            (nsoInitTrace.isEmpty ? "" : "\n\nNSOInit: " + nsoInitTrace)
     }
 
     private func requestGameStop(reason: String) {

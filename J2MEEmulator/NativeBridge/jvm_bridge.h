@@ -24,6 +24,10 @@ int jvm_bridge_interrupt_active_threads(void);
 /// Record a Java launcher failure and return its UTF-8 diagnostic to Swift.
 /// The message persists across JVM teardown until the next session begins.
 void jvm_bridge_set_launch_error(const char *message);
+// Launch-only diagnostic: trace Class_ek delegate assignment vs first paint.
+// Keeps bounded events across JVM teardown until the next launch.
+void jvm_bridge_note_nso_init_trace(const char *detail);
+const char *jvm_bridge_nso_init_trace(void);
 const char *jvm_bridge_last_error(void);
 
 /// Initialize miniJVM with the given resource and save directories.

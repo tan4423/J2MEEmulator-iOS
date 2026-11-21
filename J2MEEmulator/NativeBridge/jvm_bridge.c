@@ -83,6 +83,29 @@ static pthread_mutex_t g_bridge_lifecycle_lock = PTHREAD_MUTEX_INITIALIZER;
 // Java launcher reports a specific error BEFORE the native runner unwinds.
 // One session owns this buffer, and only the owning Swift worker reads it.
 static char g_bridge_last_error[1536];
+// Bounded launch-only JVM field trace. Never used for normal Treo telemetry.
+static pthread_mutex_t g_bridge_nso_trace_lock = PTHREAD_MUTEX_INITIALIZER;
+static char g_bridge_nso_init_trace[2048];
+static unsigned g_bridge_nso_init_trace_count;
+void jvm_bridge_note_nso_init_trace(const char *detail) {
+    if (!detail || !detail[0]) return;
+    pthread_mutex_lock(&g_bridge_nso_trace_lock);
+    if (g_bridge_nso_init_trace_count < 12) {
+        size_t len = strlen(g_bridge_nso_init_trace);
+        size_t avail = sizeof(g_bridge_nso_init_trace) - len - 1;
+        if (avail >= 4) {
+            const int added = snprintf(g_bridge_nso_init_trace + len, avail + 1,
+                                      "%s%s", len ? " | " : "", detail);
+            if (added > 0) ++g_bridge_nso_init_trace_count;
+        }
+    }
+    pthread_mutex_unlock(&g_bridge_nso_trace_lock);
+    printf("[JarBoxVM][NSOInit] %s\n", detail);
+}
+const char *jvm_bridge_nso_init_trace(void) {
+    return g_bridge_nso_init_trace;
+}
+
 static atomic_int g_bridge_last_error_ready;
 void jvm_bridge_set_launch_error(const char *message) {
     if (!message) return;
@@ -107,6 +130,10 @@ int jvm_bridge_try_begin_session(void) {
     atomic_store_explicit(&g_jvm_stop_requested, 0, memory_order_release);
     atomic_store_explicit(&g_bridge_last_error_ready, 0, memory_order_release);
     g_bridge_last_error[0] = '\0';
+    pthread_mutex_lock(&g_bridge_nso_trace_lock);
+    g_bridge_nso_init_trace[0] = '\0';
+    g_bridge_nso_init_trace_count = 0;
+    pthread_mutex_unlock(&g_bridge_nso_trace_lock);
     atomic_store_explicit(&g_bridge_phase, BRIDGE_STARTING, memory_order_release);
     printf("[JarBoxVM][Lifecycle] session=acquired phase=starting\n");
     return 1;
