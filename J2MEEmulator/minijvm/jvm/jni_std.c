@@ -106,9 +106,19 @@ s32 java_lang_Class_newInstance(Runtime *runtime, JClass *clazz) {
     s32 ret = 0;
     if (cl && !cl->mb.arr_type_index) {//class exists and not array class
         ins = instance_create(runtime, cl);
-        instance_hold_to_thread(ins, runtime);
-        instance_init(ins, runtime);
-        instance_release_from_thread(ins, runtime);
+        if (ins) {
+            instance_hold_to_thread(ins, runtime);
+            s32 init_ret = instance_init_checked(ins, runtime);
+            instance_release_from_thread(ins, runtime);
+            if (init_ret != RUNTIME_STATUS_NORMAL) {
+                // A failed Java constructor MUST NOT become a successfully
+                // constructed MIDlet. The original Throwable is already on
+                // the operand stack. Propagate it through newInstance() so
+                // the launcher reports phase=load/constructor, rather than
+                // crashing later when Canvas.paint reads a never-set field.
+                return init_ret;
+            }
+        }
     }
     if (ins) {
         push_ref(stack, (__refer) ins);

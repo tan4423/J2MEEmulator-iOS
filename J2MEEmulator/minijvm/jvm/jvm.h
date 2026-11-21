@@ -1208,6 +1208,9 @@ struct _InstanceType {
 Instance *instance_create(Runtime *runtime, JClass *clazz);
 
 void instance_init(Instance *ins, Runtime *runtime);
+// Unlike the legacy logging wrapper, this returns the constructor's Java
+// exception to the caller. Required by java.lang.Class.newInstance().
+s32 instance_init_checked(Instance *ins, Runtime *runtime);
 
 void instance_init_with_para(Instance *ins, Runtime *runtime, c8 *methodtype, RuntimeStack *para);
 

@@ -1310,6 +1310,27 @@ Instance *instance_create(Runtime *runtime, JClass *clazz) {
     return ins;
 }
 
+s32 instance_init_checked(Instance *ins, Runtime *runtime) {
+    if (!ins) return RUNTIME_STATUS_ERROR;
+    // Preserve the original exception and exception stack. Printing an
+    // exception here and returning a half-initialized object made
+    // Class.newInstance() appear to succeed even when <init> unwound early.
+    Utf8String *methodName = utf8_create_c("<init>");
+    Utf8String *methodType = utf8_create_c("()V");
+    MethodInfo *mi = find_methodInfo_by_name(ins->mb.clazz->name, methodName,
+                                             methodType, ins->mb.clazz->jloader,
+                                             runtime);
+    utf8_destroy(methodName);
+    utf8_destroy(methodType);
+    if (!mi) {
+        push_ref(runtime->stack, (__refer) exception_create_str(
+            JVM_EXCEPTION_NOSUCHMETHOD, runtime, "<init>()V"));
+        return RUNTIME_STATUS_EXCEPTION;
+    }
+    push_ref(runtime->stack, (__refer) ins);
+    return execute_method_impl(mi, runtime);
+}
+
 void instance_init(Instance *ins, Runtime *runtime) {
     instance_init_with_para(ins, runtime, "()V", NULL);
 }
