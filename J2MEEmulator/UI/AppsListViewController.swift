@@ -7,6 +7,7 @@
 
 import UIKit
 import UniformTypeIdentifiers
+import Darwin
 
 class AppsListViewController: UIViewController,
                       UICollectionViewDataSource,
@@ -116,6 +117,7 @@ class AppsListViewController: UIViewController,
         NotificationCenter.default.addObserver(self, selector: #selector(springboardThermalChanged),
                                                name: ProcessInfo.thermalStateDidChangeNotification, object: nil)
         logSpringboardEnergyState("library appeared")
+        updateStuckSessionButton()
     }
 
     override func viewWillDisappear(_ animated: Bool) {
@@ -132,7 +134,61 @@ class AppsListViewController: UIViewController,
 
     @objc private func appDidBecomeActive() {
         scanApps()
+        updateStuckSessionButton()
         logSpringboardEnergyState("app became active")
+    }
+
+    // Event-driven recovery for sessions stranded by an unexpected UI exit.
+    // No timer, animation or background polling on the low-power library.
+    private func updateStuckSessionButton() {
+        if jvm_bridge_session_is_active() != 0 {
+            navigationItem.leftBarButtonItem = UIBarButtonItem(
+                title: "Dừng phiên kẹt", style: .plain,
+                target: self, action: #selector(openStuckSessionRecovery))
+        } else {
+            navigationItem.leftBarButtonItem = nil
+        }
+    }
+
+    @objc private func openStuckSessionRecovery() {
+        guard jvm_bridge_session_is_active() != 0 else {
+            updateStuckSessionButton()
+            return
+        }
+        let alert = UIAlertController(
+            title: "Phiên game cũ chưa dừng",
+            message: "Bạn đã về thư viện nhưng JVM vẫn tồn tại (pha \(jvm_bridge_session_phase())). " +
+                     "Hãy thử ngắt Java thread trước. Nếu không thể dừng, " +
+                     "bạn có thể đóng JarBox để giải phóng toàn bộ tiến trình.",
+            preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "Ngắt luồng Java", style: .default) { _ in
+            jvm_bridge_request_stop()
+            DispatchQueue.global(qos: .userInitiated).async {
+                let interrupted = jvm_bridge_interrupt_active_threads()
+                NSLog("[JarBoxVM][Lifecycle] library_interrupt=%d", interrupted)
+            }
+        })
+        alert.addAction(UIAlertAction(title: "Buộc đóng JarBox", style: .destructive) { [weak self] _ in
+            self?.confirmLibraryEmergencyExit()
+        })
+        alert.addAction(UIAlertAction(title: "Đóng", style: .cancel))
+        present(alert, animated: true)
+    }
+
+    private func confirmLibraryEmergencyExit() {
+        guard jvm_bridge_session_is_active() != 0 else { return }
+        let alert = UIAlertController(
+            title: "Đóng toàn bộ JarBox?",
+            message: "Dữ liệu game chưa lưu có thể mất. JarBox sẽ tắt hẳn " +
+                     "để kết thúc mọi luồng JVM và socket. Bạn cần tự mở lại.",
+            preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "Không", style: .cancel))
+        alert.addAction(UIAlertAction(title: "Đóng JarBox ngay", style: .destructive) { _ in
+            guard jvm_bridge_session_is_active() != 0 else { return }
+            NSLog("[JarBoxVM][Lifecycle] library_process_exit_confirmed")
+            Darwin.exit(0)
+        })
+        present(alert, animated: true)
     }
 
     @objc private func springboardThermalChanged() {
@@ -532,6 +588,11 @@ class AppsListViewController: UIViewController,
     func collectionView(_ collectionView: UICollectionView,
                         didSelectItemAt indexPath: IndexPath) {
         let app = apps[indexPath.item]
+        if jvm_bridge_session_is_active() != 0 {
+            updateStuckSessionButton()
+            openStuckSessionRecovery()
+            return
+        }
 
         let render3dScale = Self.is3DSupersampling(for: app) ? 3 : 1
         let res = Self.resolution(for: app)

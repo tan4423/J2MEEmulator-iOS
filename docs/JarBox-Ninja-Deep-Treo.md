@@ -866,3 +866,29 @@ network retries. Logs are available while game UI is open, even if the JVM
 continues running after a connection failure. With these measurements, make
 the smallest cause-specific correction instead of speculative code changes.
 No changes to game JAR, main, Deep Treo, or workflow count.
+
+
+## 2026-11-21 Robust stop and permanent stuck-session recovery
+
+User described intermittent slow exit with the top-left Back button and
+sometimes a *permanently* blocked exclusive miniJVM slot after the game UI
+had already returned to the library. Root UI issue: requestGameStop's
+7-second rescue timer dismissed the game controller although the worker
+had not completed Java/native cleanup. New code never dismisses on that
+timer. Instead it presents a stuck-session recovery alert. The original
+cooperative stop followed by a two-second Java-thread interruption remains;
+the owner worker is still the only path that tears down the JVM and frees
+the exclusive session slot. Tapping Back again or choosing the new
+**Dừng game hoàn toàn** action in the floating game menu opens a recovery
+alert after stop has been requested. An event-driven **Dừng phiên kẹt**
+button also appears in the library if a session remains owned, including
+after an unexpected UI exit. A blocked attempt to open another game
+shows actionable recovery instead of an endless "wait" message.
+
+A double-confirmed **Buộc đóng JarBox** fallback uses process termination,
+which ends ALL games, socket threads and VM state at the OS level; unsaved
+game state can be lost and the user must relaunch JarBox manually. It is
+not a normal JVM shutdown and is not invoked automatically. Clearing the
+single-owner flag while a JVM lives would be unsafe due to use-after-free
+and is explicitly avoided. No game JAR, Deep Treo NSO fast paths, main
+branch, or workflow changes. Build and iPhone test still required.

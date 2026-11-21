@@ -15,6 +15,8 @@ extern int g_render_3d_scale;
 int jvm_bridge_try_begin_session(void);
 /// 0 idle, 1 starting, 2 running, 3 tearing down.
 int jvm_bridge_session_phase(void);
+/// Check the actual ownership flag (phase may briefly be idle during start).
+int jvm_bridge_session_is_active(void);
 /// Must only be called by the owning worker AFTER native cleanup.
 void jvm_bridge_finish_session(void);
 /// After user cancellation grace period, interrupt Java wait/sleep/loops.

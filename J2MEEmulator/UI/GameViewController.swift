@@ -8,6 +8,7 @@
 
 import UIKit
 import CoreFoundation
+import Darwin
 
 // MARK: - Layout mode (extensible for future layouts)
 
@@ -872,7 +873,8 @@ class GameViewController: UIViewController {
         if jarAuditID != nil {
             screenMenu.menu = UIMenu(children: [
                 UIAction(title: "Chẩn đoán kết nối") { [weak self] _ in self?.showNetworkDiagnostics() },
-                UIAction(title: "Hủy chẩn đoán CPU JAR", attributes: .destructive) { [weak self] _ in self?.stopJarAudit() }
+                UIAction(title: "Hủy chẩn đoán CPU JAR", attributes: .destructive) { [weak self] _ in self?.stopJarAudit() },
+                UIAction(title: "Dừng game hoàn toàn", attributes: .destructive) { [weak self] _ in self?.stopGameFromMenu() }
             ])
             return
         }
@@ -894,8 +896,60 @@ class GameViewController: UIViewController {
             },
             UIAction(title: "Chẩn đoán kết nối") { [weak self] _ in
                 self?.showNetworkDiagnostics()
+            },
+            UIAction(title: "Dừng game hoàn toàn", attributes: .destructive) { [weak self] _ in
+                self?.stopGameFromMenu()
             }
         ])
+    }
+
+    private func stopGameFromMenu() {
+        requestGameStop(reason: "menu_stop")
+    }
+
+    // A hung JVM cannot safely have its singleton flag cleared while Java
+    // threads still hold pointers into its heap. Offer a *confirmed*
+    // process-level escape hatch rather than a fake view dismissal.
+    private func showStuckSessionRecovery() {
+        guard ownsJVMSession, viewIfLoaded?.window != nil, !isBeingDismissed else { return }
+        let phase = jvm_bridge_session_phase()
+        let alert = UIAlertController(
+            title: "Game chưa dừng hẳn",
+            message: "JVM vẫn đang hoạt động hoặc dọn dẹp (pha \(phase)). " +
+                     "Bạn có thể tiếp tục chờ, hoặc đóng hẳn JarBox để giải phóng " +
+                     "phiên kẹt. Không thể mở chồng JVM khác khi phiên này còn sống.",
+            preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "Tiếp tục chờ", style: .cancel))
+        alert.addAction(UIAlertAction(title: "Buộc đóng JarBox", style: .destructive) { [weak self] _ in
+            self?.confirmEmergencyExit()
+        })
+        if let previous = presentedViewController {
+            previous.dismiss(animated: false) { [weak self] in
+                guard let self, self.ownsJVMSession, self.view.window != nil else { return }
+                self.present(alert, animated: true)
+            }
+        } else {
+            present(alert, animated: true)
+        }
+    }
+
+    private func confirmEmergencyExit() {
+        guard jvm_bridge_session_is_active() != 0 else { return }
+        let alert = UIAlertController(
+            title: "Đóng toàn bộ JarBox?",
+            message: "Chỉ dùng nếu game kẹt không thể dừng. Dữ liệu chưa lưu " +
+                     "có thể mất. JarBox sẽ tắt hoàn toàn và cần được mở lại.",
+            preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "Không", style: .cancel))
+        alert.addAction(UIAlertAction(title: "Đóng JarBox ngay", style: .destructive) { _ in
+            guard jvm_bridge_session_is_active() != 0 else { return }
+            NSLog("[JarBoxVM][Lifecycle] confirmed_hard_process_exit phase=%d",
+                  jvm_bridge_session_phase())
+            // A process stop releases all VM threads/sockets, unlike
+            // unsafely clearing the session flag of an active JVM.
+            Darwin.exit(0)
+        })
+        present(alert, animated: true)
     }
 
     private func showNetworkDiagnostics() {
@@ -3340,9 +3394,7 @@ class GameViewController: UIViewController {
         }
 
         guard jvm_bridge_try_begin_session() != 0 else {
-            showLaunchFailure("JVM đang khởi động, chạy hoặc dọn dẹp game trước. " +
-                              "JarBox không mở chồng hai phiên JVM vì dễ hỏng bộ nhớ. " +
-                              "Hãy thử mở lại sau khi phiên trước kết thúc.")
+            showBlockedSessionAlert()
             return
         }
         ownsJVMSession = true
@@ -3411,6 +3463,30 @@ class GameViewController: UIViewController {
     private func finishStartupWatchdog() {
         startupWatchdog?.cancel()
         startupWatchdog = nil
+    }
+
+    private func showBlockedSessionAlert() {
+        let alert = UIAlertController(
+            title: "Phiên JVM cũ chưa kết thúc",
+            message: "JVM của game trước vẫn còn hoạt động (pha \(jvm_bridge_session_phase())). " +
+                     "Chờ thêm sẽ không giải quyết được nếu luồng Java bị treo. " +
+                     "Hãy thử ngắt phiên cũ; nếu vẫn kẹt, đóng hẳn JarBox.",
+            preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "Ngắt phiên cũ", style: .default) { [weak self] _ in
+            jvm_bridge_request_stop()
+            DispatchQueue.global(qos: .userInitiated).async {
+                let result = jvm_bridge_interrupt_active_threads()
+                NSLog("[JarBoxVM][Lifecycle] blocked_slot_interrupt=%d", result)
+            }
+            self?.dismiss(animated: true)
+        })
+        alert.addAction(UIAlertAction(title: "Đóng", style: .cancel) { [weak self] _ in
+            self?.dismiss(animated: true)
+        })
+        alert.addAction(UIAlertAction(title: "Buộc đóng JarBox", style: .destructive) { [weak self] _ in
+            self?.confirmEmergencyExit()
+        })
+        present(alert, animated: true)
     }
 
     private func showLaunchFailure(_ message: String) {
@@ -3483,7 +3559,10 @@ class GameViewController: UIViewController {
             dismiss(animated: true)
             return
         }
-        guard !gameStopRequested else { return }
+        if gameStopRequested {
+            showStuckSessionRecovery()
+            return
+        }
         gameStopRequested = true
         NSLog("[JarBoxVM][Lifecycle] cancel_requested reason=%@ phase=%d",
               reason, jvm_bridge_session_phase())
@@ -3492,7 +3571,8 @@ class GameViewController: UIViewController {
         discardCPUProfile()
         for code in Array(heldDirections) { releaseDirection(code) }
         if blackout != nil { hideBlackout() }
-        backButton.isEnabled = false
+        // Leave Back usable: another tap opens stuck-session recovery.
+        // Otherwise a still-running game could trap the user behind the UI.
         jvm_bridge_request_stop()
 
         // Cooperative stop first; interrupt the still-running Java threads
@@ -3507,13 +3587,14 @@ class GameViewController: UIViewController {
         stopEscalationWork = escalate
         DispatchQueue.main.asyncAfter(deadline: .now() + 2, execute: escalate)
 
-        // Rescue navigation UI, NOT the JVM memory. The owning worker must
-        // finish cleanup before any subsequent game may acquire a VM slot.
+        // NEVER dismiss a live JVM after an arbitrary timeout. Previously
+        // the 7-second UI rescue hid the active worker behind the library,
+        // leaving no way to stop it and blocking every subsequent game.
         let rescue = DispatchWorkItem { [weak self] in
             guard let self, self.gameStopRequested, self.ownsJVMSession else { return }
-            NSLog("[JarBoxVM][Lifecycle] cancel_ui_rescue phase=%d",
+            NSLog("[JarBoxVM][Lifecycle] stop_pending_recovery phase=%d",
                   jvm_bridge_session_phase())
-            self.dismiss(animated: true)
+            self.showStuckSessionRecovery()
         }
         stopRescueWork = rescue
         DispatchQueue.main.asyncAfter(deadline: .now() + 7, execute: rescue)

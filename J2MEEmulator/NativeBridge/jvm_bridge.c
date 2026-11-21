@@ -192,6 +192,9 @@ int jvm_bridge_try_begin_session(void) {
 int jvm_bridge_session_phase(void) {
     return atomic_load_explicit(&g_bridge_phase, memory_order_acquire);
 }
+int jvm_bridge_session_is_active(void) {
+    return atomic_load_explicit(&g_bridge_session_active, memory_order_acquire);
+}
 void jvm_bridge_finish_session(void) {
     // Only the owning startup worker calls this AFTER native teardown.
     if (g_jvm) {
