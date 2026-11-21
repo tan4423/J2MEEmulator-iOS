@@ -784,6 +784,8 @@ class AppsListViewController: UIViewController,
                 let meta = JARMetadata.read(from: jar.path)
                 let jarIcon = meta?.readIcon(from: jar.path)
                 let fileName = URL(fileURLWithPath: jar.path).lastPathComponent
+                JarBoxGameStorage.migratePreferencesIfUnique(
+                    for: jar.path, documents: Self.documentsDirectory)
                 let defaultName = meta?.midletName ?? jar.name
                 let key = "displayName_" + Self.gameId(forPath: jar.path)
                 let savedName = UserDefaults.standard.string(forKey: key)?
@@ -983,8 +985,7 @@ class AppsListViewController: UIViewController,
     // MARK: - Per-game settings
 
     private static func gameId(forPath path: String) -> String {
-        let jarName = URL(fileURLWithPath: path).deletingPathExtension().lastPathComponent
-        return jarName.replacingOccurrences(of: "[^a-zA-Z0-9._-]", with: "_", options: .regularExpression)
+        JarBoxGameStorage.installId(for: path)
     }
 
     private static func gameId(for app: AppInfo) -> String {
@@ -1010,6 +1011,8 @@ class AppsListViewController: UIViewController,
                 return
             }
             UserDefaults.standard.set(name, forKey: "displayName_\(Self.gameId(for: app))")
+            JarBoxGameStorage.appendSettingEvent(jarPath: app.path,
+                documents: Self.documentsDirectory, event: "RENAME")
             self?.scanApps()
         })
         present(alert, animated: true)
@@ -1029,6 +1032,9 @@ class AppsListViewController: UIViewController,
 
     static func set3DSupersampling(_ enabled: Bool, for app: AppInfo) {
         UserDefaults.standard.set(enabled, forKey: "ss3d_\(gameId(for: app))")
+        JarBoxGameStorage.appendSettingEvent(jarPath: app.path,
+            documents: documentsDirectory, event: "SUPERSAMPLING",
+            value: enabled ? "1" : "0")
     }
 
     private static let resolutionOptions: [(label: String, w: Int, h: Int)] = [
@@ -1062,6 +1068,9 @@ class AppsListViewController: UIViewController,
         let gid = gameId(for: app)
         UserDefaults.standard.set(w, forKey: "resW_\(gid)")
         UserDefaults.standard.set(h, forKey: "resH_\(gid)")
+        JarBoxGameStorage.appendSettingEvent(jarPath: app.path,
+            documents: documentsDirectory, event: "RESOLUTION",
+            value: String(w) + "x" + String(h))
     }
 
     private static let fpsLimitOptions: [(label: String, value: Int)] = [
@@ -1078,6 +1087,8 @@ class AppsListViewController: UIViewController,
 
     private static func setFpsLimit(_ fps: Int, for app: AppInfo) {
         UserDefaults.standard.set(fps, forKey: "fpsLimit_\(gameId(for: app))")
+        JarBoxGameStorage.appendSettingEvent(jarPath: app.path,
+            documents: documentsDirectory, event: "FPS", value: String(fps))
     }
 
     private static var documentsDirectory: String {
