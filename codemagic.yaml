@@ -48,6 +48,7 @@ workflows:
             J2MEEmulator/RuntimePatches/java/nio/charset/StandardCharsets.java \
             J2MEEmulator/RuntimePatches/java/io/OutputStreamWriter.java \
             J2MEEmulator/RuntimePatches/java/time/LocalTime.java \
+            J2MEEmulator/RuntimePatches/java/lang/VerifyError.java \
             J2MEEmulator/RuntimePatches/com/sun/cldc/i18n/j2me/UTF_8_Reader.java
           jar uf "$jars/minijvm_rt.jar" -C "$core_classes" .
           # Verify the classes that will be packaged, NOT the host JDK
@@ -56,7 +57,8 @@ workflows:
           mkdir -p "$core_verify"
           (cd "$core_verify" && jar xf "$jars/minijvm_rt.jar" \
             java/nio/charset/StandardCharsets.class java/io/OutputStreamWriter.class \
-            java/time/LocalTime.class com/sun/cldc/i18n/j2me/UTF_8_Reader.class)
+            java/time/LocalTime.class java/lang/VerifyError.class \
+            com/sun/cldc/i18n/j2me/UTF_8_Reader.class)
           javap "$core_verify/java/nio/charset/StandardCharsets.class" > "$RUNNER_TEMP/utf8-class.txt"
           javap "$core_verify/java/io/OutputStreamWriter.class" > "$RUNNER_TEMP/writer-class.txt"
           grep -Fq 'public static final java.nio.charset.Charset UTF_8;' "$RUNNER_TEMP/utf8-class.txt"
@@ -71,7 +73,9 @@ workflows:
           grep -Fq 'public boolean equals(java.lang.Object);' "$RUNNER_TEMP/localtime-signatures.txt"
           javap -c "$core_verify/java/time/LocalTime.class" > "$RUNNER_TEMP/localtime-bytecode.txt"
           grep -Fq 'java/util/Calendar.getInstance:()Ljava/util/Calendar;' "$RUNNER_TEMP/localtime-bytecode.txt"
-          echo "[JarBoxNET][BUILD] java8_core_utf8=present localtime=present boot_jar=patched short_read=enabled"
+          javap "$core_verify/java/lang/VerifyError.class" > "$RUNNER_TEMP/verify-error-signatures.txt"
+          grep -Fq 'public java.lang.VerifyError(java.lang.String);' "$RUNNER_TEMP/verify-error-signatures.txt"
+          echo "[JarBoxNET][BUILD] java8_core_utf8=present localtime=present verifyerror=present boot_jar=patched short_read=enabled"
           classes="$RUNNER_TEMP/lcdui-classes"
           mkdir -p "$classes"
           javac --release 8 -sourcepath '' -cp "$jars/j2me_api.jar:$jars/minijvm_rt.jar" \
@@ -205,7 +209,7 @@ workflows:
           build_commit="$(git rev-parse --verify HEAD)"
           test "${#build_commit}" -eq 40
           /usr/libexec/PlistBuddy -c "Add :JarBoxBuildCommit string $build_commit" "$app/Info.plist"
-          /usr/libexec/PlistBuddy -c 'Add :JarBoxBootPatch string java8_utf8_localtime_v2' "$app/Info.plist"
+          /usr/libexec/PlistBuddy -c 'Add :JarBoxBootPatch string java8_utf8_localtime_verify_v3' "$app/Info.plist"
           actual_commit="$(/usr/libexec/PlistBuddy -c 'Print :JarBoxBuildCommit' "$app/Info.plist")"
           test "$actual_commit" = "$build_commit"
           echo "[JarBoxNET][BUILD] final_ipa_commit=$build_commit"
@@ -220,7 +224,7 @@ workflows:
           ipa_plist="$RUNNER_TEMP/packaged-Info.plist"
           unzip -p "$GITHUB_WORKSPACE/J2ME-Treo-jar-cpu-audit-unsigned.ipa" "Payload/*.app/Info.plist" > "$ipa_plist"
           test "$(/usr/libexec/PlistBuddy -c 'Print :JarBoxBuildCommit' "$ipa_plist")" = "$build_commit"
-          test "$(/usr/libexec/PlistBuddy -c 'Print :JarBoxBootPatch' "$ipa_plist")" = "java8_utf8_localtime_v2"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :JarBoxBootPatch' "$ipa_plist")" = "java8_utf8_localtime_verify_v3"
           echo "[JarBoxNET][BUILD] stamped IPA archive verified"
     artifacts: &jarbox_ipa_shared_artifacts
       - J2ME-Treo-jar-cpu-audit-unsigned.ipa

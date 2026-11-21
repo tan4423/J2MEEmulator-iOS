@@ -460,6 +460,8 @@ enum {
     JVM_EXCEPTION_VMSTOP,
     JVM_EXCEPTION_ILLEGALTHREADSTATE,
     JVM_EXCEPTION_ILLEGALMONITORSTATE,
+    // Append; existing exception IDs must retain their numeric values.
+    JVM_ERROR_VERIFY,
 };
 
 enum {

@@ -4861,7 +4861,11 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                                     break;
                                 }
                                 default:
+#if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__
+                                    goto label_unsupported_opcode_throw;
+#else
                                     _op_notsupport(runtime->pc, runtime);
+#endif
                             }
                             break;
                         }
@@ -5454,7 +5458,11 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
 
                         default: TREO_VM_HANDLER(default)
+#if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__
+                            goto label_unsupported_opcode_throw;
+#else
                             _op_notsupport(runtime->pc, runtime);
+#endif
                     }
 
                     /* ================================== runtime->pc end =============================*/
@@ -5465,6 +5473,31 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                     profile_put(cur_inst, spent, 1);
 #endif
                     continue;
+#if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__
+                    label_unsupported_opcode_throw:
+                    {
+                        // The upstream default opcode path calls exit(2),
+                        // killing the entire host app. Report a Java
+                        // VerifyError through the normal JVM unwinder.
+                        stack->sp = sp;
+                        const uintptr_t base = ca && ca->code ?
+                            (uintptr_t)ca->code : 0;
+                        const uintptr_t at = (uintptr_t)runtime->pc;
+                        const long pc_offset = base && at >= base &&
+                            at - base < ca->code_length ? (long)(at - base) : -1L;
+                        char diagnostic[208];
+                        snprintf(diagnostic, sizeof(diagnostic),
+                                 "vm_unsupported_opcode:class=%s,method=%s,pc=%ld,opcode=%u",
+                                 clazz ? utf8_cstr(clazz->name) : "?",
+                                 method ? utf8_cstr(method->name) : "?",
+                                 pc_offset,
+                                 runtime->pc ? (unsigned)(u8)*runtime->pc : 0u);
+                        jvm_bridge_note_net_trace(diagnostic);
+                        push_ref(stack, (__refer)exception_create_str(
+                            JVM_ERROR_VERIFY, runtime, diagnostic));
+                        goto label_exception_handle;
+                    }
+#endif
                     label_outofbounds_throw:
                     {
                         stack->sp = sp;

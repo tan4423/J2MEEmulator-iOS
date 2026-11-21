@@ -246,6 +246,7 @@ int jvm_bridge_try_begin_session(void) {
     // which Java network API the game calls. Detects an older installed IPA.
     jvm_bridge_note_net_trace("probe:java8_utf8_boot_patch=v1");
     jvm_bridge_note_net_trace("probe:java8_localtime_boot_patch=v1");
+    jvm_bridge_note_net_trace("probe:vm_opcode_guard=v1");
     printf("[JarBoxVM][Lifecycle] session=acquired phase=starting\n");
     return 1;
 }

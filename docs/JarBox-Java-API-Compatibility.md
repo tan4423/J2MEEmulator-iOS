@@ -34,3 +34,18 @@ Prioritize implementing missing APIs in a shared, tested boot/J2ME runtime layer
 not adding game-specific bytecode patches. Use the working TrungDucTV build
 as the regression baseline. Never alter the original JAR, the main branch,
 Deep Treo behavior or session-token lifecycle to satisfy an audit warning.
+
+
+## iOS VM containment for unsupported instructions
+
+The upstream interpreter's fallback for unknown/unsupported JVM opcodes
+invokes \`exit(2)\`; a game encountering one would terminate JarBox itself.
+On iOS only, both the ordinary opcode and the \`wide\` sub-opcode fallback
+now push \`java.lang.VerifyError\` onto the Java operand stack and unwind
+through the existing exception handler instead. A trace note records
+\`vm_unsupported_opcode:class=...,method=...,pc=...,opcode=...\`
+without disclosing network content. A compatible VerifyError class is
+compiled into the boot runtime and checked by classfile path during build.
+This does **not** make that opcode supported or fix all possible native
+crashes; it allows the normal Java error path to run without calling
+\`exit(2)\`. Other OS builds retain the original interpreter path.
