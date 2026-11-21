@@ -41,19 +41,26 @@ static int treo_is_nso_family(const char *jar_path) {
     if (!jar_path) return 0;
     mz_zip_archive archive = {0};
     if (!mz_zip_reader_init_file(&archive, jar_path, 0)) return 0;
-    int match = 1;
+    // A mod may add/remove a few resources. Five of seven independent
+    // signature assets plus map and sprite categories is sufficient.
+    // The loaded Canvas bytecode shape is verified separately before skipping.
+    unsigned matched = 0;
+    int has_map = 0, has_sprite = 0;
     for (unsigned i = 0; i < sizeof(resources) / sizeof(resources[0]); ++i) {
         int index = mz_zip_reader_locate_file(
             &archive, resources[i], NULL, MZ_ZIP_FLAG_CASE_SENSITIVE);
         mz_zip_archive_file_stat file_stat;
-        if (index < 0 || !mz_zip_reader_file_stat(&archive, index, &file_stat) ||
-            file_stat.m_uncomp_size == 0 || mz_zip_reader_is_file_a_directory(&archive, index)) {
-            match = 0;
-            break;
+        if (index >= 0 &&
+            mz_zip_reader_file_stat(&archive, index, &file_stat) &&
+            file_stat.m_uncomp_size != 0 &&
+            !mz_zip_reader_is_file_a_directory(&archive, index)) {
+            matched++;
+            if (i == 2 || i == 3) has_map = 1;
+            if (i >= 4) has_sprite = 1;
         }
     }
     mz_zip_reader_end(&archive);
-    return match;
+    return matched >= 5 && has_map && has_sprite;
 }
 
 #endif

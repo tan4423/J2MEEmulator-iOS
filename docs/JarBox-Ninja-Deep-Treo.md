@@ -10,7 +10,7 @@ This profile is **not SHA-256 locked**. The three user-provided NSO builds are:
 | `217_TrungDucTV_51026.jar` | `3420df8cb91b` | `Class_ek.paint` | `Class_cu.run` |
 | `Nick-B25-Map37-Farm-Clean-CPU.jar` | `7e1cff13508f` | `Class_hef.paint` | `Class_hxb.run` |
 
-All three contain seven common, non-empty NSO assets:
+All three contain all seven common, non-empty NSO assets:
 `font/number`, `font/tahoma_7`, `map/1`, `map/newmap`,
 `x1/bg/bg00.png`, `x1/export/0`, `x1/e/d00.png`.
 All three `Canvas.paint(Graphics)` overrides are 9-byte forwarding-only
@@ -28,7 +28,9 @@ the nine-byte forwarding shape; so it retains Universal Treo.
 ## Implementation (single workflow)
 
 On JVM start, **once**, miniJVM's already-bundled `miniz` inspects ZIP filenames
-for the common resource signature. No reading/decompressing game resources in
+for the common resource signature. NSO is recognized with at least **5 of 7**
+markers, including at least one map marker and one sprite marker; this tolerates
+small mod asset changes without requiring an identical JAR hash. No reading/decompressing game resources in
 the Treo hot loop. When the package qualifies, the installed Java
 `Canvas.repaint`, `serviceRepaints`, and `doPaint` call a native predicate
 that checks the current object class is a direct Canvas subclass with a
