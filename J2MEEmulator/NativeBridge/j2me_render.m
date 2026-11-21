@@ -165,6 +165,7 @@ static int treo_live_image(RenderContext *rc, CGImageRef image, int64_t x, int64
 static int treo_live_enqueue(RenderContext *rc, RenderImage *img, int64_t x, int64_t y,
                              int sx, int sy, int w, int h, int transform);
 static j2me_flush_callback g_flush_callback = NULL;
+static j2me_flush_callback_owned g_owned_flush_callback = NULL;
 // Frame publication is controlled by a *generation* bound to one VM,
 // never by JAR path (clones all share the same binary) or stale pointers.
 // Java rendering into offscreen buffers may continue, but only the VM
@@ -1753,6 +1754,12 @@ static CGColorSpaceRef getColorSpace(void) {
 void j2me_render_set_flush_callback(j2me_flush_callback callback) {
     g_flush_callback = callback;
 }
+void j2me_render_set_owned_flush_callback(j2me_flush_callback_owned callback) {
+    g_owned_flush_callback = callback;
+}
+uint64_t j2me_render_visible_owner_key(void) {
+    return atomic_load_explicit(&g_visible_render_owner_key, memory_order_acquire);
+}
 
 // ============================================================
 // Helper
@@ -1972,7 +1979,7 @@ static s32 n_flushToScreen(Runtime *runtime, JClass *clazz) {
     }
     const int profiling = treo_profile_active();
     if (profiling) TREO_PROF_ADD(flushes, 1);
-    if (rc && g_flush_callback) {
+    if (rc && (g_flush_callback || g_owned_flush_callback)) {
         const uint64_t begin = profiling ? treo_thread_cpu_ns() : 0;
         CGImageRef image = treo_canvas_snapshot(rc);
         if (profiling && treo_profile_active()) {
@@ -1982,7 +1989,10 @@ static s32 n_flushToScreen(Runtime *runtime, JClass *clazz) {
         }
         if (image) {
             atomic_fetch_add_explicit(&sw_frames, 1, memory_order_relaxed);
-            g_flush_callback(image, rc->width, rc->height);
+            if (g_owned_flush_callback)
+                g_owned_flush_callback(image, rc->width, rc->height, rc->heap_key);
+            else
+                g_flush_callback(image, rc->width, rc->height);
         }
     }
     rc_release(rc);
