@@ -13,6 +13,8 @@ class SpringboardCell: UICollectionViewCell {
 
     let iconView = UIImageView()
     let nameLabel = UILabel()
+    // Static green activity dot; no animation or polling.
+    private let liveDot = UIView()
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -23,6 +25,14 @@ class SpringboardCell: UICollectionViewCell {
         iconView.contentMode = .scaleAspectFill
         iconView.translatesAutoresizingMaskIntoConstraints = false
         contentView.addSubview(iconView)
+
+        liveDot.backgroundColor = UIColor.systemGreen
+        liveDot.layer.cornerRadius = 7
+        liveDot.layer.borderWidth = 2
+        liveDot.layer.borderColor = UIColor(white: 0.12, alpha: 1).cgColor
+        liveDot.isHidden = true
+        liveDot.translatesAutoresizingMaskIntoConstraints = false
+        contentView.addSubview(liveDot)
 
         // Static text: no shadow blur or offscreen text effect.
         nameLabel.font = .systemFont(ofSize: 11.5, weight: .medium)
@@ -38,6 +48,10 @@ class SpringboardCell: UICollectionViewCell {
             iconView.centerXAnchor.constraint(equalTo: contentView.centerXAnchor),
             iconView.widthAnchor.constraint(equalToConstant: Self.iconSize),
             iconView.heightAnchor.constraint(equalToConstant: Self.iconSize),
+            liveDot.widthAnchor.constraint(equalToConstant: 14),
+            liveDot.heightAnchor.constraint(equalToConstant: 14),
+            liveDot.topAnchor.constraint(equalTo: iconView.topAnchor, constant: -3),
+            liveDot.trailingAnchor.constraint(equalTo: iconView.trailingAnchor, constant: 4),
 
             nameLabel.topAnchor.constraint(equalTo: iconView.bottomAnchor, constant: 5),
             nameLabel.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: -2),
@@ -53,6 +67,8 @@ class SpringboardCell: UICollectionViewCell {
         super.prepareForReuse()
         iconView.image = nil
         nameLabel.text = nil
+        liveDot.isHidden = true
+        accessibilityValue = nil
     }
 
     // Instant touch feedback. No animation transaction or scaling.
@@ -60,8 +76,11 @@ class SpringboardCell: UICollectionViewCell {
         didSet { iconView.alpha = isHighlighted ? 0.7 : 1.0 }
     }
 
-    func configure(name: String, icon: UIImage) {
+    func configure(name: String, icon: UIImage, running: Bool = false) {
         iconView.image = icon
         nameLabel.text = name
+        liveDot.isHidden = !running
+        accessibilityLabel = name
+        accessibilityValue = running ? "Đang chạy ẩn trong JarBox" : nil
     }
 }
