@@ -494,3 +494,65 @@ NPE, fabricate a delegate, or skip real paint to make the menu appear.
 
 Source-level checks done; no on-iPhone or Codemagic build was run
 during this change. Do not claim that the mod opens until verified.
+
+
+## 2026-11-21 repeated first-paint NPE after superclass layout fix: targeted proof
+
+The same `Class_ek.paint -> NullPointerException` stack recurred after the
+parent-first class-field-layout patch. The live `Class_ek.b` reference is
+null at the moment `Class_bv.a(Graphics)` would be invoked, but the stack
+trace **does not** prove which earlier operation lost the reference.
+
+The supplied `217_TrungDucTV_51026.jar` was examined with `javap`:
+`Class_cu.<init>` invokes
+`Class_ek.a(Class_bv)` at Java bytecode offset 36, then invokes
+`System.gc()` at offset 227, and performs additional initialization.
+`GameMidlet.<init>` constructs `Class_ek`, creates `Class_cu` and
+calls its `d()` method before `startApp` invokes
+`Display.setCurrent(Class_ek.a)`. Separate `Class_as` code reads
+`Class_ek.b`, but those known references do not write it.
+
+The newest **diagnostic-only** source adds a bounded
+`[JarBoxVM][NSOInit]` field-state trace. It is captured in the
+on-screen launch failure alert as `NSOInit:`, copyable with the existing
+**Sao chép lỗi** action. Native miniJVM probes observe:
+
+- `cu_ctor_entry`: Class_ek canvas and delegate before constructor
+  initialization
+- `setter_before` / `setter_after`: the **actual inlined**
+  `Class_ek.a(Class_bv)` operation, its receiver, argument and field value
+- `cu_ctor_exit`: after constructor initialization including `System.gc()`
+- `midlet_ctor_exit`: after creating and initializing `Class_cu`
+- `paint_entry`: the Canvas object and delegate immediately before the
+  failing paint
+
+The trace includes `canvas` pointer, `static` Canvas pointer,
+`b` delegate pointer, setter `arg` pointer, instance field offset,
+class instance length and `valid` field-range check. These are
+diagnostic values (not game data); do not infer identity when pointers
+were not resolved. A bounded 12-event launch buffer is reset between
+sessions, with no extra sampling on normal repaint/AFK paths.
+
+Interpretation:
+- `setter_after.b=null` despite non-null `arg` suggests a JVM write
+  or field-offset/dispatch issue.
+- `setter_after.b=non-null` and `cu_ctor_exit.b=null` points to
+  intervening initialization or GC.
+- `cu_ctor_exit.b=non-null`, `midlet_ctor_exit.b=null` points to
+  code after Class_cu initialization.
+- `midlet_ctor_exit.b=non-null`, `paint_entry.b=null` points to
+  Display/Canvas handling, GC, or instance identity mismatch.
+- `paint_entry.canvas != paint_entry.static` shows paint of a different
+  Canvas instance from the one stored in Class_ek.a.
+
+**This does not yet repair the actual NPE.** It isolates its origin with
+one on-device launch instead of another speculative miniJVM modification.
+The earlier setter-inlining and parent-layout patches did not change the
+user-visible first-paint failure; the setter-inlining experiment has
+already been reverted. Do not silently skip the paint, create a fake
+delegate or add a hard-coded JAR-specific object assignment.
+
+Source changes restricted to `loader-ios-jit-probe`, preserving the
+single `jit-probe-unsigned` Codemagic workflow, NSO Deep Treo, 3D/FPS
+advanced menu and display-only rename. No iOS build/device verification
+has been done for the new probes.
