@@ -8,6 +8,7 @@
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
 #include "j2me_ui.h"
+#include "garbage.h"
 #include "j2me_render.h"
 #include "j2me_input.h"
 #include "jvm.h"
@@ -68,6 +69,7 @@ typedef struct {
 
 typedef struct {
     _Atomic(MiniJVM *) owner;
+    uint64_t heap_key; // generation-bound, never just a reused JVM address
     char form_title[256];
     FormItem form_items[MAX_FORM_ITEMS];
     int form_item_count;
@@ -99,6 +101,13 @@ static atomic_int g_ui_focused_index = -1;
 static _Thread_local int g_ui_thread_index = -1;
 static _Atomic uint32_t g_ui_new_session_revision = 1;
 static j2me_ui_callback g_ui_callback = NULL;
+static j2me_ui_callback_owned g_owned_ui_callback = NULL;
+
+static void ui_publish_action(int action, int revision, uint64_t owner_key) {
+    if (!owner_key) return;
+    if (g_owned_ui_callback) g_owned_ui_callback(action, revision, owner_key);
+    else if (g_ui_callback) g_ui_callback(action, revision);
+}
 
 static void init_ui_contexts(void) {
     pthread_mutex_init(&g_empty_ui_context.screen_lock, NULL);
@@ -188,6 +197,8 @@ static int ui_register_vm(MiniJVM *vm) {
                 [objects->choices removeAllObjects];
                 [objects->icons removeAllObjects];
                 [objects->pendingText removeAllObjects];
+                ctx->heap_key = jarbox_native_heap_key_for_vm(vm);
+                if (!ctx->heap_key) { index = -1; break; }
                 atomic_store_explicit(&ctx->owner, vm, memory_order_release);
                 break;
             }
@@ -205,6 +216,7 @@ static int ui_register_vm(MiniJVM *vm) {
 // selecting focus alone does not start or validate multiple Java sessions.
 int j2me_ui_focus_vm(MiniJVM *vm) {
     int action = 0, revision = 0;
+    uint64_t ownerKey = 0;
     pthread_mutex_lock(&g_ui_contexts_lock);
     int index = ui_slot_for_vm(vm);
     if (index >= 0) {
@@ -214,9 +226,10 @@ int j2me_ui_focus_vm(MiniJVM *vm) {
         // never replay a different JVM's Form or Alert.
         action = ctx->last_action;
         revision = atomic_load_explicit(&ctx->screen_revision, memory_order_acquire);
+        ownerKey = ctx->heap_key;
     }
     pthread_mutex_unlock(&g_ui_contexts_lock);
-    if (action && g_ui_callback) g_ui_callback(action, revision);
+    if (action) ui_publish_action(action, revision, ownerKey);
     return index >= 0;
 }
 
@@ -228,6 +241,7 @@ void j2me_ui_release_vm(MiniJVM *vm) {
         if (atomic_load_explicit(&g_ui_focused_index, memory_order_acquire) == index)
             atomic_store_explicit(&g_ui_focused_index, -1, memory_order_release);
         atomic_store_explicit(&ctx->owner, NULL, memory_order_release);
+        ctx->heap_key = 0;
         ctx->last_action = 0;
     }
     pthread_mutex_unlock(&g_ui_contexts_lock);
@@ -325,6 +339,9 @@ static s32 n_takeText(Runtime *runtime, JClass *clazz) {
 
 void j2me_ui_set_callback(j2me_ui_callback callback) {
     g_ui_callback = callback;
+}
+void j2me_ui_set_owned_callback(j2me_ui_callback_owned callback) {
+    g_owned_ui_callback = callback;
 }
 
 const char *j2me_ui_get_form_title(void) { return g_form_title; }
@@ -515,8 +532,8 @@ static s32 n_formShow(Runtime *runtime, JClass *clazz) {
         default: action = J2ME_UI_ACTION_SHOW_FORM; break;
     }
     ui_context()->last_action = action;
-    if (ui_is_focused_owner() && g_ui_callback)
-        g_ui_callback(action, j2me_ui_revision());
+    if (ui_is_focused_owner())
+        ui_publish_action(action, j2me_ui_revision(), ui_context()->heap_key);
     return RUNTIME_STATUS_NORMAL;
 }
 
@@ -544,8 +561,9 @@ static s32 n_showCanvas(Runtime *runtime, JClass *clazz) {
     }
     printf("[J2ME UI] showCanvas\n");
     ui_context()->last_action = J2ME_UI_ACTION_SHOW_CANVAS;
-    if (ui_is_focused_owner() && g_ui_callback) {
-        g_ui_callback(J2ME_UI_ACTION_SHOW_CANVAS, revision);
+    if (ui_is_focused_owner()) {
+        ui_publish_action(J2ME_UI_ACTION_SHOW_CANVAS, revision,
+                          ui_context()->heap_key);
     }
     return RUNTIME_STATUS_NORMAL;
 }
