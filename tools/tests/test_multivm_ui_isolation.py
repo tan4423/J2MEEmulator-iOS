@@ -43,6 +43,17 @@ class MultiVMUIIsolationTests(unittest.TestCase):
         self.assertLess(freed, callback)
         self.assertIn("if (!urlString || !ui_is_focused_owner())", source)
 
+    def test_owned_midp_ui_callback_survives_async_focus_switch(self):
+        game = (ROOT / "J2MEEmulator/UI/GameViewController.swift").read_text(encoding="utf-8")
+        header = (ROOT / "J2MEEmulator/NativeBridge/j2me_ui.h").read_text(encoding="utf-8")
+        self.assertIn("j2me_ui_callback_owned", header)
+        self.assertIn("ui_publish_action(int action, int revision, uint64_t owner_key)", self.ui)
+        self.assertIn("ui_context()->heap_key", self.ui)
+        self.assertIn("j2me_ui_set_owned_callback(ownedGameUICallback)", game)
+        self.assertIn("let ownedGameUICallback: @convention(c)", game)
+        self.assertIn("j2me_render_visible_owner_key() == ownerKey", game)
+        self.assertIn("guard revision == j2me_ui_revision()", game)
+
     def test_not_claiming_full_multi(self):
         # UIKit presentation callback still needs token-scoped dispatch,
         # as do the global render and Smart Treo modes.
