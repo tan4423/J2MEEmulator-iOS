@@ -29,9 +29,93 @@ typedef struct {
     int keyCode;
 } InputEvent;
 
-static InputEvent g_queue[INPUT_QUEUE_SIZE];
-static atomic_int g_write_pos = 0;
-static atomic_int g_read_pos = 0;
+// First native subsystem with true *per-VM* storage. Each bound miniJVM
+// owns a distinct input ring and GC-safe Display wait. A JVM's native calls
+// are dispatched through runtime->jvm, never through another game's UI slot.
+// This does NOT yet enable multi-game execution: rendering, MIDP UI, audio,
+// and several VM diagnostics still use process globals.
+#define JARBOX_INPUT_CONTEXT_CAPACITY 4
+typedef struct {
+    _Atomic(MiniJVM *) vm;
+    InputEvent queue[INPUT_QUEUE_SIZE];
+    atomic_int write_pos;
+    atomic_int read_pos;
+    atomic_int display_wait_enabled;
+    pthread_mutex_t display_wait_lock;
+    pthread_cond_t display_wait_cond;
+    uint32_t display_wait_sequence;
+    int canvas_width, canvas_height;
+} J2MEInputContext;
+
+static J2MEInputContext g_input_contexts[JARBOX_INPUT_CONTEXT_CAPACITY];
+static pthread_once_t g_input_context_once = PTHREAD_ONCE_INIT;
+static pthread_mutex_t g_input_context_lock = PTHREAD_MUTEX_INITIALIZER;
+static _Atomic(J2MEInputContext *) g_visible_input_context;
+
+static void init_input_contexts(void) {
+    for (int i = 0; i < JARBOX_INPUT_CONTEXT_CAPACITY; ++i) {
+        J2MEInputContext *ctx = &g_input_contexts[i];
+        pthread_mutex_init(&ctx->display_wait_lock, NULL);
+        pthread_cond_init(&ctx->display_wait_cond, NULL);
+        ctx->display_wait_sequence = 1;
+        ctx->canvas_width = 240;
+        ctx->canvas_height = 320;
+    }
+}
+
+static J2MEInputContext *context_for_vm(MiniJVM *vm) {
+    if (!vm) return NULL;
+    for (int i = 0; i < JARBOX_INPUT_CONTEXT_CAPACITY; ++i) {
+        J2MEInputContext *ctx = &g_input_contexts[i];
+        if (atomic_load_explicit(&ctx->vm, memory_order_acquire) == vm)
+            return ctx;
+    }
+    return NULL;
+}
+
+static J2MEInputContext *visible_input_context(void) {
+    return atomic_load_explicit(&g_visible_input_context, memory_order_acquire);
+}
+
+// Called when a new JVM's native methods are registered. A bound JVM never
+// receives input events belonging to any other bound JVM.
+static int bind_input_context(MiniJVM *vm) {
+    if (!vm) return 0;
+    pthread_once(&g_input_context_once, init_input_contexts);
+    pthread_mutex_lock(&g_input_context_lock);
+    J2MEInputContext *ctx = context_for_vm(vm);
+    if (!ctx) {
+        for (int i = 0; i < JARBOX_INPUT_CONTEXT_CAPACITY; ++i) {
+            J2MEInputContext *candidate = &g_input_contexts[i];
+            if (!atomic_load_explicit(&candidate->vm, memory_order_acquire)) {
+                ctx = candidate;
+                atomic_store_explicit(&ctx->read_pos, 0, memory_order_relaxed);
+                atomic_store_explicit(&ctx->write_pos, 0, memory_order_relaxed);
+                atomic_store_explicit(&ctx->display_wait_enabled, 0, memory_order_relaxed);
+                ctx->canvas_width = 240;
+                ctx->canvas_height = 320;
+                atomic_store_explicit(&ctx->vm, vm, memory_order_release);
+                break;
+            }
+        }
+    }
+    // Existing one-JVM lifecycle continues to select its input destination.
+    // A future multi-JVM scheduler must explicitly set focus when switching.
+    if (ctx && !visible_input_context())
+        atomic_store_explicit(&g_visible_input_context, ctx, memory_order_release);
+    pthread_mutex_unlock(&g_input_context_lock);
+    return ctx != NULL;
+}
+
+// The UI can select exactly which bound JVM receives physical input. This
+// selects a destination only; it does not create/start/stop a Java VM.
+int j2me_input_focus_vm(MiniJVM *vm) {
+    pthread_mutex_lock(&g_input_context_lock);
+    J2MEInputContext *ctx = context_for_vm(vm);
+    if (ctx) atomic_store_explicit(&g_visible_input_context, ctx, memory_order_release);
+    pthread_mutex_unlock(&g_input_context_lock);
+    return ctx != NULL;
+}
 
 // Only enabled for the known TrungDucTV NSO mod during its normal game
 // runtime. Do not log every key or every frame on other Java ME games.
@@ -50,32 +134,37 @@ static void trace_modal_key(const char *where, int type, int keyCode) {
 
 // Opt-in Display idle wait. Version sampling before polling prevents lost
 // native input and repaint notifications between the Java test and sleep.
-static atomic_int g_display_wait_enabled;
-static pthread_mutex_t g_display_wait_lock = PTHREAD_MUTEX_INITIALIZER;
-static pthread_cond_t g_display_wait_cond = PTHREAD_COND_INITIALIZER;
-static uint32_t g_display_wait_sequence = 1;
+// Process-wide diagnostic counters; they are deliberately not labelled
+// per-game. The actual wait/condition state lives in each input context.
 static _Atomic uint64_t g_display_poll_calls;
 static _Atomic uint64_t g_display_wait_calls;
 static _Atomic uint64_t g_display_gc_safe_wait_calls;
 static _Atomic uint64_t g_display_wait_timeouts;
 static _Atomic uint64_t g_display_wake_signals;
 
-static void signal_display_wait(void) {
-    pthread_mutex_lock(&g_display_wait_lock);
-    ++g_display_wait_sequence;
-    pthread_cond_broadcast(&g_display_wait_cond);
-    pthread_mutex_unlock(&g_display_wait_lock);
+static void signal_display_wait(J2MEInputContext *ctx) {
+    if (!ctx) return;
+    pthread_mutex_lock(&ctx->display_wait_lock);
+    ++ctx->display_wait_sequence;
+    pthread_cond_broadcast(&ctx->display_wait_cond);
+    pthread_mutex_unlock(&ctx->display_wait_lock);
 }
-void j2me_display_wake(void) {
-    if (atomic_load_explicit(&g_display_wait_enabled, memory_order_acquire)) {
+static void wake_input_context(J2MEInputContext *ctx) {
+    if (!ctx) return;
+    if (atomic_load_explicit(&ctx->display_wait_enabled, memory_order_acquire)) {
         atomic_fetch_add_explicit(&g_display_wake_signals, 1, memory_order_relaxed);
-        signal_display_wait();
+        signal_display_wait(ctx);
     }
 }
+void j2me_display_wake(void) {
+    wake_input_context(visible_input_context());
+}
 void treo_display_wait_set(int enabled) {
-    atomic_store_explicit(&g_display_wait_enabled, enabled != 0, memory_order_release);
+    J2MEInputContext *ctx = visible_input_context();
+    if (!ctx) return;
+    atomic_store_explicit(&ctx->display_wait_enabled, enabled != 0, memory_order_release);
     // Also wake when disabled, so a pending native timed wait ends now.
-    signal_display_wait();
+    signal_display_wait(ctx);
 }
 uint64_t treo_display_poll_calls(void) { return atomic_load_explicit(&g_display_poll_calls, memory_order_relaxed); }
 uint64_t treo_display_wait_calls(void) { return atomic_load_explicit(&g_display_wait_calls, memory_order_relaxed); }
@@ -84,18 +173,19 @@ uint64_t treo_display_wait_timeouts(void) { return atomic_load_explicit(&g_displ
 uint64_t treo_display_wake_signals(void) { return atomic_load_explicit(&g_display_wake_signals, memory_order_relaxed); }
 
 
-static int g_canvas_width = 240;
-static int g_canvas_height = 320;
-
 void j2me_input_set_canvas_size(int width, int height) {
-    g_canvas_width = width;
-    g_canvas_height = height;
+    J2MEInputContext *ctx = visible_input_context();
+    if (!ctx) return;
+    ctx->canvas_width = width;
+    ctx->canvas_height = height;
 }
 
 static void enqueue_event(int type, int x, int y, int keyCode) {
-    int wp = atomic_load_explicit(&g_write_pos, memory_order_relaxed);
+    J2MEInputContext *ctx = visible_input_context();
+    if (!ctx) return;
+    int wp = atomic_load_explicit(&ctx->write_pos, memory_order_relaxed);
     int next_wp = (wp + 1) & INPUT_QUEUE_MASK;
-    int rp = atomic_load_explicit(&g_read_pos, memory_order_acquire);
+    int rp = atomic_load_explicit(&ctx->read_pos, memory_order_acquire);
 
     if (next_wp == rp) {
         // If the OK key was dropped, make the failure visible; never invent
@@ -104,26 +194,27 @@ static void enqueue_event(int type, int x, int y, int keyCode) {
         return;
     }
 
-    g_queue[wp].type = type;
-    g_queue[wp].x = x;
-    g_queue[wp].y = y;
-    g_queue[wp].keyCode = keyCode;
+    ctx->queue[wp].type = type;
+    ctx->queue[wp].x = x;
+    ctx->queue[wp].y = y;
+    ctx->queue[wp].keyCode = keyCode;
 
-    atomic_store_explicit(&g_write_pos, next_wp, memory_order_release);
+    atomic_store_explicit(&ctx->write_pos, next_wp, memory_order_release);
     trace_modal_key("post", type, keyCode);
-    j2me_display_wake();
+    wake_input_context(ctx);
 }
 
-static int dequeue_event(InputEvent *out) {
-    int rp = atomic_load_explicit(&g_read_pos, memory_order_relaxed);
-    int wp = atomic_load_explicit(&g_write_pos, memory_order_acquire);
+static int dequeue_event(J2MEInputContext *ctx, InputEvent *out) {
+    if (!ctx) return 0;
+    int rp = atomic_load_explicit(&ctx->read_pos, memory_order_relaxed);
+    int wp = atomic_load_explicit(&ctx->write_pos, memory_order_acquire);
 
     if (rp == wp) {
         return 0; // Empty
     }
 
-    *out = g_queue[rp];
-    atomic_store_explicit(&g_read_pos, (rp + 1) & INPUT_QUEUE_MASK, memory_order_release);
+    *out = ctx->queue[rp];
+    atomic_store_explicit(&ctx->read_pos, (rp + 1) & INPUT_QUEUE_MASK, memory_order_release);
     return 1;
 }
 
@@ -149,7 +240,7 @@ static s32 n_pollInputEvent(Runtime *runtime, JClass *clazz) {
     JniEnv *env = runtime->jnienv;
     InputEvent evt;
 
-    if (!dequeue_event(&evt)) {
+    if (!dequeue_event(context_for_vm(runtime->jvm), &evt)) {
         env->push_ref(runtime->stack, NULL);
         return RUNTIME_STATUS_NORMAL;
     }
@@ -203,13 +294,20 @@ static s32 n_isStopRequested(Runtime *runtime, JClass *clazz) {
 // paths not wired to the input bridge (safe stop even if a signal is missed).
 // ============================================================
 static s32 n_displayWaitEnabled(Runtime *runtime, JClass *clazz) {
-    push_int(runtime->stack, atomic_load_explicit(&g_display_wait_enabled, memory_order_acquire) != 0);
+    J2MEInputContext *ctx = context_for_vm(runtime->jvm);
+    push_int(runtime->stack, ctx &&
+        atomic_load_explicit(&ctx->display_wait_enabled, memory_order_acquire));
     return RUNTIME_STATUS_NORMAL;
 }
 static s32 n_displayWaitVersion(Runtime *runtime, JClass *clazz) {
-    pthread_mutex_lock(&g_display_wait_lock);
-    const uint32_t seq = g_display_wait_sequence;
-    pthread_mutex_unlock(&g_display_wait_lock);
+    J2MEInputContext *ctx = context_for_vm(runtime->jvm);
+    if (!ctx) {
+        push_int(runtime->stack, 0);
+        return RUNTIME_STATUS_NORMAL;
+    }
+    pthread_mutex_lock(&ctx->display_wait_lock);
+    const uint32_t seq = ctx->display_wait_sequence;
+    pthread_mutex_unlock(&ctx->display_wait_lock);
     push_int(runtime->stack, (s32)seq);
     return RUNTIME_STATUS_NORMAL;
 }
@@ -219,11 +317,16 @@ static s32 n_displayWaitIfUnchanged(Runtime *runtime, JClass *clazz) {
     if (milliseconds < 1) milliseconds = 1;
     if (milliseconds > 250) milliseconds = 250;
 
+    J2MEInputContext *ctx = context_for_vm(runtime->jvm);
+    if (!ctx) {
+        push_int(runtime->stack, 0);
+        return RUNTIME_STATUS_NORMAL;
+    }
     int timedOut = 0;
     int vmBlocked = 0;
-    pthread_mutex_lock(&g_display_wait_lock);
-    if (atomic_load_explicit(&g_display_wait_enabled, memory_order_acquire)
-        && g_display_wait_sequence == seq) {
+    pthread_mutex_lock(&ctx->display_wait_lock);
+    if (atomic_load_explicit(&ctx->display_wait_enabled, memory_order_acquire)
+        && ctx->display_wait_sequence == seq) {
         struct timespec until;
         if (clock_gettime(CLOCK_REALTIME, &until) == 0) {
             until.tv_sec += milliseconds / 1000;
@@ -243,13 +346,13 @@ static s32 n_displayWaitIfUnchanged(Runtime *runtime, JClass *clazz) {
             vmBlocked = 1;
             atomic_fetch_add_explicit(&g_display_gc_safe_wait_calls, 1, memory_order_relaxed);
             atomic_fetch_add_explicit(&g_display_wait_calls, 1, memory_order_relaxed);
-            if (pthread_cond_timedwait(&g_display_wait_cond, &g_display_wait_lock, &until) == ETIMEDOUT) {
+            if (pthread_cond_timedwait(&ctx->display_wait_cond, &ctx->display_wait_lock, &until) == ETIMEDOUT) {
                 atomic_fetch_add_explicit(&g_display_wait_timeouts, 1, memory_order_relaxed);
                 timedOut = 1;
             }
         }
     }
-    pthread_mutex_unlock(&g_display_wait_lock);
+    pthread_mutex_unlock(&ctx->display_wait_lock);
     // This can pause for an in-progress GC. Never hold the display
     // condition mutex while returning to the miniJVM safepoint protocol.
     if (vmBlocked) jthread_block_exit(runtime);
@@ -257,7 +360,7 @@ static s32 n_displayWaitIfUnchanged(Runtime *runtime, JClass *clazz) {
     return RUNTIME_STATUS_NORMAL;
 }
 static s32 n_displayWake(Runtime *runtime, JClass *clazz) {
-    j2me_display_wake();
+    wake_input_context(context_for_vm(runtime->jvm));
     return RUNTIME_STATUS_NORMAL;
 }
 
@@ -266,10 +369,31 @@ static s32 n_displayWake(Runtime *runtime, JClass *clazz) {
 // ============================================================
 
 void j2me_input_reset(void) {
-    treo_display_wait_set(0);
-    atomic_store_explicit(&g_write_pos, 0, memory_order_relaxed);
-    atomic_store_explicit(&g_read_pos, 0, memory_order_relaxed);
-    printf("[J2ME Input] Ring buffer reset\n");
+    J2MEInputContext *ctx = visible_input_context();
+    if (!ctx) return;
+    atomic_store_explicit(&ctx->display_wait_enabled, 0, memory_order_release);
+    signal_display_wait(ctx);
+    atomic_store_explicit(&ctx->write_pos, 0, memory_order_relaxed);
+    atomic_store_explicit(&ctx->read_pos, 0, memory_order_relaxed);
+    printf("[J2ME Input] Ring buffer reset for current JVM\n");
+}
+
+// Call during owning JVM teardown after stopping its Java threads. Stop and
+// wake only *this* context; no other JVM input queue or wait may be reset.
+void j2me_input_release_vm(MiniJVM *vm) {
+    pthread_mutex_lock(&g_input_context_lock);
+    J2MEInputContext *ctx = context_for_vm(vm);
+    if (ctx) {
+        atomic_store_explicit(&ctx->display_wait_enabled, 0, memory_order_release);
+        signal_display_wait(ctx);
+        if (visible_input_context() == ctx)
+            atomic_store_explicit(&g_visible_input_context, NULL, memory_order_release);
+        atomic_store_explicit(&ctx->vm, NULL, memory_order_release);
+        atomic_store_explicit(&ctx->read_pos, 0, memory_order_relaxed);
+        atomic_store_explicit(&ctx->write_pos, 0, memory_order_relaxed);
+        printf("[J2ME Input] Released owned JVM input context\n");
+    }
+    pthread_mutex_unlock(&g_input_context_lock);
 }
 
 // ============================================================
@@ -291,6 +415,10 @@ static java_native_method j2me_input_methods[] = {
 #undef CLS
 
 void j2me_input_reg_natives(MiniJVM *jvm) {
+    if (!bind_input_context(jvm)) {
+        printf("[J2ME Input] ERROR: no free per-JVM input context\n");
+        return;
+    }
     native_reg_lib(jvm, j2me_input_methods,
                    sizeof(j2me_input_methods) / sizeof(java_native_method));
     printf("[J2ME Input] Registered %lu native methods\n",
