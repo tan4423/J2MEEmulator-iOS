@@ -3624,15 +3624,16 @@ class GameViewController: UIViewController {
         defer { jvm_bridge_finish_session() }
         let docs = NSSearchPathForDirectoriesInDomains(
             .documentDirectory, .userDomainMask, true).first ?? NSTemporaryDirectory()
-        let jarFileName = URL(fileURLWithPath: jarPath).deletingPathExtension().lastPathComponent
-        let gameId = jarFileName.replacingOccurrences(of: "[^a-zA-Z0-9._-]",
-                                                       with: "_", options: .regularExpression)
-        let saveRoot = docs + "/Games Data/" + gameId
+        let saveRoot: String
         do {
-            try FileManager.default.createDirectory(atPath: saveRoot, withIntermediateDirectories: true)
+            saveRoot = try JarBoxGameStorage.prepareRoot(jarPath: jarPath, documents: docs)
         } catch {
-            return "Cannot create the game's save directory."
+            NSLog("[JarBoxStorage] save root preparation failed: %@", error.localizedDescription)
+            return "Không thể mở dữ liệu lưu an toàn: " + error.localizedDescription
         }
+        // Metadata-only audit. The RMS records themselves remain unchanged.
+        JarBoxGameStorage.appendSettingEvent(jarPath: jarPath, documents: docs,
+                                            event: "SESSION_START")
 
         NSLog("[J2ME Treo] Entering JVM initialization")
         let initResult = jvm_bridge_init(resRoot, saveRoot, jarPath, width, height, scale, fps)
@@ -3650,6 +3651,8 @@ class GameViewController: UIViewController {
         let javaError = String(cString: jvm_bridge_last_error())
         let nsoInitTrace = String(cString: jvm_bridge_nso_init_trace())
         jvm_bridge_destroy()
+        JarBoxGameStorage.appendSettingEvent(jarPath: jarPath, documents: docs,
+                                            event: "SESSION_END", value: String(runResult))
         NSLog("[J2ME Treo] JVM cleanup complete")
         if runResult == 0 { return nil }
         return "Game execution failed (\(runResult))." +
