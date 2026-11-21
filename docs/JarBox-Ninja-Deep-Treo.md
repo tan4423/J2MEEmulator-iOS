@@ -991,3 +991,27 @@ acquisition. This patch targets missing VM API, not external server
 responses; real server success and any further Java-8 API gaps must still
 be validated on iPhone. One Codemagic workflow and session-token lifecycle
 controls remain intact.
+
+
+## 2026-11-21 Unchanged network traces and missing required startup marker
+
+After commit `24d1774`, user still observed 11 successful TCP connections to
+port 2024 with zero read/write on each; critically the required
+`probe:java8_utf8_boot_patch=v1` (written synchronously in
+`jvm_bridge_try_begin_session`, before any Java/game startup) was absent.
+The network ring holds 64 events / 8 KB, and the pasted trace contained
+22 events, so truncation is not a persuasive explanation. **Do not
+claim the Java-8 patch failed on device** when its presence has not been
+verified in the installed artifact. Repeated network changes cannot
+resolve the deployment-provenance ambiguity.
+
+The existing single Codemagic workflow now stamps the actual Git SHA from
+its checked-out source tree plus boot-patch identifier into the final IPA
+`Info.plist`, verifies both in the archived IPA, and prints the SHA in
+build logs. The game menu's `Chẩn đoán kết nối` includes
+`build_commit`, `boot_patch`, and `vm_start_probe` *before* native
+trace events. The version readout is intentionally independent of JVM and
+classloading. Missing `build_commit` means the installed IPA predates
+this fingerprint feature; a SHA mismatch means wrong installed artifact;
+a matching SHA with missing startup probe isolates trace instrumentation.
+Do not introduce extra workflows, alter game JAR, or reset the JVM slot.

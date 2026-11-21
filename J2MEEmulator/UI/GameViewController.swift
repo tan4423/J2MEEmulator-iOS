@@ -960,10 +960,20 @@ class GameViewController: UIViewController {
     private func showNetworkDiagnostics() {
         guard viewIfLoaded?.window != nil, presentedViewController == nil else { return }
         let trace = String(cString: jvm_bridge_net_trace())
+        // This identity is embedded by Codemagic into the *packaged IPA*,
+        // independent of JVM startup, diagnostics or Java class loading.
+        // Old installations lacking it are immediately distinguishable.
+        let packagedCommit = Bundle.main.object(forInfoDictionaryKey: "JarBoxBuildCommit") as? String
+        let packagedPatch = Bundle.main.object(forInfoDictionaryKey: "JarBoxBootPatch") as? String
+        let buildID = packagedCommit ?? "không có (IPA cũ/chưa gắn phiên bản)"
+        let bootPatch = packagedPatch ?? "không có"
+        let hasStartupProbe = trace.contains("probe:java8_utf8_boot_patch=v1")
         let report = "JarBoxNET\n" +
+            "build_commit=" + buildID + "\n" +
+            "boot_patch=" + bootPatch + "\n" +
+            "vm_start_probe=" + (hasStartupProbe ? "seen" : "missing") + "\n" +
             (trace.isEmpty
-                ? "Chưa ghi nhận lần thử TCP hoặc exception mạng của game.\n" +
-                  "Nếu game vẫn báo lỗi, có thể lỗi xảy ra trước bước kết nối."
+                ? "Chưa ghi nhận TCP hoặc exception mạng của game."
                 : trace)
         let alert = UIAlertController(title: "Chẩn đoán kết nối",
                                       message: report, preferredStyle: .alert)
