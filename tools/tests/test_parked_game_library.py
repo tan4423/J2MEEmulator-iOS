@@ -42,18 +42,39 @@ class ParkedGameLibraryTest(unittest.TestCase):
         self.assertIn('extern int g_render_3d_scale;', self.bridge)
         self.assertIn('jvm_bridge_try_begin_session(void)', self.bridge)
 
-    def test_offscreen_presentation_is_detached_and_restored(self):
+    def test_automatic_treo_on_library_transition(self):
         self.assertIn('setGlobalEmulatorView(nil)', self.game)
         self.assertIn('emulatorView.clearPendingGameFrame()', self.game)
-        self.assertIn('j2me_render_set_afk_suspended(1)', self.game)
+        self.assertIn('startParkedTreo()', self.game)
+        self.assertIn('treo_afk_guard_auto_set(1)', self.game)
+        self.assertIn('treo_gc_smart_set(1)', self.game)
+        self.assertIn('treo_render_set_afk_mode(8)', self.game)
+        self.assertIn('treo_ninja_deep_verified() != 0', self.game)
+        self.assertIn('treo_nso_canvas_recognized() != 0', self.game)
+        self.assertIn('if parkedNSODeepIdle { treo_display_wait_set(1) }', self.game)
+        self.assertIn('if parkedNSODeepIdle {', self.game)
+        self.assertIn('treo_display_wait_set(0)', self.game)
+        self.assertIn('treo_gc_smart_set(0)', self.game)
+        self.assertIn('treo_afk_guard_auto_set(0)', self.game)
+        self.assertIn('treo_render_set_afk_mode(0)', self.game)
+        self.assertIn('stopParkedTreo()', self.game)
         self.assertIn('setGlobalEmulatorView(self.emulatorView)', self.game)
-        self.assertIn('j2me_render_set_afk_suspended(0)', self.game)
         self.assertIn('libraryIsPresented', self.game)
         self.assertIn('overlay.dismiss(animated: false)', self.game)
         self.assertIn('JarBoxLibraryNavigationController(rootViewController: library)', self.game)
         self.assertIn('if libraryIsPresented {\n            deferredGameAlert = true', self.game)
         self.assertIn('if self.deferredGameAlert', self.game)
         self.assertIn('self.showAlert()', self.game)
+
+    def test_treo_is_automatic_not_manual_menu_choice(self):
+        self.assertNotIn('UIAction(title: "Treo tiết kiệm', self.game)
+        self.assertNotIn('UIAction(title: "Treo tương thích', self.game)
+        self.assertIn('UIAction(title: "Về thư viện · tự động Treo"', self.game)
+        self.assertIn('requestGameStop(reason: "menu_stop")', self.game)
+        self.assertIn('requestGameStop(reason: "library_stop")', self.game)
+        self.assertRegex(self.game,
+            r'func stopParkedGame\(\)\s*\{[^{}]*stopParkedTreo\(\)[^{}]*requestGameStop\(reason: "library_stop"\)')
+        self.assertIn('self.stopParkedTreo()', self.game)
 
     def test_library_shows_running_state_and_blocks_second_game(self):
         self.assertIn('weak var parkedGameController: GameViewController?', self.library)
