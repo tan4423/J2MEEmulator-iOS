@@ -1,4 +1,6 @@
-# Treo resource-byte cache experiment (not yet confirmed by iPhone)
+# Treo resource-byte cache experiment — default disabled after device test
+
+> **November 2026 measured outcome:** 188.7 s, app_CPU=32.2%, paint_CPU=184.27 ms/s, image_cache_hits~0 (batched/64, so a few hits are possible), image_cache_stores=2, stored-source bytes=313. There is NO evidence that repeated Image.createImage(String) resource reads are a major cost in this scene. Cache is **OFF in the default JIT workflow** as of the follow-up commit. This document below describes the experimental candidate as originally shipped; see the current workflow matrix near the end.
 
 Branch: `loader-ios-jit-probe` **only**. Never merge into `main` without device A/B, stability and semantics checks. The iPhone-confirmed springboard animation fix remains intact, as do the new centered wake control and 15-second CPU/battery/thermal HUD.
 
@@ -34,3 +36,12 @@ Both workflows run the same shared script, compile the updated bundled Java `Ima
 5. **Keep only with evidence**: positive significant repeated `image_cache_hits`, repeatable overall CPU reduction beyond run-to-run variation, no increased crashes/GC pressure and no game, network or pixel restoration regressions. Reject if hits remain 0 or are too rare to justify caching; if OFF is faster; if heap or GC increases substantially; or if the app loads mutable classpath assets and returns stale bytes. The OFF baseline is the immediate safe fallback without source edits.
 
 Do not confuse GPU or energy with CPU: `app_CPU` is cumulative process CPU time divided by elapsed wall time, not watts, and iOS thermal state is not degrees Celsius. This branch has **source checks only**; no actual Xcode compile or on-device measurement yet.
+
+## Workflow status after field test
+
+- `J2ME Treo JIT probe unsigned`: Image Cache **OFF** by default, PaintHot **OFF**, UTF-16 **ON**, centered wake/HUD retained.
+- `J2ME Treo Image Cache ON experimental unsigned`: same as default except Image Cache **ON**. Retained for optional regression investigation only; not recommended.
+- `J2ME Treo PaintPath diagnostic unsigned`: Image Cache **OFF**, PaintHot **ON** at 1/32 paints, UTF-16 ON; this produces call provenance at a measurable profiling cost. Do **not** compare its CPU% with normal profiles.
+- `J2ME Treo UTF16 OFF baseline unsigned`: same as default except UTF-16 OFF.
+
+No user environment-variable changes are required. In all cases original game JAR is left untouched. The old A/B instructions above are historic; default and former baseline have been reassigned per this field result.
