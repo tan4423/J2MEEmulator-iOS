@@ -307,3 +307,28 @@ regression), TrungDucTV, and repeated quick open/cancel/open. For a
 and console `[MIDletRunner]`, `[JarBoxVM][LaunchError]` and
 `[JarBoxVM][Lifecycle]`. Further Java SE API compatibility work must
 be driven by that actual exception rather than arbitrary stubs.
+
+
+### Additional verified class-loader bug: interface-method table
+
+An independent defect was found in `class_load.c`: when parsing the
+`CONSTANT_InterfaceMethodref` pool, the code used
+`arraylist_get_value(clazz->constantPool.methodRef, i)` instead of the
+distinct `interfaceMethodRef` table. This silently populated metadata
+for the wrong method refs and left real interface refs uninitialized,
+potentially causing later interface method resolution failures. It now
+correctly indexes `interfaceMethodRef`. It affects generic miniJVM
+correctness; it is not a game-specific bytecode hack.
+
+Offline classfile inspection shows `217_TrungDucTV_51026.jar` has
+interface method refs in 13 classes (23 references total). The
+original NSO and the Nick mod also contain interface refs, so they are
+negative regression controls for the patch. This is a definite static
+bug fix, but it has not been proven to be the exact source of the
+reported code-1 Java exception.
+
+**Important:** the previously reported `Game execution failed (1)`
+was on a build *before* the latest launch-error/ownership/interface
+metadata fixes. The newest build should report the actual Java error
+name/message if execution still fails. A successful compile or
+classfile parse does not imply a modded JAR will run.
