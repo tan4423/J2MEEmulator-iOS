@@ -926,3 +926,7 @@ renderer, audio, stop state and per-clone save/RMS directories into separate
 `GameSession` contexts with stable `instanceId`. Do not clear a global
 lock or destroy a shared native resource to simulate independent game stops.
 No concurrent-JVM feature is activated in this commit.
+
+The double-confirmed process-level fallback also checks that the originally
+stuck session token is still current before acting: a delayed confirmation
+must never terminate a newly launched game or future clone session.

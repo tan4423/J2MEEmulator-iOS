@@ -179,6 +179,8 @@ class AppsListViewController: UIViewController,
 
     private func confirmLibraryEmergencyExit() {
         guard jvm_bridge_session_is_active() != 0 else { return }
+        let expectedToken = jvm_bridge_session_token()
+        guard expectedToken != 0 else { return }
         let alert = UIAlertController(
             title: "Đóng toàn bộ JarBox?",
             message: "Dữ liệu game chưa lưu có thể mất. JarBox sẽ tắt hẳn " +
@@ -186,7 +188,7 @@ class AppsListViewController: UIViewController,
             preferredStyle: .alert)
         alert.addAction(UIAlertAction(title: "Không", style: .cancel))
         alert.addAction(UIAlertAction(title: "Đóng JarBox ngay", style: .destructive) { _ in
-            guard jvm_bridge_session_is_active() != 0 else { return }
+            guard jvm_bridge_session_token() == expectedToken else { return }
             NSLog("[JarBoxVM][Lifecycle] library_process_exit_confirmed")
             Darwin.exit(0)
         })

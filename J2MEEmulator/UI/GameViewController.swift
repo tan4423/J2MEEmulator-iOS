@@ -936,6 +936,10 @@ class GameViewController: UIViewController {
 
     private func confirmEmergencyExit() {
         guard jvm_bridge_session_is_active() != 0 else { return }
+        // A stale confirmation must not kill a newly launched game/clone.
+        let expectedToken = gameSessionToken != 0
+            ? gameSessionToken : jvm_bridge_session_token()
+        guard expectedToken != 0 else { return }
         let alert = UIAlertController(
             title: "Đóng toàn bộ JarBox?",
             message: "Chỉ dùng nếu game kẹt không thể dừng. Dữ liệu chưa lưu " +
@@ -943,7 +947,7 @@ class GameViewController: UIViewController {
             preferredStyle: .alert)
         alert.addAction(UIAlertAction(title: "Không", style: .cancel))
         alert.addAction(UIAlertAction(title: "Đóng JarBox ngay", style: .destructive) { _ in
-            guard jvm_bridge_session_is_active() != 0 else { return }
+            guard jvm_bridge_session_token() == expectedToken else { return }
             NSLog("[JarBoxVM][Lifecycle] confirmed_hard_process_exit phase=%d",
                   jvm_bridge_session_phase())
             // A process stop releases all VM threads/sockets, unlike
