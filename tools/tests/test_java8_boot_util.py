@@ -72,6 +72,26 @@ public class TestJava8BootUtil {
         check("fallback".equals(Objects.toString(null, "fallback")), "toString");
         check("ok".equals(Objects.requireNonNull("ok")), "nonNull");
         check(Objects.compare("a", "b", String::compareTo) < 0, "compare");
+        final int[] supplierCalls = {0};
+        String kept = Objects.requireNonNull("present", () -> {
+            supplierCalls[0]++;
+            return "unused";
+        });
+        check("present".equals(kept) && supplierCalls[0] == 0, "lazy requireNonNull");
+        try {
+            Objects.requireNonNull(null, () -> {
+                supplierCalls[0]++;
+                return "missing object";
+            });
+            throw new AssertionError("requireNonNull should throw");
+        } catch (NullPointerException expected) {
+            check("missing object".equals(expected.getMessage()) &&
+                  supplierCalls[0] == 1, "Supplier error message");
+        }
+        try {
+            Objects.requireNonNull(null, (java.util.function.Supplier<String>)null);
+            throw new AssertionError("null Supplier should throw");
+        } catch (NullPointerException expected) { }
     }
 }
 """
