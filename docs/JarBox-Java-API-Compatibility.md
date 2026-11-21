@@ -349,3 +349,75 @@ private-server version logic, original JAR content, or session-token teardown.
 The number of Codemagic workflows remains one. Revalidate the v9 IPA on
 Ninja School, TrungDucTV and ideally a small java.util.function fixture
 before treating this version as the device regression baseline.
+
+
+## Java 8 StringJoiner + newer JAR classfile profiling (v10, 2026-11-21)
+
+The user confirmed the `java8_function_api_v9` IPA is working on their
+games. Preserve v9 as the on-device regression baseline.
+
+### Runtime API
+
+The boot classpath now includes the **real Java 8 `java.util.StringJoiner`
+surface** (both constructors, `add`, `merge`, `setEmptyValue`,
+`length`, `toString`). It stores actual characters, keeps a snapshot
+of delimiter/prefix/suffix, handles null elements using `"null"`, and
+handles self-merging and empty joiners without special-casing game data.
+No dummy method bodies or bypasses.
+
+The host-side regression `test_java8_boot_stringjoiner.py` compiles the
+original source as Java 8 bytecode in an isolated package and compares
+2,000 randomized sequences of joins and merges against the host JDK.
+It also checks empty values, null arguments, empty elements, self-merging,
+Unicode, and mutable CharSequence constructor arguments.
+
+### Static JAR bytecode profile
+
+A separate, read-only command now reports whether a supplied JAR contains
+Java 8/11/17+ classfiles and attributes requiring additional VM support:
+
+```sh
+python3 tools/jar_bytecode_profile.py --output /tmp/jarbox-bytecode.json \
+    /path/to/mod.jar
+```
+
+The report identifies:
+- Baseline classfile major versions, including **52=Java 8**, **55=Java 11**,
+  **61=Java 17** (higher major versions are mapped mechanically).
+- Optional multi-release JAR entries, separated from baseline classes.
+- Static references such as invokedynamic, method-handle/method-type and
+  dynamic constants, plus NestHost, NestMembers, Record, PermittedSubclasses
+  and module classfile attributes.
+- Invalid classfiles and preview classfile flags.
+
+The profiler reads bounded classfile data and **never executes or changes**
+a game JAR. Seeing an `invokedynamic` constant does not prove that it will
+be executed, nor that the miniJVM supports its bootstrap. A Java 8 classfile
+may also depend on missing JDK APIs or dynamically load classes not visible
+to static scanning.
+
+The existing optional Codemagic variable `JARBOX_COMPAT_AUDIT_JAR` now
+runs both the old API-surface analyzer and this new bytecode profiler when
+set to an existing **local JAR path**. No JAR is downloaded. Without that
+variable, the workflow builds normally and runs only the small host regression
+fixtures. The new tests compile Java 8 lambdas, Java 11 string concatenation
+and Java 17 records and verify the reported classfile versions and feature
+flags; they also cover truncated bytecode and multi-release archives.
+
+**Not full Java 8/11/17 compatibility:** This v10 is a scoped library
+addition plus analysis tooling, **not** a new JVM. It does not implement
+`java.util.stream`, the whole NIO API, all `java.time` interfaces or
+all modern Java class loading, default-method, LambdaMetafactory and
+`invokedynamic` behavior. In particular, simply lowering a classfile's
+major version is not a valid way to support newer Java bytecode.
+Those capabilities require dedicated implementation and on-device testing
+against the real mod JARs. Do not advertise arbitrary Java 11/17 JAR support.
+
+The same single Codemagic workflow builds the extra classfile into
+`minijvm_rt.jar`, extracts it by exact path, checks Java 8 public
+signatures, and stamps
+`boot_patch=java8_stringjoiner_profile_v10`.
+No changes to `main`, JAR files, networking, graphics, Deep Treo,
+the JVM session lifecycle, or normal game-loop instrumentation.
+The v10 IPA must be built and verified on iPhone before calling it
+an on-device stable baseline.
