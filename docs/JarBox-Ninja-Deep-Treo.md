@@ -65,3 +65,48 @@ baseline from the same workflow in a later commit, not a second workflow.
 
 **Status:** static review and user-JAR bytecode comparison completed.
 No new Codemagic build or iPhone functional/CPU A/B is yet verified.
+
+
+## HUD mode name and game-loop heartbeat proxy (2026-11-21)
+
+The black Treo screen now clearly displays **`Chế độ treo: Chuẩn`** or
+**`Chế độ treo: Chuyên biệt (NSO)`**. "Chuyên biệt" is shown only for requested
+JarBox mode 8 with an NSO resource-family match **and** a real loaded Canvas
+matching the inspected simple paint-forwarding structure. The label
+automatically refreshes with the existing 15-second status timer, without
+adding a new UI timer, and leaves the diagnostic workflow titles alone.
+
+New lightweight `[JarBoxVM][GamePulse]` log and result text include:
+
+- `pre_8s_hz`: rate of NSO-qualified `Canvas.repaint()` requests in the eight
+  preceding **full** one-second buckets, requiring at least six populated
+  seconds. The snapshot is taken just before entering Treo. `?` means a
+  reliable pre-Treo baseline is unavailable.
+- `treo_hz`: observed calls to this same request method per second during Treo.
+- `rate_ratio`: Treo request cadence divided by the pre-Treo cadence.
+- `requests`: qualifying Canvas repaint requests during the interval.
+- `last_request_gap_ms`: elapsed time from latest qualifying request to
+  exit; a gap >= 5000ms flags suspected stall.
+- `status`: `nhip_yeu_cau_khung_hinh_on`,
+  `nghi_cham_nhip` (rate below 85% of baseline),
+  `nghi_ngung_nhip` (zero requests / very long idle gap),
+  `chua_co_moc_truoc_treo`, or `khong_co_tin_hieu_chuyen_biet`.
+
+These calls occur on each game's own update-loop path in the three inspected
+NSO JARs, so this is a useful **game-loop heartbeat proxy**, more meaningful
+than paint FPS or CPU alone. It is **not** direct instrumentation of game ticks,
+auto farming, network socket success or server-side state progression. A loop
+can continue requesting a frame while the actual task is stuck. Thus even a
+normal rate ratio does **not** prove game progress: check farm/mob/map/RMS and
+network behavior after exiting Treo. No watt measurement is implied.
+
+Implementation uses native monotonic timestamps and a fixed set of 16
+one-second atomic bins. No disk I/O in the loop, no Java bytecode modifications,
+no PaintHot sampler, and no added foreground UI timer. Probe state is reset per
+loaded MIDlet in `jvm_bridge_init`. The same `J2ME Treo JIT probe unsigned`
+Codemagic workflow remains the ONLY workflow. This change is committed
+for a **subsequent IPA**; any IPA already installed during the current user's
+measurement retains its earlier log format until rebuilt.
+
+**Verification:** source/static checks only, no Codemagic compiler output or
+on-device NSO pace measurements have been received yet.
