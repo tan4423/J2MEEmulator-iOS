@@ -398,6 +398,8 @@ class GameViewController: UIViewController {
         // render target that a newer game session has already registered.
         alertTimeoutWork?.cancel()
         startupWatchdog?.cancel()
+        stopEscalationWork?.cancel()
+        stopRescueWork?.cancel()
         measurementDeadline?.cancel()
         afkMeasure?.cancel()
         jarAuditWork?.cancel()
@@ -412,12 +414,15 @@ class GameViewController: UIViewController {
             NotificationCenter.default.removeObserver(blackoutThermalObserver)
         }
         if mainStackAuditID != nil { treo_afk_main_trace_cancel() }
-        treo_afk_buffer_audit_set(0, 0)
-        if jarBoxSmartTreo { treo_gc_smart_set(0) }
-        treo_afk_guard_auto_set(0)
-        if blackoutNSODeepIdle {
-            treo_display_wait_set(0)
-            blackoutNSODeepIdle = false
+        // An old controller may die while a newer session owns the VM.
+        if activeGameViewController === self {
+            treo_afk_buffer_audit_set(0, 0)
+            if jarBoxSmartTreo { treo_gc_smart_set(0) }
+            treo_afk_guard_auto_set(0)
+            if blackoutNSODeepIdle {
+                treo_display_wait_set(0)
+                blackoutNSODeepIdle = false
+            }
         }
     }
 
@@ -496,6 +501,11 @@ class GameViewController: UIViewController {
     private var lastMeasurement: (title: String, message: String)?
     private var cpuMetalBaseline: (UInt64, UInt64, UInt64) = (0, 0, 0)
     private var startupWatchdog: DispatchWorkItem?
+    private var stopEscalationWork: DispatchWorkItem?
+    private var stopRescueWork: DispatchWorkItem?
+    private var ownsJVMSession = false
+    private var gameStopRequested = false
+    private var startupTimeoutShown = false
 
     override var prefersStatusBarHidden: Bool { true }
 
@@ -549,12 +559,9 @@ class GameViewController: UIViewController {
             }
         }
 
-        // Register native callbacks
-        setGlobalEmulatorView(emulatorView)
-        j2me_render_set_afk_suspended(0)
-        j2me_render_set_flush_callback(flushCallback)
-        j2me_ui_set_callback(gameUICallback)
-        activeGameViewController = self
+        // Register native callbacks only after acquiring the exclusive
+        // miniJVM slot in startGame. Early registration could make a stale
+        // controller steal an active game's render target.
     }
 
     override func viewDidAppear(_ animated: Bool) {
@@ -3341,6 +3348,19 @@ class GameViewController: UIViewController {
             return
         }
 
+        guard jvm_bridge_try_begin_session() != 0 else {
+            showLaunchFailure("JVM đang khởi động, chạy hoặc dọn dẹp game trước. " +
+                              "JarBox không mở chồng hai phiên JVM vì dễ hỏng bộ nhớ. " +
+                              "Hãy thử mở lại sau khi phiên trước kết thúc.")
+            return
+        }
+        ownsJVMSession = true
+        setGlobalEmulatorView(emulatorView)
+        j2me_render_set_afk_suspended(0)
+        j2me_render_set_flush_callback(flushCallback)
+        j2me_ui_set_callback(gameUICallback)
+        activeGameViewController = self
+
         // Copy plain values on the main actor; the VM worker never reads the view controller.
         let gamePath = jarPath
         let width = Int32(canvasWidth)
@@ -3394,6 +3414,9 @@ class GameViewController: UIViewController {
     nonisolated private static func runMIDlet(resRoot: String, jarPath: String,
                                               width: Int32, height: Int32,
                                               scale: Int32, fps: Int32) -> String? {
+        // Only the owning worker releases the exclusive JVM slot after
+        // native cleanup, including startup errors and cancellations.
+        defer { jvm_bridge_finish_session() }
         let docs = NSSearchPathForDirectoriesInDomains(
             .documentDirectory, .userDomainMask, true).first ?? NSTemporaryDirectory()
         let jarFileName = URL(fileURLWithPath: jarPath).deletingPathExtension().lastPathComponent
@@ -3410,6 +3433,11 @@ class GameViewController: UIViewController {
         let initResult = jvm_bridge_init(resRoot, saveRoot, jarPath, width, height, scale, fps)
         NSLog("[J2ME Treo] JVM initialization returned %d", initResult)
         guard initResult == 0 else { return "Java runtime initialization failed (\(initResult))." }
+        if jvm_bridge_is_stop_requested() != 0 {
+            NSLog("[JarBoxVM][Lifecycle] cancelled after JVM init, before MIDlet start")
+            jvm_bridge_destroy()
+            return "Game startup cancelled."
+        }
 
         NSLog("[J2ME Treo] Entering MIDlet runner")
         let runResult = jvm_bridge_run_midlet(jarPath)
