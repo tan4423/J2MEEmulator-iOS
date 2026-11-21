@@ -42,19 +42,23 @@ workflows:
           javac --release 8 -sourcepath '' -cp "$jars/minijvm_rt.jar:$jars/j2me_api.jar" \
             -d "$core_classes" \
             J2MEEmulator/RuntimePatches/java/nio/charset/StandardCharsets.java \
-            J2MEEmulator/RuntimePatches/java/io/OutputStreamWriter.java
+            J2MEEmulator/RuntimePatches/java/io/OutputStreamWriter.java \
+            J2MEEmulator/RuntimePatches/com/sun/cldc/i18n/j2me/UTF_8_Reader.java
           jar uf "$jars/minijvm_rt.jar" -C "$core_classes" .
           # Verify the classes that will be packaged, NOT the host JDK
           # (javap by class name otherwise resolves java.base first).
           core_verify="$RUNNER_TEMP/java8-core-verify"
           mkdir -p "$core_verify"
           (cd "$core_verify" && jar xf "$jars/minijvm_rt.jar" \
-            java/nio/charset/StandardCharsets.class java/io/OutputStreamWriter.class)
+            java/nio/charset/StandardCharsets.class java/io/OutputStreamWriter.class \
+            com/sun/cldc/i18n/j2me/UTF_8_Reader.class)
           javap "$core_verify/java/nio/charset/StandardCharsets.class" > "$RUNNER_TEMP/utf8-class.txt"
           javap "$core_verify/java/io/OutputStreamWriter.class" > "$RUNNER_TEMP/writer-class.txt"
           grep -Fq 'public static final java.nio.charset.Charset UTF_8;' "$RUNNER_TEMP/utf8-class.txt"
           grep -Fq 'java.io.OutputStreamWriter(java.io.OutputStream, java.nio.charset.Charset);' "$RUNNER_TEMP/writer-class.txt"
-          echo "[JarBoxNET][BUILD] java8_core_utf8=present boot_jar=patched"
+          javap -c "$core_verify/com/sun/cldc/i18n/j2me/UTF_8_Reader.class" > "$RUNNER_TEMP/utf8-reader-bytecode.txt"
+          grep -Fq 'ready:()Z' "$RUNNER_TEMP/utf8-reader-bytecode.txt"
+          echo "[JarBoxNET][BUILD] java8_core_utf8=present boot_jar=patched short_read=enabled"
           classes="$RUNNER_TEMP/lcdui-classes"
           mkdir -p "$classes"
           javac --release 8 -sourcepath '' -cp "$jars/j2me_api.jar:$jars/minijvm_rt.jar" \

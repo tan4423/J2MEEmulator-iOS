@@ -1015,3 +1015,48 @@ classloading. Missing `build_commit` means the installed IPA predates
 this fingerprint feature; a SHA mismatch means wrong installed artifact;
 a matching SHA with missing startup probe isolates trace instrumentation.
 Do not introduce extra workflows, alter game JAR, or reset the JVM slot.
+
+
+## 2026-11-21 Real TCP handshake progressed; UTF-8 Reader short-read deadlock fix
+
+User confirmed installed IPA `build_commit=d6ef8fc...`,
+`vm_start_probe=seen`, a successful TCP connect to mod service on
+port 2024, `tcp_first_write:kind=buffer,wanted=1,actual=1` and
+`tcp_first_read:kind=byte,wanted=1,actual=1`. The first write/read
+events only show that at least one byte in each direction was processed;
+they do NOT show total packet size, complete lines or response validity.
+The game stopped showing the prior connection error but did not advance
+from its spinner/loading state.
+
+The original JAR directly invokes
+`BufferedReader.readLine()` in `Class_fq.d()` and `Class_gv.g()`.
+MiniJVM's upstream `BufferedReader.fill()` requests the full remaining
+character buffer with `in.read(cb,dst,cb.length-dst)`. Its
+`com.sun.cldc.i18n.j2me.UTF_8_Reader.read(char[],off,len)`
+incorrectly runs `while(count < length)` and unconditionally blocks
+for every character, even after reading a complete short line. A
+server that sends one line then waits for the next command can deadlock
+the client. This violates the short-read contract of java.io.Reader.
+
+Fix the **boot** UTF_8_Reader, without editing the game, to return
+after at least one decoded character when `ready()` reports that
+further input may block. The first code point (including continuation
+bytes for valid multibyte UTF-8) remains blocking. The CLDC
+`StreamReader.ready()` uses `in.available()`, conservatively
+returning false when unavailable; on miniJVM's socket this often means
+one character per fill, but prevents an indefinite read of 8192 chars.
+No busy-wait, retry timers, packet-content logging or game-specific
+method hack. Its class is rebuilt into `minijvm_rt.jar` by the one
+Codemagic workflow and verified by inspecting the extracted class bytecode.
+
+Local socket regression simulation:
+- A localhost TCP server writes `GO\\n` and leaves its connection
+  open to simulate a line-oriented mod service.
+- Original read-to-full-buffer logic hung waiting for buffer fill.
+- Patched Reader-compatible short-read logic returned `GO` while
+  the socket remained open.
+This was a Java 21 fixture mirroring the key read loop, **not** a full
+iOS/miniJVM execution test. Build and iPhone validation still required.
+
+Maintain the game-specific session token lifecycle safety; do not
+enable concurrent JVMs or mutate private server requests.
