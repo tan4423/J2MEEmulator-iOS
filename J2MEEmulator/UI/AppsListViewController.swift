@@ -227,7 +227,13 @@ class AppsListViewController: UIViewController,
                 let meta = JARMetadata.read(from: jar.path)
                 let jarIcon = meta?.readIcon(from: jar.path)
                 let fileName = URL(fileURLWithPath: jar.path).lastPathComponent
-                let appName = meta?.midletName ?? jar.name
+                let defaultName = meta?.midletName ?? jar.name
+                let key = "displayName_" + Self.gameId(forPath: jar.path)
+                let override = UserDefaults.standard.string(forKey: key)?
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                // A display alias never changes the JAR filename, RMS path,
+                // or per-game preferences. Safe to read while scanning.
+                let appName = (override?.isEmpty == false) ? override! : defaultName
                 return (appName, jar.path, fileName, meta?.version, meta?.vendor, jarIcon)
             }
             unsorted.sort { $0.0.localizedCaseInsensitiveCompare($1.0) == .orderedAscending }
@@ -346,6 +352,10 @@ class AppsListViewController: UIViewController,
                                     state: ssEnabled ? .on : .off) { _ in
                 Self.set3DSupersampling(!ssEnabled, for: app)
             }
+            let rename = UIAction(title: "Đổi tên",
+                                  image: UIImage(systemName: "pencil")) { _ in
+                self?.promptRenameApp(app)
+            }
             let clearData = UIAction(title: "Clear Game Data",
                                      image: UIImage(systemName: "eraser")) { _ in
                 self?.confirmClearGameData(for: app)
@@ -377,21 +387,60 @@ class AppsListViewController: UIViewController,
                                   image: UIImage(systemName: "gauge.with.needle"),
                                   children: fpsActions)
 
-            let settings = UIMenu(options: .displayInline, children: [toggle3D, resMenu, fpsMenu])
-            let actions = UIMenu(options: .displayInline, children: [clearData, delete])
+            let advanced = UIMenu(title: "Nâng cao",
+                                  image: UIImage(systemName: "slider.horizontal.3"),
+                                  children: [toggle3D, fpsMenu])
+            let settings = UIMenu(options: .displayInline, children: [resMenu, advanced])
+            let actions = UIMenu(options: .displayInline, children: [rename, clearData, delete])
             return UIMenu(children: [settings, actions])
         })
     }
 
     // MARK: - Per-game settings
 
-    private static func gameId(for app: AppInfo) -> String {
-        let jarName = URL(fileURLWithPath: app.path).deletingPathExtension().lastPathComponent
+    private static func gameId(forPath path: String) -> String {
+        let jarName = URL(fileURLWithPath: path).deletingPathExtension().lastPathComponent
         return jarName.replacingOccurrences(of: "[^a-zA-Z0-9._-]", with: "_", options: .regularExpression)
     }
 
+    private static func gameId(for app: AppInfo) -> String {
+        gameId(forPath: app.path)
+    }
+
+    private func promptRenameApp(_ app: AppInfo) {
+        let alert = UIAlertController(title: "Đổi tên game",
+                                      message: "Chỉ đổi tên hiển thị, không đổi JAR hoặc dữ liệu lưu.",
+                                      preferredStyle: .alert)
+        alert.addTextField { field in
+            field.text = app.name
+            field.placeholder = "Tên game"
+            field.clearButtonMode = .whileEditing
+            field.autocapitalizationType = .words
+        }
+        alert.addAction(UIAlertAction(title: "Hủy", style: .cancel))
+        alert.addAction(UIAlertAction(title: "Lưu", style: .default) { [weak self, weak alert] _ in
+            guard let raw = alert?.textFields?.first?.text else { return }
+            let name = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !name.isEmpty, name.count <= 80 else {
+                self?.showRenameError()
+                return
+            }
+            UserDefaults.standard.set(name, forKey: "displayName_\(Self.gameId(for: app))")
+            self?.scanApps()
+        })
+        present(alert, animated: true)
+    }
+
+    private func showRenameError() {
+        let alert = UIAlertController(title: "Tên không hợp lệ",
+                                      message: "Tên phải dài từ 1 đến 80 ký tự.",
+                                      preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "OK", style: .default))
+        present(alert, animated: true)
+    }
+
     static func is3DSupersampling(for app: AppInfo) -> Bool {
-        UserDefaults.standard.object(forKey: "ss3d_\(gameId(for: app))") as? Bool ?? true
+        UserDefaults.standard.object(forKey: "ss3d_\(gameId(for: app))") as? Bool ?? false
     }
 
     static func set3DSupersampling(_ enabled: Bool, for app: AppInfo) {
@@ -440,7 +489,7 @@ class AppsListViewController: UIViewController,
     ]
 
     static func fpsLimit(for app: AppInfo) -> Int {
-        UserDefaults.standard.object(forKey: "fpsLimit_\(gameId(for: app))") as? Int ?? 60
+        UserDefaults.standard.object(forKey: "fpsLimit_\(gameId(for: app))") as? Int ?? 0
     }
 
     private static func setFpsLimit(_ fps: Int, for app: AppInfo) {
@@ -474,6 +523,7 @@ class AppsListViewController: UIViewController,
             let gid = Self.gameId(for: app)
             try? FileManager.default.removeItem(atPath: Self.documentsDirectory + "/Games Data/" + gid)
             try? FileManager.default.removeItem(atPath: app.path)
+            UserDefaults.standard.removeObject(forKey: "displayName_\(gid)")
             self.springboardCollectionView.performBatchUpdates {
                 self.apps.remove(at: indexPath.item)
                 self.springboardCollectionView.deleteItems(at: [indexPath])
