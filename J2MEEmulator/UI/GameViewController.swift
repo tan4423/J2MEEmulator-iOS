@@ -505,6 +505,9 @@ class GameViewController: UIViewController {
     private var ownsJVMSession = false
     private var gameSessionToken: UInt64 = 0
     private var gameStopRequested = false
+    // One *live* miniJVM remains owned by this controller while the library
+    // overlays it. This is a parked foreground session, not a second JVM.
+    private var libraryIsPresented = false
     private var startupTimeoutShown = false
     private var gameIdleTimerPreviouslyDisabled: Bool?
 
@@ -527,6 +530,36 @@ class GameViewController: UIViewController {
         switch layoutMode {
         case .portrait: setupNGageLayout(portrait: true)
         case .ngage: setupNGageLayout()
+        }
+        if layoutMode == .ngage {
+            // Landscape previously lacked the floating game menu entirely.
+            screenMenu.translatesAutoresizingMaskIntoConstraints = false
+            screenMenu.setImage(UIImage(systemName: "ellipsis.circle"), for: .normal)
+            screenMenu.tintColor = .white
+            screenMenu.accessibilityLabel = "Tùy chọn game"
+            screenMenu.showsMenuAsPrimaryAction = true
+            screenMenu.menu = UIMenu(children: [
+                UIAction(title: "Về thư viện · giữ game chạy",
+                         image: UIImage(systemName: "square.grid.2x2")) { [weak self] _ in
+                    self?.openLibraryKeepingGame()
+                },
+                UIAction(title: "Treo tiết kiệm · GC thông minh") { [weak self] _ in
+                    self?.showBlackout(mode: 8, smartGC: true, deepPaint: true)
+                },
+                UIAction(title: "Dừng game hoàn toàn",
+                         image: UIImage(systemName: "stop.fill"),
+                         attributes: .destructive) { [weak self] _ in
+                    self?.stopGameFromMenu()
+                }
+            ])
+            view.addSubview(screenMenu)
+            NSLayoutConstraint.activate([
+                screenMenu.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 4),
+                screenMenu.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -8),
+                screenMenu.widthAnchor.constraint(equalToConstant: 44),
+                screenMenu.heightAnchor.constraint(equalToConstant: 36),
+            ])
+            view.bringSubviewToFront(screenMenu)
         }
 
         // Placeholder icon — visible until first game frame
@@ -630,8 +663,10 @@ class GameViewController: UIViewController {
         rskButton.tag = -7
 
         // Back button
-        backButton.setTitle("  \u{2715}  ", for: .normal)
-        backButton.titleLabel?.font = .systemFont(ofSize: 20, weight: .medium)
+        backButton.setTitle("‹ Thư viện", for: .normal)
+        backButton.titleLabel?.font = .systemFont(ofSize: 15, weight: .semibold)
+        backButton.accessibilityLabel = "Về thư viện, giữ game chạy"
+        backButton.contentEdgeInsets = UIEdgeInsets(top: 0, left: 10, bottom: 0, right: 10)
         backButton.backgroundColor = UIColor(white: 0.15, alpha: 0.85)
         backButton.setTitleColor(.white, for: .normal)
         backButton.layer.cornerRadius = 10
@@ -873,6 +908,7 @@ class GameViewController: UIViewController {
         for pin in portraitPadBottomPins { pin.isActive = padIsVisible }
         if jarAuditID != nil {
             screenMenu.menu = UIMenu(children: [
+                UIAction(title: "Về thư viện · giữ game chạy") { [weak self] _ in self?.openLibraryKeepingGame() },
                 UIAction(title: "Chẩn đoán kết nối") { [weak self] _ in self?.showNetworkDiagnostics() },
                 UIAction(title: "Hủy chẩn đoán CPU JAR", attributes: .destructive) { [weak self] _ in self?.stopJarAudit() },
                 UIAction(title: "Dừng game hoàn toàn", attributes: .destructive) { [weak self] _ in self?.stopGameFromMenu() }
@@ -882,6 +918,10 @@ class GameViewController: UIViewController {
         // User-facing menu: stable functions + exactly ONE active experiment.
         // Historical probes remain in source for rollback, not in the UI.
         screenMenu.menu = UIMenu(children: [
+            UIAction(title: "Về thư viện · giữ game chạy",
+                     image: UIImage(systemName: "square.grid.2x2")) { [weak self] _ in
+                self?.openLibraryKeepingGame()
+            },
             UIAction(title: "Phím điều hướng", state: padMode == .directions ? .on : .off) { [weak self] _ in self?.setPadMode(.directions) },
             UIAction(title: "Phím số", state: padMode == .numbers ? .on : .off) { [weak self] _ in self?.setPadMode(.numbers) },
             UIAction(title: "Ẩn phím · màn hình lớn", state: padMode == .hidden ? .on : .off) { [weak self] _ in self?.setPadMode(.hidden) },
@@ -3454,7 +3494,21 @@ class GameViewController: UIViewController {
                 self.discardCPUProfile()
                 self.hideBlackout()
                 for code in Array(self.heldDirections) { self.releaseDirection(code) }
-                if self.gameStopRequested {
+                if self.libraryIsPresented {
+                    // Close the parked library *before* dismissing its presenting
+                    // game controller. A live VM must never be abandoned behind UI.
+                    self.libraryIsPresented = false
+                    if let overlay = self.presentedViewController {
+                        overlay.dismiss(animated: false) { [weak self] in
+                            self?.dismiss(animated: true)
+                        }
+                    } else {
+                        self.dismiss(animated: true)
+                    }
+                    if let failure {
+                        NSLog("[JarBoxVM][Lifecycle] parked session exited: %@", failure)
+                    }
+                } else if self.gameStopRequested {
                     self.dismiss(animated: true)
                 } else if let failure {
                     self.showLaunchFailure(failure)
@@ -3631,8 +3685,63 @@ class GameViewController: UIViewController {
         DispatchQueue.main.asyncAfter(deadline: .now() + 7, execute: rescue)
     }
 
+    /// Only the owner with the current native token may control this JVM.
+    func ownsLiveGameSession(for path: String? = nil) -> Bool {
+        ownsJVMSession && !gameStopRequested && gameSessionToken != 0 &&
+        jvm_bridge_session_is_active() != 0 &&
+        jvm_bridge_session_token() == gameSessionToken &&
+        (path == nil || path == jarPath)
+    }
+
+    /// Safe one-slot library multitasking. The game keeps its Java state,
+    /// sockets and threads; only offscreen canvas presentation is suppressed.
+    /// This does not grant iOS background execution or start another miniJVM.
+    @objc private func openLibraryKeepingGame() {
+        guard ownsLiveGameSession(), !libraryIsPresented, presentedViewController == nil else { return }
+        finishStartupWatchdog()
+        stopJarAudit()
+        discardCPUProfile()
+        for code in Array(heldDirections) { releaseDirection(code) }
+        if blackout != nil { hideBlackout() }  // restore screen brightness and probes
+
+        let library = AppsListViewController()
+        library.parkedGameController = self
+        let navigation = JarBoxLibraryNavigationController(rootViewController: library)
+        navigation.modalPresentationStyle = .fullScreen
+
+        libraryIsPresented = true
+        // The library is now the only UIKit destination. The existing AFK
+        // mode 1 skips display work without changing Java scheduling or
+        // introducing a background timer; use the user's proven Treo mode
+        // only when explicitly requested.
+        setGlobalEmulatorView(nil)
+        emulatorView.clearPendingGameFrame()
+        j2me_render_set_afk_suspended(1)
+        NSLog("[JarBoxVM][Park] session=%llu jar=%@", gameSessionToken,
+              URL(fileURLWithPath: jarPath).lastPathComponent)
+        present(navigation, animated: false)
+    }
+
+    func resumeParkedGame() {
+        guard libraryIsPresented,
+              let navigation = presentedViewController as? UINavigationController else { return }
+        navigation.dismiss(animated: false) { [weak self] in
+            guard let self else { return }
+            self.libraryIsPresented = false
+            guard self.ownsLiveGameSession() else { return }
+            setGlobalEmulatorView(self.emulatorView)
+            j2me_render_set_afk_suspended(0)
+            NSLog("[JarBoxVM][Park] resumed session=%llu", self.gameSessionToken)
+        }
+    }
+
+    func stopParkedGame() {
+        guard ownsLiveGameSession() else { return }
+        requestGameStop(reason: "library_stop")
+    }
+
     @objc private func backTapped() {
-        requestGameStop(reason: "user_back")
+        openLibraryKeepingGame()
     }
 
     // ============================================================
