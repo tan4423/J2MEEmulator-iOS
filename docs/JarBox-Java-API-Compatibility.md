@@ -138,3 +138,58 @@ Do not claim an actual iPhone result until this exact build is installed
 and tested. Recheck original NSO and TrungDucTV launch, gameplay, session
 stop/restart, and background behavior. No changes to the single Codemagic
 workflow count, `main`, Deep Treo, JVM session token, or game content.
+
+
+## Java 8 Instant / Duration boot compatibility (2026-11-21)
+
+The user confirmed the preceding `LocalDate` / `LocalDateTime` IPA runs
+their tested games normally. Preserve that on-device result as the regression
+baseline. This update adds two further *generic* Java 8 boot-library subsets:
+
+- `java.time.Instant`: `EPOCH`, `now()` from `System.currentTimeMillis()`,
+  `ofEpochSecond(long)`, `ofEpochSecond(long,long)`,
+  `ofEpochMilli(long)`, `getEpochSecond`, `getNano`,
+  `toEpochMilli`, `plus/minusSeconds/Millis/Nanos`, comparison,
+  equality/hash, ISO UTC formatting and strict `Z`-suffixed
+  `parse(CharSequence)`. Instants are immutable and normalized to 0..999999999
+  nanoseconds. The time is UTC; no fake clock, server status, local-zone
+  adjustment, JAR edit or game-specific code is involved.
+- `java.time.Duration`: `ZERO`, `ofSeconds` (both forms),
+  `ofMillis/ofNanos/ofMinutes/ofHours/ofDays`,
+  `getSeconds/getNano`, sign/zero checks, `toDays/Hours/Minutes/Millis/Nanos`,
+  `plus/minus` of Duration and of seconds/millis/nanos/minutes/hours/days,
+  `negated`, `abs`, comparison, equality/hash and ISO `toString`.
+  Arithmetic uses explicit overflow checks and the Java 8 negative-fraction
+  second/nanosecond representation.
+
+**Boundaries:** `Instant` deliberately limits UTC calendar years to
+0001–9999, matching JarBox's `LocalDate` subset (unlike full JDK Instant).
+Its parser supports only UTC `Z` timestamps with mandatory seconds,
+optional 1–9 digit fraction; not timezone offsets or a general formatter.
+`Duration.parse`, `Duration.between(Temporal,Temporal)`, Temporal/ChronoUnit,
+clock/zone providers, streams, `BigInteger` and the full `java.time`
+interface ecosystem are not implemented. Some invalid values throw
+`IllegalArgumentException` rather than the exact JDK date exception.
+Supporting these classes alone does not make arbitrary Java 8 JARs runnable.
+
+**Host validation:** exact Java 8 source compiled at `--release 8`.
+A package-renamed, host-JDK regression checked over **12,000 randomized
+Instant samples and 12,000 randomized Duration samples**, plus fixed boundary
+vectors, comparison of ISO output, epoch milliseconds, nanos, normalized
+arithmetic, hash codes, negative fractional milliseconds, and extreme
+`Long.MIN_VALUE` subtraction. The package-renamed fixture uses the host JDK
+`LocalDate`/`LocalTime` for Instant formatting while the iOS boot runtime
+uses JarBox's previously validated date/time subset. The build-time
+test `tools/tests/test_java8_boot_instants.py` is included in the existing
+`test_*.py` discovery.
+
+**Build integration:** only the pre-existing Codemagic workflow compiles
+`Instant.java` and `Duration.java` into `minijvm_rt.jar`, extracts exact
+`java/time/Instant.class` and `java/time/Duration.class` paths, checks
+the expected public methods and that `Instant.now()` calls the real system
+millisecond clock. The IPA stamp is
+`boot_patch=java8_utf8_localtime_instant_duration_v6`.
+Codemagic and iPhone execution for this commit are **not yet verified**.
+Retest original Ninja School and TrungDucTV gameplay and restart behavior
+before treating the new IPA as a stable baseline. No changes to `main`,
+Deep Treo, game JARs, network packets, or the session-token lifecycle.
