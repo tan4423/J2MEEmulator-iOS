@@ -67,15 +67,17 @@ def parse_class_profile(data):
         tags[tag] += 1
         if tag == 1:
             cp[i] = r.take(r.u2()).decode("utf-8", "replace")
-        elif tag in (3, 4, 9, 10, 11, 12, 17, 18):
+        elif tag in (3, 4):
             r.take(4)
+        elif tag in (9, 10, 11, 12, 17, 18):
+            cp[i] = (tag, r.u2(), r.u2())
         elif tag in (5, 6):
             r.take(8)
             i += 1
         elif tag in (7, 8, 16, 19, 20):
-            r.take(2)
+            cp[i] = (tag, r.u2())
         elif tag == 15:
-            r.take(3)
+            cp[i] = (tag, r.u1(), r.u2())
         else:
             raise FormatError("unsupported constant-pool tag " + str(tag))
         i += 1
@@ -98,7 +100,40 @@ def parse_class_profile(data):
     for _ in range(r.u2()):
         r.take(6)
         attributes()
-    class_attributes = set(attributes())
+    class_attributes = set()
+    bootstrap_owners = set()
+    for _ in range(r.u2()):
+        index = r.u2()
+        if index <= 0 or index >= count or not isinstance(cp[index], str):
+            raise FormatError("invalid attribute name index")
+        name = cp[index]
+        class_attributes.add(name)
+        length = r.u4()
+        if name != "BootstrapMethods":
+            r.take(length)
+            continue
+        end = r.pos + length
+        if end > len(data):
+            raise FormatError("truncated BootstrapMethods attribute")
+        n = r.u2()
+        for _ in range(n):
+            handle_idx = r.u2()
+            nargs = r.u2()
+            r.take(2 * nargs)
+            try:
+                handle = cp[handle_idx]
+                member = cp[handle[2]]
+                owner = cp[member[1]]
+                owner_name = cp[owner[1]]
+                if handle[0] != 15 or member[0] not in (10, 11) or owner[0] != 7:
+                    raise ValueError("unexpected bootstrap handle")
+                if not isinstance(owner_name, str):
+                    raise ValueError("invalid bootstrap owner")
+                bootstrap_owners.add(owner_name)
+            except (IndexError, TypeError, ValueError):
+                raise FormatError("invalid bootstrap method handle")
+        if r.pos != end:
+            raise FormatError("invalid BootstrapMethods attribute length")
     if r.pos != len(data):
         raise FormatError("trailing data after classfile")
 
@@ -118,7 +153,8 @@ def parse_class_profile(data):
     if minor == 65535:
         features.add("preview_classfile")
     return {"major": major, "minor": minor,
-            "java_release": java_release(major), "features": sorted(features)}
+            "java_release": java_release(major), "features": sorted(features),
+            "bootstrap_owners": sorted(bootstrap_owners)}
 
 
 def _manifest_multirelease(archive):
@@ -142,6 +178,7 @@ def profile_jar(path):
     counts = Counter()
     versioned_counts = Counter()
     features = Counter()
+    bootstrap_owners = Counter()
     errors = []
     previews = 0
     processed = 0
@@ -178,6 +215,8 @@ def profile_jar(path):
                 previews += 1
             for feat in info["features"]:
                 features[feat] += 1
+            for owner in info["bootstrap_owners"]:
+                bootstrap_owners[owner] += 1
             processed += 1
     version_hist = dict(sorted(counts.items(), key=lambda x: int(x[0])))
     variant_hist = dict(sorted(versioned_counts.items(), key=lambda x: int(x[0])))
@@ -202,6 +241,7 @@ def profile_jar(path):
         "has_preview_classfile": previews > 0,
         "manifest_multi_release": multi_release,
         "feature_class_counts": dict(sorted(features.items())),
+        "bootstrap_owner_class_counts": dict(sorted(bootstrap_owners.items())),
         "parse_errors": errors[:50],
         "parse_error_count": len(errors),
         "notes": notes,
