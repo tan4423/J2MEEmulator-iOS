@@ -29,6 +29,15 @@ class AppsListViewController: UIViewController,
     private var jarBoxMenuButton: UIBarButtonItem?
     // CPU sampling is event-based, process-wide; never attribute it to one game.
     private var libraryCPUEntry: (time: TimeInterval, cpu: Double)?
+    // JarBox-wide black sleep cover. Only its 15-second HUD timer performs
+    // periodic work, and only while the cover is visible in the foreground.
+    private var jarBoxSleepCover: UIView?
+    private weak var jarBoxSleepHUD: UILabel?
+    private var jarBoxSleepTimer: Timer?
+    private var jarBoxSleepCPUSample: (time: TimeInterval, cpu: Double)?
+    private var jarBoxSleepCPUText = "CPU tổng: đang đo"
+    private var jarBoxSleepBatteryWasEnabled: Bool?
+    private var jarBoxSleepStartedAt: TimeInterval?
 
     // Set only for a library presented over its *own* live GameViewController.
     // A weak reference plus the native session token prevents stale UI controls
@@ -39,6 +48,7 @@ class AppsListViewController: UIViewController,
     func sceneActivityChanged(_ active: Bool) {
         guard springboardVisible else { return }
         setSpringboardMotion(active, reason: active ? "scene active" : "scene inactive")
+        setJarBoxSleepSampling(active)
     }
 
     private func setSpringboardMotion(_ enabled: Bool, reason: String) {
@@ -80,6 +90,10 @@ class AppsListViewController: UIViewController,
             image: UIImage(systemName: "ellipsis.circle"),
             primaryAction: nil,
             menu: UIMenu(title: "JarBox", children: [
+                UIAction(title: "Màn hình Treo",
+                         image: UIImage(systemName: "moon.zzz")) { [weak self] _ in
+                    self?.showJarBoxSleepScreen()
+                },
                 UIAction(title: "Thông tin chung",
                          image: UIImage(systemName: "info.circle")) { [weak self] _ in
                     self?.showJarBoxOverview()
@@ -144,6 +158,8 @@ class AppsListViewController: UIViewController,
                              : "springboard visible, waiting for active scene")
         NotificationCenter.default.addObserver(self, selector: #selector(appDidBecomeActive),
                                                name: UIApplication.didBecomeActiveNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(jarBoxWillResignActive),
+                                               name: UIApplication.willResignActiveNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(springboardThermalChanged),
                                                name: ProcessInfo.thermalStateDidChangeNotification, object: nil)
         logSpringboardEnergyState("library appeared")
@@ -153,6 +169,7 @@ class AppsListViewController: UIViewController,
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
         springboardVisible = false
+        hideJarBoxSleepScreen()
         libraryCPUEntry = nil
         setSpringboardMotion(false, reason: "springboard disappearing")
     }
@@ -160,10 +177,12 @@ class AppsListViewController: UIViewController,
     override func viewDidDisappear(_ animated: Bool) {
         super.viewDidDisappear(animated)
         NotificationCenter.default.removeObserver(self, name: UIApplication.didBecomeActiveNotification, object: nil)
+        NotificationCenter.default.removeObserver(self, name: UIApplication.willResignActiveNotification, object: nil)
         NotificationCenter.default.removeObserver(self, name: ProcessInfo.thermalStateDidChangeNotification, object: nil)
     }
 
     @objc private func appDidBecomeActive() {
+        setJarBoxSleepSampling(true)
         scanApps()
         updateStuckSessionButton()
         logSpringboardEnergyState("app became active")
@@ -282,6 +301,175 @@ class AppsListViewController: UIViewController,
 
     @objc private func springboardThermalChanged() {
         logSpringboardEnergyState("thermal state changed")
+        // Event-based refresh avoids extra sampling while the cover is hidden.
+        if jarBoxSleepCover != nil { refreshJarBoxSleepHUD() }
+    }
+
+    // Global screen cover, independent from a parked game's native Treo.
+    // The native JVM is already in mode 8 from Back -> library. Opening
+    // this display must not reset it, change game clocks or create a JVM.
+    private func showJarBoxSleepScreen() {
+        guard springboardVisible, jarBoxSleepCover == nil,
+              presentedViewController == nil else { return }
+        let container = navigationController?.view ?? view!
+        let cover = UIView()
+        cover.backgroundColor = .black
+        cover.isOpaque = true
+        cover.translatesAutoresizingMaskIntoConstraints = false
+        cover.accessibilityIdentifier = "jarbox-global-sleep-screen"
+        container.addSubview(cover)
+        NSLayoutConstraint.activate([
+            cover.topAnchor.constraint(equalTo: container.topAnchor),
+            cover.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+            cover.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            cover.trailingAnchor.constraint(equalTo: container.trailingAnchor)
+        ])
+
+        let title = UILabel()
+        title.text = "JarBox · Màn hình Treo\nChạm nút giữa để trở lại thư viện"
+        title.font = .systemFont(ofSize: 15, weight: .medium)
+        title.textColor = UIColor(white: 0.64, alpha: 1)
+        title.textAlignment = .center
+        title.numberOfLines = 2
+        title.translatesAutoresizingMaskIntoConstraints = false
+        cover.addSubview(title)
+
+        let wake = UIButton(type: .system)
+        wake.setImage(UIImage(systemName: "arrow.uturn.backward"), for: .normal)
+        wake.tintColor = UIColor(white: 0.92, alpha: 1)
+        wake.backgroundColor = UIColor(white: 0.20, alpha: 1)
+        wake.layer.cornerRadius = 36
+        wake.layer.borderColor = UIColor(white: 0.43, alpha: 1).cgColor
+        wake.layer.borderWidth = 1
+        wake.accessibilityLabel = "Thoát màn hình Treo JarBox"
+        wake.accessibilityIdentifier = "jarbox-global-sleep-wake"
+        wake.translatesAutoresizingMaskIntoConstraints = false
+        wake.addTarget(self, action: #selector(hideJarBoxSleepScreen), for: .touchUpInside)
+        cover.addSubview(wake)
+
+        let info = UILabel()
+        info.font = .monospacedDigitSystemFont(ofSize: 12, weight: .medium)
+        info.textColor = UIColor(white: 0.70, alpha: 1)
+        info.numberOfLines = 0
+        info.textAlignment = .center
+        info.adjustsFontSizeToFitWidth = true
+        info.minimumScaleFactor = 0.85
+        info.translatesAutoresizingMaskIntoConstraints = false
+        cover.addSubview(info)
+        NSLayoutConstraint.activate([
+            title.centerXAnchor.constraint(equalTo: cover.centerXAnchor),
+            title.bottomAnchor.constraint(equalTo: wake.topAnchor, constant: -38),
+            title.leadingAnchor.constraint(greaterThanOrEqualTo: cover.leadingAnchor, constant: 16),
+            title.trailingAnchor.constraint(lessThanOrEqualTo: cover.trailingAnchor, constant: -16),
+            wake.centerXAnchor.constraint(equalTo: cover.centerXAnchor),
+            wake.centerYAnchor.constraint(equalTo: cover.centerYAnchor, constant: -24),
+            wake.widthAnchor.constraint(equalToConstant: 72),
+            wake.heightAnchor.constraint(equalToConstant: 72),
+            info.topAnchor.constraint(equalTo: wake.bottomAnchor, constant: 26),
+            info.leadingAnchor.constraint(equalTo: cover.leadingAnchor, constant: 16),
+            info.trailingAnchor.constraint(equalTo: cover.trailingAnchor, constant: -16),
+            info.bottomAnchor.constraint(lessThanOrEqualTo: cover.safeAreaLayoutGuide.bottomAnchor, constant: -16)
+        ])
+        // Overlay intercepts all stray taps; only the wake control closes it.
+        container.bringSubviewToFront(cover)
+        jarBoxSleepCover = cover
+        jarBoxSleepHUD = info
+        jarBoxSleepStartedAt = ProcessInfo.processInfo.systemUptime
+        jarBoxSleepCPUText = "CPU tổng: đang đo"
+        let device = UIDevice.current
+        jarBoxSleepBatteryWasEnabled = device.isBatteryMonitoringEnabled
+        if !device.isBatteryMonitoringEnabled { device.isBatteryMonitoringEnabled = true }
+        setSpringboardMotion(false, reason: "JarBox sleep screen")
+        setJarBoxSleepSampling(view.window?.windowScene?.activationState == .foregroundActive)
+        refreshJarBoxSleepHUD()
+    }
+
+    @objc private func hideJarBoxSleepScreen() {
+        guard let cover = jarBoxSleepCover else { return }
+        jarBoxSleepTimer?.invalidate()
+        jarBoxSleepTimer = nil
+        jarBoxSleepCPUSample = nil
+        jarBoxSleepStartedAt = nil
+        jarBoxSleepHUD = nil
+        if let old = jarBoxSleepBatteryWasEnabled {
+            UIDevice.current.isBatteryMonitoringEnabled = old
+            jarBoxSleepBatteryWasEnabled = nil
+        }
+        jarBoxSleepCover = nil
+        cover.removeFromSuperview()
+        let active = view.window?.windowScene?.activationState == .foregroundActive
+        setSpringboardMotion(springboardVisible && active, reason: "JarBox sleep screen closed")
+    }
+
+    @objc private func jarBoxWillResignActive() {
+        setJarBoxSleepSampling(false)
+    }
+
+    private func setJarBoxSleepSampling(_ active: Bool) {
+        guard jarBoxSleepCover != nil else { return }
+        jarBoxSleepTimer?.invalidate()
+        jarBoxSleepTimer = nil
+        jarBoxSleepCPUSample = nil
+        guard active, springboardVisible else { return }
+        jarBoxSleepCPUSample = (ProcessInfo.processInfo.systemUptime,
+                               treo_process_cpu_seconds())
+        refreshJarBoxSleepHUD()
+        let timer = Timer.scheduledTimer(withTimeInterval: 15.0, repeats: true) {
+            [weak self] _ in
+            self?.refreshJarBoxSleepHUD()
+        }
+        timer.tolerance = 3.0
+        jarBoxSleepTimer = timer
+    }
+
+    private func refreshJarBoxSleepHUD() {
+        guard jarBoxSleepCover != nil, let label = jarBoxSleepHUD else { return }
+        let now = ProcessInfo.processInfo.systemUptime
+        let cpuNow = treo_process_cpu_seconds()
+        if let prev = jarBoxSleepCPUSample, prev.cpu >= 0, cpuNow >= prev.cpu,
+           now > prev.time {
+            jarBoxSleepCPUText = String(format: "CPU tổng JarBox: %.1f%%",
+                                        100 * (cpuNow - prev.cpu) / (now - prev.time))
+        }
+        if jarBoxSleepTimer != nil {
+            jarBoxSleepCPUSample = (now, cpuNow)
+        }
+
+        let thermal: String
+        switch ProcessInfo.processInfo.thermalState {
+        case .nominal: thermal = "Bình thường"
+        case .fair: thermal = "Tăng nhẹ"
+        case .serious: thermal = "Cao"
+        case .critical: thermal = "Rất cao"
+        @unknown default: thermal = "Không xác định"
+        }
+        let batteryLevel = UIDevice.current.batteryLevel
+        let battery = batteryLevel >= 0
+            ? String(format: "%.0f%%", Double(batteryLevel) * 100)
+            : "Chưa có dữ liệu"
+        let active = jvm_bridge_session_is_active() != 0
+        let runningText: String
+        if let parked = parkedGameController, parked.ownsLiveGameSession() {
+            runningText = parked.appName + " · Treo tự động"
+        } else if active {
+            runningText = "Phiên JVM đang khởi động/dừng"
+        } else {
+            runningText = "Không có game đang chạy"
+        }
+        let elapsed = max(0, now - (jarBoxSleepStartedAt ?? now))
+        let lines = [
+            jarBoxSleepCPUText,
+            "Pin: " + battery,
+            "Áp lực nhiệt: " + thermal,
+            "Chế độ pin yếu: " + (ProcessInfo.processInfo.isLowPowerModeEnabled ? "Bật" : "Tắt"),
+            "Tab đang chạy: " + String(active ? 1 : 0) + "/1",
+            runningText,
+            String(format: "Thời gian phủ: %.0f giây", elapsed),
+            "CPU là tổng tiến trình, không phải CPU của riêng game.",
+            "Nhiệt là mức iOS, không phải nhiệt độ °C."
+        ]
+        let updated = lines.joined(separator: "\n")
+        if label.text != updated { label.text = updated }
     }
 
     // General JarBox information is intentionally separated from game metadata.
