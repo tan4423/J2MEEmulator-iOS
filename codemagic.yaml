@@ -132,9 +132,10 @@ workflows:
           grep -Fq 'public default java.util.function.Predicate<T> negate();' "$RUNNER_TEMP/predicate-signatures.txt"
           # Default methods produce helper classes; ensure they made it into the
           # boot JAR instead of validating only the interface classfiles.
-          jar tf "$jars/minijvm_rt.jar" | grep -Fqx 'java/util/function/Function$1.class'
-          jar tf "$jars/minijvm_rt.jar" | grep -Fqx 'java/util/function/Consumer$1.class'
-          jar tf "$jars/minijvm_rt.jar" | grep -Fqx 'java/util/function/Predicate$4.class'
+          jar tf "$jars/minijvm_rt.jar" > "$RUNNER_TEMP/java8-boot-entries.txt"
+          grep -Fqx 'java/util/function/Function$1.class' "$RUNNER_TEMP/java8-boot-entries.txt"
+          grep -Fqx 'java/util/function/Consumer$1.class' "$RUNNER_TEMP/java8-boot-entries.txt"
+          grep -Fqx 'java/util/function/Predicate$4.class' "$RUNNER_TEMP/java8-boot-entries.txt"
           echo "[JarBoxNET][BUILD] java8_core_utf8=present localtime=present localdate=present localdatetime=present instant=present duration=present verifyerror=present base64=present objects=present optional=present function=present boot_jar=patched short_read=enabled"
           classes="$RUNNER_TEMP/lcdui-classes"
           mkdir -p "$classes"
