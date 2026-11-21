@@ -59,6 +59,8 @@ class ParkedGameLibraryTest(unittest.TestCase):
         self.assertIn('weak var parkedGameController: GameViewController?', self.library)
         self.assertIn('parked.ownsLiveGameSession()', self.library)
         self.assertIn('showAnotherGameBlocked(app)', self.library)
+        self.assertIn('if let parked = parkedGameController {', self.library)
+        self.assertIn('title: "Đang đóng phiên cũ"', self.library)
         self.assertIn('resumeParkedGame()', self.library)
         self.assertIn('stopParkedGame()', self.library)
         self.assertIn('running: parkedGameController?.ownsLiveGameSession(for: app.path)', self.library)
