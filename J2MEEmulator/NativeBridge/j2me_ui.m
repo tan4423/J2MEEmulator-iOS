@@ -94,6 +94,8 @@ static JarBoxUIScreenContext g_empty_ui_context;
 static pthread_once_t g_ui_contexts_once = PTHREAD_ONCE_INIT;
 static pthread_mutex_t g_ui_contexts_lock = PTHREAD_MUTEX_INITIALIZER;
 static atomic_int g_ui_focused_index = -1;
+// -1: ordinary UIKit thread (uses visible context); -2: stale Java
+// runtime with NO registered owner (must never inherit the visible screen).
 static _Thread_local int g_ui_thread_index = -1;
 static _Atomic uint32_t g_ui_new_session_revision = 1;
 static j2me_ui_callback g_ui_callback = NULL;
@@ -123,7 +125,8 @@ static int ui_slot_for_vm(MiniJVM *vm) {
 static JarBoxUIScreenContext *ui_context(void) {
     pthread_once(&g_ui_contexts_once, init_ui_contexts);
     int index = g_ui_thread_index;
-    if (index < 0 || index >= JARBOX_UI_CONTEXT_CAPACITY)
+    if (index == -2) return &g_empty_ui_context;
+    if (index == -1)
         index = atomic_load_explicit(&g_ui_focused_index, memory_order_acquire);
     return index < 0 || index >= JARBOX_UI_CONTEXT_CAPACITY
         ? &g_empty_ui_context : &g_ui_contexts[index];
@@ -132,7 +135,9 @@ static JarBoxUIScreenContext *ui_context(void) {
 static void ui_bind_runtime(Runtime *runtime) {
     // A stale Java thread cannot select an unrelated game by its UI focus.
     pthread_once(&g_ui_contexts_once, init_ui_contexts);
-    g_ui_thread_index = ui_slot_for_vm(runtime ? runtime->jvm : NULL);
+    int index = ui_slot_for_vm(runtime ? runtime->jvm : NULL);
+    // Missing binding means stale or invalid Java context, NOT focused UI.
+    g_ui_thread_index = index >= 0 ? index : -2;
 }
 
 static int ui_is_focused_owner(void) {
@@ -611,15 +616,16 @@ static s32 n_platformRequest(Runtime *runtime, JClass *clazz) {
     Utf8String *u = utf8_create();
     env->jstring_2_utf8(jurl, u, runtime);
     const char *urlStr = utf8_cstr(u);
-
+    // Copy before destroying the Java UTF8 buffer; the UIKit callback is async.
+    NSString *urlString = urlStr ? [NSString stringWithUTF8String:urlStr] : nil;
+    utf8_destroy(u);
+    if (!urlString || !ui_is_focused_owner()) return RUNTIME_STATUS_NORMAL;
     dispatch_async(dispatch_get_main_queue(), ^{
-        NSURL *url = [NSURL URLWithString:[NSString stringWithUTF8String:urlStr]];
+        NSURL *url = [NSURL URLWithString:urlString];
         if (url) {
             [[UIApplication sharedApplication] openURL:url options:@{} completionHandler:nil];
         }
     });
-
-    utf8_destroy(u);
     return RUNTIME_STATUS_NORMAL;
 }
 
