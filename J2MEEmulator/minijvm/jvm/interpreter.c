@@ -1133,6 +1133,57 @@ static inline s32 _optimize_inline_setter(JClass *clazz, s32 cfrIdx, Runtime *ru
 }
 
 
+
+#if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__
+/*
+ * Read-only first-frame diagnosis for the TrungDucTV NSO Canvas. Observe
+ * the actual reference in class-owned field storage; do not fabricate it.
+ * Called only by this JAR's constructor/first-paint or exact setter.
+ */
+extern void jvm_bridge_note_nso_init_trace(const char *detail);
+static void treo_nso_inspect_delegate(Runtime *rt, const char *stage,
+                                       Instance *canvas_override, Instance *arg) {
+    JClass *ek = classes_get_c(rt->jvm, NULL, "Class_ek");
+    if (!ek || ek->status < CLASS_STATUS_PREPARED) {
+        char msg[96];
+        snprintf(msg, sizeof(msg), "%s:Class_ek_unprepared", stage);
+        jvm_bridge_note_nso_init_trace(msg);
+        return;
+    }
+    FieldInfo *static_canvas = NULL, *delegate = NULL;
+    for (int i = 0; i < ek->fieldPool.field_used; ++i) {
+        FieldInfo *f = &ek->fieldPool.field[i];
+        if ((f->access_flags & ACC_STATIC) &&
+            utf8_equals_c(f->name, "a") &&
+            utf8_equals_c(f->descriptor, "LClass_ek;"))
+            static_canvas = f;
+        if (!(f->access_flags & ACC_STATIC) &&
+            utf8_equals_c(f->name, "b") &&
+            utf8_equals_c(f->descriptor, "LClass_bv;"))
+            delegate = f;
+    }
+    Instance *canonical = static_canvas && ek->field_static
+        ? getFieldRefer(getStaticFieldPtr(static_canvas)) : NULL;
+    Instance *canvas = canvas_override ? canvas_override : canonical;
+    Instance *value = NULL;
+    int field_ok = 0;
+    if (canvas && delegate && canvas->mb.type == MEM_TYPE_INS &&
+        canvas->mb.clazz == ek && delegate->offset_instance >= 0 &&
+        ek->field_instance_len >= (s32)sizeof(__refer) &&
+        delegate->offset_instance <= ek->field_instance_len - (s32)sizeof(__refer)) {
+        field_ok = 1;
+        value = getFieldRefer(getInstanceFieldPtr(canvas, delegate));
+    }
+    char msg[256];
+    snprintf(msg, sizeof(msg),
+             "%s:canvas=%p,static=%p,b=%p,arg=%p,off=%d,len=%d,valid=%d",
+             stage, (void *)canvas, (void *)canonical, (void *)value,
+             (void *)arg, delegate ? delegate->offset_instance : -1,
+             ek->field_instance_len, field_ok);
+    jvm_bridge_note_nso_init_trace(msg);
+}
+#endif
+
 s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
 #if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__
     // Retain game logic inside paint(). For a headless *Canvas* Graphics,
@@ -1312,6 +1363,19 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
     clazz = method->_this_class;
     runtime->clazz = clazz;
     runtime->method = method;
+#if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__
+    int nso_init_probe = 0;
+    Instance *nso_init_receiver = NULL;
+    if (utf8_equals_c(method->name, "<init>")) {
+        if (utf8_equals_c(clazz->name, "Class_cu")) nso_init_probe = 1;
+        else if (utf8_equals_c(clazz->name, "GameMidlet")) nso_init_probe = 2;
+    } else if (utf8_equals_c(clazz->name, "Class_ek") &&
+               utf8_equals_c(method->name, "paint") &&
+               utf8_equals_c(method->descriptor,
+                             "(Ljavax/microedition/lcdui/Graphics;)V")) {
+        nso_init_probe = 3;
+    }
+#endif
     while (clazz->status < CLASS_STATUS_CLINITING) {
         class_clinit(clazz, runtime);
     }
@@ -1342,6 +1406,15 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
             runtime->pc = ca->code;
 
             localvar_init(runtime, ca->max_locals, method->para_slots);
+#if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__
+            if (nso_init_probe) {
+                nso_init_receiver = localvar_getRefer(runtime->localvar, 0);
+                if (nso_init_probe == 1)
+                    treo_nso_inspect_delegate(runtime, "cu_ctor_entry", NULL, nso_init_receiver);
+                else if (nso_init_probe == 3)
+                    treo_nso_inspect_delegate(runtime, "paint_entry", nso_init_receiver, NULL);
+            }
+#endif
 
             //method sync begin
             if (method->is_sync)_synchronized_lock_method(method, runtime);
@@ -4114,6 +4187,17 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                                         //jvm_printf("methodcall getter %s.%s  %d  in    %s.%s\n", utf8_cstr(m->_this_class->name), utf8_cstr(m->name), m->_this_class->status, utf8_cstr(clazz->name), utf8_cstr(method->name));
                                         runtime->pc += 3;
                                     } else if (m->is_setter) {//optimize setter eg: void setSize(int size){this.size=size;}
+#if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__
+                                        const int nso_setter = nso_init_probe == 1 &&
+                                            utf8_equals_c(m->_this_class->name, "Class_ek") &&
+                                            utf8_equals_c(m->name, "a") &&
+                                            utf8_equals_c(m->descriptor, "(LClass_bv;)V");
+                                        Instance *nso_setter_canvas = nso_setter ? ins : NULL;
+                                        Instance *nso_setter_arg = nso_setter ? (sp - 1)->rvalue : NULL;
+                                        if (nso_setter)
+                                            treo_nso_inspect_delegate(runtime, "setter_before",
+                                                                      nso_setter_canvas, nso_setter_arg);
+#endif
                                         ptr = (c8 *) m->converted_code->bytecode_for_jit;//must use original bytecode
                                         match = 1;
                                         //do setter here
@@ -4125,6 +4209,11 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                                         if (ret) {
                                             goto label_exception_handle;
                                         }
+#if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__
+                                        if (nso_setter)
+                                            treo_nso_inspect_delegate(runtime, "setter_after",
+                                                                      nso_setter_canvas, nso_setter_arg);
+#endif
                                         //jvm_printf("methodcall setter %s.%s  %d  in    %s.%s\n", utf8_cstr(m->_this_class->name), utf8_cstr(m->name), m->_this_class->status, utf8_cstr(clazz->name), utf8_cstr(method->name));
                                         runtime->pc += 3;
                                     }
@@ -5195,6 +5284,12 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
             if (!runtime->thrd_info->is_stop)exit(1);//if is_stop , the stack will confuse
         }
     }
+#endif
+#if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__
+    if (nso_init_probe == 1)
+        treo_nso_inspect_delegate(runtime, "cu_ctor_exit", NULL, nso_init_receiver);
+    else if (nso_init_probe == 2)
+        treo_nso_inspect_delegate(runtime, "midlet_ctor_exit", NULL, nso_init_receiver);
 #endif
     runtime_destroy_inl(runtime);
     pruntime->son = NULL;  //must clear , required for getLastSon()
