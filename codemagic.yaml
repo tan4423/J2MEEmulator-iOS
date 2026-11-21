@@ -50,6 +50,8 @@ workflows:
             J2MEEmulator/RuntimePatches/java/time/LocalTime.java \
             J2MEEmulator/RuntimePatches/java/time/LocalDate.java \
             J2MEEmulator/RuntimePatches/java/time/LocalDateTime.java \
+            J2MEEmulator/RuntimePatches/java/time/Instant.java \
+            J2MEEmulator/RuntimePatches/java/time/Duration.java \
             J2MEEmulator/RuntimePatches/java/lang/VerifyError.java \
             J2MEEmulator/RuntimePatches/java/util/Base64.java \
             J2MEEmulator/RuntimePatches/java/util/Objects.java \
@@ -62,7 +64,8 @@ workflows:
           (cd "$core_verify" && jar xf "$jars/minijvm_rt.jar" \
             java/nio/charset/StandardCharsets.class java/io/OutputStreamWriter.class \
             java/time/LocalTime.class java/time/LocalDate.class \
-            java/time/LocalDateTime.class java/lang/VerifyError.class \
+            java/time/LocalDateTime.class java/time/Instant.class \
+            java/time/Duration.class java/lang/VerifyError.class \
             java/util/Base64.class 'java/util/Base64$Encoder.class' \
             'java/util/Base64$Decoder.class' java/util/Objects.class \
             com/sun/cldc/i18n/j2me/UTF_8_Reader.class)
@@ -90,6 +93,16 @@ workflows:
           grep -Fq 'public static java.time.LocalDateTime of(int, int, int, int, int, int, int);' "$RUNNER_TEMP/localdatetime-signatures.txt"
           grep -Fq 'public static java.time.LocalDateTime parse(java.lang.CharSequence);' "$RUNNER_TEMP/localdatetime-signatures.txt"
           grep -Fq 'public java.time.LocalDateTime plusNanos(long);' "$RUNNER_TEMP/localdatetime-signatures.txt"
+          javap "$core_verify/java/time/Instant.class" > "$RUNNER_TEMP/instant-signatures.txt"
+          grep -Fq 'public static java.time.Instant ofEpochSecond(long, long);' "$RUNNER_TEMP/instant-signatures.txt"
+          grep -Fq 'public static java.time.Instant parse(java.lang.CharSequence);' "$RUNNER_TEMP/instant-signatures.txt"
+          grep -Fq 'public long toEpochMilli();' "$RUNNER_TEMP/instant-signatures.txt"
+          javap -c "$core_verify/java/time/Instant.class" > "$RUNNER_TEMP/instant-bytecode.txt"
+          grep -Fq 'java/lang/System.currentTimeMillis:()J' "$RUNNER_TEMP/instant-bytecode.txt"
+          javap "$core_verify/java/time/Duration.class" > "$RUNNER_TEMP/duration-signatures.txt"
+          grep -Fq 'public static java.time.Duration ofSeconds(long, long);' "$RUNNER_TEMP/duration-signatures.txt"
+          grep -Fq 'public java.time.Duration plusNanos(long);' "$RUNNER_TEMP/duration-signatures.txt"
+          grep -Fq 'public long toMillis();' "$RUNNER_TEMP/duration-signatures.txt"
           javap "$core_verify/java/lang/VerifyError.class" > "$RUNNER_TEMP/verify-error-signatures.txt"
           grep -Fq 'public java.lang.VerifyError(java.lang.String);' "$RUNNER_TEMP/verify-error-signatures.txt"
           javap "$core_verify/java/util/Base64.class" > "$RUNNER_TEMP/base64-signatures.txt"
@@ -102,7 +115,7 @@ workflows:
           javap "$core_verify/java/util/Objects.class" > "$RUNNER_TEMP/objects-signatures.txt"
           grep -Fq 'public static boolean deepEquals(java.lang.Object, java.lang.Object);' "$RUNNER_TEMP/objects-signatures.txt"
           grep -Fq 'public static <T> T requireNonNull(T, java.lang.String);' "$RUNNER_TEMP/objects-signatures.txt"
-          echo "[JarBoxNET][BUILD] java8_core_utf8=present localtime=present localdate=present localdatetime=present verifyerror=present base64=present objects=present boot_jar=patched short_read=enabled"
+          echo "[JarBoxNET][BUILD] java8_core_utf8=present localtime=present localdate=present localdatetime=present instant=present duration=present verifyerror=present base64=present objects=present boot_jar=patched short_read=enabled"
           classes="$RUNNER_TEMP/lcdui-classes"
           mkdir -p "$classes"
           javac --release 8 -sourcepath '' -cp "$jars/j2me_api.jar:$jars/minijvm_rt.jar" \
@@ -236,7 +249,7 @@ workflows:
           build_commit="$(git rev-parse --verify HEAD)"
           test "${#build_commit}" -eq 40
           /usr/libexec/PlistBuddy -c "Add :JarBoxBuildCommit string $build_commit" "$app/Info.plist"
-          /usr/libexec/PlistBuddy -c 'Add :JarBoxBootPatch string java8_utf8_localtime_date_v5' "$app/Info.plist"
+          /usr/libexec/PlistBuddy -c 'Add :JarBoxBootPatch string java8_utf8_localtime_instant_duration_v6' "$app/Info.plist"
           actual_commit="$(/usr/libexec/PlistBuddy -c 'Print :JarBoxBuildCommit' "$app/Info.plist")"
           test "$actual_commit" = "$build_commit"
           echo "[JarBoxNET][BUILD] final_ipa_commit=$build_commit"
@@ -251,7 +264,7 @@ workflows:
           ipa_plist="$RUNNER_TEMP/packaged-Info.plist"
           unzip -p "$GITHUB_WORKSPACE/J2ME-Treo-jar-cpu-audit-unsigned.ipa" "Payload/*.app/Info.plist" > "$ipa_plist"
           test "$(/usr/libexec/PlistBuddy -c 'Print :JarBoxBuildCommit' "$ipa_plist")" = "$build_commit"
-          test "$(/usr/libexec/PlistBuddy -c 'Print :JarBoxBootPatch' "$ipa_plist")" = "java8_utf8_localtime_date_v5"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :JarBoxBootPatch' "$ipa_plist")" = "java8_utf8_localtime_instant_duration_v6"
           echo "[JarBoxNET][BUILD] stamped IPA archive verified"
     artifacts: &jarbox_ipa_shared_artifacts
       - J2ME-Treo-jar-cpu-audit-unsigned.ipa
