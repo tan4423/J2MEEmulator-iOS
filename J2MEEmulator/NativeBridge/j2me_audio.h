@@ -10,7 +10,11 @@ extern "C" {
 /// Register audio-related native methods with the JVM.
 void j2me_audio_reg_natives(MiniJVM *jvm);
 
-/// Stop and release all active audio players. Call between game sessions.
+/// Stop and release only this JVM's audio handles. Required for
+/// independently running games; never close another JVM's media players.
+void j2me_audio_stop_for_vm(MiniJVM *vm);
+
+/// Global emergency cleanup only; not used by ordinary game shutdown.
 void j2me_audio_stop_all(void);
 
 #ifdef __cplusplus
