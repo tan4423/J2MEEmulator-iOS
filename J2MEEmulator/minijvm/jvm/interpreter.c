@@ -164,8 +164,8 @@ uint64_t treo_vm_array_lookup_fast_calls(void) { return 0; }
 #if TREO_VM_ARRAY_LOOKUP_DIAG
 // Lightweight staged gate counters, only in the dedicated diagnostic build.
 // Batches of 64; cannot be used to compare CPU with normal A/B builds.
-static _Atomic uint64_t treo_array_diag_counts[8];
-static _Thread_local unsigned treo_array_diag_pending[8];
+static _Atomic uint64_t treo_array_diag_counts[9];
+static _Thread_local unsigned treo_array_diag_pending[9];
 static _Atomic int treo_array_diag_sample_taken;
 static char treo_array_diag_sample[256];
 static inline void treo_array_diag_note(int stage) {
@@ -177,8 +177,9 @@ static inline void treo_array_diag_note(int stage) {
 }
 // A single readout, not a per-method print. Low cost on the game thread.
 static inline void treo_array_diag_capture(MethodInfo *m, const u8 *code) {
-    if (atomic_exchange_explicit(&treo_array_diag_sample_taken, 1,
-                                 memory_order_relaxed) == 0) {
+    int not_started = 0;
+    if (atomic_compare_exchange_strong_explicit(&treo_array_diag_sample_taken,
+            &not_started, 1, memory_order_acq_rel, memory_order_relaxed)) {
         const CodeAttribute *ca = m->converted_code;
         const ExceptionTable *e = ca->exception_table;
         snprintf(treo_array_diag_sample, sizeof(treo_array_diag_sample),
@@ -192,6 +193,8 @@ static inline void treo_array_diag_capture(MethodInfo *m, const u8 *code) {
                  ca->exception_table_length,
                  e ? e->start_pc : 0, e ? e->end_pc : 0,
                  e ? e->handler_pc : 0);
+        atomic_store_explicit(&treo_array_diag_sample_taken, 2,
+                              memory_order_release);
     }
 }
 #endif
@@ -200,11 +203,12 @@ const char *treo_vm_array_lookup_diag_report(void) {
     static char report[700];
     snprintf(report, sizeof(report),
              "[JarBoxVM][ArrayLookupDiag] enabled=1 "
-             "shape_calls~%llu loose_calls~%llu match_calls~%llu "
+             "arity_calls~%llu shape_calls~%llu loose_calls~%llu match_calls~%llu "
              "entered_calls~%llu fields_resolved~%llu "
              "types_ok~%llu array_ok~%llu inbounds_fast~%llu "
              "sample={%s}. Counts batched/64, cumulative per process; "
              "diagnostic CPU is not a valid A/B measurement.",
+             (unsigned long long)atomic_load_explicit(&treo_array_diag_counts[8], memory_order_relaxed),
              (unsigned long long)atomic_load_explicit(&treo_array_diag_counts[0], memory_order_relaxed),
              (unsigned long long)atomic_load_explicit(&treo_array_diag_counts[1], memory_order_relaxed),
              (unsigned long long)atomic_load_explicit(&treo_array_diag_counts[2], memory_order_relaxed),
@@ -213,7 +217,8 @@ const char *treo_vm_array_lookup_diag_report(void) {
              (unsigned long long)atomic_load_explicit(&treo_array_diag_counts[5], memory_order_relaxed),
              (unsigned long long)atomic_load_explicit(&treo_array_diag_counts[6], memory_order_relaxed),
              (unsigned long long)atomic_load_explicit(&treo_array_diag_counts[7], memory_order_relaxed),
-             treo_array_diag_sample_taken ? treo_array_diag_sample : "none");
+             atomic_load_explicit(&treo_array_diag_sample_taken,
+                                  memory_order_acquire) == 2 ? treo_array_diag_sample : "none");
     return report;
 #else
     return "[JarBoxVM][ArrayLookupDiag] enabled=0";
@@ -1169,6 +1174,9 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
 #if TREO_VM_ARRAY_LOOKUP_DIAG
     // Track candidate calls even if the fast-path safety preconditions reject
     // the method before the exact bytecode matcher is ever reached.
+    if (treo_paint_mode == 8 && method->para_slots == 2 &&
+        method->return_slots == 1 && method->is_static)
+        treo_array_diag_note(8); // broader arity gate; before code length
     if (treo_paint_mode == 8 && method->para_slots == 2 &&
         method->return_slots == 1 && method->is_static &&
         method->converted_code && method->converted_code->code &&
