@@ -1144,6 +1144,13 @@ extern void jvm_bridge_note_nso_init_trace(const char *detail);
 static void treo_nso_inspect_delegate(Runtime *rt, const char *stage,
                                        Instance *canvas_override, Instance *arg) {
     JClass *ek = classes_get_c(rt->jvm, NULL, "Class_ek");
+    if (!ek && rt->clazz && rt->clazz->jloader)
+        ek = classes_get_c(rt->jvm, rt->clazz->jloader, "Class_ek");
+    // Some modded MIDlets are defined by a non-boot class loader.
+    // The live receiver is authoritative for setter/paint probes.
+    if (!ek && canvas_override && canvas_override->mb.clazz &&
+        utf8_equals_c(canvas_override->mb.clazz->name, "Class_ek"))
+        ek = canvas_override->mb.clazz;
     if (!ek || ek->status < CLASS_STATUS_PREPARED) {
         char msg[96];
         snprintf(msg, sizeof(msg), "%s:Class_ek_unprepared", stage);
