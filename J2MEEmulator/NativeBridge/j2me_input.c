@@ -414,13 +414,14 @@ static java_native_method j2me_input_methods[] = {
 
 #undef CLS
 
-void j2me_input_reg_natives(MiniJVM *jvm) {
+int j2me_input_reg_natives(MiniJVM *jvm) {
     if (!bind_input_context(jvm)) {
         printf("[J2ME Input] ERROR: no free per-JVM input context\n");
-        return;
+        return 0;
     }
     native_reg_lib(jvm, j2me_input_methods,
                    sizeof(j2me_input_methods) / sizeof(java_native_method));
-    printf("[J2ME Input] Registered %lu native methods\n",
+    printf("[J2ME Input] Registered %lu native methods for owned JVM\n",
            sizeof(j2me_input_methods) / sizeof(java_native_method));
+    return 1;
 }
