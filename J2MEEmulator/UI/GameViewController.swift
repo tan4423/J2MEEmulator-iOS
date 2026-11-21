@@ -415,6 +415,13 @@ class GameViewController: UIViewController {
         if mainStackAuditID != nil { treo_afk_main_trace_cancel() }
         // An old controller may die while a newer session owns the VM.
         if activeGameViewController === self {
+            // Defensive teardown for a controller that disappears unexpectedly.
+            // A later owner's native session must never be touched.
+            if parkedTreoActive &&
+                (jvm_bridge_session_token() == gameSessionToken ||
+                 jvm_bridge_session_is_active() == 0) {
+                stopParkedTreo()
+            }
             treo_afk_buffer_audit_set(0, 0)
             if jarBoxSmartTreo { treo_gc_smart_set(0) }
             treo_afk_guard_auto_set(0)
@@ -508,6 +515,10 @@ class GameViewController: UIViewController {
     // One *live* miniJVM remains owned by this controller while the library
     // overlays it. This is a parked foreground session, not a second JVM.
     private var libraryIsPresented = false
+    // Automatic Treo belongs to the parked JVM, not a black-screen UI.
+    // Explicitly undone on resume, Stop and JVM termination.
+    private var parkedTreoActive = false
+    private var parkedNSODeepIdle = false
     // A game may request an MIDP Alert while the library covers the game.
     // Present it only after returning to the game, not atop the library.
     private var deferredGameAlert = false
@@ -542,12 +553,9 @@ class GameViewController: UIViewController {
             screenMenu.accessibilityLabel = "Tùy chọn game"
             screenMenu.showsMenuAsPrimaryAction = true
             screenMenu.menu = UIMenu(children: [
-                UIAction(title: "Về thư viện · giữ game chạy",
+                UIAction(title: "Về thư viện · tự động Treo",
                          image: UIImage(systemName: "square.grid.2x2")) { [weak self] _ in
                     self?.openLibraryKeepingGame()
-                },
-                UIAction(title: "Treo tiết kiệm · GC thông minh") { [weak self] _ in
-                    self?.showBlackout(mode: 8, smartGC: true, deepPaint: true)
                 },
                 UIAction(title: "Dừng game hoàn toàn",
                          image: UIImage(systemName: "stop.fill"),
@@ -913,7 +921,7 @@ class GameViewController: UIViewController {
         for pin in portraitPadBottomPins { pin.isActive = padIsVisible }
         if jarAuditID != nil {
             screenMenu.menu = UIMenu(children: [
-                UIAction(title: "Về thư viện · giữ game chạy") { [weak self] _ in self?.openLibraryKeepingGame() },
+                UIAction(title: "Về thư viện · tự động Treo") { [weak self] _ in self?.openLibraryKeepingGame() },
                 UIAction(title: "Chẩn đoán kết nối") { [weak self] _ in self?.showNetworkDiagnostics() },
                 UIAction(title: "Hủy chẩn đoán CPU JAR", attributes: .destructive) { [weak self] _ in self?.stopJarAudit() },
                 UIAction(title: "Dừng game hoàn toàn", attributes: .destructive) { [weak self] _ in self?.stopGameFromMenu() }
@@ -923,19 +931,13 @@ class GameViewController: UIViewController {
         // User-facing menu: stable functions + exactly ONE active experiment.
         // Historical probes remain in source for rollback, not in the UI.
         screenMenu.menu = UIMenu(children: [
-            UIAction(title: "Về thư viện · giữ game chạy",
+            UIAction(title: "Về thư viện · tự động Treo",
                      image: UIImage(systemName: "square.grid.2x2")) { [weak self] _ in
                 self?.openLibraryKeepingGame()
             },
             UIAction(title: "Phím điều hướng", state: padMode == .directions ? .on : .off) { [weak self] _ in self?.setPadMode(.directions) },
             UIAction(title: "Phím số", state: padMode == .numbers ? .on : .off) { [weak self] _ in self?.setPadMode(.numbers) },
             UIAction(title: "Ẩn phím · màn hình lớn", state: padMode == .hidden ? .on : .off) { [weak self] _ in self?.setPadMode(.hidden) },
-            UIAction(title: "Treo tiết kiệm · GC thông minh") { [weak self] _ in
-                self?.showBlackout(mode: 8, smartGC: true, deepPaint: true)
-            },
-            UIAction(title: "Treo tương thích · dự phòng") { [weak self] _ in
-                self?.showBlackout(mode: 1, smartGC: true)
-            },
             UIAction(title: "Xem kết quả đo gần nhất",
                      attributes: lastMeasurement == nil ? .disabled : []) { [weak self] _ in
                 self?.showLastMeasurement()
@@ -3495,6 +3497,7 @@ class GameViewController: UIViewController {
                 self.stopRescueWork?.cancel()
                 self.stopRescueWork = nil
                 self.stopJarAudit()
+                self.stopParkedTreo()
                 self.finishStartupWatchdog()
                 self.discardCPUProfile()
                 self.hideBlackout()
@@ -3698,9 +3701,43 @@ class GameViewController: UIViewController {
         (path == nil || path == jarPath)
     }
 
+    // The same proven mode-8 headless Canvas + smart GC path as Treo.
+    // On suspicious late-pixel access, the native guard automatically falls
+    // back to the compatible mode 1. No timer, fullscreen black cover or
+    // artificial Java-loop slowdown is added while browsing the library.
+    private func startParkedTreo() {
+        guard ownsLiveGameSession(), !parkedTreoActive else { return }
+        parkedTreoActive = true
+        treo_afk_guard_auto_set(1)
+        treo_gc_smart_set(1)
+        treo_render_set_afk_mode(8)
+        // Only park Display's polling thread for the structurally verified
+        // NSO Canvas; arbitrary games retain their normal event semantics.
+        parkedNSODeepIdle = treo_ninja_deep_verified() != 0 &&
+                            treo_nso_canvas_recognized() != 0
+        if parkedNSODeepIdle { treo_display_wait_set(1) }
+        NSLog("[JarBoxVM][ParkTreo] enabled token=%llu deep_idle=%d",
+              gameSessionToken, parkedNSODeepIdle ? 1 : 0)
+    }
+
+    private func stopParkedTreo() {
+        guard parkedTreoActive else { return }
+        parkedTreoActive = false
+        // Restore the Display waiter before waking/refreshing the Canvas.
+        if parkedNSODeepIdle {
+            treo_display_wait_set(0)
+            parkedNSODeepIdle = false
+        }
+        treo_afk_guard_auto_set(0)
+        treo_gc_smart_set(0)
+        treo_render_set_afk_mode(0)
+        NSLog("[JarBoxVM][ParkTreo] disabled")
+    }
+
     /// Safe one-slot library multitasking. The game keeps its Java state,
-    /// sockets and threads; only offscreen canvas presentation is suppressed.
-    /// This does not grant iOS background execution or start another miniJVM.
+    /// sockets and threads, while the *full Treo* pipeline reduces offscreen
+    /// drawing and GC overhead. This does not grant iOS background execution
+    /// or start another miniJVM.
     @objc private func openLibraryKeepingGame() {
         guard ownsLiveGameSession(), !libraryIsPresented, presentedViewController == nil else { return }
         finishStartupWatchdog()
@@ -3724,13 +3761,11 @@ class GameViewController: UIViewController {
         navigation.navigationBar.tintColor = .white
 
         libraryIsPresented = true
-        // The library is now the only UIKit destination. The existing AFK
-        // mode 1 skips display work without changing Java scheduling or
-        // introducing a background timer; use the user's proven Treo mode
-        // only when explicitly requested.
+        // Reuse Treo, not the old mode-1-only offscreen path. The library
+        // itself performs no recurring CPU sampling or background animation.
         setGlobalEmulatorView(nil)
         emulatorView.clearPendingGameFrame()
-        j2me_render_set_afk_suspended(1)
+        startParkedTreo()
         NSLog("[JarBoxVM][Park] session=%llu jar=%@", gameSessionToken,
               URL(fileURLWithPath: jarPath).lastPathComponent)
         present(navigation, animated: false)
@@ -3743,8 +3778,8 @@ class GameViewController: UIViewController {
             guard let self else { return }
             self.libraryIsPresented = false
             guard self.ownsLiveGameSession() else { return }
+            stopParkedTreo()
             setGlobalEmulatorView(self.emulatorView)
-            j2me_render_set_afk_suspended(0)
             if self.deferredGameAlert {
                 self.deferredGameAlert = false
                 self.showAlert()
@@ -3755,6 +3790,8 @@ class GameViewController: UIViewController {
 
     func stopParkedGame() {
         guard ownsLiveGameSession() else { return }
+        // Restore native wait/GC state before cooperative shutdown.
+        stopParkedTreo()
         requestGameStop(reason: "library_stop")
     }
 
