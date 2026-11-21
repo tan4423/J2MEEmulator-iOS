@@ -89,77 +89,125 @@ enum JarBoxGameStorage {
         return group
     }
 
-    /// Stage a private snapshot of the source save, then publish clone
-    /// metadata atomically. This API is deliberately not offered in UI
-    /// until the Multi-JVM coordinator can reserve a quiescent snapshot.
-    /// A clone starts with identical save/settings but diverges immediately.
-    nonisolated static func createCloneWhileAllVMsStopped(jarPath: String,
-                                                           documents: String,
-                                                           label: String) throws -> CloneRecord {
+    /// Create a factory-default instance: the same immutable JAR bytes, but
+    /// no original RMS, session logs, display alias or preference values.
+    /// Never copy from the running original. No JVM is started here.
+    nonisolated static func createDefaultClone(jarPath: String, documents: String,
+                                                label: String) throws -> CloneRecord {
         cloneRegistryLock.lock()
         defer { cloneRegistryLock.unlock() }
-        guard jvm_bridge_active_session_count() == 0 else {
-            throw NSError(domain: "JarBox.GameStorage", code: 6,
-                userInfo: [NSLocalizedDescriptionKey: "Không thể sao chép save khi JVM đang chạy."])
-        }
         let title = label.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !title.isEmpty && title.count <= 80 else {
             throw NSError(domain: "JarBox.GameStorage", code: 7,
-                userInfo: [NSLocalizedDescriptionKey: "Tên phiên nhân không hợp lệ."])
+                userInfo: [NSLocalizedDescriptionKey: "Tên tab mới không hợp lệ."])
         }
-        // Preserve the original's on-disk RMS, including old-file migration.
-        let source = try prepareRoot(jarPath: jarPath, documents: documents)
+        guard FileManager.default.fileExists(atPath: jarPath) else {
+            throw NSError(domain: "JarBox.GameStorage", code: 11,
+                userInfo: [NSLocalizedDescriptionKey: "Không tìm thấy file JAR nguồn."])
+        }
         var group = try readCloneGroup(jarPath: jarPath, documents: documents)
+        guard group.clones.count < 16 else {
+            throw NSError(domain: "JarBox.GameStorage", code: 12,
+                userInfo: [NSLocalizedDescriptionKey: "Tối đa 16 bản nhân cho một JAR."])
+        }
         let record = CloneRecord(id: UUID(), label: title, createdAt: Date())
         let target = rootPath(jarPath: jarPath, documents: documents, cloneID: record.id)
-        let pending = target + ".pending-" + UUID().uuidString
         let fm = FileManager.default
         guard !fm.fileExists(atPath: target) else {
             throw NSError(domain: "JarBox.GameStorage", code: 8,
-                userInfo: [NSLocalizedDescriptionKey: "Phiên nhân đã tồn tại."])
+                userInfo: [NSLocalizedDescriptionKey: "Thư mục tab mới đã tồn tại."])
         }
-        try fm.copyItem(atPath: source, toPath: pending)
+        let base = (documents as NSString).appendingPathComponent("Games Data")
+        try fm.createDirectory(atPath: base, withIntermediateDirectories: true)
+        // Empty private root: the MIDlet will create its own RMS defaults.
+        // Do not copy the original's save, settings, account or log.
+        try fm.createDirectory(atPath: target, withIntermediateDirectories: false)
         do {
-            let oldLog = (pending as NSString).appendingPathComponent("save-events.log")
-            if fm.fileExists(atPath: oldLog) { try fm.removeItem(atPath: oldLog) }
-            try fm.moveItem(atPath: pending, toPath: target)
             group.clones.append(record)
-            let registryPath = cloneRegistryPath(jarPath: jarPath, documents: documents)
-            try fm.createDirectory(atPath: (registryPath as NSString).deletingLastPathComponent,
-                                   withIntermediateDirectories: true)
-            let encoded = try JSONEncoder().encode(group)
-            try encoded.write(to: URL(fileURLWithPath: registryPath), options: .atomic)
+            try writeCloneGroup(group, jarPath: jarPath, documents: documents)
         } catch {
-            try? fm.removeItem(atPath: pending)
             try? fm.removeItem(atPath: target)
             throw error
-        }
-        // Duplicate configuration values; do not copy the source display alias.
-        let defaults = UserDefaults.standard
-        let original = settingsId(jarPath: jarPath)
-        let clone = settingsId(jarPath: jarPath, cloneID: record.id)
-        for prefix in ["ss3d_", "resW_", "resH_", "fpsLimit_"] {
-            if let value = defaults.object(forKey: prefix + original) {
-                defaults.set(value, forKey: prefix + clone)
-            }
         }
         return record
     }
 
-
-    nonisolated private static func isSymbolicLink(_ path: String) -> Bool {
-        let values = try? URL(fileURLWithPath: path).resourceValues(forKeys: [.isSymbolicLinkKey])
-        return values?.isSymbolicLink ?? false
+    nonisolated private static func writeCloneGroup(_ group: CloneGroup,
+                                                      jarPath: String,
+                                                      documents: String) throws {
+        let path = cloneRegistryPath(jarPath: jarPath, documents: documents)
+        try FileManager.default.createDirectory(
+            atPath: (path as NSString).deletingLastPathComponent,
+            withIntermediateDirectories: true)
+        try JSONEncoder().encode(group).write(
+            to: URL(fileURLWithPath: path), options: .atomic)
     }
 
-    nonisolated private static func legacyOwners(jarPath: String, documents: String) -> [String] {
-        let directory = (documents as NSString).appendingPathComponent("games")
-        let slug = legacyId(for: jarPath)
-        let filenames = (try? FileManager.default.contentsOfDirectory(atPath: directory)) ?? []
-        return filenames.filter {
-            $0.lowercased().hasSuffix(".jar") &&
-            legacyId(for: (directory as NSString).appendingPathComponent($0)) == slug
+    /// Deletes exactly one independent clone's save and preferences.
+    /// The original JAR and all sibling roots are untouched. Until the
+    /// native coordinator supports per-instance teardown, require idle JVMs.
+    nonisolated static func removeClone(jarPath: String, documents: String,
+                                        cloneID: UUID) throws {
+        cloneRegistryLock.lock()
+        defer { cloneRegistryLock.unlock() }
+        guard jvm_bridge_active_session_count() == 0 else {
+            throw NSError(domain: "JarBox.GameStorage", code: 13,
+                userInfo: [NSLocalizedDescriptionKey: "Dừng game trước khi xóa tab."])
         }
+        var group = try readCloneGroup(jarPath: jarPath, documents: documents)
+        guard group.clones.contains(where: { $0.id == cloneID }) else {
+            throw NSError(domain: "JarBox.GameStorage", code: 14,
+                userInfo: [NSLocalizedDescriptionKey: "Tab nhân bản không tồn tại."])
+        }
+        let target = rootPath(jarPath: jarPath, documents: documents, cloneID: cloneID)
+        let fm = FileManager.default
+        var isDirectory: ObjCBool = false
+        guard fm.fileExists(atPath: target, isDirectory: &isDirectory),
+              isDirectory.boolValue, !isSymbolicLink(target) else {
+            throw NSError(domain: "JarBox.GameStorage", code: 15,
+                userInfo: [NSLocalizedDescriptionKey: "Thư mục tab không an toàn hoặc đã mất."])
+        }
+        // Rename to a private tombstone before changing the registry.
+        // On a registry failure we can restore the save untouched.
+        let tomb = target + ".deleting-" + UUID().uuidString
+        try fm.moveItem(atPath: target, toPath: tomb)
+        group.clones.removeAll(where: { $0.id == cloneID })
+        do {
+            try writeCloneGroup(group, jarPath: jarPath, documents: documents)
+        } catch {
+            try? fm.moveItem(atPath: tomb, toPath: target)
+            throw error
+        }
+        do {
+            try fm.removeItem(atPath: tomb)
+        } catch {
+            // The user must not see a successful deletion when save bytes
+            // were not actually removed.
+            try? fm.moveItem(atPath: tomb, toPath: target)
+            var restore = group
+            restore.clones = try readCloneGroupForRollback(jarPath: jarPath,
+                documents: documents, cloneID: cloneID, group: group)
+            try? writeCloneGroup(restore, jarPath: jarPath, documents: documents)
+            throw error
+        }
+        let defaults = UserDefaults.standard
+        let instance = settingsId(jarPath: jarPath, cloneID: cloneID)
+        for prefix in ["displayName_", "ss3d_", "resW_", "resH_", "fpsLimit_"] {
+            defaults.removeObject(forKey: prefix + instance)
+        }
+    }
+
+    nonisolated private static func readCloneGroupForRollback(jarPath: String,
+                                                                documents: String,
+                                                                cloneID: UUID,
+                                                                group: CloneGroup) throws -> [CloneRecord] {
+        // Keep failed deletion visible as a recoverable group entry.
+        var entries = group.clones
+        if !entries.contains(where: { $0.id == cloneID }) {
+            entries.append(CloneRecord(id: cloneID, label: "Tab cần khôi phục",
+                                       createdAt: Date()))
+        }
+        return entries
     }
 
     /// Never combine two colliding legacy saves or launch against the wrong
