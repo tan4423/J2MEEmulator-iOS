@@ -38,6 +38,12 @@ void j2me_input_post_touch(int type, int x, int y);
 /// @param keyCode J2ME key code
 void j2me_input_post_key(int type, int keyCode);
 
+/// Generation-bound key event for sound completion callbacks. Call on the
+/// iOS main thread to preserve the input ring's single-producer contract.
+uint64_t j2me_input_binding_generation(MiniJVM *vm);
+void j2me_input_post_key_to_vm(MiniJVM *vm, uint64_t generation,
+                              int type, int keyCode);
+
 /// Set virtual canvas size for coordinate conversion.
 void j2me_input_set_canvas_size(int width, int height);
 
