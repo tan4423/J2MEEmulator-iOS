@@ -1,4 +1,5 @@
 #include "jvm_bridge.h"
+#include "jarbox_focus_policy.h"
 #include "jvm.h"
 #include "jvm_util.h"
 #include "garbage.h"
@@ -100,6 +101,8 @@ typedef struct {
 static JarBoxVMContext g_bridge_vm = {0};
 // Tokens are never reused, even when this context is reset and acquired again.
 static _Atomic uint64_t g_bridge_session_sequence;
+// One visible window; every other live tab remains parked (never stopped).
+static JarBoxFocusPolicy g_bridge_focus = JARBOX_FOCUS_POLICY_INITIALIZER;
 // Protect the JVM pointer/phase while the cancellation watchdog interrupts
 // Java threads; normal VM execution never takes this mutex.
 static pthread_mutex_t g_bridge_lifecycle_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -224,6 +227,13 @@ int jvm_bridge_try_begin_session(void) {
         return 0;
     const uint64_t token = atomic_fetch_add_explicit(
         &g_bridge_session_sequence, 1, memory_order_relaxed) + 1;
+    // Every VM token is registered with the single-visible policy before
+    // its async startup worker is scheduled. A new VM cannot steal focus.
+    if (!jarbox_focus_register(&g_bridge_focus, token)) {
+        atomic_store_explicit(&g_bridge_vm.active, 0, memory_order_release);
+        return 0;
+    }
+    (void)jarbox_focus_select(&g_bridge_focus, token);
     atomic_store_explicit(&g_bridge_vm.token, token, memory_order_release);
     atomic_store_explicit(&g_bridge_vm.stop_requested, 0, memory_order_release);
     atomic_store_explicit(&g_bridge_last_error_ready, 0, memory_order_release);
@@ -253,6 +263,39 @@ int jvm_bridge_try_begin_session(void) {
     printf("[JarBoxVM][Lifecycle] session=acquired phase=starting\n");
     return 1;
 }
+/* One visible session, all remaining JVMs parked. The existing one-JVM
+ * guard remains while native Treo/renderer/GC and 3D contain globals.
+ * The focus policy itself is multi-slot; these functions only act on the
+ * VM we can prove owns the current bridge slot today.
+ */
+int jvm_bridge_park_session(uint64_t token) {
+    if (!token || !atomic_load_explicit(&g_bridge_vm.active, memory_order_acquire) ||
+        atomic_load_explicit(&g_bridge_vm.token, memory_order_acquire) != token)
+        return 0;
+    jarbox_focus_park_all(&g_bridge_focus);
+    return jarbox_focus_is_parked(&g_bridge_focus, token) == 1;
+}
+
+int jvm_bridge_focus_session(uint64_t token) {
+    if (!token || !atomic_load_explicit(&g_bridge_vm.active, memory_order_acquire) ||
+        atomic_load_explicit(&g_bridge_vm.token, memory_order_acquire) != token)
+        return 0;
+    MiniJVM *owner = atomic_load_explicit(&g_bridge_vm.jvm, memory_order_acquire);
+    if (!owner) return 0;
+    // The renderer must own the next frame before LCDUI replays the
+    // most recent Form/List/Canvas. Physical input goes only to this VM.
+    if (!j2me_render_focus_vm(owner) || !j2me_input_focus_vm(owner) ||
+        !j2me_ui_focus_vm(owner)) return 0;
+    return jarbox_focus_select(&g_bridge_focus, token);
+}
+
+int jvm_bridge_session_is_parked(uint64_t token) {
+    return jarbox_focus_is_parked(&g_bridge_focus, token);
+}
+uint64_t jvm_bridge_visible_session_token(void) {
+    return jarbox_focus_visible(&g_bridge_focus);
+}
+
 int jvm_bridge_session_phase(void) {
     return atomic_load_explicit(&g_bridge_vm.phase, memory_order_acquire);
 }
@@ -277,6 +320,9 @@ void jvm_bridge_finish_session(void) {
         return;
     }
     pthread_mutex_lock(&g_bridge_lifecycle_lock);
+    // A stopped foreground tab never auto-unparks a different tab.
+    (void)jarbox_focus_unregister(&g_bridge_focus,
+        atomic_load_explicit(&g_bridge_vm.token, memory_order_acquire));
     atomic_store_explicit(&g_bridge_vm.phase, BRIDGE_IDLE, memory_order_release);
     atomic_store_explicit(&g_bridge_vm.stop_requested, 0, memory_order_release);
     atomic_store_explicit(&g_bridge_vm.token, 0, memory_order_release);
