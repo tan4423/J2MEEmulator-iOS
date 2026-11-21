@@ -27,33 +27,10 @@ workflows:
           export PATH="$JAVA_HOME/bin:$PATH"
           export J2ME_PROJECT=J2MEEmulator.xcodeproj
           
-          cat > "$RUNNER_TEMP/J2METreo.m" <<'OBJC'
-          #import <UIKit/UIKit.h>
-          #import <dispatch/dispatch.h>
-          
-          __attribute__((constructor)) static void J2METreoInstall(void) {
-              dispatch_async(dispatch_get_main_queue(), ^{
-                  NSNotificationCenter *center = [NSNotificationCenter defaultCenter];
-                  [center addObserverForName:UIApplicationDidBecomeActiveNotification
-                                      object:nil queue:[NSOperationQueue mainQueue]
-                                  usingBlock:^(NSNotification *note) {
-                      [UIApplication sharedApplication].idleTimerDisabled = YES;
-                  }];
-                  [center addObserverForName:UIApplicationWillResignActiveNotification
-                                      object:nil queue:[NSOperationQueue mainQueue]
-                                  usingBlock:^(NSNotification *note) {
-                      [UIApplication sharedApplication].idleTimerDisabled = NO;
-                  }];
-                  UIApplication *app = [UIApplication sharedApplication];
-                  app.idleTimerDisabled = (app.applicationState == UIApplicationStateActive);
-              });
-          }
-          OBJC
-          xcrun --sdk iphoneos clang -arch arm64 \
-            -isysroot "$(xcrun --sdk iphoneos --show-sdk-path)" \
-            -miphoneos-version-min=15.0 -fobjc-arc \
-            -c "$RUNNER_TEMP/J2METreo.m" -o "$RUNNER_TEMP/J2METreo.o"
-          
+          # GameViewController controls idleTimerDisabled only while its
+          # game UI is visible. The library must allow iOS auto-lock;
+          # do not inject the old process-wide always-awake constructor.
+
           set -euo pipefail
           jars="$PWD/J2MEEmulator/Resources/jars"
           classes="$RUNNER_TEMP/lcdui-classes"
@@ -159,7 +136,7 @@ workflows:
             -scheme J2MEEmulator -configuration Release \
             -sdk iphoneos -destination 'generic/platform=iOS' \
             -derivedDataPath "$RUNNER_TEMP/jarbox-build" \
-            "OTHER_LDFLAGS=\$(inherited) $RUNNER_TEMP/J2METreo.o $RUNNER_TEMP/TreoSLJIT.o $RUNNER_TEMP/TreoJITProbe.o -framework UIKit -framework Foundation -framework Metal" \
+            "OTHER_LDFLAGS=\$(inherited) $RUNNER_TEMP/TreoSLJIT.o $RUNNER_TEMP/TreoJITProbe.o -framework UIKit -framework Foundation -framework Metal" \
             "TREO_GAME_JIT_CFLAGS=-DTREO_IOS_GAME_JIT=1 -I$sljit $vm_dispatch_flag $vm_paint_bridge_flag $paint_sample_flag $utf16_flag $image_cache_flag $array_lookup_flag $array_lookup_diagnostic_flag" \
             "SWIFT_ACTIVE_COMPILATION_CONDITIONS=\$(inherited) $bg_flag" \
             PRODUCT_BUNDLE_IDENTIFIER=app.j2metreo.personal \

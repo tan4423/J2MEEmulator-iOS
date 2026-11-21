@@ -758,3 +758,18 @@ TrungDucTV, and send the full new `Lỗi Java` plus `NSOInit` if it still
 fails. Also compare 10-15 minutes of idle library CPU/thermal at fixed
 brightness/charging conditions. Static checks and GitHub commit do not
 constitute a successful iOS build/device runtime test.
+
+
+### 2026-11-21 screen idle timer aligned to game visibility
+
+The single Codemagic workflow previously injected `J2METreo.m` with an
+Objective-C constructor that set `UIApplication.idleTimerDisabled=YES`
+whenever JarBox was foreground, **including an idle library screen**.
+This prevented iOS display auto-lock even with no game, potentially
+contributing to screen power/heat despite near-zero app CPU. Removed
+that injected constructor from the SAME workflow (no new workflow).
+`GameViewController` now disables auto-lock while a game is visible
+and restores the previous setting on disappearance, preserving long-running
+NSO auto/Treo while letting the library use normal iOS auto-lock.
+The iOS display and brightness can still consume energy while manually
+kept awake; do not equate UI simplification with measured watt savings.

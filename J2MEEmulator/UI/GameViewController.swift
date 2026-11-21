@@ -504,6 +504,7 @@ class GameViewController: UIViewController {
     private var ownsJVMSession = false
     private var gameStopRequested = false
     private var startupTimeoutShown = false
+    private var gameIdleTimerPreviouslyDisabled: Bool?
 
     override var prefersStatusBarHidden: Bool { true }
 
@@ -554,7 +555,22 @@ class GameViewController: UIViewController {
 
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
+        // Keep the screen awake only while the game is visible. Locking the
+        // phone while NSO auto/Treo is active may suspend Java execution.
+        // The library itself must NOT permanently disable auto-lock.
+        if gameIdleTimerPreviouslyDisabled == nil {
+            gameIdleTimerPreviouslyDisabled = UIApplication.shared.isIdleTimerDisabled
+        }
+        UIApplication.shared.isIdleTimerDisabled = true
         startGame()
+    }
+
+    override func viewDidDisappear(_ animated: Bool) {
+        super.viewDidDisappear(animated)
+        if let previous = gameIdleTimerPreviouslyDisabled {
+            UIApplication.shared.isIdleTimerDisabled = previous
+            gameIdleTimerPreviouslyDisabled = nil
+        }
     }
 
     override func didReceiveMemoryWarning() {
