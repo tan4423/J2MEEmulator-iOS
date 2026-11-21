@@ -95,6 +95,7 @@ static pthread_once_t g_ui_contexts_once = PTHREAD_ONCE_INIT;
 static pthread_mutex_t g_ui_contexts_lock = PTHREAD_MUTEX_INITIALIZER;
 static atomic_int g_ui_focused_index = -1;
 static _Thread_local int g_ui_thread_index = -1;
+static _Atomic uint32_t g_ui_new_session_revision = 1;
 static j2me_ui_callback g_ui_callback = NULL;
 
 static void init_ui_contexts(void) {
@@ -167,7 +168,13 @@ static int ui_register_vm(MiniJVM *vm) {
                 ctx->list_type = 0;
                 ctx->alert_timeout = -2;
                 ctx->last_action = 0;
-                atomic_store(&ctx->screen_revision, 0);
+                // Different JVM generations must not reuse the same initial
+                // revision: an old delayed UIKit callback must not be
+                // mistaken for the new session's first Form/Canvas notice.
+                const uint32_t startRevision =
+                    atomic_fetch_add_explicit(&g_ui_new_session_revision, 65536U,
+                                              memory_order_relaxed);
+                atomic_store(&ctx->screen_revision, (int)(startRevision & 0x7fffffffU));
                 atomic_store(&ctx->ui_cut_enabled, false);
                 atomic_store(&ctx->ui_canvas_applied_token, 0);
                 atomic_store(&ctx->ui_saved_notices, 0);
@@ -192,11 +199,19 @@ static int ui_register_vm(MiniJVM *vm) {
 // point is intentionally exposed for a future session coordinator, but
 // selecting focus alone does not start or validate multiple Java sessions.
 int j2me_ui_focus_vm(MiniJVM *vm) {
+    int action = 0, revision = 0;
     pthread_mutex_lock(&g_ui_contexts_lock);
     int index = ui_slot_for_vm(vm);
-    if (index >= 0)
+    if (index >= 0) {
+        JarBoxUIScreenContext *ctx = &g_ui_contexts[index];
         atomic_store_explicit(&g_ui_focused_index, index, memory_order_release);
+        // Refresh the latest real MIDP screen after a session switch,
+        // never replay a different JVM's Form or Alert.
+        action = ctx->last_action;
+        revision = atomic_load_explicit(&ctx->screen_revision, memory_order_acquire);
+    }
     pthread_mutex_unlock(&g_ui_contexts_lock);
+    if (action && g_ui_callback) g_ui_callback(action, revision);
     return index >= 0;
 }
 
@@ -486,19 +501,17 @@ static s32 n_formShow(Runtime *runtime, JClass *clazz) {
     ui_bind_runtime(runtime);
     printf("[J2ME UI] formShow: type=%d title='%s' items=%d commands=%d\n",
            g_form_type, g_form_title, g_form_item_count, g_form_command_count);
-    ui_context()->last_action = J2ME_UI_ACTION_SHOW_FORM;
-    if (ui_is_focused_owner() && g_ui_callback) {
-        int action;
-        switch (g_form_type) {
-            case 0: action = J2ME_UI_ACTION_SHOW_FORM; break;
-            case 1: action = J2ME_UI_ACTION_SHOW_LIST; break;
-            case 2: action = J2ME_UI_ACTION_SHOW_ALERT; break;
-            case 3: action = J2ME_UI_ACTION_SHOW_TEXTBOX; break;
-            default: action = J2ME_UI_ACTION_SHOW_FORM; break;
-        }
-        ui_context()->last_action = action;
-        g_ui_callback(action, j2me_ui_revision());
+    int action;
+    switch (g_form_type) {
+        case 0: action = J2ME_UI_ACTION_SHOW_FORM; break;
+        case 1: action = J2ME_UI_ACTION_SHOW_LIST; break;
+        case 2: action = J2ME_UI_ACTION_SHOW_ALERT; break;
+        case 3: action = J2ME_UI_ACTION_SHOW_TEXTBOX; break;
+        default: action = J2ME_UI_ACTION_SHOW_FORM; break;
     }
+    ui_context()->last_action = action;
+    if (ui_is_focused_owner() && g_ui_callback)
+        g_ui_callback(action, j2me_ui_revision());
     return RUNTIME_STATUS_NORMAL;
 }
 
