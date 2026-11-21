@@ -717,3 +717,44 @@ constructor dispatch bug if status/PC do not show an exception).
 No JAR contents, game loop, paint/Deep Treo semantics, general-purpose
 class layout, library background optimization, 3D/FPS preference,
 rename, or Codemagic workflow count was changed by this fix.
+
+
+## 2026-11-21 Class_fq receiver corruption identified and low-power solid gray UI
+
+On-device diagnostic for TrungDucTV after the checked constructor patch:
+
+```
+phase=load/constructor; java.lang.NoSuchMethodException: a
+midlet_virtual_miss:recv=java/lang/ClassNotFoundException,ref=Class_fq.a(LClass_bz;)V,slots=1,prelinked=1,pre_owner=Class_fq
+midlet_missing_method:pc=20,op=182,ref=Class_fq.a(LClass_bz;)V
+```
+
+Direct inspection of the supplied JAR with `javap` confirms the
+`public final void Class_fq.a(Class_bz)` method exists and PC 20 really
+is that `invokevirtual`. The receiver is **not** `Class_fq` but a
+`ClassNotFoundException` left on the shared operand stack. This is why
+method dispatch failed despite successful symbolic prelinking.
+
+Source audit of `class_load.c:load_class()` found a concrete stack bug:
+when the application class loader's Java `loadClass` threw, the helper
+returned NULL and left the thrown exception on the shared JVM stack.
+Unreachable Java-8 method references can trigger speculative class loads
+during `class_clinit` method prelinking, contaminating the active Java
+method's operands. The new generic cleanup restores the operand-stack
+depth of `load_class()` after the nested classloader call. It does not
+invent a class, skip a game call, or change JAR contents. Whether this
+is the final cause of the observed run **requires new on-device testing**.
+
+The library appearance was simplified to a single opaque dark-gray view:
+no gradient bitmap, blob animation, blur, or transparent navigation-bar
+compositing. Missing game icons use a plain gray fill and icon press
+feedback is immediate rather than animated. N-Gage decorative blur/glow
+and per-frame mirrored game-image callback were removed; the actual game
+Canvas is unchanged. No changes to main, bundled JAR games, NSO Deep
+Treo mode 8, or the single Codemagic workflow.
+
+Next: build latest `loader-ios-jit-probe`, test NSO 251 control and
+TrungDucTV, and send the full new `Lỗi Java` plus `NSOInit` if it still
+fails. Also compare 10-15 minutes of idle library CPU/thermal at fixed
+brightness/charging conditions. Static checks and GitHub commit do not
+constitute a successful iOS build/device runtime test.

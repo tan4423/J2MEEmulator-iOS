@@ -2107,21 +2107,34 @@ JClass *load_class(Instance *jloader, Utf8String *pClassName, Runtime *runtime) 
                 utf8_clear(clsName);
                 utf8_append(clsName, pClassName);
                 utf8_replace_c(clsName, "/", ".");
+                // save the enclosing Java operand-stack depth. A failed
+                // app ClassLoader.loadClass() returns an exception on the
+                // shared stack; this helper returns NULL (not an exception
+                // status), so leaving that Throwable there corrupts the
+                // caller's operand stack. In particular a speculative eager
+                // method resolution can otherwise replace an invokevirtual
+                // receiver with java/lang/ClassNotFoundException.
+                RuntimeStack *loader_stack = runtime->stack;
+                const s32 loader_stack_before = stack_size(loader_stack);
                 Instance *jstr = jstring_create(pClassName, runtime);
-                push_ref(runtime->stack, jstr);
-                push_ref(runtime->stack, jloader);
+                push_ref(loader_stack, jstr);
+                push_ref(loader_stack, jloader);
 
                 s32 ret = execute_method_impl(jvm->shortcut.launcher_loadClass, runtime);
-                if (!ret) {
-                    Instance *ins_of_clazz = pop_ref(runtime->stack);
+                if (ret == RUNTIME_STATUS_NORMAL &&
+                    stack_size(loader_stack) > loader_stack_before) {
+                    Instance *ins_of_clazz = pop_ref(loader_stack);
                     if (ins_of_clazz) {
                         tmpclazz = insOfJavaLangClass_get_classHandle(runtime, ins_of_clazz);
                     }
-                } else {
-                    //jvm_printf("class_load.c class not found:%s\n", utf8_cstr(clsName));
-                    //print_exception(runtime);
-                    //Instance *ins = pop_ref(runtime->stack);
-                    //jvm_printf("load class exception:%s\n", utf8_cstr(ins->mb.clazz->name));
+                }
+                // On failure, discard the Throwable belonging to this
+                // unsuccessful internal lookup. A bytecode operation that
+                // truly requires the missing class still receives NULL and
+                // must raise its own linkage/lookup error at that site.
+                // Do not discard stack values belonging to the caller.
+                if (stack_size(loader_stack) > loader_stack_before) {
+                    loader_stack->sp = loader_stack->store + loader_stack_before;
                 }
                 runtime->thrd_info->no_pause--;
             }
