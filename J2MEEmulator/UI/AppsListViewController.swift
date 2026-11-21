@@ -122,6 +122,9 @@ class AppsListViewController: UIViewController,
                              : "springboard visible, waiting for active scene")
         NotificationCenter.default.addObserver(self, selector: #selector(appDidBecomeActive),
                                                name: UIApplication.didBecomeActiveNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(springboardThermalChanged),
+                                               name: ProcessInfo.thermalStateDidChangeNotification, object: nil)
+        logSpringboardEnergyState("library appeared")
     }
 
     override func viewWillDisappear(_ animated: Bool) {
@@ -133,10 +136,36 @@ class AppsListViewController: UIViewController,
     override func viewDidDisappear(_ animated: Bool) {
         super.viewDidDisappear(animated)
         NotificationCenter.default.removeObserver(self, name: UIApplication.didBecomeActiveNotification, object: nil)
+        NotificationCenter.default.removeObserver(self, name: ProcessInfo.thermalStateDidChangeNotification, object: nil)
     }
 
     @objc private func appDidBecomeActive() {
         scanApps()
+        logSpringboardEnergyState("app became active")
+    }
+
+    @objc private func springboardThermalChanged() {
+        logSpringboardEnergyState("thermal state changed")
+    }
+
+    private func logSpringboardEnergyState(_ reason: String) {
+        guard springboardVisible else { return }
+        // Event-based only. No timer, continuous sampling, GPU profiling, or
+        // recurring work is introduced on the low-power library screen.
+        let thermalName: String
+        switch ProcessInfo.processInfo.thermalState {
+        case .nominal: thermalName = "nominal"
+        case .fair: thermalName = "fair"
+        case .serious: thermalName = "serious"
+        case .critical: thermalName = "critical"
+        @unknown default: thermalName = "unknown"
+        }
+        NSLog("[JarBoxBG][Idle] %@ thermal=%@ brightness=%.2f idle_timer_disabled=%d jvm_phase=%d bg_animated=%d bg_animation_layers=%d",
+              reason, thermalName, UIScreen.main.brightness,
+              UIApplication.shared.isIdleTimerDisabled ? 1 : 0,
+              jvm_bridge_session_phase(),
+              AnimatedBackgroundView.springboardAnimating ? 1 : 0,
+              animatedBackground?.activeAnimationLayers ?? -1)
     }
 
     override func viewDidLayoutSubviews() {
