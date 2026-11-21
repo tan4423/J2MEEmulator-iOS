@@ -59,6 +59,40 @@ int treo_vm_direct_dispatch_build(void) { return TREO_VM_DIRECT_DISPATCH; }
 #endif
 int treo_vm_paint_bridge_build(void) { return TREO_VM_PAINT_BRIDGE; }
 
+#if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__ && !defined(TREO_VM_UTF16_FAST_DISABLED)
+#define TREO_VM_UTF16_FAST 1
+#else
+#define TREO_VM_UTF16_FAST 0
+#endif
+int treo_vm_utf16_fast_build(void) { return TREO_VM_UTF16_FAST; }
+#if TREO_VM_UTF16_FAST
+static _Atomic uint64_t treo_vm_utf16_batches;
+static _Thread_local unsigned treo_vm_utf16_pending;
+uint64_t treo_vm_utf16_fast_calls(void) {
+    return atomic_load_explicit(&treo_vm_utf16_batches, memory_order_relaxed);
+}
+static inline void treo_vm_utf16_note(void) {
+    if (++treo_vm_utf16_pending == 64) {
+        atomic_fetch_add_explicit(&treo_vm_utf16_batches, 64, memory_order_relaxed);
+        treo_vm_utf16_pending = 0;
+    }
+}
+static inline int treo_vm_is_bootstrap_high_surrogate(MethodInfo *m) {
+    u8 kind = __atomic_load_n(&m->treo_utf16_kind, __ATOMIC_RELAXED);
+    if (kind != 0) return kind == 2;
+    const JClass *clazz = m->_this_class;
+    kind = clazz->jloader == NULL &&
+           utf8_equals_c(clazz->name, "java/lang/Character") &&
+           utf8_equals_c(m->name, "isHighSurrogate") &&
+           utf8_equals_c(m->descriptor, "(C)Z") ? 2 : 1;
+    __atomic_store_n(&m->treo_utf16_kind, kind, __ATOMIC_RELAXED);
+    return kind == 2;
+}
+#else
+uint64_t treo_vm_utf16_fast_calls(void) { return 0; }
+#endif
+
+
 
 /* Sampled PaintHot attribution. No Java work is omitted; no bytecode hooks. */
 #if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__ && !defined(TREO_VM_PAINT_SAMPLE_DISABLED)
@@ -984,6 +1018,26 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
             return RUNTIME_STATUS_NORMAL;
         }
     }
+
+#if TREO_VM_UTF16_FAST
+    // For the pure bootstrap predicate only; args were already evaluated.
+    // Respect class initialization, thread suspension, and debugger state.
+    if (method->para_slots == 1 && method->return_slots == 1 &&
+        method->is_static && !method->is_native && !method->is_sync &&
+        method->converted_code != NULL && method->breakpoint == NULL &&
+        method->_this_class->status >= CLASS_STATUS_CLINITED &&
+        !pruntime->jvm->jdwp_enable && !pruntime->thrd_info->is_stop &&
+        !pruntime->thrd_info->suspend_count &&
+        treo_vm_is_bootstrap_high_surrogate(method)) {
+        RuntimeStack *caller = pruntime->stack;
+        StackEntry *arg = caller->sp - 1;
+        const u16 ch = (u16)arg->ivalue;
+        caller->sp = arg;
+        push_int(caller, ch >= 0xD800u && ch <= 0xDBFFu);
+        treo_vm_utf16_note();
+        return RUNTIME_STATUS_NORMAL;
+    }
+#endif
 #endif
 
 #if TREO_VM_PAINT_SAMPLE
