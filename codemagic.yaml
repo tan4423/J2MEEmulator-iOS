@@ -13,6 +13,7 @@ workflows:
         JARBOX_PAINT_SAMPLE_DISABLED: "1"
         JARBOX_VM_UTF16_BASELINE: "0"
         JARBOX_VM_IMAGE_CACHE_BASELINE: "1" # OFF by default: measured ~0 hits in 188.7s
+        JARBOX_VM_ARRAY_LOOKUP_EXPERIMENT: "0" # OFF until measured A/B
     scripts: &jarbox_ipa_shared_scripts
       - name: Build and package unsigned iPhone IPA
         script: |
@@ -137,13 +138,22 @@ workflows:
           else
             echo "[JarBoxVM][BUILD] image_cache=on (Treo mode 8 only)"
           fi
+          # Experimental bytecode-pattern inliner. Both A/B workflows use
+          # exactly the same source and differ only in this compile flag.
+          array_lookup_flag=""
+          if [[ "${JARBOX_VM_ARRAY_LOOKUP_EXPERIMENT:-0}" == "1" ]]; then
+            array_lookup_flag="-DTREO_VM_ARRAY_LOOKUP_EXPERIMENT=1"
+            echo "[JarBoxVM][BUILD] array_lookup=on (experimental)"
+          else
+            echo "[JarBoxVM][BUILD] array_lookup=off (safe baseline)"
+          fi
           xcodebuild -list -project "$J2ME_PROJECT"
           xcodebuild -project "$J2ME_PROJECT" \
             -scheme J2MEEmulator -configuration Release \
             -sdk iphoneos -destination 'generic/platform=iOS' \
             -derivedDataPath "$RUNNER_TEMP/jarbox-build" \
             "OTHER_LDFLAGS=\$(inherited) $RUNNER_TEMP/J2METreo.o $RUNNER_TEMP/TreoSLJIT.o $RUNNER_TEMP/TreoJITProbe.o -framework UIKit -framework Foundation -framework Metal" \
-            "TREO_GAME_JIT_CFLAGS=-DTREO_IOS_GAME_JIT=1 -I$sljit $vm_dispatch_flag $vm_paint_bridge_flag $paint_sample_flag $utf16_flag $image_cache_flag" \
+            "TREO_GAME_JIT_CFLAGS=-DTREO_IOS_GAME_JIT=1 -I$sljit $vm_dispatch_flag $vm_paint_bridge_flag $paint_sample_flag $utf16_flag $image_cache_flag $array_lookup_flag" \
             "SWIFT_ACTIVE_COMPILATION_CONDITIONS=\$(inherited) $bg_flag" \
             PRODUCT_BUNDLE_IDENTIFIER=app.j2metreo.personal \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build
@@ -201,6 +211,43 @@ workflows:
         JARBOX_PAINT_SAMPLE_DISABLED: "1"
         JARBOX_VM_UTF16_BASELINE: "0"
         JARBOX_VM_IMAGE_CACHE_BASELINE: "0"
+    scripts: *jarbox_ipa_shared_scripts
+    artifacts: *jarbox_ipa_shared_artifacts
+
+
+  jit-probe-unsigned-array-lookup-candidate:
+    name: J2ME Treo Array Lookup ON experimental unsigned
+    instance_type: mac_mini_m2
+    max_build_duration: 25
+    environment:
+      xcode: "26.3"
+      vars:
+        # Same source, PaintHot OFF, game JAR untouched. Only array pattern ON.
+        JARBOX_VM_SWITCH_BASELINE: "0"
+        JARBOX_VM_PAINT_BRIDGE_BASELINE: "0"
+        JARBOX_BG_ANIM_BASELINE: "0"
+        JARBOX_PAINT_SAMPLE_DISABLED: "1"
+        JARBOX_VM_UTF16_BASELINE: "0"
+        JARBOX_VM_IMAGE_CACHE_BASELINE: "1"
+        JARBOX_VM_ARRAY_LOOKUP_EXPERIMENT: "1"
+    scripts: *jarbox_ipa_shared_scripts
+    artifacts: *jarbox_ipa_shared_artifacts
+
+  jit-probe-unsigned-array-lookup-baseline:
+    name: J2ME Treo Array Lookup OFF baseline unsigned
+    instance_type: mac_mini_m2
+    max_build_duration: 25
+    environment:
+      xcode: "26.3"
+      vars:
+        # Matched baseline with exactly the same sources and every other flag.
+        JARBOX_VM_SWITCH_BASELINE: "0"
+        JARBOX_VM_PAINT_BRIDGE_BASELINE: "0"
+        JARBOX_BG_ANIM_BASELINE: "0"
+        JARBOX_PAINT_SAMPLE_DISABLED: "1"
+        JARBOX_VM_UTF16_BASELINE: "0"
+        JARBOX_VM_IMAGE_CACHE_BASELINE: "1"
+        JARBOX_VM_ARRAY_LOOKUP_EXPERIMENT: "0"
     scripts: *jarbox_ipa_shared_scripts
     artifacts: *jarbox_ipa_shared_artifacts
 

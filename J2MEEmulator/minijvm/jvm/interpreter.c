@@ -94,6 +94,66 @@ uint64_t treo_vm_utf16_fast_calls(void) { return 0; }
 
 
 
+
+/*
+ * Experimental, opt-in micro-method inline for a narrow *bytecode pattern*,
+ * not for any named JAR/class. Pattern matches the 17-byte Java method:
+ *    getstatic int[]; iload_1; getstatic int; imul; iload_0; iadd;
+ *    iaload; ireturn; astore_2; sipush 1000; ireturn
+ * with a matching 0..11 -> 12 exception handler. All invalid/exceptional
+ * accesses execute the original Java method; only valid in-bounds reads are
+ * accelerated. No JAR bytecode or game state is modified.
+ *
+ * Dynamic static fields are read on EACH call, so map arrays and dimensions
+ * can change. The 32-bit index arithmetic intentionally wraps as Java does.
+ * Disabled in all production and existing diagnostic workflows until A/B
+ * confirms both behavior and CPU benefit.
+ */
+#if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__ && defined(TREO_VM_ARRAY_LOOKUP_EXPERIMENT)
+#define TREO_VM_ARRAY_LOOKUP 1
+#else
+#define TREO_VM_ARRAY_LOOKUP 0
+#endif
+int treo_vm_array_lookup_build(void) { return TREO_VM_ARRAY_LOOKUP; }
+#if TREO_VM_ARRAY_LOOKUP
+static _Atomic uint64_t treo_vm_array_lookup_batches;
+static _Thread_local unsigned treo_vm_array_lookup_pending;
+uint64_t treo_vm_array_lookup_fast_calls(void) {
+    return atomic_load_explicit(&treo_vm_array_lookup_batches, memory_order_relaxed);
+}
+static inline void treo_vm_array_lookup_note(void) {
+    if (++treo_vm_array_lookup_pending == 64) {
+        atomic_fetch_add_explicit(&treo_vm_array_lookup_batches, 64, memory_order_relaxed);
+        treo_vm_array_lookup_pending = 0;
+    }
+}
+static inline int treo_vm_matches_array_lookup(MethodInfo *m) {
+    u8 kind = __atomic_load_n(&m->treo_array_lookup_kind, __ATOMIC_RELAXED);
+    if (kind) return kind == 2;
+    CodeAttribute *ca = m->converted_code;
+    int match = 0;
+    if (ca && ca->code_length == 17 && ca->code &&
+        ca->exception_table_length == 1 && ca->exception_table) {
+        const u8 *c = ca->code;
+        const ExceptionTable *e = ca->exception_table;
+        match =
+            (c[0] == op_getstatic || c[0] == op_getstatic_ref) &&
+            c[3] == op_iload_1 &&
+            (c[4] == op_getstatic || c[4] == op_getstatic_int) &&
+            c[7] == op_imul && c[8] == op_iload_0 &&
+            c[9] == op_iadd && c[10] == op_iaload && c[11] == op_ireturn &&
+            c[12] == op_astore_2 && c[13] == op_sipush &&
+            c[14] == 0x03 && c[15] == 0xe8 && c[16] == op_ireturn &&
+            e->start_pc == 0 && e->end_pc == 11 && e->handler_pc == 12;
+    }
+    kind = match ? 2 : 1;
+    __atomic_store_n(&m->treo_array_lookup_kind, kind, __ATOMIC_RELAXED);
+    return match;
+}
+#else
+uint64_t treo_vm_array_lookup_fast_calls(void) { return 0; }
+#endif
+
 /* Sampled PaintHot attribution. No Java work is omitted; no bytecode hooks. */
 #if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__ && !defined(TREO_VM_PAINT_SAMPLE_DISABLED)
 #define TREO_VM_PAINT_SAMPLE 1
@@ -1035,6 +1095,54 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
         push_int(caller, ch >= 0xD800u && ch <= 0xDBFFu);
         treo_vm_utf16_note();
         return RUNTIME_STATUS_NORMAL;
+    }
+#endif
+
+#if TREO_VM_ARRAY_LOOKUP
+    // Only a fully initialized, resolved, in-bounds int[] read takes the fast
+    // path. Null/OOB, uninitialized fields, debugger, suspension and other
+    // rare conditions retain the original exception and Java semantics.
+    if (treo_paint_mode == 8 && method->para_slots == 2 &&
+        method->return_slots == 1 && method->is_static &&
+        !method->is_native && !method->is_sync && method->breakpoint == NULL &&
+        method->_this_class->status >= CLASS_STATUS_CLINITED &&
+        !pruntime->jvm->jdwp_enable && !pruntime->thrd_info->is_stop &&
+        !pruntime->thrd_info->suspend_count &&
+        treo_vm_matches_array_lookup(method)) {
+        const u8 *code = method->converted_code->code;
+        const u16 array_cp = *((const u16 *)(code + 1));
+        const u16 width_cp = *((const u16 *)(code + 5));
+        ConstantFieldRef *array_ref =
+            class_get_constant_fieldref(method->_this_class, array_cp);
+        ConstantFieldRef *width_ref =
+            class_get_constant_fieldref(method->_this_class, width_cp);
+        FieldInfo *array_field = array_ref ? array_ref->fieldInfo : NULL;
+        FieldInfo *width_field = width_ref ? width_ref->fieldInfo : NULL;
+        if (array_field && width_field &&
+            array_field->_this_class == method->_this_class &&
+            width_field->_this_class == method->_this_class &&
+            array_field->isrefer && !array_field->isvolatile &&
+            !width_field->isrefer && !width_field->isvolatile &&
+            width_field->datatype_bytes == 4 &&
+            utf8_equals_c(array_field->descriptor, "[I") &&
+            utf8_equals_c(width_field->descriptor, "I")) {
+            Instance *array = *((__refer *)getStaticFieldPtr(array_field));
+            if (array && (array->mb.type & MEM_TYPE_ARR)) {
+                const s32 width = *((s32 *)getStaticFieldPtr(width_field));
+                RuntimeStack *caller = pruntime->stack;
+                StackEntry *args = caller->sp - 2;
+                const u32 bits = (u32)args[1].ivalue * (u32)width +
+                                 (u32)args[0].ivalue;
+                const s32 index = (s32)bits;
+                if (index >= 0 && index < array->arr_length) {
+                    const s32 value = ((s32 *)array->arr_body)[index];
+                    caller->sp = args;
+                    push_int(caller, value);
+                    treo_vm_array_lookup_note();
+                    return RUNTIME_STATUS_NORMAL;
+                }
+            }
+        }
     }
 #endif
 #endif

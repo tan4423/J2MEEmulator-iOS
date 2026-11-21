@@ -1064,6 +1064,7 @@ struct _MethodInfo {
     u8 treo_graphics_kind; // 0 unclassified, 1 ordinary, 2 bundled drawRegion
     u8 treo_jar_audit_kind;
     u8 treo_utf16_kind; // 0 unknown, 1 ordinary, 2 bootstrap high-surrogate predicate
+    u8 treo_array_lookup_kind; // 0 unknown, 1 ordinary, 2 exact safe int[] lookup pattern
 };
 //============================================
 
