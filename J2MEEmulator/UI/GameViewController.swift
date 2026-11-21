@@ -3427,7 +3427,10 @@ class GameViewController: UIViewController {
         guard view.window != nil else { return }
         let alert = UIAlertController(title: "Không thể mở game", message: message,
                                       preferredStyle: .alert)
-        alert.addAction(UIAlertAction(title: "Về thư viện", style: .default) { [weak self] _ in
+        alert.addAction(UIAlertAction(title: "Sao chép lỗi", style: .default) { _ in
+            UIPasteboard.general.string = message
+        })
+        alert.addAction(UIAlertAction(title: "Về thư viện", style: .cancel) { [weak self] _ in
             self?.dismiss(animated: true)
         })
         // A startup-timeout alert may still be open when the Java worker
