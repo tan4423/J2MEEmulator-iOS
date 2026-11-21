@@ -362,9 +362,16 @@ int jvm_bridge_init(const char *res_root, const char *save_root, const char *mid
         return -3;
     }
 
-    // Register native methods
+    // Acquire a distinct native input context before exposing the remaining
+    // subsystem hooks. Never start a JVM with an unbound input destination.
+    if (!j2me_input_reg_natives(g_bridge_vm.jvm)) {
+        printf("[JarBoxVM][Lifecycle] cannot reserve independent input context\n");
+        jvm_destroy(g_bridge_vm.jvm);
+        g_bridge_vm.jvm = NULL;
+        atomic_store_explicit(&treo_exact_ninja_verified, 0, memory_order_release);
+        return -4;
+    }
     j2me_render_reg_natives(g_bridge_vm.jvm);
-    j2me_input_reg_natives(g_bridge_vm.jvm);
     j2me_ui_reg_natives(g_bridge_vm.jvm);
     j2me_audio_reg_natives(g_bridge_vm.jvm);
     j2me_micro3d_gl_reg_natives(g_bridge_vm.jvm);
@@ -452,7 +459,12 @@ void jvm_bridge_destroy(void) {
         g_bridge_vm.jvm->collector->exit_flag = 1;
         thread_stop_all(g_bridge_vm.jvm);
 
-        // Step 3: jvm_destroy waits up to 3s for threads, then force-zombies.
+        // Step 3: Unbind only this JVM's physical input and Display wait.
+        // Release makes any late native poll return empty, and signals its
+        // own condition variable without waking or modifying another VM.
+        j2me_input_release_vm(g_bridge_vm.jvm);
+
+        // Step 4: jvm_destroy waits up to 3s for threads, then force-zombies.
         // After this, threads either exited or are zombie (status only — pthread
         // may still be running but render_stop prevents them touching freed resources).
         // Note: force-zombied pthreads may still execute briefly — class_clinit
@@ -460,10 +472,10 @@ void jvm_bridge_destroy(void) {
         jvm_destroy(g_bridge_vm.jvm);
         g_bridge_vm.jvm = NULL;
 
-        // Step 4: Clean up native subsystems — safe because:
+        // Step 5: Clean up other native subsystems — safe because:
         // - render_stop blocks all render acquire calls
         // - jvm_destroy gave threads 3s to exit
-        j2me_input_reset();
+        // Input reset is no longer global; that JVM was released above.
         j2me_audio_stop_all();
         j2me_micro3d_gl_cleanup();
         j2me_m3g_cleanup();
