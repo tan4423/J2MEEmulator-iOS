@@ -477,8 +477,11 @@ void jvm_bridge_destroy(void) {
         MiniJVM *const destroyed_owner = g_bridge_vm.jvm;
         printf("[JVM Bridge] Destroying JVM\n");
 
-        // Step 1: Stop render subsystem first — zombie threads calling native
-        // render methods will get NULL from acquire and return harmlessly.
+        // Step 1: Revoke this JVM's right to publish pixels before stopping
+        // native render calls. Delayed frames must never reach a later tab.
+        j2me_render_release_vm(g_bridge_vm.jvm);
+        // Existing renderer shutdown still stops all native rendering, so
+        // native parallel VM startup remains prohibited until that is scoped.
         j2me_render_stop();
 
         // Step 2: Signal JVM shutdown and stop all threads.
