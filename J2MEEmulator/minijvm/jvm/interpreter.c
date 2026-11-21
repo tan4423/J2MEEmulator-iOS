@@ -5358,6 +5358,23 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
     }
 #endif
 #if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__
+    if (nso_init_probe == 1 || nso_init_probe == 2) {
+        // A Java constructor may exit via an exception, not just RETURN.
+        // The previous NSOInit 'ctor_exit' label could not distinguish
+        // these paths and falsely suggested full initialization succeeded.
+        // Retain status and actual bytecode PC to locate the FIRST failure.
+        const CodeAttribute *method_code = method->converted_code;
+        const uintptr_t base = method_code ? (uintptr_t)method_code->code : 0;
+        const uintptr_t pc = (uintptr_t)runtime->pc;
+        const long bytecode_pc = base && pc >= base &&
+            pc - base <= method_code->code_length ? (long)(pc - base) : -1L;
+        char init_status[128];
+        snprintf(init_status, sizeof(init_status),
+                 "%s:status=%d,pc=%ld,code_len=%d",
+                 nso_init_probe == 2 ? "midlet_ctor_result" : "cu_ctor_result",
+                 ret, bytecode_pc, method_code ? (int)method_code->code_length : -1);
+        jvm_bridge_note_nso_init_trace(init_status);
+    }
     if (nso_init_probe == 1)
         treo_nso_inspect_delegate(runtime, "cu_ctor_exit", NULL, nso_init_receiver);
     else if (nso_init_probe == 2)
