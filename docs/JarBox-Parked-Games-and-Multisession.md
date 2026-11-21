@@ -198,3 +198,88 @@ without restarting its sample timer while inactive.
 The new global menu and cover are regular UIKit source changes,
 not yet built/tested on an iPhone. The existing one Codemagic workflow
 and native singleton ownership safeguards remain unchanged.
+
+
+## Multi-JVM native isolation — implementation stage 1 (2026-11-22)
+
+The developer requested **independent, truly concurrent Java ME sessions**.
+The current source has been modified immediately, but **the runtime is
+not yet authorized to start two live JVMs**. Enabling it early would be
+a real memory/IO safety regression, not an MVP.
+
+### Shipped source changes
+
+1. \`jvm_bridge.c\` moves the active \`MiniJVM*\`, phase, stop state and
+   generation token into a typed \`JarBoxVMContext\`. The JVM owner pointer
+   is an atomic C pointer, and Java's native \`isStopRequested\` checks
+   **its own** \`runtime->jvm\` instead of blindly taking a global stop flag.
+   The existing exclusive acquisition CAS remains enforced.
+2. \`j2me_input.c\` now owns up to four **native input contexts**, each
+   bound to a concrete \`MiniJVM*\` rather than one process-global ring.
+   Java \`pollInputEvent\` and Display-wait JNI resolve the context from
+   \`runtime->jvm\`; each has its own condition variable and wake sequence.
+   UIKit physical input is routed only to the explicitly focused context.
+   Binding fails rather than silently sharing an input ring. A native
+   cleanup removes only the ending JVM's ring and condition state.
+3. \`jarbox_input_ring.h\` is the **real production** SPSC ring primitive
+   with explicit C11 acquire/release ordering. The C host regression
+   compiles this exact header and runs **two concurrent producer/consumer
+   pairs**, 12,000 events per ring, including independent overflow and
+   reset tests. A separate local C smoke test ran 30,000 events per ring.
+   Input-context capacity four does **not** imply four working JVMs.
+4. Audio now tracks native WAV/MP3 and MIDI handles by their creating
+   JVM. Start/stop/close/volume/time methods check ownership. Ordinary
+   teardown calls \`j2me_audio_stop_for_vm(owner)\` and does not call the
+   old global \`stop_all\`; iOS \`AVAudioSession\` remains a physical
+   process-wide service by design. Per-player audio-completion callbacks
+   capture the input binding generation and dispatch to the main
+   producer queue, preventing an old game's completion from generating
+   input in a later game even if its VM address is reused. Immutable
+   soundfont and AVAudioSession setup use \`dispatch_once\`.
+5. \`tools/multivm_readiness.py\` returns a source-structure report with
+   a truthful **false** \`concurrent_jvms_safe_to_enable\` status while
+   any global state blocker exists. \`--require-ready\` exits nonzero.
+   New tests guard ownership, audio callbacks, exclusive teardown and
+   the remaining safety gate. These tests do not replace Xcode/iPhone
+   testing of real Java threads.
+
+### Blockers that still prevent real concurrent game execution
+
+| Native subsystem | Shared process state to separate |
+| --- | --- |
+| 2D renderer and Canvas | \`g_flush_callback\`, image/context handles, UI layer targets |
+| MIDP Form/List/Alert | \`g_form_title\`, \`g_ui_callback\`, commands, list contents, pending text, revisions |
+| Treo / GC | \`treo_afk_mode\`, Smart GC scheduling, \`g_native_extra_heap\` included in each JVM GC calculation |
+| 3D | \`g_render_3d_scale\`, MC3D/M3G GPU buffers and native handle ownership |
+| Networking and diagnostics | Java/socket native ownership plus process-wide diagnostic buffers |
+| JVM teardown/JIT | Native heap, stale/zombie Java threads, JIT caches, session-scoped resource cleanup |
+| UI/session scheduling | Independent GameViewController destinations, CPU budgets, safe focus/audio/background policy |
+
+In particular, \`garbage.c\` currently includes a global
+\`g_native_extra_heap\` in GC heap accounting while
+\`j2me_render_cleanup\` resets it globally. Starting B while A is
+collecting garbage could charge B's allocations to A or zero A's
+accounting when B exits. These are real shared-memory concerns.
+The current source audit intentionally refuses to assert multi readiness.
+
+### How to run the checks
+
+\`\`\`sh
+python3 -m unittest discover -s tools/tests -p 'test_multivm*.py'
+python3 tools/multivm_readiness.py --json
+# Unsafe until all subsystems are isolated; exits 2 as designed:
+python3 tools/multivm_readiness.py --require-ready
+\`\`\`
+
+The existing Codemagic workflow's full test discovery automatically
+includes the new test modules. There is no new workflow, no change to
+\`main\`, no game JAR modifications, no fake network calls and no
+new Treo UI variants. The once-confirmed v9 remains the on-device
+regression baseline. No IPA build or dual-JVM device run has been
+verified for this native implementation stage.
+
+**Shipping criterion for actual multi-JVM:** remove each real native
+shared-state blocker and test two live JVMs performing independent
+rendering, input, network/auto, RMS writes, audio, Treo, GC, stop,
+restart, and repeated foreground/background switches. Preserve the
+exclusive guard until that criterion is met.
