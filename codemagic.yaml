@@ -41,7 +41,8 @@ workflows:
           jar uf "$jars/j2me_api.jar" -C "$classes" .
           # The shipped Connector.class was the unsupported-transport stub.
           # Require the actual Java ME protocol dispatcher in the built JAR.
-          javap -classpath "$jars/j2me_api.jar:$jars/minijvm_rt.jar" -c javax.microedition.io.Connector | grep -q 'ConnectionBaseInterface.openPrim'
+          javap -classpath "$jars/j2me_api.jar:$jars/minijvm_rt.jar" -c javax.microedition.io.Connector > "$RUNNER_TEMP/connector-bytecode.txt"
+          grep -Fq 'ConnectionBaseInterface.openPrim' "$RUNNER_TEMP/connector-bytecode.txt"
           echo "[JarBoxNET][BUILD] Connector socket/http/https dispatch=enabled"
           
           # Use only the pinned SLJIT source; do not build or run upstream scripts.
