@@ -229,11 +229,11 @@ class AppsListViewController: UIViewController,
                 let fileName = URL(fileURLWithPath: jar.path).lastPathComponent
                 let defaultName = meta?.midletName ?? jar.name
                 let key = "displayName_" + Self.gameId(forPath: jar.path)
-                let override = UserDefaults.standard.string(forKey: key)?
+                let savedName = UserDefaults.standard.string(forKey: key)?
                     .trimmingCharacters(in: .whitespacesAndNewlines)
                 // A display alias never changes the JAR filename, RMS path,
                 // or per-game preferences. Safe to read while scanning.
-                let appName = (override?.isEmpty == false) ? override! : defaultName
+                let appName = (savedName?.isEmpty == false) ? savedName! : defaultName
                 return (appName, jar.path, fileName, meta?.version, meta?.vendor, jarIcon)
             }
             unsorted.sort { $0.0.localizedCaseInsensitiveCompare($1.0) == .orderedAscending }
