@@ -5,7 +5,14 @@ workflows:
     max_build_duration: 25
     environment:
       xcode: "26.3"
-    scripts:
+      vars:
+        # Ready-to-build defaults. No settings need to be entered in Codemagic.
+        JARBOX_VM_SWITCH_BASELINE: "0"
+        JARBOX_VM_PAINT_BRIDGE_BASELINE: "0"
+        JARBOX_BG_ANIM_BASELINE: "0"
+        JARBOX_PAINT_SAMPLE_DISABLED: "1"
+        JARBOX_VM_UTF16_BASELINE: "0"
+    scripts: &jarbox_ipa_shared_scripts
       - name: Build and package unsigned iPhone IPA
         script: |
           set -euo pipefail
@@ -148,5 +155,23 @@ workflows:
           
           test -s "$GITHUB_WORKSPACE/J2ME-Treo-jar-cpu-audit-unsigned.ipa"
           /usr/bin/unzip -tq "$GITHUB_WORKSPACE/J2ME-Treo-jar-cpu-audit-unsigned.ipa"
-    artifacts:
+    artifacts: &jarbox_ipa_shared_artifacts
       - J2ME-Treo-jar-cpu-audit-unsigned.ipa
+
+
+  jit-probe-unsigned-utf16-baseline:
+    name: J2ME Treo UTF16 OFF baseline unsigned
+    instance_type: mac_mini_m2
+    max_build_duration: 25
+    environment:
+      xcode: "26.3"
+      vars:
+        # Same script, same JARs, same iOS/UI optimizations as the candidate.
+        # Only the pure bootstrap UTF-16 method fastpath is disabled.
+        JARBOX_VM_SWITCH_BASELINE: "0"
+        JARBOX_VM_PAINT_BRIDGE_BASELINE: "0"
+        JARBOX_BG_ANIM_BASELINE: "0"
+        JARBOX_PAINT_SAMPLE_DISABLED: "1"
+        JARBOX_VM_UTF16_BASELINE: "1"
+    scripts: *jarbox_ipa_shared_scripts
+    artifacts: *jarbox_ipa_shared_artifacts

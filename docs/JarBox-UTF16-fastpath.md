@@ -13,3 +13,19 @@ Default Codemagic `J2ME Treo JIT probe unsigned`: intrinsic ON. Set `JARBOX_VM_U
 
 ## Status
 Source integrated; Xcode/iPhone build and CPU benefit **not yet verified**. Optimizing Character predicate is a candidate for a modest gain; it does not promise 10–20 CPU-point reductions.
+
+
+## Zero-manual-configuration Codemagic workflows
+
+As of the following CI-ready commit, the builder has two **preconfigured workflows** (same shared script, same source, same bundled JARs):
+
+| Select in Codemagic | UTF-16 intrinsic | PaintHot profiler | Animation pause | Other VM settings |
+| --- | --- | --- | --- | --- |
+| `J2ME Treo JIT probe unsigned` | **ON** | **OFF** | ON | computed-goto + Paint Bridge |
+| `J2ME Treo UTF16 OFF baseline unsigned` | **OFF** | **OFF** | ON | computed-goto + Paint Bridge |
+
+The variables are declared inside `codemagic.yaml`, so **do not manually set environment variables or edit code**. Select branch `loader-ios-jit-probe`, select the candidate workflow, and press **Start new build**. Download the `J2ME-Treo-jar-cpu-audit-unsigned.ipa` artifact from the finished build and install on the existing device using the user's normal unsigned-IPA workflow. For A/B, repeat with the baseline workflow and reinstall its IPA. The two IPA filenames are identical but are in *different build records*: label them with their respective workflow names when saving logs.
+
+Read the build console to verify `paint_sampler=off` and `utf16_fast=on/off` as appropriate; runtime `[JarBoxVM][Treo]` must match. If there is any mismatch, reject that run. Use same original JAR, game scene, state, brightness and similar 90-120-s AFK intervals, with Java in-JAR sleep disabled for isolated JarBox comparison. Record process/main/paint CPU, paint/s, GC, rendering restoration, bot/network status and `utf16_fast_calls~N`. Run candidate -> baseline -> candidate if feasible. Reject changes that don't produce a repeatable improvement or impact game logic.
+
+The known-good animation fix remains untouched, and all changes in this CI-ready commit are workflow defaults and instructions.
