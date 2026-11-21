@@ -165,6 +165,27 @@ static int treo_live_image(RenderContext *rc, CGImageRef image, int64_t x, int64
 static int treo_live_enqueue(RenderContext *rc, RenderImage *img, int64_t x, int64_t y,
                              int sx, int sy, int w, int h, int transform);
 static j2me_flush_callback g_flush_callback = NULL;
+// Frame publication is controlled by a *generation* bound to one VM,
+// never by JAR path (clones all share the same binary) or stale pointers.
+// Java rendering into offscreen buffers may continue, but only the VM
+// currently owning the visible screen can publish its pixels to UIKit.
+static _Atomic uint64_t g_visible_render_owner_key;
+
+int j2me_render_focus_vm(MiniJVM *vm) {
+    const uint64_t key = jarbox_native_heap_key_for_vm(vm);
+    if (!key) return 0;
+    atomic_store_explicit(&g_visible_render_owner_key, key, memory_order_release);
+    return 1;
+}
+void j2me_render_release_vm(MiniJVM *vm) {
+    const uint64_t key = jarbox_native_heap_key_for_vm(vm);
+    if (!key) return;
+    uint64_t expected = key;
+    (void)atomic_compare_exchange_strong_explicit(
+        &g_visible_render_owner_key, &expected, 0,
+        memory_order_acq_rel, memory_order_acquire);
+}
+
 _Atomic int treo_afk_mode = 0;
 static _Atomic uint64_t treo_afk_bypass_deadline, treo_afk_bypassed, treo_afk_next_paint;
 static void process_dead_shells(void);
@@ -1937,7 +1958,18 @@ static s32 n_flushToScreen(Runtime *runtime, JClass *clazz) {
         }
     }
     if (rc) { rc->liveBlocked = 0; treo_software_publish(rc); }
-    if (afk || (g_afk_canvas && g_afk_canvas == handle)) { rc_release(rc); return RUNTIME_STATUS_NORMAL; }
+    // A native framebuffer is owned by its creating VM. It may never be
+    // published when another tab owns the visible screen or when its VM
+    // no longer has a live generation key. Avoid a snapshot as well.
+    const uint64_t callerKey = jarbox_native_heap_key_for_vm(runtime->jvm);
+    const uint64_t visibleKey = atomic_load_explicit(
+        &g_visible_render_owner_key, memory_order_acquire);
+    if (!rc || !callerKey || callerKey != rc->heap_key ||
+        callerKey != visibleKey || afk ||
+        (g_afk_canvas && g_afk_canvas == handle)) {
+        rc_release(rc);
+        return RUNTIME_STATUS_NORMAL;
+    }
     const int profiling = treo_profile_active();
     if (profiling) TREO_PROF_ADD(flushes, 1);
     if (rc && g_flush_callback) {
@@ -4194,6 +4226,10 @@ static java_native_method j2me_render_methods[] = {
 #undef CLS
 
 void j2me_render_reg_natives(MiniJVM *jvm) {
+    // Preserve the existing one-game behavior while refusing unowned VMs.
+    if (atomic_load_explicit(&g_visible_render_owner_key,
+                             memory_order_acquire) == 0)
+        (void)j2me_render_focus_vm(jvm);
     native_reg_lib(jvm, j2me_render_methods,
                    sizeof(j2me_render_methods) / sizeof(java_native_method));
     printf("[J2ME Render] Registered %lu native methods\n",
