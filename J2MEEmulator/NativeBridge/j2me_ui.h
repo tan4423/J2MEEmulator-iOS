@@ -23,8 +23,16 @@ void j2me_ui_lock_screen(void);
 void j2me_ui_unlock_screen(void);
 void j2me_ui_stage_text(int revision, int index, const uint16_t *units, int count);
 
-/// Register UI-related native methods with the JVM.
-void j2me_ui_reg_natives(MiniJVM *jvm);
+/// Reserve a separate Form/List/Alert screen context for a JVM.
+/// Returns 0 if every context is occupied; never shares another VM's state.
+int j2me_ui_reg_natives(MiniJVM *jvm);
+
+/// Select the context visible to UIKit. This does not start another JVM
+/// or grant safe concurrent execution while renderer/GC remain global.
+int j2me_ui_focus_vm(MiniJVM *jvm);
+
+/// Release only the ending JVM's MIDP UI state after Java threads stop.
+void j2me_ui_release_vm(MiniJVM *jvm);
 
 /// Callback for creating/showing native iOS views.
 /// Called from JVM thread — implementations must dispatch to main thread.
