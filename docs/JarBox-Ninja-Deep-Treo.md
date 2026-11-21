@@ -561,3 +561,89 @@ Source changes restricted to `loader-ios-jit-probe`, preserving the
 single `jit-probe-unsigned` Codemagic workflow, NSO Deep Treo, 3D/FPS
 advanced menu and display-only rename. No iOS build/device verification
 has been done for the new probes.
+
+
+## 2026-11-21 Library heat at 0–2% app CPU; low-power springboard background
+
+User reported the phone feeling hot while sitting on the JarBox game
+library although the reported **app CPU is about 0–2%**. This is not
+proof of a JarBox thermal issue, nor evidence it is caused by CPU
+execution. App CPU accounting does not directly measure display power,
+the compositor, GPU power or skin temperature.
+
+Source audit found the visible library's `AnimatedBackgroundView`
+retained **six independently repeating UIKit view animations**, each
+randomly moving/resizing over 10–16s, underneath a **full-screen
+`NeutralBlurView(radius: 40)`** using live backdrop blur. This can
+require repeated screen compositing/filtering even when the application
+CPU percentage looks low. That is a concrete candidate for GPU/display
+energy and heat in idle library mode.
+
+To test/remove the ongoing work, the default library background
+implementation is now a **static, opaque, cached gradient bitmap**:
+- The six colors remain as smoothly blended radial gradients.
+- Drawn once on initial screen layout, and rebuilt only if screen
+  size or scale changes; backing-store scale capped at 2x.
+- One UIImageView displays the result. No `UIView.animate`, live
+  `UIVisualEffectView`, `CAFilter`, recurring blur, or timed loop on
+  the home screen.
+- The original animated implementation is preserved, **only** when
+  building with the existing `JARBOX_BG_ANIM_BASELINE=1` Codemagic
+  flag for controlled A/B tests. No new workflows are added.
+- `[JarBoxBG] mode=static_bitmap` logs cached pixel size, bitmap render
+  count and the absence of animated layers when the screen appears or
+  game starts. `[JarBoxBG][Idle]` logs the OS-level thermal status,
+  `UIScreen.main.brightness`, whether idle timer is disabled,
+  current `jvm_bridge_session_phase()`, and background layer count.
+  Logs are event-driven (appear, app active, thermal-state changes),
+  **not** a per-second sampling timer.
+
+A high brightness level, charging, unrelated system activity, cellular
+radio, ambient conditions or an old JVM session stuck in cleanup may
+also contribute to felt heat. These logs cannot attribute heat to
+any specific part of the phone or measure watts/GPU utilization. To
+validate, compare original animated background (baseline flag on)
+against default static background under similar brightness, ambient
+temperature, charging state, and idle library duration (e.g. 10–15min).
+Check whether thermal state changes and how the physical temperature
+feels; optionally use external power/thermal instrumentation. Do not
+claim a battery saving without controlled device readings.
+
+### New evidence from the user's exact NSO initialization trace
+
+User reported:
+
+```
+NSOInit: midlet_ctor_exit:canvas=0x11f1a1f80,static=0x11f1a1f80,b=0x0,
+arg=0x11f639100,off=112,len=136,valid=1 |
+paint_entry:canvas=0x11f1a1f80,static=0x11f1a1f80,b=0x0,
+arg=0x0,off=112,len=136,valid=1
+```
+
+Interpretation: the paint receiver **is the same instance as** the
+canonical `Class_ek.a` canvas, and the `Class_ek.b` field is null
+after the GameMidlet constructor and at first paint. The reported field
+offset 112 is within the 136-byte instance field area. This rules out
+the mistaken-Canvas hypothesis for that run. **Notably missing**
+`cu_ctor_entry`, `setter_before`, `setter_after`,
+`cu_ctor_exit`, and `before_gc/after_gc`. This strongly suggests
+the initializer was not entered or those probes did not run; it is
+**not yet proof** that GC or field corruption occurred. The next
+instrumentation follows the actual GameMidlet bytecode path and logs:
+
+- `new_cu`: object allocation from `GameMidlet.<init>`
+- `special_resolve`: resolves its `invokespecial Class_cu.<init>`
+- `special_execute`: dispatches the resolved class initializer
+  before calling `execute_method_impl`
+- `cu_ctor_entry` and the setter / GC probes as before.
+
+If `new_cu` is absent, GameMidlet's constructor control flow is
+unexpected; if `new_cu` exists but `special_resolve` / `execute`
+do not, investigate the invocation instruction transformation; if
+resolution shows `actual_cls` other than `Class_cu`, inspect
+miniJVM methodref binding and empty-method rewriting before changing
+any other code. If `Class_cu.<init>` truly executes, field-write
+events distinguish the actual failure.
+
+No generic constructor or field semantics were changed in this
+diagnostic patch. No on-device run of this version yet.
