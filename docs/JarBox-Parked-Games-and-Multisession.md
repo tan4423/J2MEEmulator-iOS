@@ -16,12 +16,21 @@ Status: **one live miniJVM, one parked app**, not simultaneous JVMs.
   if needed. The menu is available over MIDP Forms and Lists too.
 - The library shows a static green dot on the live game icon; tapping the
   same icon or **Tiếp tục** returns to the exact existing session.
-  Long-pressing the icon exposes **Tiếp tục** and **Dừng hẳn**.
+  **Dừng** is also visible in the library navigation bar. Long-pressing the
+  icon exposes **Tiếp tục** and **Dừng hẳn**.
+- MIDP game alerts requested while the library is on top are deferred
+  until the session is resumed, rather than presenting a second modal from
+  the hidden game controller. Later Canvas/Form/List transitions discard
+  obsolete deferred alerts.
 - Tapping a different JAR while this JVM is live explains the single-slot
   safety limit and offers stop/resume. The JAR is **not launched** until
   the previous JVM has genuinely terminated and released its resources.
 - When the game ends on its own while parked, the overlay library closes,
   the owner controller dismisses, and the ordinary library becomes visible.
+- A slow stop retains a **Xử lý phiên kẹt** recovery action instead of hiding
+  the still-live JVM; importing over the currently running JAR is blocked.
+  The Back control still dismisses a launch-failure screen when no JVM
+  was acquired.
 - The game's render target is detached and its pending frame discarded
   while the library is displayed. The tested *compatibility* AFK display
   suppression (mode 1) is engaged, then reversed on resume.
