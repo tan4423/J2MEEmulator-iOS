@@ -29,6 +29,8 @@ Status: **one live miniJVM, one parked app**, not simultaneous JVMs.
   the owner controller dismisses, and the ordinary library becomes visible.
 - A slow stop retains a **Xử lý phiên kẹt** recovery action instead of hiding
   the still-live JVM; importing over the currently running JAR is blocked.
+  The parked overlay also rejects new game launches during the narrow native
+  teardown → UIKit dismissal window, even if the previous native token is idle.
   The Back control still dismisses a launch-failure screen when no JVM
   was acquired.
 - The game's render target is detached and its pending frame discarded
