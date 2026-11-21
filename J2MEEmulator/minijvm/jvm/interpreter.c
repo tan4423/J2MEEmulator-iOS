@@ -137,6 +137,14 @@ static inline int treo_vm_matches_array_lookup(MethodInfo *m) {
         ca->exception_table_length == 1 && ca->exception_table) {
         const u8 *c = ca->code;
         const ExceptionTable *e = ca->exception_table;
+        // class_load.c::_changeBytesOrder rewrites the sipush immediate
+        // to host byte order in converted_code. Class-file bytes 03 e8
+        // therefore become e8 03 on arm64 iOS, unlike javap output.
+#if __JVM_LITTLE_ENDIAN__
+        const int returns_1000 = c[14] == 0xe8 && c[15] == 0x03;
+#else
+        const int returns_1000 = c[14] == 0x03 && c[15] == 0xe8;
+#endif
         match =
             (c[0] == op_getstatic || c[0] == op_getstatic_ref) &&
             c[3] == op_iload_1 &&
@@ -144,7 +152,7 @@ static inline int treo_vm_matches_array_lookup(MethodInfo *m) {
             c[7] == op_imul && c[8] == op_iload_0 &&
             c[9] == op_iadd && c[10] == op_iaload && c[11] == op_ireturn &&
             c[12] == op_astore_2 && c[13] == op_sipush &&
-            c[14] == 0x03 && c[15] == 0xe8 && c[16] == op_ireturn &&
+            returns_1000 && c[16] == op_ireturn &&
             e->start_pc == 0 && e->end_pc == 11 && e->handler_pc == 12;
     }
     kind = match ? 2 : 1;
