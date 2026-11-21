@@ -35,7 +35,7 @@ public final class RmsEventLog {
             !"DELETE_RECORD".equals(operation) &&
             !"SAVE_ERROR".equals(operation) &&
             !"DELETE_ERROR".equals(operation)) return;
-        File log = new File(root, "save-events.log");
+        File log = new File(root, "rms-events.log");
         if (log.exists() && log.length() >= MAX_LOG_BYTES) return;
         // Stable opaque-ish ID, not the raw RecordStore name. A hash
         // is diagnostic metadata, not a security guarantee.
