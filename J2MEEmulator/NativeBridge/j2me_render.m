@@ -378,7 +378,104 @@ static _Atomic uint64_t treo_nso_request_count;
 static _Atomic uint64_t treo_nso_last_request_ns;
 static _Atomic uint64_t treo_nso_request_bins[TREO_NSO_BINS];
 
+
+/*
+ * NSO game-thread compute-speed probe. At most one 60k-step benchmark
+ * every 5 seconds, on the SAME non-main pthread that repeatedly requests
+ * NSO frames (before and during Treo). Uses the same integer operations
+ * for a side-by-side phase comparison. NEVER claims a hardware core ID,
+ * clock rate, P/E assignment, real game tick, or battery power.
+ */
+enum { TREO_NSO_WORK_STEPS = 60000, TREO_NSO_WORK_PHASES = 2 };
+typedef struct {
+    _Atomic uint64_t count, cpu_ns, wall_ns;
+    _Atomic int first_qos, last_qos;
+} TreoNSOWork;
+static TreoNSOWork treo_nso_work[TREO_NSO_WORK_PHASES];
+static _Atomic uint64_t treo_nso_work_owner;
+static _Atomic uint64_t treo_nso_work_last_ns[TREO_NSO_WORK_PHASES];
+static _Thread_local uint64_t treo_nso_work_sink = UINT64_C(0x9e3779b97f4a7c15);
+
+uint64_t treo_nso_work_samples(int phase) {
+    return phase >= 0 && phase < TREO_NSO_WORK_PHASES
+         ? atomic_load_explicit(&treo_nso_work[phase].count, memory_order_acquire)
+         : 0;
+}
+double treo_nso_work_ns_per_step(int phase, int wall) {
+    if (phase < 0 || phase >= TREO_NSO_WORK_PHASES) return -1.0;
+    const uint64_t count = treo_nso_work_samples(phase);
+    if (count == 0) return -1.0;
+    const uint64_t ns = atomic_load_explicit(
+        wall ? &treo_nso_work[phase].wall_ns : &treo_nso_work[phase].cpu_ns,
+        memory_order_relaxed);
+    return (double)ns / (double)(count * TREO_NSO_WORK_STEPS);
+}
+int treo_nso_work_qos(int phase) {
+    return phase >= 0 && phase < TREO_NSO_WORK_PHASES &&
+           treo_nso_work_samples(phase) > 0
+         ? atomic_load_explicit(&treo_nso_work[phase].last_qos, memory_order_acquire)
+         : -1;
+}
+uint64_t treo_nso_work_thread(void) {
+    return atomic_load_explicit(&treo_nso_work_owner, memory_order_acquire);
+}
+static void treo_nso_work_probe(uint64_t now) {
+    if (!now || pthread_main_np()) return;
+    const int mode = atomic_load_explicit(&treo_afk_mode, memory_order_relaxed);
+    if (mode != 0 && mode != 8) return;
+    const int phase = mode == 8 ? 1 : 0;
+    // One thread is compared against itself, not against another app thread.
+    uint64_t thread_id = 0;
+    if (pthread_threadid_np(NULL, &thread_id) || !thread_id) return;
+    uint64_t owner = atomic_load_explicit(&treo_nso_work_owner, memory_order_acquire);
+    if (!owner) {
+        uint64_t expected = 0;
+        atomic_compare_exchange_strong_explicit(&treo_nso_work_owner, &expected,
+             thread_id, memory_order_acq_rel, memory_order_relaxed);
+        owner = atomic_load_explicit(&treo_nso_work_owner, memory_order_acquire);
+    }
+    if (owner != thread_id) return;
+    uint64_t previous = atomic_load_explicit(&treo_nso_work_last_ns[phase],
+                                             memory_order_relaxed);
+    if (previous && (now < previous || now - previous < UINT64_C(5000000000)))
+        return;
+    if (!atomic_compare_exchange_strong_explicit(
+            &treo_nso_work_last_ns[phase], &previous, now,
+            memory_order_relaxed, memory_order_relaxed))
+        return;
+    qos_class_t qos = QOS_CLASS_UNSPECIFIED;
+    if (pthread_get_qos_class_np(pthread_self(), &qos, NULL))
+        qos = QOS_CLASS_UNSPECIFIED;
+    volatile uint64_t result = treo_nso_work_sink;
+    const uint64_t cpu0 = treo_thread_cpu_ns();
+    const uint64_t wall0 = treo_afk_now_ns();
+    if (!cpu0 || !wall0) return;
+    for (unsigned i = 0; i < TREO_NSO_WORK_STEPS; ++i)
+        result = result * UINT64_C(6364136223846793005)
+                        + UINT64_C(1442695040888963407);
+    const uint64_t cpu1 = treo_thread_cpu_ns();
+    const uint64_t wall1 = treo_afk_now_ns();
+    treo_nso_work_sink = result;
+    if (cpu1 <= cpu0 || wall1 <= wall0) return;
+    TreoNSOWork *stat = &treo_nso_work[phase];
+    const uint64_t n = atomic_fetch_add_explicit(&stat->count, 1,
+                                                  memory_order_acq_rel);
+    if (n == 0)
+        atomic_store_explicit(&stat->first_qos, (int)qos, memory_order_release);
+    atomic_store_explicit(&stat->last_qos, (int)qos, memory_order_release);
+    atomic_fetch_add_explicit(&stat->cpu_ns, cpu1 - cpu0, memory_order_relaxed);
+    atomic_fetch_add_explicit(&stat->wall_ns, wall1 - wall0, memory_order_relaxed);
+}
 void treo_nso_probe_reset(void) {
+    atomic_store_explicit(&treo_nso_work_owner, 0, memory_order_release);
+    for (unsigned i = 0; i < TREO_NSO_WORK_PHASES; ++i) {
+        atomic_store_explicit(&treo_nso_work[i].count, 0, memory_order_relaxed);
+        atomic_store_explicit(&treo_nso_work[i].cpu_ns, 0, memory_order_relaxed);
+        atomic_store_explicit(&treo_nso_work[i].wall_ns, 0, memory_order_relaxed);
+        atomic_store_explicit(&treo_nso_work[i].first_qos, -1, memory_order_relaxed);
+        atomic_store_explicit(&treo_nso_work[i].last_qos, -1, memory_order_relaxed);
+        atomic_store_explicit(&treo_nso_work_last_ns[i], 0, memory_order_relaxed);
+    }
     atomic_store_explicit(&treo_nso_canvas_seen, 0, memory_order_relaxed);
     atomic_store_explicit(&treo_nso_request_count, 0, memory_order_relaxed);
     atomic_store_explicit(&treo_nso_last_request_ns, 0, memory_order_relaxed);
@@ -396,6 +493,8 @@ uint64_t treo_nso_repaint_requests(void) {
 }
 static void treo_nso_note_request(void) {
     const uint64_t ns = treo_afk_now_ns();
+    // During and before Treo, a 5s-gated *same-thread* fixed-work sample.
+    treo_nso_work_probe(ns);
     atomic_fetch_add_explicit(&treo_nso_request_count, 1, memory_order_relaxed);
     if (!ns) return;
     atomic_store_explicit(&treo_nso_last_request_ns, ns, memory_order_relaxed);

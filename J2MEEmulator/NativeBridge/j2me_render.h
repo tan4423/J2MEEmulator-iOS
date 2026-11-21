@@ -78,6 +78,12 @@ int treo_nso_canvas_recognized(void);
 uint64_t treo_nso_repaint_requests(void);
 double treo_nso_prior_repaint_hz(void);
 double treo_nso_last_repaint_gap_ms(void);
+// Controlled NSO fixed integer-work proxy, not direct evidence of P/E core.
+// Phase 0: normal play; phase 1: JarBox mode 8; CPU vs wall ns/step.
+uint64_t treo_nso_work_samples(int phase);
+double treo_nso_work_ns_per_step(int phase, int wall);
+int treo_nso_work_qos(int phase);
+uint64_t treo_nso_work_thread(void);
 uint64_t treo_image_cache_stores(void);
 uint64_t treo_image_cache_stored_bytes(void);
 // Opt-in safety fallback for JarBox's generic guarded Java Canvas AFK.
