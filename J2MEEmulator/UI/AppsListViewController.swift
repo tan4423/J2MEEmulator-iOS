@@ -26,6 +26,9 @@ class AppsListViewController: UIViewController,
     private weak var animatedBackground: AnimatedBackgroundView?
     private var springboardVisible = false
     private var importBarButton: UIBarButtonItem?
+    private var jarBoxMenuButton: UIBarButtonItem?
+    // CPU sampling is event-based, process-wide; never attribute it to one game.
+    private var libraryCPUEntry: (time: TimeInterval, cpu: Double)?
 
     // Set only for a library presented over its *own* live GameViewController.
     // A weak reference plus the native session token prevents stale UI controls
@@ -72,7 +75,19 @@ class AppsListViewController: UIViewController,
                 self?.addAppTapped()
             })
         importBarButton = importButton
-        navigationItem.rightBarButtonItem = importButton
+        let globalMenu = UIBarButtonItem(
+            title: nil,
+            image: UIImage(systemName: "ellipsis.circle"),
+            primaryAction: nil,
+            menu: UIMenu(title: "JarBox", children: [
+                UIAction(title: "Thông tin chung",
+                         image: UIImage(systemName: "info.circle")) { [weak self] _ in
+                    self?.showJarBoxOverview()
+                }
+            ]))
+        globalMenu.accessibilityLabel = "Menu tổng JarBox"
+        jarBoxMenuButton = globalMenu
+        navigationItem.rightBarButtonItems = [importButton, globalMenu]
 
         let layout = UICollectionViewFlowLayout()
         layout.scrollDirection = .vertical
@@ -122,6 +137,7 @@ class AppsListViewController: UIViewController,
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
         springboardVisible = true
+        libraryCPUEntry = (ProcessInfo.processInfo.systemUptime, treo_process_cpu_seconds())
         let sceneActive = view.window?.windowScene?.activationState == .foregroundActive
         setSpringboardMotion(sceneActive, reason: sceneActive
                              ? "springboard visible and scene active"
@@ -137,6 +153,7 @@ class AppsListViewController: UIViewController,
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
         springboardVisible = false
+        libraryCPUEntry = nil
         setSpringboardMotion(false, reason: "springboard disappearing")
     }
 
@@ -165,10 +182,10 @@ class AppsListViewController: UIViewController,
                     title: "Dừng", style: .plain,
                     target: self, action: #selector(stopRunningGameFromLibrary))
                 stop.tintColor = .systemRed
-                navigationItem.rightBarButtonItems = [importBarButton, stop].compactMap { $0 }
+                navigationItem.rightBarButtonItems = [importBarButton, stop, jarBoxMenuButton].compactMap { $0 }
                 return
             }
-            navigationItem.rightBarButtonItems = [importBarButton].compactMap { $0 }
+            navigationItem.rightBarButtonItems = [importBarButton, jarBoxMenuButton].compactMap { $0 }
             if jvm_bridge_session_is_active() != 0 {
                 navigationItem.title = "Đang dừng game..."
                 navigationItem.leftBarButtonItem = UIBarButtonItem(
@@ -265,6 +282,64 @@ class AppsListViewController: UIViewController,
 
     @objc private func springboardThermalChanged() {
         logSpringboardEnergyState("thermal state changed")
+    }
+
+    // General JarBox information is intentionally separated from game metadata.
+    // iOS exposes thermal *pressure*, not an exact chip temperature in °C.
+    // Read only when the user requests it; no background HUD or sampling timer.
+    private func showJarBoxOverview() {
+        let info = ProcessInfo.processInfo
+        let thermal: String
+        switch info.thermalState {
+        case .nominal: thermal = "Bình thường"
+        case .fair: thermal = "Tăng nhẹ"
+        case .serious: thermal = "Cao"
+        case .critical: thermal = "Rất cao"
+        @unknown default: thermal = "Không xác định"
+        }
+        let device = UIDevice.current
+        let previousBatteryMonitoring = device.isBatteryMonitoringEnabled
+        if !previousBatteryMonitoring { device.isBatteryMonitoringEnabled = true }
+        let level = device.batteryLevel
+        if !previousBatteryMonitoring { device.isBatteryMonitoringEnabled = false }
+        let battery = level >= 0
+            ? String(format: "%.0f%%", Double(level) * 100)
+            : "iOS chưa cung cấp"
+
+        let phase = jvm_bridge_session_phase()
+        let phaseLabel: String
+        switch phase {
+        case 0: phaseLabel = "Không có phiên JVM"
+        case 1: phaseLabel = "Đang khởi động"
+        case 2: phaseLabel = "Đang chạy"
+        case 3: phaseLabel = "Đang dừng"
+        default: phaseLabel = "Không xác định"
+        }
+        let activeCount = jvm_bridge_session_is_active() != 0 ? 1 : 0
+        var cpuText = "Chưa có khoảng đo hợp lệ"
+        if let entry = libraryCPUEntry {
+            let elapsed = ProcessInfo.processInfo.systemUptime - entry.time
+            let end = treo_process_cpu_seconds()
+            if elapsed >= 1, entry.cpu >= 0, end >= entry.cpu {
+                cpuText = String(format: "%.1f%% (TB %.0f giây)", 100 * (end - entry.cpu) / elapsed, elapsed)
+            }
+        }
+        let lines = [
+            "CPU toàn JarBox: " + cpuText,
+            "Áp lực nhiệt iOS: " + thermal,
+            "Pin: " + battery,
+            "Tiết kiệm pin iOS: " + (info.isLowPowerModeEnabled ? "Bật" : "Tắt"),
+            "Phiên JVM trong tiến trình: " + String(activeCount) + "/1",
+            "Trạng thái JVM: " + phaseLabel,
+            "CPU là của toàn JarBox, không phải riêng game.",
+            "Nhiệt là mức áp lực hệ thống, không phải số °C.",
+            "Thông số được cập nhật khi mở mục này."
+        ]
+        let alert = UIAlertController(title: "Thông tin chung · JarBox",
+                                      message: lines.joined(separator: "\n"),
+                                      preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "Đóng", style: .default))
+        present(alert, animated: true)
     }
 
     private func logSpringboardEnergyState(_ reason: String) {
@@ -486,6 +561,10 @@ class AppsListViewController: UIViewController,
         let app = apps[indexPath.item]
         return UIContextMenuConfiguration(actionProvider: { [weak self] _ in
             let isRunning = self?.parkedGameController?.ownsLiveGameSession(for: app.path) == true
+            let infoAction = UIAction(title: "Thông tin trò chơi",
+                                      image: UIImage(systemName: "info.circle")) { [weak self] _ in
+                self?.showGameInformation(app)
+            }
             var sessionActions: [UIMenuElement] = []
             if isRunning {
                 sessionActions = [
@@ -547,8 +626,39 @@ class AppsListViewController: UIViewController,
                                   children: [toggle3D, fpsMenu])
             let settings = UIMenu(options: .displayInline, children: [resMenu, advanced])
             let actions = UIMenu(options: .displayInline, children: [rename, clearData, delete])
-            return UIMenu(children: sessionActions + [settings, actions])
+            let information = UIMenu(options: .displayInline, children: [infoAction])
+            return UIMenu(children: sessionActions + [information, settings, actions])
         })
+    }
+
+    // Read metadata and current counters only on demand from the long-press
+    // "Thông tin" entry. Never start a timer for game badges or telemetry.
+    private func showGameInformation(_ app: AppInfo) {
+        let resolution = Self.resolution(for: app)
+        let fps = Self.fpsLimit(for: app)
+        let fileBytes = (try? FileManager.default.attributesOfItem(atPath: app.path)[.size] as? NSNumber)?.int64Value
+        let sizeText = fileBytes.map {
+            String(format: "%.2f MB", Double($0) / 1_048_576)
+        } ?? "Không đọc được"
+        let active = parkedGameController?.ownsLiveGameSession(for: app.path) == true
+        var lines: [String] = [
+            "Tệp JAR: " + app.fileName,
+            "Dung lượng: " + sizeText,
+            "Phiên bản: " + (app.version ?? "Không khai báo"),
+            "Nhà phát triển: " + (app.vendor ?? "Không khai báo"),
+            "Màn hình: " + String(resolution.w) + " × " + String(resolution.h),
+            "Giới hạn FPS: " + (fps == 0 ? "Không giới hạn" : String(fps)),
+            "Trạng thái: " + (active ? "Đang chạy ẩn" : "Không chạy ẩn")
+        ]
+        if active, let game = parkedGameController {
+            lines.append("")
+            lines.append(game.parkedSessionInformation())
+        }
+        let alert = UIAlertController(title: "Thông tin · " + app.name,
+                                      message: lines.joined(separator: "\n"),
+                                      preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "Đóng", style: .default))
+        present(alert, animated: true)
     }
 
     // MARK: - Per-game settings
