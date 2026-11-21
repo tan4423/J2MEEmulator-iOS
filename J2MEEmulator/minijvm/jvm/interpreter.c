@@ -4209,6 +4209,31 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                                 }
 
                                 if (!m) {
+#if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__
+                                    if (nso_init_probe == 2) {
+                                        // The bytecode owner method exists in
+                                        // the user's JAR, yet dynamic lookup
+                                        // failed. Record the ACTUAL receiver
+                                        // class and prelinked method to tell
+                                        // stack/receiver corruption apart from
+                                        // a genuine method resolver defect.
+                                        JClass *recv_cl = ins->mb.clazz;
+                                        MethodInfo *prelinked = cmr->methodInfo;
+                                        char detail[320];
+                                        snprintf(detail, sizeof(detail),
+                                                 "midlet_virtual_miss:recv=%s,ref=%s.%s%s,slots=%d,prelinked=%d,pre_owner=%s,recv_methods=%d,recv_status=%d",
+                                                 recv_cl ? utf8_cstr(recv_cl->name) : "?",
+                                                 cmr->clsName ? utf8_cstr(cmr->clsName) : "?",
+                                                 cmr->name ? utf8_cstr(cmr->name) : "?",
+                                                 cmr->descriptor ? utf8_cstr(cmr->descriptor) : "?",
+                                                 cmr->para_slots, prelinked != NULL,
+                                                 prelinked && prelinked->_this_class ?
+                                                     utf8_cstr(prelinked->_this_class->name) : "?",
+                                                 recv_cl ? recv_cl->methodPool.method_used : -1,
+                                                 recv_cl ? recv_cl->status : -1);
+                                        jvm_bridge_note_nso_init_trace(detail);
+                                    }
+#endif
                                     err_msg = utf8_cstr(cmr->name);
                                     goto label_nosuchmethod_throw;
                                 } else {
