@@ -241,3 +241,58 @@ logic. Codemagic/iPhone verification for v7 has not yet been performed.
 Retest launch/play/restart on original NSO and TrungDucTV; ideally also run a
 small MIDlet that uses `Optional.map` and `Function.andThen` to validate
 the miniJVM's on-device interface dispatch.
+
+
+## Java 8 primitive Optional and callbacks (v8, 2026-11-21)
+
+The previous `java8_optional_function_v7` build was confirmed by the user to
+play their tested JARs normally. This is a *regression baseline*, not proof of
+full Java SE 8 coverage.
+
+The boot compatibility runtime now additionally contains:
+
+- `java.util.OptionalInt`, `OptionalLong`, `OptionalDouble`, implementing the
+  **Java 8** methods `empty`, `of`, `getAsInt/getAsLong/getAsDouble`,
+  `isPresent`, `ifPresent`, `orElse`, `orElseGet`,
+  `orElseThrow(Supplier)`, `equals`, `hashCode`, and `toString`.
+  These are actual value containers with lazy callbacks; not fixed return
+  values, network bypasses, or rewrites of game code.
+- `java.util.function.IntConsumer/LongConsumer/DoubleConsumer` including
+  `andThen`, and `IntSupplier/LongSupplier/DoubleSupplier`.
+  The callback classes are compiled to Java 8 classfiles; their `andThen`
+  helpers are included as separate anonymous `$1.class` files.
+  `OptionalDouble.equals` and `hashCode` use `Double.doubleToLongBits`
+  so NaN values compare as Java 8 specifies and signed zero stays distinct.
+
+Host JDK 21 compiled the exact standalone classes using `--release 8`, and
+a package-renamed fixture compared 5,000 random values **per primitive**
+plus edge cases to Java's standard `OptionalInt/Long/Double`; all passed.
+Host behavior verification is *not* miniJVM or iOS execution verification.
+The repository test `tools/tests/test_java8_boot_primitive_optional.py`
+is run by the pre-existing Codemagic `test_*.py` test discovery before
+building the iPhone IPA. The workflow extracts the exact boot classfile
+paths, checks Java 8 method signatures, and checks all three `Consumer$1`
+helper classes. The build stamp is `java8_primitive_optional_v8`.
+
+**Size/performance:** the 12 new classfiles have a total uncompressed
+size of approximately 11.6 KB in local Java 8 compilation. The net IPA
+difference was not measured. These utilities contain no background work,
+GPU draw commands, networking, or timers; game CPU usage may nevertheless
+change when a game executes a new method frequently, and class loading uses
+RAM and startup work. No claim of zero overhead or identical FPS is made.
+
+**Not full Java SE 8:** `OptionalInt/Long/Double.stream`, `isEmpty`,
+no-argument `orElseThrow`, `ifPresentOrElse` and similar later-Java
+methods are intentionally not added. `java.util.stream`, every primitive
+functional-interface specialization, generic lambda/invokedynamic and
+interface dispatch across arbitrary JARs remain separate compatibility
+work. This upgrade adds APIs on the boot classpath; it does not alter
+`main`, JAR files, server responses, Deep Treo, the JVM session token,
+rendering/audio engines or the number of Codemagic workflows.
+
+**On-device validation needed:** build the existing
+`J2ME Treo JIT probe unsigned` workflow from the HEAD of
+`loader-ios-jit-probe`, verify that the diagnostics show the matching
+`build_commit` and `boot_patch`, then play Ninja School and TrungDucTV,
+close/reopen each game, and optionally run a small MIDlet that calls the
+new primitive APIs and `andThen` to test default-method dispatch in miniJVM.
