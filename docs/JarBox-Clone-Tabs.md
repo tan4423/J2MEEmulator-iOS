@@ -23,8 +23,10 @@ Once clones exist, tapping the icon expands an action list:
   and Tab gốc are unaffected. The original cannot be removed by − Tab.
 
 Long-press the group icon also exposes **+ Tab**, **− Tab**, and game
-information. The group chooser has an **Thông tin các tab** picker; each
-individual tab's information exposes its own **Nhật ký save**.
+information. The group chooser has **Thông tin các tab** and
+**Cài đặt các tab** pickers. Each tab can inspect its own **Nhật ký save**
+and configure resolution, FPS and 3D enhancement under its **own settings
+keys**; changes take effect on its next launch.
 
 The backend keys each clone by a freshly generated **UUID**; the label
 “Tab 1” is presentation metadata only. Removing and re-adding Tab 1 gets
@@ -33,6 +35,9 @@ a different UUID and **does not reuse the deleted account/save**.
 ## Physical separation
 
 - Group binary: `Documents/games/Avatar.jar` (example; not duplicated).
+  The JarBox importer blocks overwriting this file while the group has
+  clones, and stages new imports to avoid destroying the old JAR on failed
+  copies. Direct changes made to Documents outside JarBox are not protected.
 - Original save: `Documents/Games Data/inst-<SHA256(filename)>`.
 - Clone save: `Documents/Games Data/inst-<SHA256(filename)>-clone-<UUID>`.
 - Original prefs: `fpsLimit_<SHA256>` and other per-game keys.
@@ -42,6 +47,9 @@ a different UUID and **does not reuse the deleted account/save**.
   An on-demand viewer merges the latest records. No RMS payloads, account
   details, original store names, or packet contents are intentionally logged.
   The two writer logs are separated to avoid cross-thread seek/write races.
+
+Current limit: **16 clones plus the original per JAR group**. The
+number is an instance-management limit, not the number of concurrent JVMs.
 
 The actual Java `System` property `app.save.root` is provided through
 `sys_properties_set_c(vm, ...)`, so `AndroidRecordStoreManager` resolves
