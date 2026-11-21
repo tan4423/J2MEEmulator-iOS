@@ -3740,6 +3740,13 @@ class GameViewController: UIViewController {
     // artificial Java-loop slowdown is added while browsing the library.
     private func startParkedTreo() {
         guard ownsLiveGameSession(), !parkedTreoActive else { return }
+        // A library is not a visible JVM: all running games must stay
+        // parked. This is separate from the Treo CPU-reduction mechanism.
+        guard jvm_bridge_park_session(gameSessionToken) != 0 else {
+            NSLog("[JarBoxVM][ParkTreo] refused stale/foreign owner token=%llu",
+                  gameSessionToken)
+            return
+        }
         parkedTreoActive = true
         parkedStartedAt = ProcessInfo.processInfo.systemUptime
         parkedCPUStart = treo_process_cpu_seconds()
@@ -3858,6 +3865,12 @@ class GameViewController: UIViewController {
             guard let self else { return }
             self.libraryIsPresented = false
             guard self.ownsLiveGameSession() else { return }
+            // Select the exact previously parked VM before waking its Treo
+            // state. Never create/reload a Java heap just to show a tab.
+            guard jvm_bridge_focus_session(self.gameSessionToken) != 0 else {
+                NSLog("[JarBoxVM][Focus] failed token=%llu", self.gameSessionToken)
+                return
+            }
             stopParkedTreo()
             setGlobalEmulatorView(self.emulatorView)
             if self.deferredGameAlert {
