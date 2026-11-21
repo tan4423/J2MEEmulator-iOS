@@ -358,6 +358,9 @@ class GameViewController: UIViewController {
     // Capture the 8-second live NSO repaint-request cadence BEFORE Treo.
     // -1 means unavailable; this is a heartbeat proxy, not a proven game tick.
     private var blackoutNSOLiveHz: Double = -1
+    // NSO-only: park the otherwise idle Display/JVM polling thread on its
+    // existing GC-safe event-driven condition variable during JarBox mode 8.
+    private var blackoutNSODeepIdle = false
     private var blackoutScreen: UIScreen?
     private var previousBrightness: CGFloat?
     private var jarBoxSmartTreo = false
@@ -412,6 +415,10 @@ class GameViewController: UIViewController {
         treo_afk_buffer_audit_set(0, 0)
         if jarBoxSmartTreo { treo_gc_smart_set(0) }
         treo_afk_guard_auto_set(0)
+        if blackoutNSODeepIdle {
+            treo_display_wait_set(0)
+            blackoutNSODeepIdle = false
+        }
     }
 
     private var alertTimeoutWork: DispatchWorkItem?
@@ -1553,6 +1560,11 @@ class GameViewController: UIViewController {
         let ninjaRepaints = treo_ninja_deep_skipped(0)
         let ninjaServices = treo_ninja_deep_skipped(1)
         let ninjaPaints = treo_ninja_deep_skipped(2)
+        let displayPolls = treo_display_poll_calls()
+        let displayWaits = treo_display_wait_calls()
+        let displayTimeouts = treo_display_wait_timeouts()
+        let displayWakeSignals = treo_display_wake_signals()
+        let displayGCSafeWaits = treo_display_gc_safe_wait_calls()
         let nsoRequests = treo_nso_repaint_requests()
         let nsoCanvasSeen = treo_nso_canvas_recognized()
         let imageHits = treo_image_cache_hits()
@@ -1644,6 +1656,13 @@ class GameViewController: UIViewController {
         // Reset sampling before AFK starts. The springboard animation fix is untouched.
         treo_vm_paint_sample_reset()
         treo_render_set_afk_mode(mode)
+        // Only verified NSO Canvas in the specialized mode. Its repaint and
+        // serviceRepaints paths are already elided, so the Display thread can
+        // wait for input, screen changes or the forced wake instead of
+        // polling every ~16ms. GC treats the native wait as a blocked thread.
+        blackoutNSODeepIdle = mode == 8 && deepPaint &&
+            treo_ninja_deep_verified() != 0 && treo_nso_canvas_recognized() != 0
+        if blackoutNSODeepIdle { treo_display_wait_set(1) }
         if deepPaint {
             treo_afk_guard_auto_set(1)
             jarBoxDeepTreoStart = GenericTreoSnapshot()
@@ -1819,11 +1838,26 @@ class GameViewController: UIViewController {
                 " · status=\(speedStatus)." +
                 " Fixed-work proxy only; not P/E core ID, CPU MHz, watts or proof of game/server progress."
         }
+        let displayIdleLog: String? = vmTreoProbeStart.map { start in
+            let end = VMTreoProbe()
+            let dt = max(0.001, end.time - start.time)
+            let polls = end.displayPolls &- start.displayPolls
+            let waits = end.displayWaits &- start.displayWaits
+            let timeouts = end.displayTimeouts &- start.displayTimeouts
+            let wakes = end.displayWakeSignals &- start.displayWakeSignals
+            let gcSafe = end.displayGCSafeWaits &- start.displayGCSafeWaits
+            return String(format:
+                "[JarBoxVM][DisplayIdle] enabled=%d · display_polls=%llu · polls_hz=%.2f · waits=%llu · waits_hz=%.2f · timeouts=%llu · wake_signals=%llu · gc_safe_waits=%llu. Display-thread only; not game tick rate or power consumption.",
+                blackoutNSODeepIdle ? 1 : 0,
+                polls, Double(polls) / dt, waits, Double(waits) / dt,
+                timeouts, wakes, gcSafe)
+        }
         vmTreoProbeStart = nil
         let paintHotReport = String(cString: treo_vm_paint_sample_report())
         if let vmLog { NSLog("%@", vmLog) }
         if let pulseLog { NSLog("%@", pulseLog) }
         if let computeLog { NSLog("%@", computeLog) }
+        if let displayIdleLog { NSLog("%@", displayIdleLog) }
         let arrayLookupDiag = String(cString: treo_vm_array_lookup_diag_report())
         if arrayLookupDiag.hasPrefix("[JarBoxVM][ArrayLookupDiag] enabled=1") {
             NSLog("%@", arrayLookupDiag)
@@ -1862,6 +1896,11 @@ class GameViewController: UIViewController {
         } ?? ""
         treo_afk_guard_auto_set(0)
         jarBoxDeepTreoStart = nil
+        // Unpark Display before forced screen redraw on wake.
+        if blackoutNSODeepIdle {
+            treo_display_wait_set(0)
+            blackoutNSODeepIdle = false
+        }
         j2me_render_set_afk_suspended(0)
         if jarBoxSmartTreo {
             let elapsed = max(0.001, ProcessInfo.processInfo.systemUptime - (jarBoxSmartStartedAt ?? ProcessInfo.processInfo.systemUptime))
@@ -1893,10 +1932,12 @@ class GameViewController: UIViewController {
             if let report = lastMeasurement {
                 lastMeasurement = (report.title, report.message + "\n\n" + vmLog +
                     (pulseLog.map { "\n\n" + $0 } ?? "") +
-                    (computeLog.map { "\n\n" + $0 } ?? "") + "\n\n" + paintHotReport)
+                    (computeLog.map { "\n\n" + $0 } ?? "") +
+                    (displayIdleLog.map { "\n\n" + $0 } ?? "") + "\n\n" + paintHotReport)
             } else {
                 lastMeasurement = ("JarBoxVM · hiệu năng", vmLog + (pulseLog.map { "\n\n" + $0 } ?? "") +
-                    (computeLog.map { "\n\n" + $0 } ?? "") + "\n\n" + paintHotReport)
+                    (computeLog.map { "\n\n" + $0 } ?? "") +
+                    (displayIdleLog.map { "\n\n" + $0 } ?? "") + "\n\n" + paintHotReport)
             }
         }
         applyPadMode()
