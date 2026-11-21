@@ -12,6 +12,7 @@ workflows:
         JARBOX_BG_ANIM_BASELINE: "0"
         JARBOX_PAINT_SAMPLE_DISABLED: "1"
         JARBOX_VM_UTF16_BASELINE: "0"
+        JARBOX_VM_IMAGE_CACHE_BASELINE: "0"
     scripts: &jarbox_ipa_shared_scripts
       - name: Build and package unsigned iPhone IPA
         script: |
@@ -56,7 +57,7 @@ workflows:
           classes="$RUNNER_TEMP/lcdui-classes"
           mkdir -p "$classes"
           javac --release 8 -sourcepath '' -cp "$jars/j2me_api.jar:$jars/minijvm_rt.jar" \
-            -d "$classes" j2me_api/src/javax/microedition/lcdui/{Display,Canvas,Graphics,TextBox,NativeBridge,Form,ChoiceGroup,List}.java
+            -d "$classes" j2me_api/src/javax/microedition/lcdui/{Display,Canvas,Graphics,Image,TextBox,NativeBridge,Form,ChoiceGroup,List}.java
           jar uf "$jars/j2me_api.jar" -C "$classes" .
           
           # Use only the pinned SLJIT source; do not build or run upstream scripts.
@@ -127,13 +128,22 @@ workflows:
           else
             echo "[JarBoxVM][BUILD] utf16_fast=on"
           fi
+          # Fully preconfigured cache A/B: compile identical Java sources;
+          # only the native mode-8 cache gate differs between workflows.
+          image_cache_flag=""
+          if [[ "${JARBOX_VM_IMAGE_CACHE_BASELINE:-0}" == "1" ]]; then
+            image_cache_flag="-DTREO_VM_IMAGE_CACHE_DISABLED=1"
+            echo "[JarBoxVM][BUILD] image_cache=off (matched baseline)"
+          else
+            echo "[JarBoxVM][BUILD] image_cache=on (Treo mode 8 only)"
+          fi
           xcodebuild -list -project "$J2ME_PROJECT"
           xcodebuild -project "$J2ME_PROJECT" \
             -scheme J2MEEmulator -configuration Release \
             -sdk iphoneos -destination 'generic/platform=iOS' \
             -derivedDataPath "$RUNNER_TEMP/jarbox-build" \
             "OTHER_LDFLAGS=\$(inherited) $RUNNER_TEMP/J2METreo.o $RUNNER_TEMP/TreoSLJIT.o $RUNNER_TEMP/TreoJITProbe.o -framework UIKit -framework Foundation -framework Metal" \
-            "TREO_GAME_JIT_CFLAGS=-DTREO_IOS_GAME_JIT=1 -I$sljit $vm_dispatch_flag $vm_paint_bridge_flag $paint_sample_flag $utf16_flag" \
+            "TREO_GAME_JIT_CFLAGS=-DTREO_IOS_GAME_JIT=1 -I$sljit $vm_dispatch_flag $vm_paint_bridge_flag $paint_sample_flag $utf16_flag $image_cache_flag" \
             "SWIFT_ACTIVE_COMPILATION_CONDITIONS=\$(inherited) $bg_flag" \
             PRODUCT_BUNDLE_IDENTIFIER=app.j2metreo.personal \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build
@@ -173,5 +183,23 @@ workflows:
         JARBOX_BG_ANIM_BASELINE: "0"
         JARBOX_PAINT_SAMPLE_DISABLED: "1"
         JARBOX_VM_UTF16_BASELINE: "1"
+        JARBOX_VM_IMAGE_CACHE_BASELINE: "0"
+    scripts: *jarbox_ipa_shared_scripts
+    artifacts: *jarbox_ipa_shared_artifacts
+
+  jit-probe-unsigned-image-cache-baseline:
+    name: J2ME Treo Image Cache OFF baseline unsigned
+    instance_type: mac_mini_m2
+    max_build_duration: 25
+    environment:
+      xcode: "26.3"
+      vars:
+        # Same JAR, source, HUD, UTF-16 and paint. Image-byte cache alone off.
+        JARBOX_VM_SWITCH_BASELINE: "0"
+        JARBOX_VM_PAINT_BRIDGE_BASELINE: "0"
+        JARBOX_BG_ANIM_BASELINE: "0"
+        JARBOX_PAINT_SAMPLE_DISABLED: "1"
+        JARBOX_VM_UTF16_BASELINE: "0"
+        JARBOX_VM_IMAGE_CACHE_BASELINE: "1"
     scripts: *jarbox_ipa_shared_scripts
     artifacts: *jarbox_ipa_shared_artifacts
