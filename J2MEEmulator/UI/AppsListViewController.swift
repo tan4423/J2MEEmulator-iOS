@@ -464,7 +464,8 @@ class AppsListViewController: UIViewController,
             "Pin: " + battery,
             "Áp lực nhiệt: " + thermal,
             "Chế độ pin yếu: " + (ProcessInfo.processInfo.isLowPowerModeEnabled ? "Bật" : "Tắt"),
-            "Tab đang chạy: " + String(active ? 1 : 0) + "/1",
+            "Tab đang chạy: " + String(jvm_bridge_active_session_count()) +
+                "/" + String(jvm_bridge_supported_concurrent_sessions()),
             runningText,
             String(format: "Thời gian phủ: %.0f giây", elapsed),
             "CPU là tổng tiến trình, không phải CPU của riêng game.",
@@ -505,7 +506,7 @@ class AppsListViewController: UIViewController,
         case 3: phaseLabel = "Đang dừng"
         default: phaseLabel = "Không xác định"
         }
-        let activeCount = jvm_bridge_session_is_active() != 0 ? 1 : 0
+        let activeCount = jvm_bridge_active_session_count()
         var cpuText = "Chưa có khoảng đo hợp lệ"
         if let entry = libraryCPUEntry {
             let elapsed = ProcessInfo.processInfo.systemUptime - entry.time
@@ -519,7 +520,8 @@ class AppsListViewController: UIViewController,
             "Áp lực nhiệt iOS: " + thermal,
             "Pin: " + battery,
             "Tiết kiệm pin iOS: " + (info.isLowPowerModeEnabled ? "Bật" : "Tắt"),
-            "Phiên JVM trong tiến trình: " + String(activeCount) + "/1",
+            "Phiên JVM trong tiến trình: " + String(activeCount) +
+                "/" + String(jvm_bridge_supported_concurrent_sessions()),
             "Trạng thái JVM: " + phaseLabel,
             "CPU là của toàn JarBox, không phải riêng game.",
             "Nhiệt là mức áp lực hệ thống, không phải số °C.",
