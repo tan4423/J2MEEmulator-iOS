@@ -1142,15 +1142,18 @@ class AppsListViewController: UIViewController,
 
     // Read metadata and current counters only on demand from the long-press
     // "Thông tin" entry. Never start a timer for game badges or telemetry.
-    private func showGameInformation(_ app: AppInfo) {
-        let resolution = Self.resolution(for: app)
-        let fps = Self.fpsLimit(for: app)
+    private func showGameInformation(_ app: AppInfo, cloneID: UUID? = nil,
+                                     tabName: String = "Tab gốc") {
+        let resolution = Self.resolution(for: app, cloneID: cloneID)
+        let fps = Self.fpsLimit(for: app, cloneID: cloneID)
         let fileBytes = (try? FileManager.default.attributesOfItem(atPath: app.path)[.size] as? NSNumber)?.int64Value
         let sizeText = fileBytes.map {
             String(format: "%.2f MB", Double($0) / 1_048_576)
         } ?? "Không đọc được"
-        let active = parkedGameController?.ownsLiveGameSession(for: app.path) == true
+        let active = parkedGameController?.ownsLiveInstance(
+            for: app.path, cloneID: cloneID) == true
         var lines: [String] = [
+            "Tab: " + tabName,
             "Tệp JAR: " + app.fileName,
             "Dung lượng: " + sizeText,
             "Phiên bản: " + (app.version ?? "Không khai báo"),
@@ -1161,7 +1164,8 @@ class AppsListViewController: UIViewController,
         ]
         // Filesystem metadata only: never inspect binary RMS contents.
         let rmsPath = (JarBoxGameStorage.rootPath(
-            jarPath: app.path, documents: Self.documentsDirectory) as NSString)
+            jarPath: app.path, documents: Self.documentsDirectory,
+            cloneID: cloneID) as NSString)
             .appendingPathComponent("rms")
         if let files = try? FileManager.default.contentsOfDirectory(atPath: rmsPath) {
             let storeCount = files.filter { $0.hasSuffix(".rsh") }.count
@@ -1175,18 +1179,23 @@ class AppsListViewController: UIViewController,
             lines.append("")
             lines.append(game.parkedSessionInformation())
         }
-        let alert = UIAlertController(title: "Thông tin · " + app.name,
+        let alert = UIAlertController(title: "Thông tin · " + app.name + " · " + tabName,
                                       message: lines.joined(separator: "\n"),
                                       preferredStyle: .alert)
-        alert.addAction(UIAlertAction(title: "Đóng", style: .default))
+        alert.addAction(UIAlertAction(title: "Nhật ký save", style: .default) { [weak self] _ in
+            self?.showSaveLog(for: app, cloneID: cloneID, tabName: tabName)
+        })
+        alert.addAction(UIAlertAction(title: "Đóng", style: .cancel))
         present(alert, animated: true)
     }
 
     /// On-demand metadata log stored under the same *install-specific* root.
     /// It contains no saved record bodies; the user can inspect or copy it.
-    private func showSaveLog(for app: AppInfo) {
+    private func showSaveLog(for app: AppInfo, cloneID: UUID? = nil,
+                             tabName: String = "Tab gốc") {
         let log = (JarBoxGameStorage.rootPath(
-            jarPath: app.path, documents: Self.documentsDirectory) as NSString)
+            jarPath: app.path, documents: Self.documentsDirectory,
+            cloneID: cloneID) as NSString)
             .appendingPathComponent("save-events.log")
         let fm = FileManager.default
         var lines = "Chưa có nhật ký. Nhật ký chỉ ghi các thao tác RMS và cài đặt kể từ phiên bản hỗ trợ."
@@ -1202,7 +1211,7 @@ class AppsListViewController: UIViewController,
                 lines = "24 sự kiện gần nhất / " + String(entries.count) + " sự kiện\n\n" + lines
             }
         }
-        let alert = UIAlertController(title: "Save & cài đặt · " + app.name,
+        let alert = UIAlertController(title: "Save & cài đặt · " + app.name + " · " + tabName,
                                       message: lines,
                                       preferredStyle: .alert)
         alert.addAction(UIAlertAction(title: "Sao chép", style: .default) { _ in
@@ -1379,6 +1388,13 @@ class AppsListViewController: UIViewController,
                 return
             }
             do {
+                let clones = try JarBoxGameStorage.registeredClones(
+                    jarPath: app.path, documents: Self.documentsDirectory)
+                guard clones.isEmpty else {
+                    throw NSError(domain: "JarBox.GameStorage", code: 16,
+                        userInfo: [NSLocalizedDescriptionKey:
+                            "Hãy xóa các Tab nhân bản bằng − Tab trước khi xóa JAR gốc."])
+                }
                 let root = try JarBoxGameStorage.prepareRoot(
                     jarPath: app.path, documents: Self.documentsDirectory)
                 // Keep JAR intact if RMS cleanup fails; never silently orphan
@@ -1439,6 +1455,9 @@ class AppsListViewController: UIViewController,
         menu.addAction(UIAlertAction(title: "− Tab", style: .destructive) { [weak self] _ in
             self?.presentTabDeletion(for: app)
         })
+        menu.addAction(UIAlertAction(title: "ⓘ Thông tin các tab", style: .default) { [weak self] _ in
+            self?.showTabInformationPicker(for: app, clones: clones)
+        })
         menu.addAction(UIAlertAction(title: "Hủy", style: .cancel))
         if let popover = menu.popoverPresentationController {
             popover.sourceView = springboardCollectionView
@@ -1447,6 +1466,29 @@ class AppsListViewController: UIViewController,
                                         width: 1, height: 1)
         }
         present(menu, animated: true)
+    }
+
+    private func showTabInformationPicker(for app: AppInfo,
+                                          clones: [JarBoxGameStorage.CloneRecord]) {
+        let picker = UIAlertController(title: "Thông tin các tab · " + app.name,
+                                       message: "Cài đặt và nhật ký riêng của mỗi tab.",
+                                       preferredStyle: .actionSheet)
+        picker.addAction(UIAlertAction(title: "Tab gốc", style: .default) { [weak self] _ in
+            self?.showGameInformation(app)
+        })
+        for clone in clones {
+            picker.addAction(UIAlertAction(title: clone.label, style: .default) { [weak self] _ in
+                self?.showGameInformation(app, cloneID: clone.id, tabName: clone.label)
+            })
+        }
+        picker.addAction(UIAlertAction(title: "Hủy", style: .cancel))
+        if let popover = picker.popoverPresentationController {
+            popover.sourceView = springboardCollectionView
+            popover.sourceRect = CGRect(x: springboardCollectionView.bounds.midX,
+                                        y: springboardCollectionView.bounds.midY,
+                                        width: 1, height: 1)
+        }
+        present(picker, animated: true)
     }
 
     private func addDefaultTab(for app: AppInfo) {
