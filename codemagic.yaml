@@ -59,6 +59,7 @@ workflows:
             J2MEEmulator/RuntimePatches/java/lang/VerifyError.java \
             J2MEEmulator/RuntimePatches/java/util/Base64.java \
             J2MEEmulator/RuntimePatches/java/util/Objects.java \
+            J2MEEmulator/RuntimePatches/java/util/StringJoiner.java \
             J2MEEmulator/RuntimePatches/java/util/Optional.java \
             J2MEEmulator/RuntimePatches/java/util/OptionalInt.java \
             J2MEEmulator/RuntimePatches/java/util/OptionalLong.java \
@@ -87,6 +88,7 @@ workflows:
             java/time/Duration.class java/lang/VerifyError.class \
             java/util/Base64.class 'java/util/Base64$Encoder.class' \
             'java/util/Base64$Decoder.class' java/util/Objects.class \
+            java/util/StringJoiner.class \
             java/util/Optional.class java/util/OptionalInt.class \
             java/util/OptionalLong.class java/util/OptionalDouble.class \
             java/util/function/Supplier.class \
@@ -144,6 +146,10 @@ workflows:
           javap "$core_verify/java/util/Objects.class" > "$RUNNER_TEMP/objects-signatures.txt"
           grep -Fq 'public static boolean deepEquals(java.lang.Object, java.lang.Object);' "$RUNNER_TEMP/objects-signatures.txt"
           grep -Fq 'public static <T> T requireNonNull(T, java.lang.String);' "$RUNNER_TEMP/objects-signatures.txt"
+          javap "$core_verify/java/util/StringJoiner.class" > "$RUNNER_TEMP/stringjoiner-signatures.txt"
+          grep -Fq 'public java.util.StringJoiner(java.lang.CharSequence, java.lang.CharSequence, java.lang.CharSequence);' "$RUNNER_TEMP/stringjoiner-signatures.txt"
+          grep -Fq 'public java.util.StringJoiner merge(java.util.StringJoiner);' "$RUNNER_TEMP/stringjoiner-signatures.txt"
+          grep -Fq 'public java.util.StringJoiner setEmptyValue(java.lang.CharSequence);' "$RUNNER_TEMP/stringjoiner-signatures.txt"
           javap "$core_verify/java/util/Optional.class" > "$RUNNER_TEMP/optional-signatures.txt"
           grep -Fq 'public static <T> java.util.Optional<T> ofNullable(T);' "$RUNNER_TEMP/optional-signatures.txt"
           grep -Fq 'public <U> java.util.Optional<U> flatMap(java.util.function.Function<? super T, java.util.Optional<U>>);' "$RUNNER_TEMP/optional-signatures.txt"
@@ -225,7 +231,8 @@ workflows:
           # available locally on the Codemagic builder; never fetch one.
           if [[ -n "${JARBOX_COMPAT_AUDIT_JAR:-}" && -f "${JARBOX_COMPAT_AUDIT_JAR}" ]]; then
             python3 tools/jar_api_audit.py --boot "$jars/minijvm_rt.jar" --api "$jars/j2me_api.jar" --output "$RUNNER_TEMP/jarbox-api-audit.json" "$JARBOX_COMPAT_AUDIT_JAR"
-            echo "[JarBoxCompat] report=$RUNNER_TEMP/jarbox-api-audit.json"
+            python3 tools/jar_bytecode_profile.py --output "$RUNNER_TEMP/jarbox-bytecode-profile.json" "$JARBOX_COMPAT_AUDIT_JAR"
+            echo "[JarBoxCompat] api_report=$RUNNER_TEMP/jarbox-api-audit.json bytecode_report=$RUNNER_TEMP/jarbox-bytecode-profile.json"
           fi
           
           # Use only the pinned SLJIT source; do not build or run upstream scripts.
@@ -337,7 +344,7 @@ workflows:
           build_commit="$(git rev-parse --verify HEAD)"
           test "${#build_commit}" -eq 40
           /usr/libexec/PlistBuddy -c "Add :JarBoxBuildCommit string $build_commit" "$app/Info.plist"
-          /usr/libexec/PlistBuddy -c 'Add :JarBoxBootPatch string java8_function_api_v9' "$app/Info.plist"
+          /usr/libexec/PlistBuddy -c 'Add :JarBoxBootPatch string java8_stringjoiner_profile_v10' "$app/Info.plist"
           actual_commit="$(/usr/libexec/PlistBuddy -c 'Print :JarBoxBuildCommit' "$app/Info.plist")"
           test "$actual_commit" = "$build_commit"
           echo "[JarBoxNET][BUILD] final_ipa_commit=$build_commit"
@@ -352,7 +359,7 @@ workflows:
           ipa_plist="$RUNNER_TEMP/packaged-Info.plist"
           unzip -p "$GITHUB_WORKSPACE/J2ME-Treo-jar-cpu-audit-unsigned.ipa" "Payload/*.app/Info.plist" > "$ipa_plist"
           test "$(/usr/libexec/PlistBuddy -c 'Print :JarBoxBuildCommit' "$ipa_plist")" = "$build_commit"
-          test "$(/usr/libexec/PlistBuddy -c 'Print :JarBoxBootPatch' "$ipa_plist")" = "java8_function_api_v9"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :JarBoxBootPatch' "$ipa_plist")" = "java8_stringjoiner_profile_v10"
           echo "[JarBoxNET][BUILD] stamped IPA archive verified"
     artifacts: &jarbox_ipa_shared_artifacts
       - J2ME-Treo-jar-cpu-audit-unsigned.ipa
