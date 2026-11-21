@@ -34,10 +34,24 @@ Status: **one live miniJVM, one parked app**, not simultaneous JVMs.
   The Back control still dismisses a launch-failure screen when no JVM
   was acquired.
 - The game's render target is detached and its pending frame discarded
-  while the library is displayed. The tested *compatibility* AFK display
-  suppression (mode 1) is engaged, then reversed on resume.
-  There are no new timers, polling loops, JAR modifications, network
-  overrides or CPU/GPU benchmarks in this feature.
+  while the library is displayed. **Going Back into the library automatically
+  enables the same existing deep Treo path** used by the formerly separate
+  per-game menu choice: native AFK mode 8, guarded Canvas raster suppression
+  and Smart GC. The bridge's existing guard automatically falls back to
+  compatible mode 1 if a generic game's late-pixel read proves that skipping
+  Canvas raster is unsafe. Only a verified NSO Canvas enables the event-driven
+  GC-safe Display wait. No per-JAR identification or fabricated game results.
+- The user-facing per-game menu no longer contains **Treo tiết kiệm** or
+  **Treo tương thích** as separate commands. The one automatic Treo behavior
+  is now **Back → library**. The floating menu retains a Back-to-Library
+  entry and **Dừng game hoàn toàn**. Existing internal experiments remain
+  in source, not in the ordinary user menu.
+- Returning to the same game or stopping that game clears the parked
+  deep-idle wait, native Canvas guard, Smart GC mode and AFK mode before
+  showing a live frame or cooperatively shutting down the JVM. Native
+  shutdown after a self-exit clears the state too. No new timers, polling
+  loops, JAR modifications, network overrides or CPU/GPU benchmarks are
+  introduced on the parked library.
 
 ## Runtime/OS constraints — intentionally explicit
 
@@ -55,12 +69,19 @@ resource ownership. The single-session restriction remains intact. This
 stage does **not** permit two JARs to execute concurrently, and never claims
 to do so.
 
-AFK display suppression is **not** equivalent to suspending or sleeping
-the Java game loop: Java logic and its network work continue, so heavily
-polling JARs may still use significant CPU. Compatibility is preferred
-over globally slowing Java timers, faking network responses or delaying
-game logic. Deep Treo stays opt-in, as in the stable baseline; no custom
-JAR family heuristics are introduced in the parked path.
+Deep Treo's Canvas/raster elision is **not** equivalent to suspending or
+sleeping the Java game loop: Java logic and its network work continue, so
+heavily polling JARs may still use significant CPU. Compatibility is
+preferred over globally slowing Java timers, faking network responses or
+delaying game logic. The previously implemented native Canvas safety guard
+remains enabled while parked. Do not promise under 2% CPU for every JAR:
+the user's measured Avatar result (below 2% in its old Treo mode) is a
+per-game result, not a fixed budget. The library itself was reported near
+0% CPU when no game was running, making the old mode-1 parked game path
+the primary suspect for the extra CPU. Benchmark process CPU after 15s of
+steady state in library with the same JAR and compare mode-1 baseline,
+the original Treo mode and new automatic parked Treo; do not infer accuracy
+from screenshots or isolated microbenchmarks.
 
 All activity indicators are derived from the live native session token
 and the retained owner controller. No persisted 'running' flag survives
@@ -94,6 +115,14 @@ a process restart and no UI claims a dead session is alive.
   idle, and a different game launches after shutdown.
 - Test both portrait and landscape (N-Gage); open the floating menu while
   a MIDP Form/List is showing.
+- Compare Avatar **in-game Treo (previous build)** versus **new automatic
+  library Treo** under equivalent conditions. Check whether CPU approaches
+  its previous below-2% result; no guarantee is made for unverified JARs.
+- Confirm that **no manual Treo variant** remains in the portrait or
+  landscape floating game menu, and that Back engages mode 8 and Smart GC
+  automatically.
+- For an unrecognized Canvas, check the guarded fallback to mode 1 when
+  late-pixel reads occur, and that resume restores native AFK mode 0.
 - Return to the library while a network operation is underway; verify
   socket, sound, timer and rendering behavior on resume.
 - Verify iPhone Home/background and app-switching semantics separately.
