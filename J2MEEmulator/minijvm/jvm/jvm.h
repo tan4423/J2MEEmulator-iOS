@@ -1095,6 +1095,7 @@ struct _ClassType {
     //类变量及实例变量的参数
     u64 treo_afk_layout;
     u64 treo_graphics_layout; // packed field offsets, local to the loaded class
+    u8 treo_nso_canvas_kind; // 0 unknown, 1 ordinary, 2 simple paint forwarding
     s32 field_instance_start;//实例变量模板起始起址，继承自父类的变量放在前面
     s32 field_instance_len; //非静态变量长度
     s32 field_static_len; //静态变量内存长度

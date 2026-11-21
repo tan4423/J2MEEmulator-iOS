@@ -358,7 +358,7 @@ static s32 n_imageCacheNote(Runtime *runtime, JClass *clazz) {
 }
 
 // 0 = repaint, 1 = serviceRepaints, 2 = doPaint.
-// Suppress only for exact Ninja JAR in mode 8; Canvas.java also checks Class_hef.
+// Suppress only for recognized NSO JAR + structurally verified Canvas in mode 8.
 static _Atomic uint64_t treo_ninja_skips[3];
 uint64_t treo_ninja_deep_skipped(int stage) {
     if (stage < 0 || stage > 2) return 0;
@@ -368,14 +368,62 @@ static inline int ninja_deep_active(void) {
     return treo_ninja_deep_verified() &&
            atomic_load_explicit(&treo_afk_mode, memory_order_acquire) == 8;
 }
+/*
+ * All three supplied NSO builds have a direct Canvas subclass with exactly:
+ *   aload_0; getfield OBJECT; aload_1;
+ *   invokevirtual / invokestatic DRAW_DELEGATE; return
+ * i.e. 9-byte paint(Graphics). Target class/constant-pool indices differ
+ * across mods and are intentionally not used as an identity check.
+ * Accept miniJVM's already-quickened invoke/getfield opcodes as well.
+ */
+static int treo_nso_simple_canvas_paint(JClass *canvas_class) {
+    if (!canvas_class) return 0;
+    u8 kind = __atomic_load_n(&canvas_class->treo_nso_canvas_kind, __ATOMIC_RELAXED);
+    if (kind) return kind == 2;
+    int safe_shape = 0;
+    if (canvas_class->superclass &&
+        utf8_equals_c(canvas_class->superclass->name,
+                      "javax/microedition/lcdui/Canvas")) {
+        MethodPool *pool = &canvas_class->methodPool;
+        for (s32 i = 0; i < pool->method_used; i++) {
+            MethodInfo *method = &pool->method[i];
+            if (!utf8_equals_c(method->name, "paint") ||
+                !utf8_equals_c(method->descriptor,
+                               "(Ljavax/microedition/lcdui/Graphics;)V"))
+                continue;
+            CodeAttribute *ca = method->converted_code;
+            if (!method->is_native && !method->is_sync && ca &&
+                ca->code && ca->code_length == 9 &&
+                ca->exception_table_length == 0) {
+                const u8 *c = ca->code;
+                safe_shape =
+                    c[0] == op_aload_0 &&
+                    (c[1] == op_getfield || c[1] == op_getfield_ref) &&
+                    c[4] == op_aload_1 &&
+                    (c[5] == op_invokevirtual || c[5] == op_invokevirtual_fast ||
+                     c[5] == op_invokestatic || c[5] == op_invokestatic_fast) &&
+                    c[8] == op_return;
+            }
+            break;
+        }
+    }
+    __atomic_store_n(&canvas_class->treo_nso_canvas_kind,
+                     safe_shape ? 2 : 1, __ATOMIC_RELAXED);
+    return safe_shape;
+}
 static s32 n_ninjaDeepActive(Runtime *runtime, JClass *clazz) {
     push_int(runtime->stack, ninja_deep_active());
     return RUNTIME_STATUS_NORMAL;
 }
 static s32 n_ninjaDeepSkip(Runtime *runtime, JClass *clazz) {
-    int stage = runtime->jnienv->localvar_getInt(runtime->localvar, 0);
-    const int skip = stage >= 0 && stage <= 2 && ninja_deep_active();
-    if (skip) atomic_fetch_add_explicit(&treo_ninja_skips[stage], 1, memory_order_relaxed);
+    Instance *canvas = runtime->jnienv->localvar_getRefer(runtime->localvar, 0);
+    int stage = runtime->jnienv->localvar_getInt(runtime->localvar, 1);
+    const int skip = stage >= 0 && stage <= 2 && ninja_deep_active() &&
+        canvas && (canvas->mb.type & MEM_TYPE_INS) &&
+        treo_nso_simple_canvas_paint(canvas->mb.clazz);
+    if (skip)
+        atomic_fetch_add_explicit(&treo_ninja_skips[stage], 1,
+                                  memory_order_relaxed);
     push_int(runtime->stack, skip);
     return RUNTIME_STATUS_NORMAL;
 }
@@ -3901,7 +3949,7 @@ static java_native_method j2me_render_methods[] = {
     {CLS, "takeAfkRefresh",   "()I", n_takeAfkRefresh},
     {CLS, "afkPaintPolicy", "()I", n_afkPaintPolicy},
     {CLS, "ninjaDeepActive", "()Z", n_ninjaDeepActive},
-    {CLS, "ninjaDeepSkip", "(I)Z", n_ninjaDeepSkip},
+    {CLS, "ninjaDeepSkip", "(Ljava/lang/Object;I)Z", n_ninjaDeepSkip},
     {CLS, "afkImageCacheEnabled", "()Z", n_afkImageCacheEnabled},
     {CLS, "imageCacheNote", "(II)V", n_imageCacheNote},
     {CLS, "afkCanvasResult", "(I)V", n_afkCanvasResult},

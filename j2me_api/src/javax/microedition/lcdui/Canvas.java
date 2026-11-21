@@ -88,12 +88,11 @@ public abstract class Canvas extends Displayable {
      */
     protected abstract void paint(Graphics g);
 
-    // Exact game SHA and Class_hef type gate. Native checks mode 8 again
-    // on each committed skip to avoid stale state across wake.
+    // NSO resource signature + short, side-effect-free Canvas.paint()
+    // forwarding shape. Native checks both the class and active mode 8.
     private boolean ninjaDeepSkip(int stage) {
         if (!NativeBridge.ninjaDeepActive()) return false;
-        if (!"Class_hef".equals(getClass().getName())) return false;
-        return NativeBridge.ninjaDeepSkip(stage);
+        return NativeBridge.ninjaDeepSkip(this, stage);
     }
 
     /**

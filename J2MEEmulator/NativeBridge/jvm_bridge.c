@@ -12,7 +12,7 @@
 #include <string.h>
 #include <stdatomic.h>
 #if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__ && !defined(TREO_NINJA_DEEP_DISABLED)
-#include <CommonCrypto/CommonDigest.h>
+#include "miniz.h"
 #endif
 
 static atomic_int treo_exact_ninja_verified;
@@ -20,28 +20,42 @@ int treo_ninja_deep_verified(void) {
     return atomic_load_explicit(&treo_exact_ninja_verified, memory_order_acquire);
 }
 #if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__ && !defined(TREO_NINJA_DEEP_DISABLED)
-static int treo_is_exact_ninja_jar(const char *path) {
-    static const unsigned char expected[32] = {
-        0x7e, 0x1c, 0xff, 0x13, 0x50, 0x8f, 0x0c, 0x43,
-        0xad, 0x2f, 0xee, 0x30, 0xe7, 0x5b, 0x38, 0xd8,
-        0x07, 0xa1, 0x81, 0x1a, 0x21, 0xff, 0xf8, 0xfb,
-        0xbe, 0x3c, 0xe6, 0xf7, 0x02, 0x15, 0xf0, 0xa1
+/*
+ * NSO-family identification is based on stable game resource layout, not
+ * exact JAR hashes or obfuscated class names. The separate runtime Canvas
+ * bytecode-shape guard prevents a similar asset bundle with different paint
+ * behavior from blindly inheriting this optimization.
+ *
+ * One archive read at MIDlet load; no ZIP or disk work in the Treo hot loop.
+ */
+static int treo_is_nso_family(const char *jar_path) {
+    static const char *const resources[] = {
+        "font/number",
+        "font/tahoma_7",
+        "map/1",
+        "map/newmap",
+        "x1/bg/bg00.png",
+        "x1/export/0",
+        "x1/e/d00.png"
     };
-    if (!path) return 0;
-    FILE *in = fopen(path, "rb");
-    if (!in) return 0;
-    CC_SHA256_CTX ctx;
-    int ok = CC_SHA256_Init(&ctx) == 1;
-    unsigned char chunk[8192];
-    size_t n;
-    while (ok && (n = fread(chunk, 1, sizeof(chunk), in)) != 0)
-        ok = CC_SHA256_Update(&ctx, chunk, (CC_LONG)n) == 1;
-    if (ferror(in)) ok = 0;
-    fclose(in);
-    unsigned char digest[32];
-    if (!ok || CC_SHA256_Final(digest, &ctx) != 1) return 0;
-    return memcmp(digest, expected, sizeof(expected)) == 0;
+    if (!jar_path) return 0;
+    mz_zip_archive archive = {0};
+    if (!mz_zip_reader_init_file(&archive, jar_path, 0)) return 0;
+    int match = 1;
+    for (unsigned i = 0; i < sizeof(resources) / sizeof(resources[0]); ++i) {
+        int index = mz_zip_reader_locate_file(
+            &archive, resources[i], NULL, MZ_ZIP_FLAG_CASE_SENSITIVE);
+        mz_zip_archive_file_stat file_stat;
+        if (index < 0 || !mz_zip_reader_file_stat(&archive, index, &file_stat) ||
+            file_stat.m_uncomp_size == 0 || mz_zip_reader_is_file_a_directory(&archive, index)) {
+            match = 0;
+            break;
+        }
+    }
+    mz_zip_reader_end(&archive);
+    return match;
 }
+
 #endif
 
 
@@ -60,9 +74,9 @@ int jvm_bridge_init(const char *res_root, const char *save_root, const char *mid
     }
     atomic_store_explicit(&treo_exact_ninja_verified, 0, memory_order_release);
 #if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__ && !defined(TREO_NINJA_DEEP_DISABLED)
-    int ninja_match = treo_is_exact_ninja_jar(midlet_jar);
+    int ninja_match = treo_is_nso_family(midlet_jar);
     atomic_store_explicit(&treo_exact_ninja_verified, ninja_match, memory_order_release);
-    printf("[JarBoxVM][NinjaDeep] profile=%s (exact SHA-256)\n",
+    printf("[JarBoxVM][NinjaDeep] profile=%s (NSO resource family)\n",
            ninja_match ? "matched" : "generic");
 #endif
     // Note: g_jvm_stop_requested is NOT reset here — it is reset in

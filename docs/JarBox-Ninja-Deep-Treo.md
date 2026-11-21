@@ -1,25 +1,65 @@
-# Ninja Deep Treo — phase 1: exact-JAR early presentation bypass
+# Ninja School (NSO) family Deep Treo — phase 1
 
-## Direct bytecode evidence from the uploaded Ninja JAR
+## Actual three-JAR comparison (2026-11-21)
 
-SHA-256: `7e1cff13508f0c43ad2fee30e75b38d807a1811a21fff8fbbe3ce6f70215f0a1`
+This profile is **not SHA-256 locked**. The three user-provided NSO builds are:
 
-The class `NickCpuSleep` gates `Class_hef.repaint()`, `serviceRepaints()`, and `Class_bs.a(Graphics)` within `Class_hef.paint()`. `Class_hxb.run()` runs game-state updates and then requests a frame; it is independently paced with `Thread.sleep`. This is evidence of a useful game/render split, not a requirement to reproduce the original Treo exactly.
+| JAR | SHA-256 prefix (documentation only) | NSO Canvas | Game loop |
+|---|---|---|---|
+| `NinjaSchool_251.jar` | `96f811dc1317` | `main/b.paint` | `main/a.run` |
+| `217_TrungDucTV_51026.jar` | `3420df8cb91b` | `Class_ek.paint` | `Class_cu.run` |
+| `Nick-B25-Map37-Farm-Clean-CPU.jar` | `7e1cff13508f` | `Class_hef.paint` | `Class_hxb.run` |
 
-## Mode 8 implementation
+All three contain seven common, non-empty NSO assets:
+`font/number`, `font/tahoma_7`, `map/1`, `map/newmap`,
+`x1/bg/bg00.png`, `x1/export/0`, `x1/e/d00.png`.
+All three `Canvas.paint(Graphics)` overrides are 9-byte forwarding-only
+methods without exception handlers, using `aload_0; getfield; aload_1;
+invokevirtual/invokestatic; return`. They have distinct class names, different
+constant-pool indices, and Nick delegates through `NickCpuSleep`.
 
-On `jvm_bridge_init`, compute the actual JAR's SHA-256 using CommonCrypto. Fail closed if unreadable or different. When mode 8 is active and the current Canvas Java type is exactly `Class_hef`, skip `Canvas.repaint()`, `Canvas.serviceRepaints()`, and `Canvas.doPaint()`. This removes the Java paint tree earlier than generic headless Graphics. Preserve the user-configured `limitFps()` in `repaint()`, avoid changing any game tick, network, RMS or offscreen Image logic, and rely on the existing mode-exit full redraw.
+All three main loops perform simulation work and then call `repaint()`
+and `serviceRepaints()`, with their own `Thread.sleep` pacing. No game loop
+or data access is skipped by this profile.
 
-A pair of native checks guard each skip against mode changes. The profile is not applied to Avatar, other games or other Ninja JAR variants. No JAR on disk is changed.
+`Avatar258.jar` fails the resource check and its Canvas paint does not match
+the nine-byte forwarding shape; so it retains Universal Treo.
 
-The log includes `ninja_profile=matched|generic`, `ninja_repaint_skips`, `ninja_service_skips`, and `ninja_paint_skips` to distinguish early presentation suppression from generic Canvas raster counts. In this candidate, generic `paint` and `Canvas raster skipped` may approach zero because the paint requests have been removed before they reach `doPaint()`.
+## Implementation (single workflow)
 
-## Single Codemagic workflow
+On JVM start, **once**, miniJVM's already-bundled `miniz` inspects ZIP filenames
+for the common resource signature. No reading/decompressing game resources in
+the Treo hot loop. When the package qualifies, the installed Java
+`Canvas.repaint`, `serviceRepaints`, and `doPaint` call a native predicate
+that checks the current object class is a direct Canvas subclass with a
+9-byte simple paint delegate. Accept both original and interpreter-quickened
+`getfield` and invocation opcodes. Cache classification on each loaded
+`JClass`. Only while JarBox mode 8 is active can the work be elided; keep
+user-configured `limitFps`, game ticks, network, RMS, offscreen Images,
+and mode-exit redraw path untouched.
 
-Only `J2ME Treo JIT probe unsigned` on `loader-ios-jit-probe`. Array Lookup and PaintHot diagnostic flags are OFF for cleaner CPU comparison.
+In normal play, or on a non-NSO JAR, generic behavior is preserved. A future
+NSO version lacking one of the assets or changing its Canvas.paint behavior
+falls back safely (it can be explicitly added later based on new evidence).
+A resource/name match by itself is **not** proof of identical game behavior,
+so the Canvas method-shape check remains a minimal correctness gate, not a
+full byte-for-byte method check.
 
-Test the exact Ninja JAR with its own Treo OFF and the same farming scene. Start JarBox mode 8 for 100–180 seconds, exit, and check map/tick progression, live network/auto, saved RMS state, touch, brightness, and screen repaint. Report `[JarBoxVM][NinjaDeep]` and full `[JarBoxVM][Treo]` plus GC/Canvas. A matched profile and positive skipped frame counters demonstrate activation; they do **not** prove CPU/energy savings.
+The main logs remain `[JarBoxVM][NinjaDeep] profile=matched|generic`
+and `[JarBoxVM][Treo]` fields `ninja_profile`,
+`ninja_repaint_skips`, `ninja_service_skips`, `ninja_paint_skips`.
+These labels are historical; now they represent the whole NSO family.
 
-For a same-source baseline, a future commit on this *same* workflow can add `-DTREO_NINJA_DEEP_DISABLED=1` to the compile CFLAGS, without creating any new workflow. If the impact is good, continue by side-effect analysis of deeper map/sprite render-only Java work before any further elision.
+## On-device acceptance test
 
-**Current status:** GitHub source changes only. No fresh Codemagic IPA or device test completed; feature should not be described as production-ready.
+Build only **`J2ME Treo JIT probe unsigned`** on branch
+`loader-ios-jit-probe`. Test each of the three JARs under the same scene
+with JarBox Treo mode 8; keep any in-game Treo OFF. Collect the log and check
+repaint/service skip counts, paint CPU, overall CPU, GC, network/auto,
+map/mob activity, save state, and reawakened screen/inputs. On every JAR,
+`ninja_profile=matched` plus skip counts >0 demonstrates activation, **not**
+correctness or battery power saved. Compare CPU with a matched generic
+baseline from the same workflow in a later commit, not a second workflow.
+
+**Status:** static review and user-JAR bytecode comparison completed.
+No new Codemagic build or iPhone functional/CPU A/B is yet verified.
