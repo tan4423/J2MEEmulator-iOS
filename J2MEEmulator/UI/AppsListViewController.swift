@@ -880,6 +880,7 @@ class AppsListViewController: UIViewController,
         let fm = FileManager.default
         var imported = 0
         var blockedRunningJAR = false
+        var blockedClonedJAR = false
 
         for url in urls {
             guard url.pathExtension.lowercased() == "jar" else { continue }
@@ -895,24 +896,46 @@ class AppsListViewController: UIViewController,
                 continue
             }
 
-            // If file with same name exists, remove it (overwrite)
-            try? fm.removeItem(at: destURL)
-
+            // The JAR bytes are shared by all tabs in this group.
+            // Never silently replace a binary while its clone group exists.
             do {
-                try fm.copyItem(at: url, to: destURL)
+                let clones = try JarBoxGameStorage.registeredClones(
+                    jarPath: destURL.path, documents: Self.documentsDirectory)
+                if !clones.isEmpty {
+                    blockedClonedJAR = true
+                    continue
+                }
+            } catch {
+                blockedClonedJAR = true
+                continue
+            }
+
+            // Stage first; a failed copy must not destroy the installed JAR.
+            let pending = destURL.deletingLastPathComponent().appendingPathComponent(
+                ".import-" + UUID().uuidString + ".jar")
+            do {
+                try fm.copyItem(at: url, to: pending)
+                if fm.fileExists(atPath: destURL.path) {
+                    _ = try fm.replaceItemAt(destURL, withItemAt: pending)
+                } else {
+                    try fm.moveItem(at: pending, to: destURL)
+                }
                 imported += 1
             } catch {
-                print("[Swift] Failed to import \(url.lastPathComponent): \(error)")
+                try? fm.removeItem(at: pending)
+                NSLog("[JarBoxStorage] JAR import failed: %@", error.localizedDescription)
             }
         }
 
         if imported > 0 {
             scanApps()
         }
-        if blockedRunningJAR {
+        if blockedRunningJAR || blockedClonedJAR {
             let alert = UIAlertController(
-                title: "Game đang chạy",
-                message: "Hãy dừng game trước khi thay thế JAR của phiên đó.",
+                title: "Không thể thay JAR",
+                message: blockedClonedJAR
+                    ? "JAR này còn bản nhân đang tham chiếu. Hãy xóa các Tab nhân bản trước hoặc nhập bằng tên JAR khác."
+                    : "Hãy dừng game trước khi thay thế JAR của phiên đó.",
                 preferredStyle: .alert)
             alert.addAction(UIAlertAction(title: "OK", style: .default))
             present(alert, animated: true)
