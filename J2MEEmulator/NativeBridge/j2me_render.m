@@ -424,6 +424,12 @@ static void treo_nso_work_probe(uint64_t now) {
     const int mode = atomic_load_explicit(&treo_afk_mode, memory_order_relaxed);
     if (mode != 0 && mode != 8) return;
     const int phase = mode == 8 ? 1 : 0;
+    // Reject 99%+ of calls before querying thread identity. Keep the
+    // continuous repaint hot path as light as possible.
+    uint64_t previous = atomic_load_explicit(&treo_nso_work_last_ns[phase],
+                                             memory_order_relaxed);
+    if (previous && (now < previous || now - previous < UINT64_C(5000000000)))
+        return;
     // One thread is compared against itself, not against another app thread.
     uint64_t thread_id = 0;
     if (pthread_threadid_np(NULL, &thread_id) || !thread_id) return;
@@ -435,10 +441,6 @@ static void treo_nso_work_probe(uint64_t now) {
         owner = atomic_load_explicit(&treo_nso_work_owner, memory_order_acquire);
     }
     if (owner != thread_id) return;
-    uint64_t previous = atomic_load_explicit(&treo_nso_work_last_ns[phase],
-                                             memory_order_relaxed);
-    if (previous && (now < previous || now - previous < UINT64_C(5000000000)))
-        return;
     if (!atomic_compare_exchange_strong_explicit(
             &treo_nso_work_last_ns[phase], &previous, now,
             memory_order_relaxed, memory_order_relaxed))
