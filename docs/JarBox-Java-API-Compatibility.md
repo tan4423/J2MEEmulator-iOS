@@ -388,6 +388,10 @@ The report identifies:
 - Static references such as invokedynamic, method-handle/method-type and
   dynamic constants, plus NestHost, NestMembers, Record, PermittedSubclasses
   and module classfile attributes.
+- Where a BootstrapMethods attribute is present, referenced bootstrap owners
+  (for example `java/lang/invoke/LambdaMetafactory` for Java 8 lambdas versus
+  `java/lang/invoke/StringConcatFactory` for Java 11 string concatenation).
+  These owners are static references, not a promise of runtime support.
 - Invalid classfiles and preview classfile flags.
 
 The profiler reads bounded classfile data and **never executes or changes**
