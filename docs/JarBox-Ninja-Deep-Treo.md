@@ -128,3 +128,67 @@ Interpretation: an increased CPU ns/step suggests lower effective compute throug
 ### Next on-device check
 
 Build the exact same **`J2ME Treo JIT probe unsigned`** workflow from the latest commit on `loader-ios-jit-probe` (one workflow). Launch one of the three NSO JARs. Let normal gameplay and auto run for **at least 25–30 seconds** before JarBox mode 8 to collect >=3 pre samples; Treo 3–5 minutes. Send `[JarBoxVM][NSOCompute]`, `[JarBoxVM][GamePulse]`, and `[JarBoxVM][Treo]`. Perform a follow-up run under comparable temperature, charging state, same scene and network. Do not assume a new native log field is present in an IPA compiled before this commit. Source-only instrumented; no claim that actual iPhone QoS or core assignment has been measured yet.
+
+
+## NSO Deep Idle Display wait experiment (after 394.6s GamePulse/NSOCompute log)
+
+Device observation supplied by the user for the previous build:
+- `app_CPU=14.0%`, `paint_CPU=0.00 ms/s`, `ninja_profile=matched`;
+  `10050` repaint requests elided over `394.6s`.
+- `GamePulse` live `25.25` repaint requests/s, Treo `25.47` requests/s,
+  ratio `100.9%`, last gap `19.24ms`.
+- `NSOCompute`: same-thread CPU `7.909 -> 15.658 ns/step`
+  (`1.980x`), wall `7.906 -> 15.839 ns/step` (`2.003x`),
+  QoS `21 -> 21`. A slow-down in the fixed-work probe while game
+  repaint requests remain stable may reflect CPU frequency/power management
+  or core scheduling changes. **It does NOT determine P/E core identity,
+  confirm lower energy draw, or prove real game/server progress.**
+- 215 smart GC cycles, `13.71ms/s` CPU, 14.9 MiB heap peak, thermal
+  nominal throughout; GC fallback not seen.
+
+### What changed
+
+The Java Display event loop already includes an event-driven sleep path:
+`Display.runEventLoop()` can call native
+`displayWaitIfUnchanged(generation, 250)` instead of repeatedly sleeping
+approximately 16ms. Native input, `Display.setCurrent`, stop/exit and
+`treo_render_set_afk_mode` send wake signals; the 250ms watchdog prevents
+unbounded waiting. The native pthread condition wait uses
+`jthread_block_enter/exit` so miniJVM GC treats the sleeping Display
+thread as safely blocked.
+
+JarBox now enables this **existing** path automatically only while its
+mode-8 Deep Treo overlay is active, **and only** after an NSO-family JAR
+and a structurally recognized live NSO Canvas have been observed.
+Other MIDlets and the fallback Treo mode are unchanged. On wake/teardown
+the wait is disabled before normal screen restoration; the same wake
+mechanism unblocks any pending wait. No NSO update/tick sleep, network,
+RMS, Canvas heartbeat, or QoS is modified.
+
+A new `[JarBoxVM][DisplayIdle]` line in the existing Treo report includes:
+- `enabled`: whether the new event-driven Display mode was armed.
+- `display_polls` and `polls_hz`: actual Display event-loop polls/second.
+- `waits` and `waits_hz`: native idle waits/second.
+- `timeouts`, `wake_signals`, `gc_safe_waits`: bounded timeouts,
+  notification wakeups and GC-safe waits.
+
+Hypothesis: lower idle polling/wake rates might reduce scheduler activity,
+CPU load and heat under sustained Treo. These are hypotheses, not measured
+savings. Compare with the previous ~14% CPU NSO session in similar game
+state and later do an A/B under controlled conditions if promising.
+
+### Device acceptance
+
+Build the **same single** `J2ME Treo JIT probe unsigned` workflow from
+`loader-ios-jit-probe` and let NSO run visibly >=30s before mode-8 Treo.
+Treo at least 3–5 minutes. Send `[Treo]`, `[GamePulse]`,
+`[NSOCompute]`, **new** `[DisplayIdle]`, GC/heap/thermal, and note
+whether auto/network and wake redraw actually worked. Look for:
+`enabled=1`, substantially fewer `polls_hz`, waits/timeouts,
+unchanged `GamePulse`, healthy GC and input responsiveness. If
+`enabled=0`, investigate live-Canvas detection. If the game, GC, or
+wake behavior regress, roll back this single experiment; keep the
+already-measured presentation bypass.
+
+**Source code is committed but has not been built/tested on iPhone in
+this environment.**
