@@ -3710,6 +3710,15 @@ class GameViewController: UIViewController {
         library.parkedGameController = self
         let navigation = JarBoxLibraryNavigationController(rootViewController: library)
         navigation.modalPresentationStyle = .fullScreen
+        // Match the main library, not UIKit's default bright navigation bar.
+        let appearance = UINavigationBarAppearance()
+        appearance.configureWithOpaqueBackground()
+        appearance.backgroundColor = AnimatedBackgroundView.backgroundGray
+        appearance.shadowColor = .clear
+        appearance.titleTextAttributes = [.foregroundColor: UIColor.white]
+        navigation.navigationBar.standardAppearance = appearance
+        navigation.navigationBar.scrollEdgeAppearance = appearance
+        navigation.navigationBar.tintColor = .white
 
         libraryIsPresented = true
         // The library is now the only UIKit destination. The existing AFK
