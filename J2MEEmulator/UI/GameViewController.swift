@@ -1776,10 +1776,54 @@ class GameViewController: UIViewController {
                 " · last_request_gap_ms=\(rateText(gapMs)) · status=\(status)." +
                 " Đây chỉ là nhịp yêu cầu vẽ từ vòng game, không xác nhận logic/auto/mạng/server vẫn tiến triển."
         }
+        // Same integer-work probe on the SAME NSO repaint-requesting thread,
+        // before vs. during Treo. QoS and ns/step are observable; physical
+        // P/E-core assignments and CPU frequency are NOT available here.
+        let computeLog: String? = vmTreoProbeStart.map { _ in
+            let preN = treo_nso_work_samples(0)
+            let duringN = treo_nso_work_samples(1)
+            let preCPU = treo_nso_work_ns_per_step(0, 0)
+            let duringCPU = treo_nso_work_ns_per_step(1, 0)
+            let preWall = treo_nso_work_ns_per_step(0, 1)
+            let duringWall = treo_nso_work_ns_per_step(1, 1)
+            let preQoS = treo_nso_work_qos(0)
+            let duringQoS = treo_nso_work_qos(1)
+            let owner = treo_nso_work_thread()
+            func value(_ amount: Double) -> String {
+                return amount > 0 && amount.isFinite
+                    ? String(format: "%.3f", amount) : "?"
+            }
+            let valid = preN >= 3 && duringN >= 6 &&
+                preCPU > 0 && duringCPU > 0 && preWall > 0 && duringWall > 0
+            let cpuRatio = valid ? duringCPU / preCPU : -1
+            let wallRatio = valid ? duringWall / preWall : -1
+            let qosText = preQoS >= 0 && duringQoS >= 0
+                ? (preQoS == duringQoS ? "unchanged" : "changed") : "unknown"
+            let speedStatus: String
+            if !valid {
+                speedStatus = "chua_du_mau"
+            } else if cpuRatio > 1.30 {
+                speedStatus = "nghi_giam_toc_tinh_toan"
+            } else if wallRatio > 1.35 && cpuRatio <= 1.15 {
+                speedStatus = "nghi_tang_do_tre_lap_lich"
+            } else {
+                speedStatus = "khong_thay_giam_toc_ro"
+            }
+            return "[JarBoxVM][NSOCompute] same_thread_id=\(owner)" +
+                " · samples_pre=\(preN) · samples_treo=\(duringN)" +
+                " · cpu_ns_per_step=\(value(preCPU))->\(value(duringCPU))" +
+                " · wall_ns_per_step=\(value(preWall))->\(value(duringWall))" +
+                " · cpu_slowdown=\(value(cpuRatio))x" +
+                " · wall_slowdown=\(value(wallRatio))x" +
+                " · thread_qos=\(preQoS)->\(duringQoS)(\(qosText))" +
+                " · status=\(speedStatus)." +
+                " Fixed-work proxy only; not P/E core ID, CPU MHz, watts or proof of game/server progress."
+        }
         vmTreoProbeStart = nil
         let paintHotReport = String(cString: treo_vm_paint_sample_report())
         if let vmLog { NSLog("%@", vmLog) }
         if let pulseLog { NSLog("%@", pulseLog) }
+        if let computeLog { NSLog("%@", computeLog) }
         let arrayLookupDiag = String(cString: treo_vm_array_lookup_diag_report())
         if arrayLookupDiag.hasPrefix("[JarBoxVM][ArrayLookupDiag] enabled=1") {
             NSLog("%@", arrayLookupDiag)
@@ -1848,9 +1892,11 @@ class GameViewController: UIViewController {
         if let vmLog {
             if let report = lastMeasurement {
                 lastMeasurement = (report.title, report.message + "\n\n" + vmLog +
-                    (pulseLog.map { "\n\n" + $0 } ?? "") + "\n\n" + paintHotReport)
+                    (pulseLog.map { "\n\n" + $0 } ?? "") +
+                    (computeLog.map { "\n\n" + $0 } ?? "") + "\n\n" + paintHotReport)
             } else {
-                lastMeasurement = ("JarBoxVM · hiệu năng", vmLog + (pulseLog.map { "\n\n" + $0 } ?? "") + "\n\n" + paintHotReport)
+                lastMeasurement = ("JarBoxVM · hiệu năng", vmLog + (pulseLog.map { "\n\n" + $0 } ?? "") +
+                    (computeLog.map { "\n\n" + $0 } ?? "") + "\n\n" + paintHotReport)
             }
         }
         applyPadMode()
