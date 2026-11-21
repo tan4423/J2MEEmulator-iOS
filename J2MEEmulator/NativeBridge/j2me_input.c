@@ -6,6 +6,7 @@
 //
 
 #include "j2me_input.h"
+#include "jarbox_input_ring.h"
 #include "jvm_bridge.h"
 #include "jvm.h"
 #include "jvm_util.h"
@@ -20,15 +21,6 @@
 // Ring buffer
 // ============================================================
 
-#define INPUT_QUEUE_SIZE 256
-#define INPUT_QUEUE_MASK (INPUT_QUEUE_SIZE - 1)
-
-typedef struct {
-    int type;
-    int x, y;
-    int keyCode;
-} InputEvent;
-
 // First native subsystem with true *per-VM* storage. Each bound miniJVM
 // owns a distinct input ring and GC-safe Display wait. A JVM's native calls
 // are dispatched through runtime->jvm, never through another game's UI slot.
@@ -37,9 +29,7 @@ typedef struct {
 #define JARBOX_INPUT_CONTEXT_CAPACITY 4
 typedef struct {
     _Atomic(MiniJVM *) vm;
-    InputEvent queue[INPUT_QUEUE_SIZE];
-    atomic_int write_pos;
-    atomic_int read_pos;
+    JarBoxInputRing ring;
     atomic_int display_wait_enabled;
     pthread_mutex_t display_wait_lock;
     pthread_cond_t display_wait_cond;
@@ -89,8 +79,7 @@ static int bind_input_context(MiniJVM *vm) {
             J2MEInputContext *candidate = &g_input_contexts[i];
             if (!atomic_load_explicit(&candidate->vm, memory_order_acquire)) {
                 ctx = candidate;
-                atomic_store_explicit(&ctx->read_pos, 0, memory_order_relaxed);
-                atomic_store_explicit(&ctx->write_pos, 0, memory_order_relaxed);
+                jarbox_input_ring_reset(&ctx->ring);
                 atomic_store_explicit(&ctx->display_wait_enabled, 0, memory_order_relaxed);
                 ctx->canvas_width = 240;
                 ctx->canvas_height = 320;
@@ -183,39 +172,18 @@ void j2me_input_set_canvas_size(int width, int height) {
 static void enqueue_event(int type, int x, int y, int keyCode) {
     J2MEInputContext *ctx = visible_input_context();
     if (!ctx) return;
-    int wp = atomic_load_explicit(&ctx->write_pos, memory_order_relaxed);
-    int next_wp = (wp + 1) & INPUT_QUEUE_MASK;
-    int rp = atomic_load_explicit(&ctx->read_pos, memory_order_acquire);
-
-    if (next_wp == rp) {
-        // If the OK key was dropped, make the failure visible; never invent
-        // a replacement key event or alter ring-buffer ownership.
+    const JarBoxInputEvent event = {type, x, y, keyCode};
+    if (!jarbox_input_ring_push(&ctx->ring, &event)) {
+        // A full queue is a real drop, never an invented replacement key.
         trace_modal_key("drop", type, keyCode);
         return;
     }
-
-    ctx->queue[wp].type = type;
-    ctx->queue[wp].x = x;
-    ctx->queue[wp].y = y;
-    ctx->queue[wp].keyCode = keyCode;
-
-    atomic_store_explicit(&ctx->write_pos, next_wp, memory_order_release);
     trace_modal_key("post", type, keyCode);
     wake_input_context(ctx);
 }
 
-static int dequeue_event(J2MEInputContext *ctx, InputEvent *out) {
-    if (!ctx) return 0;
-    int rp = atomic_load_explicit(&ctx->read_pos, memory_order_relaxed);
-    int wp = atomic_load_explicit(&ctx->write_pos, memory_order_acquire);
-
-    if (rp == wp) {
-        return 0; // Empty
-    }
-
-    *out = ctx->queue[rp];
-    atomic_store_explicit(&ctx->read_pos, (rp + 1) & INPUT_QUEUE_MASK, memory_order_release);
-    return 1;
+static int dequeue_event(J2MEInputContext *ctx, JarBoxInputEvent *out) {
+    return ctx && jarbox_input_ring_pop(&ctx->ring, out);
 }
 
 // ============================================================
@@ -238,7 +206,7 @@ void j2me_input_post_key(int type, int keyCode) {
 static s32 n_pollInputEvent(Runtime *runtime, JClass *clazz) {
     atomic_fetch_add_explicit(&g_display_poll_calls, 1, memory_order_relaxed);
     JniEnv *env = runtime->jnienv;
-    InputEvent evt;
+    JarBoxInputEvent evt;
 
     if (!dequeue_event(context_for_vm(runtime->jvm), &evt)) {
         env->push_ref(runtime->stack, NULL);
@@ -373,8 +341,7 @@ void j2me_input_reset(void) {
     if (!ctx) return;
     atomic_store_explicit(&ctx->display_wait_enabled, 0, memory_order_release);
     signal_display_wait(ctx);
-    atomic_store_explicit(&ctx->write_pos, 0, memory_order_relaxed);
-    atomic_store_explicit(&ctx->read_pos, 0, memory_order_relaxed);
+    jarbox_input_ring_reset(&ctx->ring);
     printf("[J2ME Input] Ring buffer reset for current JVM\n");
 }
 
@@ -389,8 +356,7 @@ void j2me_input_release_vm(MiniJVM *vm) {
         if (visible_input_context() == ctx)
             atomic_store_explicit(&g_visible_input_context, NULL, memory_order_release);
         atomic_store_explicit(&ctx->vm, NULL, memory_order_release);
-        atomic_store_explicit(&ctx->read_pos, 0, memory_order_relaxed);
-        atomic_store_explicit(&ctx->write_pos, 0, memory_order_relaxed);
+        jarbox_input_ring_reset(&ctx->ring);
         printf("[J2ME Input] Released owned JVM input context\n");
     }
     pthread_mutex_unlock(&g_input_context_lock);
