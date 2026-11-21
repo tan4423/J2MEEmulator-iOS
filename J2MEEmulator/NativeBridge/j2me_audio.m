@@ -17,8 +17,10 @@
 // ============================================================
 
 static void ensureAudioSession(void) {
-    static BOOL initialized = NO;
-    if (!initialized) {
+    // AVAudioSession is an iOS process resource; configure it exactly once
+    // even if multiple independent Java workers request audio concurrently.
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
         NSError *error = nil;
         [[AVAudioSession sharedInstance] setCategory:AVAudioSessionCategoryPlayback error:&error];
         [[AVAudioSession sharedInstance] setActive:YES error:&error];
@@ -26,8 +28,7 @@ static void ensureAudioSession(void) {
             printf("[J2ME Audio] Audio session error: %s\n",
                    [[error localizedDescription] UTF8String]);
         }
-        initialized = YES;
-    }
+    });
 }
 
 // ============================================================
@@ -36,7 +37,8 @@ static void ensureAudioSession(void) {
 
 static NSURL *getSoundFontURL(void) {
     static NSURL *url = nil;
-    if (!url) {
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
         // Try various subdirectory locations
         url = [[NSBundle mainBundle] URLForResource:@"gs_instruments" withExtension:@"sf2"];
         if (!url) {
@@ -55,7 +57,7 @@ static NSURL *getSoundFontURL(void) {
         if (!url) {
             printf("[J2ME Audio] WARNING: gs_instruments.sf2 not found in bundle!\n");
         }
-    }
+    });
     return url;
 }
 
