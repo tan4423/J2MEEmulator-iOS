@@ -53,6 +53,10 @@ uint64_t jvm_bridge_mod_loop_stage_count(int stage);
 int jvm_bridge_mod_loop_last_stage(void);
 // Bound exception notes to the first 12 per session; no Java heap access.
 int jvm_bridge_mod_loop_exception_log_slot(void);
+// One-shot JVM method-resolution diagnostics for the mod. These counters
+// are independent of the repeating UI exception notes.
+int jvm_bridge_mod_dispatch_probe_slot(void);
+int jvm_bridge_mod_method_missing_slot(void);
 
 /// Initialize miniJVM with the given resource and save directories.
 /// @param res_root         Path to directory containing runtime JARs

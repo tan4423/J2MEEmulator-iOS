@@ -633,6 +633,8 @@ extern void jvm_bridge_note_net_trace(const char *detail);
 extern void jvm_bridge_mod_popup_tick(void);
 extern void jvm_bridge_mod_loop_note_stage(int stage);
 extern int jvm_bridge_mod_loop_exception_log_slot(void);
+extern int jvm_bridge_mod_dispatch_probe_slot(void);
+extern int jvm_bridge_mod_method_missing_slot(void);
 #endif
 
 s32 exception_handle(RuntimeStack *stack, Runtime *runtime) {
@@ -4339,8 +4341,46 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                                     spin_unlock(&jvm->lock_cloader);
                                 }
 
+#if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__
+                                // The original JAR's Class_cu.run PC306 invokes
+                                // Class_gr.a()V. Both Class_gr and Class_dw
+                                // declare this method, so record the *actual*
+                                // receiver and resolved owner before concluding
+                                // the missing-method error comes from this call.
+                                // Emit at most twice, never per frame.
+                                if (atomic_load_explicit(&treo_nso_init_target_active, memory_order_relaxed) &&
+                                    utf8_equals_c(clazz->name, "Class_cu") &&
+                                    utf8_equals_c(method->name, "run") &&
+                                    (s32)(runtime->pc - ca->code) == 306 &&
+                                    jvm_bridge_mod_dispatch_probe_slot()) {
+                                    char event[272];
+                                    snprintf(event, sizeof(event),
+                                             "mod_pc306_dispatch:recv=%s,ref=%s.%s%s,resolved=%d,owner=%s",
+                                             ins->mb.clazz ? utf8_cstr(ins->mb.clazz->name) : "?",
+                                             cmr->clsName ? utf8_cstr(cmr->clsName) : "?",
+                                             cmr->name ? utf8_cstr(cmr->name) : "?",
+                                             cmr->descriptor ? utf8_cstr(cmr->descriptor) : "?",
+                                             m != NULL,
+                                             m && m->_this_class ? utf8_cstr(m->_this_class->name) : "?");
+                                    jvm_bridge_note_net_trace(event);
+                                }
+#endif
                                 if (!m) {
 #if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__
+                                    if (atomic_load_explicit(&treo_nso_init_target_active, memory_order_relaxed) &&
+                                        jvm_bridge_mod_method_missing_slot()) {
+                                        char event[312];
+                                        snprintf(event, sizeof(event),
+                                                 "mod_virtual_missing:caller=%s.%s,pc=%ld,recv=%s,ref=%s.%s%s,prelinked=%d",
+                                                 utf8_cstr(clazz->name), utf8_cstr(method->name),
+                                                 (long)(runtime->pc - ca->code),
+                                                 ins->mb.clazz ? utf8_cstr(ins->mb.clazz->name) : "?",
+                                                 cmr->clsName ? utf8_cstr(cmr->clsName) : "?",
+                                                 cmr->name ? utf8_cstr(cmr->name) : "?",
+                                                 cmr->descriptor ? utf8_cstr(cmr->descriptor) : "?",
+                                                 cmr->methodInfo != NULL);
+                                        jvm_bridge_note_net_trace(event);
+                                    }
                                     if (nso_init_probe == 2) {
                                         // The bytecode owner method exists in
                                         // the user's JAR, yet dynamic lookup
@@ -5385,6 +5425,23 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                     label_nosuchmethod_throw:
                     {
 #if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__
+                        if (atomic_load_explicit(&treo_nso_init_target_active, memory_order_relaxed) &&
+                            jvm_bridge_mod_method_missing_slot()) {
+                            const uintptr_t start = ca && ca->code ? (uintptr_t)ca->code : 0;
+                            const uintptr_t at = (uintptr_t)runtime->pc;
+                            const long offset = start && at >= start &&
+                                at - start < ca->code_length ? (long)(at - start) : -1L;
+                            char event[304];
+                            snprintf(event, sizeof(event),
+                                     "mod_method_throw:caller=%s.%s,pc=%ld,op=%u,ref=%s.%s%s",
+                                     clazz ? utf8_cstr(clazz->name) : "?",
+                                     method ? utf8_cstr(method->name) : "?",
+                                     offset, offset >= 0 ? (unsigned)(u8)*runtime->pc : 0u,
+                                     cmr && cmr->clsName ? utf8_cstr(cmr->clsName) : "?",
+                                     cmr && cmr->name ? utf8_cstr(cmr->name) : "?",
+                                     cmr && cmr->descriptor ? utf8_cstr(cmr->descriptor) : "?");
+                            jvm_bridge_note_net_trace(event);
+                        }
                         if (nso_init_probe == 2) {
                             // The original "NoSuchMethodException: a" omitted
                             // the owner and descriptor. Capture the unresolved

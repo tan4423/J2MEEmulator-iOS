@@ -1130,3 +1130,30 @@ auto-pressing OK, no JAR modification, network retries, loop polling
 timers, new Codemagic workflows, or changes to the session token
 lifecyle. Test a single screenshot/report after game freezes; users
 need not press the unresponsive game controls.
+
+
+## 2026-11-21 Class_cu.run PC306 recurring NoSuchMethodException
+
+Real iPhone device report, confirmed build `ed96afc`, contains repeated
+`mod_ui_exception:class=Class_cu,method=run,pc=306,type=java/lang/NoSuchMethodException`.
+Java input is working: `input_post/polled` FIRE=-5, then
+`game_key_handler:enter`. Game loop continues with approximately
+33 popup updates, 33 repaint and serviceRepaints calls, and sleeps;
+it is NOT a UIKit key mapping failure, TCP connect failure or proof
+of an actual deadlocked thread. Catching and retrying Exception every
+second prevents normal game progression.
+
+Exact unmodified JAR `javap -c -p` identifies PC306 as
+`invokevirtual Class_gr.a:()V` (not Class_cc, not network). Confirmed
+both `Class_gr.a()V` and override `Class_dw.a()V` physically exist in
+the original JAR. This exception could be from wrong receiver/virtual
+lookup, OR a nested unresolved call propagated through Class_gr.a().
+Do not bypass the method or fabricate its result. The miniJVM
+`label_nosuchmethod_throw` (true failure site) now records caller,
+code PC, actual missing ref, opcode; the specific PC306 virtual
+resolution also records receiver type, target and resolved owner.
+Events are capped at two dispatch probes + ten missing-resolution
+notes per session (independent of UI exception log), only enabled for
+this mod. This should differentiate an invalid receiver from a deeper
+method-resolution failure with one device run. No JAR, network, UI key,
+Deep Treo or workflow changes. iOS build is not yet verified.

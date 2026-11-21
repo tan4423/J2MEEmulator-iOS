@@ -117,6 +117,16 @@ static _Atomic uint64_t g_mod_popup_update_ticks;
 static _Atomic uint64_t g_mod_loop_stage_counts[5];
 static atomic_int g_mod_loop_last_stage;
 static atomic_int g_mod_loop_exception_notes;
+static atomic_int g_mod_dispatch_probe_notes;
+static atomic_int g_mod_method_missing_notes;
+int jvm_bridge_mod_dispatch_probe_slot(void) {
+    return atomic_fetch_add_explicit(&g_mod_dispatch_probe_notes, 1,
+                                     memory_order_relaxed) < 2;
+}
+int jvm_bridge_mod_method_missing_slot(void) {
+    return atomic_fetch_add_explicit(&g_mod_method_missing_notes, 1,
+                                     memory_order_relaxed) < 10;
+}
 void jvm_bridge_mod_loop_note_stage(int stage) {
     if (stage < 1 || stage > 4) return;
     atomic_store_explicit(&g_mod_loop_last_stage, stage, memory_order_relaxed);
@@ -223,6 +233,8 @@ int jvm_bridge_try_begin_session(void) {
         atomic_store_explicit(&g_mod_loop_stage_counts[j], 0, memory_order_relaxed);
     atomic_store_explicit(&g_mod_loop_last_stage, 0, memory_order_release);
     atomic_store_explicit(&g_mod_loop_exception_notes, 0, memory_order_release);
+    atomic_store_explicit(&g_mod_dispatch_probe_notes, 0, memory_order_release);
+    atomic_store_explicit(&g_mod_method_missing_notes, 0, memory_order_release);
     atomic_store_explicit(&g_bridge_phase, BRIDGE_STARTING, memory_order_release);
     // Visible from the first frame in Chẩn đoán kết nối, regardless of
     // which Java network API the game calls. Detects an older installed IPA.
