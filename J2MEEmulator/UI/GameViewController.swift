@@ -508,6 +508,9 @@ class GameViewController: UIViewController {
     // One *live* miniJVM remains owned by this controller while the library
     // overlays it. This is a parked foreground session, not a second JVM.
     private var libraryIsPresented = false
+    // A game may request an MIDP Alert while the library covers the game.
+    // Present it only after returning to the game, not atop the library.
+    private var deferredGameAlert = false
     private var startupTimeoutShown = false
     private var gameIdleTimerPreviouslyDisabled: Bool?
 
@@ -3742,6 +3745,10 @@ class GameViewController: UIViewController {
             guard self.ownsLiveGameSession() else { return }
             setGlobalEmulatorView(self.emulatorView)
             j2me_render_set_afk_suspended(0)
+            if self.deferredGameAlert {
+                self.deferredGameAlert = false
+                self.showAlert()
+            }
             NSLog("[JarBoxVM][Park] resumed session=%llu", self.gameSessionToken)
         }
     }
@@ -3767,6 +3774,7 @@ class GameViewController: UIViewController {
     // ============================================================
 
     func showCanvasView() {
+        deferredGameAlert = false
         emulatorView.isHidden = false
         joystickView?.isHidden = layoutMode == .portrait
         numpadView?.isHidden = false
@@ -3777,6 +3785,7 @@ class GameViewController: UIViewController {
     }
 
     func showFormView() {
+        deferredGameAlert = false
         finishStartupWatchdog()
         placeholderIconView?.isHidden = true
         formView.buildFromNativeData()
@@ -3790,6 +3799,7 @@ class GameViewController: UIViewController {
     }
 
     func showListView() {
+        deferredGameAlert = false
         finishStartupWatchdog()
         placeholderIconView?.isHidden = true
         listView.buildFromNativeData()
@@ -3804,6 +3814,10 @@ class GameViewController: UIViewController {
 
     func showAlert() {
         finishStartupWatchdog()
+        if libraryIsPresented {
+            deferredGameAlert = true
+            return
+        }
         let revision = j2me_ui_revision()
         let title = String(cString: j2me_ui_get_form_title())
         let text = String(cString: j2me_ui_get_alert_text())
