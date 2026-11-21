@@ -41,6 +41,10 @@ workflows:
           # java/nio/charset/StandardCharsets.UTF_8 plus the Charset-based
           # OutputStreamWriter constructor. Modifying Connector in the app
           # API JAR alone cannot affect this code path.
+          # Generate the remaining 33 Java 8 java.util.function interfaces
+          # deterministically, without altering the 10 already patched APIs.
+          function_src="$RUNNER_TEMP/java8-function-src"
+          PYTHONDONTWRITEBYTECODE=1 python3 tools/generate_java8_function_boot.py "$function_src"
           core_classes="$RUNNER_TEMP/java8-core-classes"
           mkdir -p "$core_classes"
           javac --release 8 -sourcepath '' -cp "$jars/minijvm_rt.jar:$jars/j2me_api.jar" \
@@ -69,6 +73,7 @@ workflows:
             J2MEEmulator/RuntimePatches/java/util/function/LongSupplier.java \
             J2MEEmulator/RuntimePatches/java/util/function/DoubleConsumer.java \
             J2MEEmulator/RuntimePatches/java/util/function/DoubleSupplier.java \
+            "$function_src"/java/util/function/*.java \
             J2MEEmulator/RuntimePatches/com/sun/cldc/i18n/j2me/UTF_8_Reader.java
           jar uf "$jars/minijvm_rt.jar" -C "$core_classes" .
           # Verify the classes that will be packaged, NOT the host JDK
@@ -90,6 +95,8 @@ workflows:
             java/util/function/DoubleConsumer.class java/util/function/DoubleSupplier.class \
             java/util/function/Consumer.class java/util/function/Function.class \
             java/util/function/Predicate.class \
+            java/util/function/BiFunction.class java/util/function/BiPredicate.class \
+            java/util/function/BinaryOperator.class java/util/function/IntUnaryOperator.class \
             com/sun/cldc/i18n/j2me/UTF_8_Reader.class)
           javap "$core_verify/java/nio/charset/StandardCharsets.class" > "$RUNNER_TEMP/utf8-class.txt"
           javap "$core_verify/java/io/OutputStreamWriter.class" > "$RUNNER_TEMP/writer-class.txt"
@@ -144,6 +151,34 @@ workflows:
           grep -Fq 'public default <V> java.util.function.Function<T, V> andThen(java.util.function.Function<? super R, ? extends V>);' "$RUNNER_TEMP/function-signatures.txt"
           javap "$core_verify/java/util/function/Predicate.class" > "$RUNNER_TEMP/predicate-signatures.txt"
           grep -Fq 'public default java.util.function.Predicate<T> negate();' "$RUNNER_TEMP/predicate-signatures.txt"
+          javap "$core_verify/java/util/function/BiFunction.class" > "$RUNNER_TEMP/bifunction-signatures.txt"
+          grep -Fq 'public default <V> java.util.function.BiFunction<T, U, V> andThen(java.util.function.Function<? super R, ? extends V>);' "$RUNNER_TEMP/bifunction-signatures.txt"
+          javap "$core_verify/java/util/function/BiPredicate.class" > "$RUNNER_TEMP/bipredicate-signatures.txt"
+          grep -Fq 'public default java.util.function.BiPredicate<T, U> negate();' "$RUNNER_TEMP/bipredicate-signatures.txt"
+          javap "$core_verify/java/util/function/IntUnaryOperator.class" > "$RUNNER_TEMP/intunary-signatures.txt"
+          grep -Fq 'public static java.util.function.IntUnaryOperator identity();' "$RUNNER_TEMP/intunary-signatures.txt"
+          javap "$core_verify/java/util/function/BinaryOperator.class" > "$RUNNER_TEMP/binaryoperator-signatures.txt"
+          grep -Fq 'public static <T> java.util.function.BinaryOperator<T> minBy(java.util.Comparator<? super T>);' "$RUNNER_TEMP/binaryoperator-signatures.txt"
+          # Check ALL generated classfiles are present in the actual patched
+          # boot JAR. Checking only signatures of a few files can miss a
+          # packaging error or an anonymous helper class.
+          python3 - "$function_src" "$jars/minijvm_rt.jar" <<'PY'
+          from pathlib import Path
+          import sys, zipfile
+          source_dir = Path(sys.argv[1]) / "java/util/function"
+          expected = {f"java/util/function/{p.stem}.class" for p in source_dir.glob("*.java")}
+          if len(expected) != 33:
+              raise SystemExit("Expected exactly 33 generated functional interfaces")
+          with zipfile.ZipFile(sys.argv[2]) as boot:
+              actual = set(boot.namelist())
+          missing = expected - actual
+          if missing:
+              raise SystemExit("Missing Java 8 boot APIs: " + ", ".join(sorted(missing)))
+          for name in ("BiConsumer$1", "BiPredicate$3", "BinaryOperator$2", "IntUnaryOperator$3"):
+              if f"java/util/function/{name}.class" not in actual:
+                  raise SystemExit("Missing functional helper class: " + name)
+          print("[JarBoxCompat] full_java8_function_api=43/43 generated=33")
+          PY
           javap "$core_verify/java/util/OptionalInt.class" > "$RUNNER_TEMP/optional-int-signatures.txt"
           javap "$core_verify/java/util/OptionalLong.class" > "$RUNNER_TEMP/optional-long-signatures.txt"
           javap "$core_verify/java/util/OptionalDouble.class" > "$RUNNER_TEMP/optional-double-signatures.txt"
@@ -168,7 +203,7 @@ workflows:
           for kind in Int Long Double; do
             grep -Fqx "java/util/function/${kind}Consumer\$1.class" "$RUNNER_TEMP/java8-boot-entries.txt"
           done
-          echo "[JarBoxNET][BUILD] java8_core_utf8=present localtime=present localdate=present localdatetime=present instant=present duration=present verifyerror=present base64=present objects=present optional=present primitive_optional=present function=present boot_jar=patched short_read=enabled"
+          echo "[JarBoxNET][BUILD] java8_core_utf8=present localtime=present localdate=present localdatetime=present instant=present duration=present verifyerror=present base64=present objects=present optional=present primitive_optional=present function_api=43/43 boot_jar=patched short_read=enabled"
           classes="$RUNNER_TEMP/lcdui-classes"
           mkdir -p "$classes"
           javac --release 8 -sourcepath '' -cp "$jars/j2me_api.jar:$jars/minijvm_rt.jar" \
@@ -302,7 +337,7 @@ workflows:
           build_commit="$(git rev-parse --verify HEAD)"
           test "${#build_commit}" -eq 40
           /usr/libexec/PlistBuddy -c "Add :JarBoxBuildCommit string $build_commit" "$app/Info.plist"
-          /usr/libexec/PlistBuddy -c 'Add :JarBoxBootPatch string java8_primitive_optional_v8' "$app/Info.plist"
+          /usr/libexec/PlistBuddy -c 'Add :JarBoxBootPatch string java8_function_api_v9' "$app/Info.plist"
           actual_commit="$(/usr/libexec/PlistBuddy -c 'Print :JarBoxBuildCommit' "$app/Info.plist")"
           test "$actual_commit" = "$build_commit"
           echo "[JarBoxNET][BUILD] final_ipa_commit=$build_commit"
@@ -317,7 +352,7 @@ workflows:
           ipa_plist="$RUNNER_TEMP/packaged-Info.plist"
           unzip -p "$GITHUB_WORKSPACE/J2ME-Treo-jar-cpu-audit-unsigned.ipa" "Payload/*.app/Info.plist" > "$ipa_plist"
           test "$(/usr/libexec/PlistBuddy -c 'Print :JarBoxBuildCommit' "$ipa_plist")" = "$build_commit"
-          test "$(/usr/libexec/PlistBuddy -c 'Print :JarBoxBootPatch' "$ipa_plist")" = "java8_primitive_optional_v8"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :JarBoxBootPatch' "$ipa_plist")" = "java8_function_api_v9"
           echo "[JarBoxNET][BUILD] stamped IPA archive verified"
     artifacts: &jarbox_ipa_shared_artifacts
       - J2ME-Treo-jar-cpu-audit-unsigned.ipa
