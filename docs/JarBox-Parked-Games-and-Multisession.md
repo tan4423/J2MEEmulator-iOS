@@ -311,3 +311,21 @@ guard. The 2+ JVM goal still depends on per-instance renderer, MIDP
 UI, Treo/GC, 3D and network/IO callback isolation. The group abstraction
 allows future sessions to be independent from the start without
 reworking save paths or user-facing organization.
+
+
+## Reference: legacy class-duplicated three-tab loader
+
+The uploaded legacy reference `Nicknsonet_t5_x3.jar` demonstrates
+a *single-VM, class-repackaged* three-instance MIDlet launcher with
+297 original classes plus matching `b/` and `c/` copies. The proven
+parts worth keeping are lazy tab initialization, returning to a stored
+per-tab MIDP Displayable, closing one tab without closing others, and
+clear grouped tab selection. The legacy RMS `a/b/c` store-name prefixes
+and its shared `lib.Display.d` / `lib.Connector.UrlMap` Java statics
+are **not** full isolation and must **not** replace JarBox's per-clone
+UUID save roots or per-JVM native owners.
+
+See [the complete static analysis](JarBox-Legacy-Three-Tab-Loader-Analysis.md)
+and its concrete concurrent-session acceptance tests. Reference JAR
+contents are not checked into this repository. Two independently safe
+JVMs are still not enabled.
