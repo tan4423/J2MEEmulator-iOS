@@ -15,6 +15,7 @@ class MultiVMReadinessTest(unittest.TestCase):
         self.assertTrue(report["owned_native_components"]["input_queue_display_wait"])
         self.assertTrue(report["owned_native_components"]["wav_midi_players"])
         self.assertTrue(report["owned_native_components"]["lcd_ui_screen_buffers"])
+        self.assertTrue(report["owned_native_components"]["gc_native_graphics_accounting"])
         self.assertTrue(report["enforced_single_active_jvm"])
         self.assertFalse(report["concurrent_jvms_safe_to_enable"])
         bridge = (ROOT / "J2MEEmulator/NativeBridge/jvm_bridge.c").read_text()
@@ -24,11 +25,12 @@ class MultiVMReadinessTest(unittest.TestCase):
         self.assertIn('jvm_bridge_supported_concurrent_sessions()', ui)
         blockers = report["unisolated_native_blockers"]
         self.assertNotIn("lcd_ui_single_form_state", blockers)
+        self.assertNotIn("gc_single_native_memory_account", blockers)
         for item in (
             "render_single_flush_callback",
             "lcd_ui_single_callback",
             "treo_single_global_mode",
-            "gc_single_native_memory_account",
+            "gc_single_smart_treo_scheduler",
             "3d_single_supersampling",
         ):
             with self.subTest(blocker=item):
