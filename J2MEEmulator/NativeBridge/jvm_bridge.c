@@ -357,7 +357,7 @@ int jvm_bridge_init(const char *res_root, const char *save_root, const char *mid
 
     g_bridge_vm.jvm->jdwp_enable = 0;
     g_bridge_vm.jvm->jdwp_suspend_on_start = 0;
-    g_bridge_vm.jvm->max_heap_size = 128 * 1024 * 1024;       // 128MB (java + native via g_native_extra_heap)
+    g_bridge_vm.jvm->max_heap_size = 128 * 1024 * 1024;       // 128MB Java + this JVM's native graphics
     g_bridge_vm.jvm->garbage_collect_period_ms = 500;          // GC every 0.5 sec
     g_bridge_vm.jvm->heap_overload_percent = 70;               // GC at 70% heap
 
@@ -370,10 +370,21 @@ int jvm_bridge_init(const char *res_root, const char *save_root, const char *mid
         return -3;
     }
 
+    // GC's native-memory ledger is separate for each JVM and guarded by
+    // a generation key (including when a subsequent heap reuses an address).
+    if (!jarbox_native_heap_register_vm(g_bridge_vm.jvm)) {
+        printf("[JarBoxVM][Lifecycle] no free native heap ledger slot\n");
+        jvm_destroy(g_bridge_vm.jvm);
+        g_bridge_vm.jvm = NULL;
+        atomic_store_explicit(&treo_exact_ninja_verified, 0, memory_order_release);
+        return -7;
+    }
+
     // Acquire a distinct native input context before exposing the remaining
     // subsystem hooks. Never start a JVM with an unbound input destination.
     if (!j2me_input_reg_natives(g_bridge_vm.jvm)) {
         printf("[JarBoxVM][Lifecycle] cannot reserve independent input context\n");
+        jarbox_native_heap_unregister_vm(g_bridge_vm.jvm);
         jvm_destroy(g_bridge_vm.jvm);
         g_bridge_vm.jvm = NULL;
         atomic_store_explicit(&treo_exact_ninja_verified, 0, memory_order_release);
@@ -382,6 +393,7 @@ int jvm_bridge_init(const char *res_root, const char *save_root, const char *mid
     if (!j2me_ui_reg_natives(g_bridge_vm.jvm)) {
         printf("[JarBoxVM][Lifecycle] cannot reserve independent LCDUI context\n");
         j2me_input_release_vm(g_bridge_vm.jvm);
+        jarbox_native_heap_unregister_vm(g_bridge_vm.jvm);
         jvm_destroy(g_bridge_vm.jvm);
         g_bridge_vm.jvm = NULL;
         atomic_store_explicit(&treo_exact_ninja_verified, 0, memory_order_release);
@@ -501,6 +513,9 @@ void jvm_bridge_destroy(void) {
         j2me_micro3d_gl_cleanup();
         j2me_m3g_cleanup();
         j2me_render_cleanup(); // also resets render_stopped flag
+        // The C native ledger is independent of the freed Java heap pointer.
+        // Dereference is never required; compare identity and invalidate key.
+        jarbox_native_heap_unregister_vm(g_bridge_vm.jvm);
         // Keep cancellation asserted until the owning Swift worker releases
         // the session. A late Back click must not bleed into the next launch.
         atomic_store_explicit(&treo_exact_ninja_verified, 0, memory_order_release);
