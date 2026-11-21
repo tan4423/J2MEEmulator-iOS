@@ -127,6 +127,9 @@ class MultiVMInputIsolationTest(unittest.TestCase):
         self.assertIn('context_for_vm(runtime->jvm)', native)
         self.assertIn('jarbox_input_ring_push(&ctx->ring', native)
         self.assertIn('jarbox_input_ring_pop(&ctx->ring', native)
+        self.assertIn('j2me_input_binding_generation(MiniJVM *vm)', native)
+        self.assertIn('j2me_input_post_key_to_vm(MiniJVM *vm, uint64_t generation', native)
+        self.assertIn('ctx->generation == generation', native)
         self.assertIn('ctx->display_wait_cond', native)
         self.assertIn('ctx->display_wait_lock', native)
         self.assertIn('j2me_input_release_vm(MiniJVM *vm)', native)
@@ -134,6 +137,8 @@ class MultiVMInputIsolationTest(unittest.TestCase):
         self.assertIn('if (!j2me_input_reg_natives(g_bridge_vm.jvm))', bridge)
         self.assertIn('JarBoxVMContext', bridge)
         self.assertIn('atomic_int stop_requested;', bridge)
+        self.assertIn('jvm_bridge_is_stop_requested_for_vm', bridge)
+        self.assertIn('owner != vm', bridge)
         self.assertIn('_Atomic uint64_t token;', bridge)
         # Keep the global singleton gate until every native subsystem is isolated.
         self.assertIn('atomic_compare_exchange_strong_explicit(&g_bridge_vm.active', bridge)
