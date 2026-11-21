@@ -1252,15 +1252,18 @@ class AppsListViewController: UIViewController,
         present(alert, animated: true)
     }
 
-    static func is3DSupersampling(for app: AppInfo) -> Bool {
-        UserDefaults.standard.object(forKey: "ss3d_\(gameId(for: app))") as? Bool ?? false
+    static func is3DSupersampling(for app: AppInfo, cloneID: UUID? = nil) -> Bool {
+        UserDefaults.standard.object(forKey: "ss3d_" + JarBoxGameStorage.settingsId(
+            jarPath: app.path, cloneID: cloneID)) as? Bool ?? false
     }
 
-    static func set3DSupersampling(_ enabled: Bool, for app: AppInfo) {
-        UserDefaults.standard.set(enabled, forKey: "ss3d_\(gameId(for: app))")
+    static func set3DSupersampling(_ enabled: Bool, for app: AppInfo,
+                                   cloneID: UUID? = nil) {
+        UserDefaults.standard.set(enabled, forKey: "ss3d_" +
+            JarBoxGameStorage.settingsId(jarPath: app.path, cloneID: cloneID))
         JarBoxGameStorage.appendSettingEvent(jarPath: app.path,
             documents: documentsDirectory, event: "SUPERSAMPLING",
-            value: enabled ? "1" : "0")
+            value: enabled ? "1" : "0", cloneID: cloneID)
     }
 
     private static let resolutionOptions: [(label: String, w: Int, h: Int)] = [
@@ -1283,20 +1286,21 @@ class AppsListViewController: UIViewController,
         ("480×800",  480, 800),
     ]
 
-    static func resolution(for app: AppInfo) -> (w: Int, h: Int) {
-        let gid = gameId(for: app)
+    static func resolution(for app: AppInfo, cloneID: UUID? = nil) -> (w: Int, h: Int) {
+        let gid = JarBoxGameStorage.settingsId(jarPath: app.path, cloneID: cloneID)
         let w = UserDefaults.standard.object(forKey: "resW_\(gid)") as? Int ?? 240
         let h = UserDefaults.standard.object(forKey: "resH_\(gid)") as? Int ?? 320
         return (w, h)
     }
 
-    private static func setResolution(w: Int, h: Int, for app: AppInfo) {
-        let gid = gameId(for: app)
+    private static func setResolution(w: Int, h: Int, for app: AppInfo,
+                                      cloneID: UUID? = nil) {
+        let gid = JarBoxGameStorage.settingsId(jarPath: app.path, cloneID: cloneID)
         UserDefaults.standard.set(w, forKey: "resW_\(gid)")
         UserDefaults.standard.set(h, forKey: "resH_\(gid)")
         JarBoxGameStorage.appendSettingEvent(jarPath: app.path,
             documents: documentsDirectory, event: "RESOLUTION",
-            value: String(w) + "x" + String(h))
+            value: String(w) + "x" + String(h), cloneID: cloneID)
     }
 
     private static let fpsLimitOptions: [(label: String, value: Int)] = [
@@ -1307,14 +1311,18 @@ class AppsListViewController: UIViewController,
         ("60 FPS",   60),
     ]
 
-    static func fpsLimit(for app: AppInfo) -> Int {
-        UserDefaults.standard.object(forKey: "fpsLimit_\(gameId(for: app))") as? Int ?? 0
+    static func fpsLimit(for app: AppInfo, cloneID: UUID? = nil) -> Int {
+        UserDefaults.standard.object(forKey: "fpsLimit_" +
+            JarBoxGameStorage.settingsId(jarPath: app.path, cloneID: cloneID)) as? Int ?? 0
     }
 
-    private static func setFpsLimit(_ fps: Int, for app: AppInfo) {
-        UserDefaults.standard.set(fps, forKey: "fpsLimit_\(gameId(for: app))")
+    private static func setFpsLimit(_ fps: Int, for app: AppInfo,
+                                    cloneID: UUID? = nil) {
+        UserDefaults.standard.set(fps, forKey: "fpsLimit_" +
+            JarBoxGameStorage.settingsId(jarPath: app.path, cloneID: cloneID))
         JarBoxGameStorage.appendSettingEvent(jarPath: app.path,
-            documents: documentsDirectory, event: "FPS", value: String(fps))
+            documents: documentsDirectory, event: "FPS", value: String(fps),
+            cloneID: cloneID)
     }
 
     private static var documentsDirectory: String {
