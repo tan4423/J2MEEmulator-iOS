@@ -25,6 +25,7 @@ class AppsListViewController: UIViewController,
     private var lastLayoutWidth: CGFloat = 0
     private weak var animatedBackground: AnimatedBackgroundView?
     private var springboardVisible = false
+    private var importBarButton: UIBarButtonItem?
 
     // Set only for a library presented over its *own* live GameViewController.
     // A weak reference plus the native session token prevents stale UI controls
@@ -66,10 +67,12 @@ class AppsListViewController: UIViewController,
         ])
 
         // "+" button — import JAR from Files
-        navigationItem.rightBarButtonItem = UIBarButtonItem(
+        let importButton = UIBarButtonItem(
             systemItem: .add, primaryAction: UIAction { [weak self] _ in
                 self?.addAppTapped()
             })
+        importBarButton = importButton
+        navigationItem.rightBarButtonItem = importButton
 
         let layout = UICollectionViewFlowLayout()
         layout.scrollDirection = .vertical
@@ -158,8 +161,14 @@ class AppsListViewController: UIViewController,
                 navigationItem.leftBarButtonItem = UIBarButtonItem(
                     title: "Tiếp tục", style: .plain,
                     target: self, action: #selector(resumeParkedGame))
+                let stop = UIBarButtonItem(
+                    title: "Dừng", style: .plain,
+                    target: self, action: #selector(stopRunningGameFromLibrary))
+                stop.tintColor = .systemRed
+                navigationItem.rightBarButtonItems = [importBarButton, stop].compactMap { $0 }
                 return
             }
+            navigationItem.rightBarButtonItems = [importBarButton].compactMap { $0 }
             if jvm_bridge_session_is_active() != 0 {
                 navigationItem.title = "Đang dừng game..."
                 navigationItem.leftBarButtonItem = UIBarButtonItem(
@@ -182,6 +191,11 @@ class AppsListViewController: UIViewController,
 
     @objc private func resumeParkedGame() {
         parkedGameController?.resumeParkedGame()
+    }
+
+    @objc private func stopRunningGameFromLibrary() {
+        parkedGameController?.stopParkedGame()
+        updateStuckSessionButton()
     }
 
     private func showAnotherGameBlocked(_ app: AppInfo) {
