@@ -23,6 +23,7 @@
 #include "j2me_input.h"
 #include "jvm.h"
 #include "jvm_util.h"
+#include "garbage.h"
 #include <stdio.h>
 #include <stdatomic.h>
 #include <time.h>
@@ -129,6 +130,7 @@ typedef struct RenderContext {
     int liveStroke, liveSavedStroke;
     CGRect liveRawClip;
     int liveBlocked;
+    uint64_t heap_key; // owning JVM generation for native GC
     _Atomic int32_t refcount;
     struct RenderContext *next_dead;
 } RenderContext;
@@ -142,6 +144,7 @@ typedef struct RenderImage {
     const uint32_t *softwareSource;
     size_t softwareStride;
     atomic_uint softwareVerified, softwareRejected;
+    uint64_t heap_key;
     _Atomic int32_t refcount;
     struct RenderImage *next_dead;
 } RenderImage;
@@ -1593,16 +1596,13 @@ static void untrack_img(RenderImage *img) {
     spin_unlock(&g_track_lock);
 }
 
-// ============================================================
-// Native memory counter — visible to miniJVM GC via gc_sum_heap()
-// ============================================================
-extern s64 g_native_extra_heap;
-
-static inline void native_heap_add(s32 bytes) {
-    __atomic_fetch_add(&g_native_extra_heap, (s64)bytes, __ATOMIC_RELAXED);
+// Each graphics handle carries an owning JVM generation; GC must never
+// include native memory used by a different game tab.
+static inline void native_heap_add(uint64_t key, s32 bytes) {
+    jarbox_native_heap_account(key, (s64)bytes);
 }
-static inline void native_heap_sub(s32 bytes) {
-    __atomic_fetch_sub(&g_native_extra_heap, (s64)bytes, __ATOMIC_RELAXED);
+static inline void native_heap_sub(uint64_t key, s32 bytes) {
+    jarbox_native_heap_account(key, -(s64)bytes);
 }
 
 // ============================================================
@@ -1688,7 +1688,7 @@ static inline void rc_release(RenderContext *rc) {
         free(rc->softwarePixels);
         rc->softwarePixels = NULL;
         if (font) CFRelease(font);
-        if (pixels > 0) native_heap_sub(pixels);
+        if (pixels > 0) native_heap_sub(rc->heap_key, pixels);
         enqueue_dead_rc(rc);
     }
 }
@@ -1715,7 +1715,7 @@ static inline void img_release(RenderImage *img) {
         img->ctx = NULL;
         if (img->immutableSnapshot) CGImageRelease(img->immutableSnapshot);
         if (ctx) CGContextRelease(ctx);
-        if (pixels > 0) native_heap_sub(pixels);
+        if (pixels > 0) native_heap_sub(img->heap_key, pixels);
         enqueue_dead_img(img);
     }
 }
@@ -1750,11 +1750,12 @@ static inline void setColorFromARGB(CGContextRef ctx, int argb) {
 // Context management
 // ============================================================
 
-static RenderContext *createRenderContext(int width, int height) {
+static RenderContext *createRenderContext(MiniJVM *owner, int width, int height) {
     if (width <= 0 || height <= 0 || (uint64_t)width * height > INT32_MAX / 4) return NULL;
     RenderContext *rc = (RenderContext *)calloc(1, sizeof(RenderContext));
     if (!rc) return NULL;
     atomic_init(&rc->refcount, 1);
+    rc->heap_key = jarbox_native_heap_key_for_vm(owner);
     rc->width = width;
     rc->height = height;
 
@@ -1787,7 +1788,7 @@ static RenderContext *createRenderContext(int width, int height) {
     rc->regionClipBounds = CGRectMake(0, 0, width, height);
 
     track_rc(rc);
-    native_heap_add(width * height * 4);
+    native_heap_add(rc->heap_key, width * height * 4);
     return rc;
 }
 
@@ -1800,9 +1801,10 @@ static void destroyRenderContext(RenderContext *rc) {
 // Image management
 // ============================================================
 
-static RenderImage *createMutableImage(int width, int height) {
+static RenderImage *createMutableImage(MiniJVM *owner, int width, int height) {
     RenderImage *img = (RenderImage *)calloc(1, sizeof(RenderImage));
     atomic_init(&img->refcount, 1);
+    img->heap_key = jarbox_native_heap_key_for_vm(owner);
     img->width = width;
     img->height = height;
     img->isMutable = 1;
@@ -1815,13 +1817,14 @@ static RenderImage *createMutableImage(int width, int height) {
     CGContextScaleCTM(img->ctx, 1.0, -1.0);
 
     track_img(img);
-    native_heap_add(width * height * 4);
+    native_heap_add(img->heap_key, width * height * 4);
     return img;
 }
 
-static RenderImage *createImageFromData(const uint8_t *data, int length) {
+static RenderImage *createImageFromData(MiniJVM *owner, const uint8_t *data, int length) {
     RenderImage *img = (RenderImage *)calloc(1, sizeof(RenderImage));
     atomic_init(&img->refcount, 1);
+    img->heap_key = jarbox_native_heap_key_for_vm(owner);
     img->isMutable = 0;
 
     CFDataRef cfData = CFDataCreate(NULL, data, length);
@@ -1858,7 +1861,7 @@ static RenderImage *createImageFromData(const uint8_t *data, int length) {
     atomic_init(&img->softwareRejected, 0);
 
     track_img(img);
-    native_heap_add(img->width * img->height * 4);
+    native_heap_add(img->heap_key, img->width * img->height * 4);
     return img;
 }
 
@@ -1881,7 +1884,7 @@ static s32 n_createContext(Runtime *runtime, JClass *clazz) {
     JniEnv *env = runtime->jnienv;
     s32 w = env->localvar_getInt(runtime->localvar, 0);
     s32 h = env->localvar_getInt(runtime->localvar, 1);
-    RenderContext *rc = createRenderContext(w, h);
+    RenderContext *rc = createRenderContext(runtime->jvm, w, h);
     env->push_long(runtime->stack, (s64)(intptr_t)rc);
     return RUNTIME_STATUS_NORMAL;
 }
@@ -2451,7 +2454,7 @@ static s32 n_createMutableImage(Runtime *runtime, JClass *clazz) {
     JniEnv *env = runtime->jnienv;
     s32 w = env->localvar_getInt(runtime->localvar, 0);
     s32 h = env->localvar_getInt(runtime->localvar, 1);
-    RenderImage *img = createMutableImage(w, h);
+    RenderImage *img = createMutableImage(runtime->jvm, w, h);
     env->push_long(runtime->stack, (s64)(intptr_t)img);
     return RUNTIME_STATUS_NORMAL;
 }
@@ -2463,7 +2466,7 @@ static s32 n_createImageFromData(Runtime *runtime, JClass *clazz) {
     s32 length = env->localvar_getInt(runtime->localvar, 2);
     if (!arr) { env->push_long(runtime->stack, 0); return RUNTIME_STATUS_NORMAL; }
     c8 *arrBody = arr->arr_body;
-    RenderImage *img = createImageFromData((uint8_t *)arrBody + offset, length);
+    RenderImage *img = createImageFromData(runtime->jvm, (uint8_t *)arrBody + offset, length);
     env->push_long(runtime->stack, (s64)(intptr_t)img);
     return RUNTIME_STATUS_NORMAL;
 }
@@ -4244,8 +4247,8 @@ void j2me_render_cleanup(void) {
     g_dead_img_gen1 = NULL;
     os_unfair_lock_unlock(&g_dead_drain_lock);
 
-    // Reset native heap counter
-    __atomic_store_n(&g_native_extra_heap, 0, __ATOMIC_RELAXED);
+    // Each JVM's native accounting is released after its own render
+    // teardown. Never globally reset another tab's memory quota.
 
     // Stop haptic engine
     if (@available(iOS 13.0, *)) {
