@@ -98,3 +98,41 @@ from one NSO login attempt, especially `api_stage`, `tcp_connect`,
 `tcp_first_available`, `tcp_first_read`, `tcp_first_write`,
 `tcp_close`, and `game_net_exception` entries. Empty entries are evidence
 too. Do not log credentials, URL or packet bodies.
+
+
+## 2026-11-22: NSO login server selector and missing RMS logging constructor
+
+Two iPhone diagnostic snapshots, both from IPA
+`d5931df2e5a54c2932cec9d1908feb6e4c2f876a`, had different
+runtime coverage. The early one showed only startup probes and
+`display_poll_count=880`; this did **not** prove that TCP was never called.
+The later snapshot showed `display_poll_count=3637`,
+`popup_update_count=525`, active game-loop repaint/service/sleep counts,
+and successful TCP connect/write/read/close at port 2024.
+
+The actionable repeated exception is:
+`mod_method_throw:caller=javax/microedition/rms/impl/RmsEventLog.note,pc=230,op=183,ref=java/io/FileOutputStream.<init>(Ljava/io/File;Z)V`.
+
+**Fixed in source:** `RmsEventLog.note` in the app API JAR previously invoked
+`new FileOutputStream(log, true)`, a Java SE constructor missing from
+miniJVM's boot `FileOutputStream`. miniJVM exposes the append constructor
+`FileOutputStream(String, boolean)`, so use
+`new FileOutputStream(log.getPath(), true)`. This keeps the existing
+append semantics, per-JVM save root, metadata cap, and non-secret log format.
+The existing Codemagic script already recompiles `RmsEventLog.java` into
+the shipped `j2me_api.jar`; no workflow/JAR modification is required.
+
+Regression `tools/tests/test_rms_eventlog_boot_compat.py` extracts and
+disassembles `java/io/FileOutputStream.class` **from the bundled miniJVM
+boot JAR** rather than the host JDK, checks the classfile call signature
+from the rebuilt logger, and runs a host-only Java append preservation fixture.
+A separate equivalent Java-8-compatible fixture ran successfully on Linux;
+full Codemagic, iPhone and full-miniJVM execution **remain unverified**.
+
+This exception affects the emulator's RMS *metadata event logger*, not
+necessarily RMS record serialization. It can disrupt an RMS operation if
+method resolution fails before the logger's `IOException` handler, but it is
+**not yet proved** to be the sole cause of NSO's empty server selector.
+Do not rewrite the game JAR, seed fake server entries, modify network
+protocols, or enable concurrent JVMs on the strength of this log. Collect
+a fresh `JarBoxNET` report from the built IPA if the selector remains empty.
