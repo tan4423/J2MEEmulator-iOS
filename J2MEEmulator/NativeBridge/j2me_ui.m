@@ -606,7 +606,7 @@ static s32 n_listSetLastIcon(Runtime *runtime, JClass *clazz) {
     if (g_list_item_count <= 0) return RUNTIME_STATUS_NORMAL;
     JniEnv *env = runtime->jnienv;
     s64 handle = env->localvar_getLong_2slot(runtime->localvar, 0);
-    CGImageRef icon = j2me_render_copy_image(handle);
+    CGImageRef icon = j2me_render_copy_image_for_vm(handle, runtime->jvm);
     if (icon) {
         @synchronized ([NSMutableDictionary class]) {
             if (!g_list_icons) g_list_icons = [NSMutableDictionary dictionary];
