@@ -1,6 +1,6 @@
 """Compile real miniJVM socket option functions and check OS-level effects.
 
-Host socketpair test only; no remote NSO endpoint, no full JVM or iOS build.
+Host TCP loopback test only; no remote NSO endpoint, no full JVM or iOS build.
 """
 import shutil
 import subprocess
@@ -16,6 +16,8 @@ PREAMBLE = r"""
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <sys/time.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
 #include <unistd.h>
 #include <fcntl.h>
 #include <stdio.h>
@@ -40,16 +42,41 @@ static int mbedtls_net_set_block(NetCtx *ctx) {(void)ctx; return 0;}
 """
 TEST = r"""
 int main(void) {
-    int sv[2];
-    if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) != 0) return 1;
+    // SO_KEEPALIVE is a TCP option. AF_UNIX socketpair does not promise to
+    // store/report this option consistently (macOS returned 0 after set).
+    // Exercise the real TCP implementation using loopback + an ephemeral port:
+    // no outside network connection, DNS, or external service involved.
+    int listener = socket(AF_INET, SOCK_STREAM, 0);
+    if (listener < 0) return 1;
+    struct sockaddr_in addr = {0};
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    addr.sin_port = htons(0);
+    if (bind(listener, (const struct sockaddr *)&addr, sizeof(addr)) != 0)
+        return 14;
+    if (listen(listener, 1) != 0) return 15;
+    socklen_t addr_len = sizeof(addr);
+    if (getsockname(listener, (struct sockaddr *)&addr, &addr_len) != 0)
+        return 16;
+    int client = socket(AF_INET, SOCK_STREAM, 0);
+    if (client < 0) return 17;
+    if (connect(client, (const struct sockaddr *)&addr, sizeof(addr)) != 0)
+        return 18;
+    int accepted = accept(listener, NULL, NULL);
+    if (accepted < 0) return 19;
     VmSock s = {0};
-    s.contex.fd = sv[0];
+    s.contex.fd = client;
     if (sock_option(&s, SOCK_OP_TYPE_TIMEOUT, 750, 0)) return 2;
     int baseline = sock_get_option(&s, SOCK_OP_TYPE_TIMEOUT);
     if (baseline < 700 || baseline > 900) return 3;
 
     if (sock_option(&s, SOCK_OP_TYPE_KEEPALIVE, 1, 0)) return 4;
-    if (sock_get_option(&s, SOCK_OP_TYPE_KEEPALIVE) != 1) return 5;
+    int keepalive = sock_get_option(&s, SOCK_OP_TYPE_KEEPALIVE);
+    if (keepalive != 1) {
+        fprintf(stderr, "SO_KEEPALIVE on TCP socket: expected 1, got %d\\n",
+                keepalive);
+        return 5;
+    }
     if (sock_get_option(&s, SOCK_OP_TYPE_TIMEOUT) != baseline) return 6;
 
     if (sock_option(&s, SOCK_OP_TYPE_LINGER, 1, 4)) return 7;
@@ -60,7 +87,7 @@ int main(void) {
     if (sock_get_option(&s, SOCK_OP_TYPE_KEEPALIVE) != 0) return 11;
     if (sock_option(&s, SOCK_OP_TYPE_LINGER, 0, 0)) return 12;
     if (sock_get_option(&s, SOCK_OP_TYPE_LINGER) != -1) return 13;
-    close(sv[0]); close(sv[1]); return 0;
+    close(client); close(accepted); close(listener); return 0;
 }
 """
 
@@ -73,6 +100,8 @@ class SocketOptionsTest(unittest.TestCase):
         start = code.index("s32 sock_option(VmSock *vmsock")
         end = code.index("\ns32 host_2_ip(", start)
         funcs = code[start:end]
+        self.assertIn("socket(AF_INET, SOCK_STREAM, 0)", TEST)
+        self.assertNotIn("socketpair(AF_UNIX", TEST)
         self.assertIn("SO_LINGER", funcs)
         self.assertIn("SO_KEEPALIVE", funcs)
         with tempfile.TemporaryDirectory(prefix="jarbox-socket-options-") as t:
