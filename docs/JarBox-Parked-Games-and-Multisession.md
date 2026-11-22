@@ -375,9 +375,9 @@ CAS remains in place. Do not present this source stage as functional
 The single-JVM safety gate is **still on**. This checkpoint splits the *native
 2D handle teardown*, not the entire renderer or simultaneous miniJVM execution.
 
-- \`RenderContext\` and \`RenderImage\` still carry their native-heap generation
-  key. \`jvm_bridge_destroy\` captures that key before \`jvm_destroy\` and passes
-  it to \`j2me_render_cleanup_for_owner\` before unregistering the heap ledger.
+- `RenderContext` and `RenderImage` still carry their native-heap generation
+  key. `jvm_bridge_destroy` captures that key before `jvm_destroy` and passes
+  it to `j2me_render_cleanup_for_owner` before unregistering the heap ledger.
   The cleanup function removes only that generation's live handles; it does
   not zero the process-wide registry or discard another owner's frame buffers.
 - Each handle is detached while the tracking lock is held, but its Treo cache
@@ -387,18 +387,18 @@ The single-JVM safety gate is **still on**. This checkpoint splits the *native
   from the currently visible tab. The bridge uses the scoped API.
 - Bitmap creation now checks the live owner generation, allocations and decoded
   image dimensions before constructing native handles. The shared immutable
-  \`CGColorSpace\` is initialized with \`dispatch_once\`.
+  `CGColorSpace` is initialized with `dispatch_once`.
 - Native flush re-checks the visible generation after snapshot construction;
   a frame captured while focus switches is released rather than queued.
   UIKit still independently checks ownership when the queued frame arrives.
-- \`tools/tests/test_multivm_render_cleanup.py\` compiles the actual owner
+- `tools/tests/test_multivm_render_cleanup.py` compiles the actual owner
   extraction helpers into a host C harness. It exercises concurrent owner
   A/B extraction and verifies owner C survives, and source-checks bridge
   ordering and native frame ownership. A standalone sanitizer-host harness
   of these helpers passed ASan/UBSan on Linux. These are **not iOS build or
   simultaneous miniJVM tests**.
 
-**Still blocking concurrent JVMs:** \`g_render_stopped\` is a shared stop
+**Still blocking concurrent JVMs:** `g_render_stopped` is a shared stop
 barrier; native graphics acquire/release, Metal workspace/texture cache, Treo
 and Smart GC, UIKit destination ownership, haptics, 3D, sockets and final
 VM/thread shutdown still need independent per-generation resource ownership
