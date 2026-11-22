@@ -419,12 +419,14 @@ class GameViewController: UIViewController {
         }
         if mainStackAuditID != nil { treo_afk_main_trace_cancel() }
         // An old controller may die while a newer session owns the VM.
-        if activeGameViewController === self {
-            // Defensive teardown for a controller that disappears unexpectedly.
-            // A later owner's native session must never be touched.
-            if parkedTreoActive &&
-                (jvm_bridge_session_token() == gameSessionToken ||
-                 jvm_bridge_session_is_active() == 0) {
+        if activeGameViewController === self &&
+            ownsJVMSession && gameSessionToken != 0 &&
+            jvm_bridge_session_token() == gameSessionToken &&
+            jvm_bridge_session_is_active() != 0 {
+            // Only this controller's still-live JVM may modify process-wide
+            // Treo/GC state. In particular, token 0 must never authorize an
+            // old controller after a newly started game inherited the UI.
+            if parkedTreoActive {
                 // deinit may not be actor-isolated under strict Swift checks.
                 // Keep this last-resort native reset direct, without
                 // invoking an actor-isolated instance method from deinit.
@@ -3504,6 +3506,9 @@ class GameViewController: UIViewController {
         let height = Int32(canvasHeight)
         let scale = Int32(render3dScale)
         let fps = Int32(fpsLimit)
+        // Captured before the async worker starts. A recycled controller
+        // reference or a late main-queue completion cannot inherit B's token.
+        let launchingToken = gameSessionToken
         let worker = DispatchWorkItem { [weak self] in
             let failure = GameViewController.runMIDlet(
                 resRoot: resRoot, jarPath: gamePath, width: width,
@@ -3511,9 +3516,27 @@ class GameViewController: UIViewController {
                 cloneID: instanceCloneID
             )
             DispatchQueue.main.async { [weak self] in
-                guard let self else { return }
+                guard let self, self.ownsJVMSession,
+                      self.gameSessionToken == launchingToken,
+                      launchingToken != 0 else { return }
+                // The native worker has already finished/unregistered A.
+                // If B acquired the global slot meanwhile, A's late UIKit
+                // cleanup must not reset B's Treo or render state.
+                let currentToken = jvm_bridge_session_token()
+                let mayResetNative = currentToken == 0 ||
+                    currentToken == launchingToken
                 self.ownsJVMSession = false
                 self.gameSessionToken = 0
+                if !mayResetNative {
+                    self.parkedTreoActive = false
+                    self.parkedNSODeepIdle = false
+                    self.parkedStartedAt = nil
+                    self.parkedCPUStart = nil
+                    self.stopEscalationWork?.cancel()
+                    self.stopRescueWork?.cancel()
+                    self.finishStartupWatchdog()
+                    return
+                }
                 self.stopEscalationWork?.cancel()
                 self.stopEscalationWork = nil
                 self.stopRescueWork?.cancel()
@@ -3795,6 +3818,17 @@ class GameViewController: UIViewController {
 
     private func stopParkedTreo() {
         guard parkedTreoActive else { return }
+        // The native session can finish before this controller's deferred
+        // completion. Never reset Treo of an unrelated newly acquired tab.
+        guard gameSessionToken != 0 &&
+              jvm_bridge_session_token() == gameSessionToken &&
+              jvm_bridge_session_is_active() != 0 else {
+            parkedTreoActive = false
+            parkedNSODeepIdle = false
+            parkedStartedAt = nil
+            parkedCPUStart = nil
+            return
+        }
         parkedTreoActive = false
         let fallback = treo_afk_guard_auto_fell_back() != 0
         let elapsed = parkedStartedAt.map {
@@ -3944,11 +3978,30 @@ class GameViewController: UIViewController {
 
     func showAlert() {
         finishStartupWatchdog()
+        // Capture *both* the worker's immutable session token and the
+        // MIDP render owner for every deferred Alert action and timeout.
+        guard ownsLiveGameSession() else { return }
+        let originToken = gameSessionToken
+        let originKey = j2me_ui_focused_owner_key()
+        guard originKey != 0,
+              j2me_render_visible_owner_key() == originKey else { return }
         if libraryIsPresented {
             deferredGameAlert = true
             return
         }
         let revision = j2me_ui_revision()
+        // A revision alone is not enough: A and B may use the same value.
+        // An Alert created by A must never post input to the focused B.
+        let canDeliver: () -> Bool = { [weak self] in
+            guard let self else { return false }
+            return self.ownsJVMSession &&
+                self.gameSessionToken == originToken &&
+                jvm_bridge_session_token() == originToken &&
+                jvm_bridge_session_is_active() != 0 &&
+                j2me_ui_focused_owner_key() == originKey &&
+                j2me_render_visible_owner_key() == originKey &&
+                j2me_ui_revision() == revision
+        }
         let title = String(cString: j2me_ui_get_form_title())
         let text = String(cString: j2me_ui_get_alert_text())
 
@@ -3960,6 +4013,7 @@ class GameViewController: UIViewController {
         let cmdCount = j2me_ui_get_command_count()
         if cmdCount == 0 {
             alert.addAction(UIAlertAction(title: "OK", style: .default) { [weak self] _ in
+                guard canDeliver() else { return }
                 self?.alertTimeoutWork?.cancel()
                 j2me_input_post_touch(Int32(J2ME_UI_ALERT_DISMISSED), revision, 0)
             })
@@ -3968,6 +4022,7 @@ class GameViewController: UIViewController {
                 let label = String(cString: j2me_ui_get_command_label(Int32(i)))
                 let cmdId = j2me_ui_get_command_id(Int32(i))
                 alert.addAction(UIAlertAction(title: label, style: .default) { [weak self] _ in
+                    guard canDeliver() else { return }
                     self?.alertTimeoutWork?.cancel()
                     j2me_input_post_touch(Int32(J2ME_UI_COMMAND_ACTION), revision, cmdId)
                 })
@@ -3979,7 +4034,9 @@ class GameViewController: UIViewController {
         let timeout = j2me_ui_get_alert_timeout()
         if timeout > 0 {
             let work = DispatchWorkItem { [weak alert] in
+                guard canDeliver() else { return }
                 alert?.dismiss(animated: true) {
+                    guard canDeliver() else { return }
                     j2me_input_post_touch(Int32(J2ME_UI_ALERT_DISMISSED), revision, 0)
                 }
             }
@@ -3998,18 +4055,24 @@ private(set) weak var activeGameViewController: GameViewController?
 // on Tab B even when their JAR path and screen revision happen to coincide.
 private func dispatchMIDPScreenAction(_ action: Int32, _ revision: Int32,
                                       ownerKey: UInt64 = 0) {
+    // The unowned legacy callback cannot prove whether A or B queued an
+    // event. All iOS sessions install ownedGameUICallback; fail closed.
+    guard ownerKey != 0 else { return }
+    let sourceToken = jvm_bridge_session_token()
+    guard sourceToken != 0 else { return }
     DispatchQueue.main.async {
-        if ownerKey != 0 {
-            guard j2me_render_visible_owner_key() == ownerKey,
-                  j2me_ui_focused_owner_key() == ownerKey else { return }
-        }
+        guard jvm_bridge_session_token() == sourceToken,
+              jvm_bridge_session_is_active() != 0,
+              j2me_render_visible_owner_key() == ownerKey,
+              j2me_ui_focused_owner_key() == ownerKey else { return }
         j2me_ui_lock_screen()
         defer { j2me_ui_unlock_screen() }
         guard revision == j2me_ui_revision(),
-              (ownerKey == 0 ||
-               (j2me_render_visible_owner_key() == ownerKey &&
-                j2me_ui_focused_owner_key() == ownerKey)),
-              let vc = activeGameViewController else { return }
+              j2me_render_visible_owner_key() == ownerKey,
+              j2me_ui_focused_owner_key() == ownerKey,
+              let vc = activeGameViewController,
+              vc.ownsLiveGameSession(),
+              vc.gameSessionToken == sourceToken else { return }
         switch action {
         case Int32(J2ME_UI_ACTION_SHOW_FORM), Int32(J2ME_UI_ACTION_SHOW_TEXTBOX),
              Int32(J2ME_UI_ACTION_SHOW_LIST), Int32(J2ME_UI_ACTION_SHOW_ALERT):
