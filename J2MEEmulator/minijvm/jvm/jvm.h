@@ -1961,6 +1961,9 @@ struct _MiniJVM {
 
     JniEnv *env;
 
+    // Non-cryptographic Math.random state belongs to this JVM. Updated with
+    // __atomic CAS so Java threads of the same JVM cannot race.
+    u64 math_random_state;
     s32 jvm_state;
 };
 

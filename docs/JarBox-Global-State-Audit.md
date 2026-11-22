@@ -16,7 +16,7 @@ Risk: **H** can corrupt/steal state between JVMs, **M** logic/behaviour leak or 
 |---|---|---|---|---|
 | `global.c:11`, written in `jvm_util.c:2121-2138` (`init_jni_func_table` from `jvm_init`) | `JniEnv jnienv` | P | **M** **[TSan]** | Every `jvm_init` rewrites the same function-pointer table concurrently (data race by the C model; values are identical, so latent). Fix: one-time init guarded by `pthread_once`. |
 | `jvm.c:257-262` | `signal(SIGABRT/FPE/SEGV/TERM/PIPE, …)` | P | M | Handlers are process-wide and installed by *each* JVM; they must stay process-level, not owned per JVM. A JVM-sig handler also hides crash reports. Decide one owner (app), not each `jvm_init`. |
-| `jni_std.c:21,399` | `is_random_init` / `srand` | P | M | Seeds libc `rand()` once for all JVMs. Two JVMs share one PRNG stream → no isolation of `java.util.Random` seeds that use `rand()`. Fix: per-JVM seed state. |
+| `jni_std.c`, `jvm.c`, `jvm.h` | `java_lang_Math_random` seed/state | **V** | — | **Fixed in source:** atomic 64-bit state in each `MiniJVM`, seeded during `jvm_create` from time, pointer, and an atomic sequence. Removed process-global `is_random_init` / `srand` / `rand` from Math.random. Non-cryptographic; host full-core/Tsan regression not yet rerun. `java.util.Random` has separate Java implementation. |
 | `global.c:367-368` | `pro_lock`, `profile_instructs[]` | P | L | Instruction profiler, off in production. Guard or compile out. |
 | `jit.c:124,1287,3516` | `check_suspend` (lazily generated stub) | P | M | Machine-code stub generated on first use. Compiled under `treo_jit_compile_mutex` on iOS, but the plain (non-`TREO_IOS_GAME_JIT`) path in `interpreter.c:1703` uses a per-method lock only. Code does not embed a JVM pointer, so sharing is acceptable once generation is a one-time atomic publish. **Not exercised by host test (JIT stubbed).** |
 | `jit.c:24-32` | `treo_jit_*` counters + `treo_jit_compile_mutex` | P | L/M | One global compile mutex serialises JIT across JVMs (performance, not safety). |
@@ -26,7 +26,7 @@ Risk: **H** can corrupt/steal state between JVMs, **M** logic/behaviour leak or 
 | `garbage.c:321` | `treo_gc_probe_requested_ms` | P | M | Smart-GC probe interval is global → Treo of one JVM changes GC cadence of another. Part of Treo/Smart-GC per-VM work. |
 | `garbage.c:400-402` | `g_native_heaps[]` ledger | V | — | Already per-JVM with generation key (done). |
 | `hashset.c`, `hashtable.c` | default-size statics | P | — | Read-only after init (not truly mutable). |
-| `ssl_client.c:10-11` | `ca_inited`, `ca_crt_rsa` | P | M | CA bundle initialised lazily, unsynchronised. Guard with `pthread_once`. |
+| `ssl_client.c` | `ca_crt_rsa` / `g_ca_bundle_once` | P | M | **Fixed in source:** CA bundle assembled under `pthread_once` and read as immutable thereafter. Full ssl_client/mTLS host and iOS builds not rerun; harness stubs TLS. |
 
 ## B. Native bridge (`NativeBridge`)
 
@@ -60,3 +60,9 @@ above; none of them is exercised by the host harness (render/UI/audio/3D are stu
 3. Per-VM render stop flag instead of `j2me_render_stop()` global.
 4. Micro3D / M3G context ownership.
 5. Session registry replacing `g_bridge_vm`; then, and only then, lift the one-JVM cap.
+
+## 2026-11-22 checkpoint: host verification unavailable
+
+- `git am` on a temporary empty checkout failed because original miniJVM source files are not present; the supplied patch was applied as exact Git blobs through GitHub's Git API instead (all eight blob hashes matched the format-patch).
+- `tools/host_multivm_smoke/run.sh plain 2`, `asan 17`, and `tsan 3` returned exit code 2 before compilation because this execution environment could not fetch the complete repository. Old TSan logs were cleared first. These commands do **not** revalidate either `jnienv` or the CA/RNG changes.
+- The documented 51/51 sanitizer result is user-provided earlier evidence only; the host harness does not exercise UIKit, render, audio, 3D, TLS, or JIT. The single-JVM safety limit remains in place.

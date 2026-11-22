@@ -235,6 +235,9 @@ void _on_jvm_sig(s32 no) {
     exit(no);
 }
 
+// Process-wide *seed allocator* only, not a shared PRNG stream.
+static u64 g_vm_math_seed_sequence;
+
 MiniJVM *jvm_create() {
     MiniJVM *jvm = jvm_calloc(sizeof(MiniJVM));
     if (!jvm) {
@@ -245,6 +248,19 @@ MiniJVM *jvm_create() {
     jvm->max_heap_size = MAX_HEAP_SIZE_DEFAULT;
     jvm->heap_overload_percent = GARBAGE_OVERLOAD_DEFAULT;
     jvm->garbage_collect_period_ms = GARBAGE_PERIOD_MS_DEFAULT;
+    // Mix a monotonic allocation sequence, time and this VM address. The
+    // resulting PRNG state never aliases a different live JVM's state.
+    const u64 sequence = __atomic_add_fetch(&g_vm_math_seed_sequence, 1,
+                                             __ATOMIC_RELAXED);
+    u64 seed = (u64)(uintptr_t)jvm ^ ((u64)currentTimeMillis() << 19)
+               ^ (sequence * UINT64_C(0x9e3779b97f4a7c15));
+    seed ^= seed >> 30;
+    seed *= UINT64_C(0xbf58476d1ce4e5b9);
+    seed ^= seed >> 27;
+    seed *= UINT64_C(0x94d049bb133111eb);
+    seed ^= seed >> 31;
+    __atomic_store_n(&jvm->math_random_state, seed ? seed : 1,
+                     __ATOMIC_RELAXED);
     return jvm;
 }
 

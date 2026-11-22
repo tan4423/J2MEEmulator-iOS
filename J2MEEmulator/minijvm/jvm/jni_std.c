@@ -18,7 +18,19 @@
 
 #endif
 
-u32 is_random_init = FALSE;
+// JVM-local, thread-safe, non-cryptographic RNG. Only java.lang.Math.random
+// uses this stream; TLS entropy and java.util.Random have separate sources.
+static u64 jarbox_vm_math_random_next(MiniJVM *jvm) {
+    u64 previous = __atomic_load_n(&jvm->math_random_state, __ATOMIC_RELAXED);
+    u64 next;
+    do {
+        next = previous * UINT64_C(6364136223846793005) +
+               UINT64_C(1442695040888963407);
+    } while (!__atomic_compare_exchange_n(&jvm->math_random_state, &previous,
+                                          next, 0, __ATOMIC_ACQ_REL,
+                                          __ATOMIC_RELAXED));
+    return next;
+}
 
 s32 com_sun_cldc_io_ConsoleOutputStream_write(Runtime *runtime, JClass *clazz) {
     u8 ch = (u8) localvar_getInt(runtime->localvar, 1);
@@ -393,14 +405,9 @@ s32 java_lang_Math_exp(Runtime *runtime, JClass *clazz) {
 
 s32 java_lang_Math_random(Runtime *runtime, JClass *clazz) {
     RuntimeStack *stack = runtime->stack;
-    f64 r = 0.0f;
-    s32 i;
-    s32 times = 0;
-    if (!is_random_init) { // Setting seed only necessary once.
-        srand((u32) time(0));
-        is_random_init = TRUE;
-    }
-    r = ((f64) rand() / (f64) RAND_MAX);
+    // 53 high bits represent a double uniformly on [0,1).
+    const u64 bits = jarbox_vm_math_random_next(runtime->jvm);
+    const f64 r = (f64)(bits >> 11) * (1.0 / 9007199254740992.0);
 #if _JVM_DEBUG_LOG_LEVEL > 5
     invoke_deepth(runtime);
     jvm_printf("java_lang_Math_random r = %f\n", r);
