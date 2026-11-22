@@ -126,6 +126,13 @@ class MultiVMRenderCleanupTest(unittest.TestCase):
         self.assertIn("CGImageRelease(image);", flush)
         self.assertIn("g_owned_flush_callback(image, rc->width, rc->height, rc->heap_key)", flush)
 
+    def test_haptic_callbacks_require_live_foreground_vm_generation(self):
+        render = RENDER.read_text(encoding="utf-8")
+        self.assertIn("render_haptic_release_owner(key);", render)
+        self.assertIn("if (owner_key != j2me_render_visible_owner_key()) return;", render)
+        self.assertIn("atomic_store_explicit(&g_haptic_player_owner_key, owner_key", render)
+        self.assertIn("atomic_load_explicit(&g_haptic_player_owner_key, memory_order_acquire)", render)
+
     def test_bridge_cleanup_sequence_and_global_stop_are_truthful(self):
         render = RENDER.read_text(encoding="utf-8")
         bridge = BRIDGE.read_text(encoding="utf-8")
