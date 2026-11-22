@@ -71,6 +71,8 @@ class MultiVMUIIsolationTests(unittest.TestCase):
         self.assertIn("j2me_ui_set_owned_callback(ownedGameUICallback)", game)
         self.assertIn("let ownedGameUICallback: @convention(c)", game)
         self.assertIn("j2me_render_visible_owner_key() == ownerKey", game)
+        self.assertIn("j2me_ui_focused_owner_key() == ownerKey", game)
+        self.assertIn("uint64_t j2me_ui_focused_owner_key(void)", header)
         self.assertIn("guard revision == j2me_ui_revision()", game)
 
     def test_not_claiming_full_multi(self):
