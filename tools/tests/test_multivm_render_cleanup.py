@@ -1,0 +1,137 @@
+"""Compile the real renderer's owner partition helpers with two VM generations.
+
+This is a host C test for the ownership *selection algorithm*, not proof
+that CoreGraphics, callbacks, teardown or two JVMs run safely on iPhone.
+"""
+import shutil
+import subprocess
+import tempfile
+import unittest
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]
+RENDER = ROOT / "J2MEEmulator/NativeBridge/j2me_render.m"
+BRIDGE = ROOT / "J2MEEmulator/NativeBridge/jvm_bridge.c"
+
+PREAMBLE = r"""
+#include <stdint.h>
+#include <stdatomic.h>
+#include <pthread.h>
+#include <sched.h>
+#include <stdlib.h>
+#include <stdio.h>
+typedef struct { uint64_t heap_key; int id; } RenderContext;
+typedef struct { uint64_t heap_key; int id; } RenderImage;
+typedef struct { atomic_int held; } spinlock_t;
+static spinlock_t g_track_lock = {0};
+static RenderContext *g_live_rc[1024];
+static RenderImage *g_live_img[1024];
+static int g_live_rc_count, g_live_img_count;
+static void spin_lock(spinlock_t *l) {
+    while (atomic_exchange_explicit(&l->held, 1, memory_order_acquire))
+        sched_yield();
+}
+static void spin_unlock(spinlock_t *l) {
+    atomic_store_explicit(&l->held, 0, memory_order_release);
+}
+"""
+
+TEST = r"""
+enum { A = 101, B = 202, C = 303, N = 128 };
+static RenderContext rc[3*N];
+static RenderImage img[3*N];
+
+typedef struct { uint64_t key; int rc_count, img_count; } Work;
+static void *release_owner(void *arg) {
+    Work *w = arg;
+    RenderContext *r;
+    RenderImage *im;
+    while ((r = take_rc_for_owner(w->key))) {
+        if (r->heap_key != w->key) abort();
+        ++w->rc_count;
+    }
+    while ((im = take_img_for_owner(w->key))) {
+        if (im->heap_key != w->key) abort();
+        ++w->img_count;
+    }
+    return NULL;
+}
+
+int main(void) {
+    for (int i = 0; i < 3*N; ++i) {
+        uint64_t key = i%3 == 0 ? A : i%3 == 1 ? B : C;
+        rc[i].heap_key = img[i].heap_key = key;
+        rc[i].id = img[i].id = i;
+        g_live_rc[g_live_rc_count++] = &rc[i];
+        g_live_img[g_live_img_count++] = &img[i];
+    }
+    if (take_rc_for_owner(0) || take_img_for_owner(0)) return 1;
+    Work a = {A, 0, 0}, b = {B, 0, 0};
+    pthread_t a_thread, b_thread;
+    if (pthread_create(&a_thread, NULL, release_owner, &a)) return 2;
+    if (pthread_create(&b_thread, NULL, release_owner, &b)) return 3;
+    pthread_join(a_thread, NULL);
+    pthread_join(b_thread, NULL);
+    if (a.rc_count != N || a.img_count != N) return 4;
+    if (b.rc_count != N || b.img_count != N) return 5;
+    if (g_live_rc_count != N || g_live_img_count != N) return 6;
+    for (int i = 0; i < N; ++i)
+        if (g_live_rc[i]->heap_key != C ||
+            g_live_img[i]->heap_key != C) return 7;
+    // Reused JVM pointer with a NEW generation must not match old ownership.
+    Work old_a = {A, 0, 0};
+    release_owner(&old_a);
+    if (old_a.rc_count || old_a.img_count) return 8;
+    Work c = {C, 0, 0};
+    release_owner(&c);
+    if (c.rc_count != N || c.img_count != N) return 9;
+    if (g_live_rc_count || g_live_img_count) return 10;
+    return 0;
+}
+"""
+
+class MultiVMRenderCleanupTest(unittest.TestCase):
+    def test_compiled_real_owner_partition_keeps_other_vm_handles(self):
+        cc = shutil.which("cc") or shutil.which("clang")
+        if not cc:
+            self.skipTest("C compiler unavailable")
+        src = RENDER.read_text(encoding="utf-8")
+        start = src.index("static RenderContext *take_rc_for_owner(")
+        end = src.index("\nvoid j2me_render_cleanup_for_owner(", start)
+        production = src[start:end]
+        self.assertIn("g_live_rc[i]->heap_key == key", production)
+        self.assertIn("g_live_img[i]->heap_key == key", production)
+        with tempfile.TemporaryDirectory(prefix="jarbox-render-owner-") as tmp:
+            path = Path(tmp)
+            c_file = path / "partition.c"
+            exe = path / "partition"
+            c_file.write_text(PREAMBLE + production + "\n" + TEST)
+            subprocess.run(
+                [cc, "-std=c11", "-O2", "-Wall", "-Wextra", "-pthread",
+                 str(c_file), "-o", str(exe)],
+                check=True, capture_output=True, text=True, timeout=45)
+            subprocess.run([str(exe)], check=True, capture_output=True,
+                           text=True, timeout=15)
+
+    def test_bridge_cleanup_sequence_and_global_stop_are_truthful(self):
+        render = RENDER.read_text(encoding="utf-8")
+        bridge = BRIDGE.read_text(encoding="utf-8")
+        start = bridge.index("void jvm_bridge_destroy(void)")
+        body = bridge[start:]
+        self.assertLess(body.index("jarbox_native_heap_key_for_vm(destroyed_owner)"),
+                        body.index("jvm_destroy(g_bridge_vm.jvm)"))
+        self.assertLess(body.index("j2me_render_cleanup_for_owner(destroyed_render_key)"),
+                        body.index("jarbox_native_heap_unregister_vm(destroyed_owner)"))
+        cleanup = render[render.index("void j2me_render_cleanup_for_owner("):]
+        self.assertIn("take_rc_for_owner(owner_key)", cleanup)
+        self.assertIn("take_img_for_owner(owner_key)", cleanup)
+        self.assertNotIn("g_live_rc_count = 0;", cleanup)
+        self.assertNotIn("g_live_img_count = 0;", cleanup)
+        self.assertIn("g_render_stopped = 0;", cleanup)
+        self.assertIn("jvm_bridge_active_session_count() <= 1", cleanup)
+        # The fatal global stop is not yet per-VM. Never unlock concurrency.
+        self.assertIn("g_render_stopped = 1;", render)
+        self.assertIn("j2me_render_stop();", bridge)
+
+if __name__ == "__main__":
+    unittest.main()
