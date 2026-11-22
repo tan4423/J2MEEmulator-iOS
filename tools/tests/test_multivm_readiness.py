@@ -28,6 +28,8 @@ class MultiVMReadinessTest(unittest.TestCase):
         self.assertNotIn("gc_single_native_memory_account", blockers)
         for item in (
             "render_single_flush_callback",
+            "render_global_stop_and_cleanup",
+            "render_global_haptic_teardown",
             "lcd_ui_single_callback",
             "treo_single_global_mode",
             "gc_single_smart_treo_scheduler",
@@ -39,6 +41,8 @@ class MultiVMReadinessTest(unittest.TestCase):
     def test_audit_does_not_claim_runtime_proof(self):
         report = audit()
         self.assertTrue(report["verified_source_structure_only"])
+        self.assertFalse(report["runtime_device_concurrency_validated"])
+        self.assertFalse(report["concurrent_jvms_safe_to_enable"])
         self.assertIn("Input contexts (capacity four) are not four working JVM sessions.",
                       report["notes"])
 
