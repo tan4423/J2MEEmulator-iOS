@@ -184,6 +184,11 @@ void treo_render_profile_replaced(void);
 void treo_render_profile_submitted(void);
 
 CGImageRef _Nullable j2me_render_copy_image(int64_t handle) CF_RETURNS_RETAINED;
+/** Returns NULL for missing, expired or foreign-JVM handles.
+ * This registry-validated form is for MIDP UI icon reads.
+ */
+CGImageRef _Nullable j2me_render_copy_image_for_vm(int64_t handle, MiniJVM *vm)
+    CF_RETURNS_RETAINED;
 
 /// Signal render subsystem to stop (all acquire calls return NULL).
 /// Must be called before cleanup to protect against zombie threads.
