@@ -72,19 +72,35 @@ int main(void) {
 
     if (sock_option(&s, SOCK_OP_TYPE_KEEPALIVE, 1, 0)) return 4;
     int keepalive = sock_get_option(&s, SOCK_OP_TYPE_KEEPALIVE);
-    if (keepalive != 1) {
-        fprintf(stderr, "SO_KEEPALIVE on TCP socket: expected 1, got %d\\n",
-                keepalive);
+    int raw_keepalive = 0;
+    socklen_t keepalive_len = sizeof(raw_keepalive);
+    if (getsockopt(client, SOL_SOCKET, SO_KEEPALIVE,
+                   &raw_keepalive, &keepalive_len) != 0 ||
+        raw_keepalive == 0 || keepalive != 1) {
+        fprintf(stderr, "SO_KEEPALIVE normalized=%d raw=%d\\n",
+                keepalive, raw_keepalive);
         return 5;
     }
     if (sock_get_option(&s, SOCK_OP_TYPE_TIMEOUT) != baseline) return 6;
 
     if (sock_option(&s, SOCK_OP_TYPE_LINGER, 1, 4)) return 7;
-    if (sock_get_option(&s, SOCK_OP_TYPE_LINGER) != 4) return 8;
+    // Darwin SO_LINGER may use ticks; Linux reports seconds. Test the
+    // enabled state without assuming a cross-platform interval encoding.
+    int linger = sock_get_option(&s, SOCK_OP_TYPE_LINGER);
+    struct linger raw_linger = {0};
+    socklen_t linger_len = sizeof(raw_linger);
+    if (getsockopt(client, SOL_SOCKET, SO_LINGER,
+                   &raw_linger, &linger_len) != 0 ||
+        raw_linger.l_onoff == 0 || linger <= 0) return 8;
     if (sock_get_option(&s, SOCK_OP_TYPE_TIMEOUT) != baseline) return 9;
 
     if (sock_option(&s, SOCK_OP_TYPE_KEEPALIVE, 0, 0)) return 10;
-    if (sock_get_option(&s, SOCK_OP_TYPE_KEEPALIVE) != 0) return 11;
+    raw_keepalive = -1;
+    keepalive_len = sizeof(raw_keepalive);
+    if (sock_get_option(&s, SOCK_OP_TYPE_KEEPALIVE) != 0 ||
+        getsockopt(client, SOL_SOCKET, SO_KEEPALIVE,
+                   &raw_keepalive, &keepalive_len) != 0 ||
+        raw_keepalive != 0) return 11;
     if (sock_option(&s, SOCK_OP_TYPE_LINGER, 0, 0)) return 12;
     if (sock_get_option(&s, SOCK_OP_TYPE_LINGER) != -1) return 13;
     close(client); close(accepted); close(listener); return 0;
@@ -104,6 +120,7 @@ class SocketOptionsTest(unittest.TestCase):
         self.assertNotIn("socketpair(AF_UNIX", TEST)
         self.assertIn("SO_LINGER", funcs)
         self.assertIn("SO_KEEPALIVE", funcs)
+        self.assertIn("ret = ret != 0 ? 1 : 0;", funcs)
         with tempfile.TemporaryDirectory(prefix="jarbox-socket-options-") as t:
             src = Path(t) / "options.c"
             exe = Path(t) / "options"
