@@ -44,9 +44,11 @@ def audit(root=ROOT):
         "uint64_t heap_key;", "jarbox_native_heap_key_for_vm(owner)",
         "native_heap_sub(rc->heap_key, pixels)"))
     ui_owned = all(x in src["lcd_ui"] for x in (
-        "JarBoxUIScreenContext", "ui_slot_for_vm(runtime ? runtime->jvm : NULL)",
+        "JarBoxUIScreenContext", "ui_slot_for_vm(vm)",
         "j2me_ui_release_vm(MiniJVM *vm)",
         "j2me_ui_focus_vm(MiniJVM *vm)",
+        "g_ui_thread_key = valid ? key : 0;",
+        "jarbox_ui_generation_matches(key, slot_key)",
     ))
     blockers = {
         "render_single_flush_callback":
