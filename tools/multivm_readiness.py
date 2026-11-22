@@ -59,6 +59,12 @@ def audit(root=ROOT):
             and "g_live_img_count = 0" in src["render"],
         "render_global_haptic_teardown":
             "g_hapticEngine stopWithCompletionHandler" in src["render"],
+        "render_global_stop_barrier":
+            "g_render_stopped = 1" in src["render"]
+            and "static volatile int g_render_stopped = 0" in src["render"],
+        "render_shared_metal_workspace":
+            "static id<MTLCommandQueue> treo_live_queue" in src["render"]
+            and "static id<MTLTexture> treo_live_target" in src["render"],
         "lcd_ui_single_form_state":
             "static char g_form_title" in src["lcd_ui"],
         "lcd_ui_single_callback":
@@ -104,6 +110,7 @@ def audit(root=ROOT):
         },
         "notes": [
             "Input contexts (capacity four) are not four working JVM sessions.",
+            "Renderer context/image teardown is generation-filtered, but the global stop barrier, Metal cache and haptics are shared.",
             "LCDUI Form/List buffers are VM-owned, but UIKit callbacks and native renderer remain shared.",
             "Network, classloader, JIT, sockets, native image handles, and teardown still need device validation.",
             "Do not enable another JVM while there are unisolated native blockers.",
