@@ -248,7 +248,13 @@ s32 sock_get_option(VmSock *vmsock, s32 opType) {
         case SOCK_OP_TYPE_KEEPALIVE: {
             len = sizeof(ret);
             if (getsockopt(vmsock->contex.fd, SOL_SOCKET, SO_KEEPALIVE,
-                           (void *)&ret, &len) != 0) ret = -1;
+                           (void *)&ret, &len) != 0) {
+                ret = -1;
+            } else {
+                // Darwin returns SO_KEEPALIVE's flag bit (0x0008), while
+                // Linux usually returns 1. Java ME exposes a boolean 0/1.
+                ret = ret != 0 ? 1 : 0;
+            }
             break;
         }
     }
