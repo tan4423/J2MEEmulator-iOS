@@ -419,16 +419,23 @@ void jvm_destroy(MiniJVM *jvm) {
     jvm_printf("[INFO]waitting for thread terminate\n");
 #endif
     {
-        s32 wait_count = 0;
-        s32 max_wait = 150; // 150 * 20ms = 3 seconds timeout
-        while (threadlist_count_active(jvm) > 0 && wait_count < max_wait) {
+        // A Java status of ZOMBIE is *not* a pthread exit. The previous
+        // three-second force-zombie path freed Runtime/MiniJVM while a live
+        // pthread could still dereference them. Every worker reserves a
+        // lease before thrd_create and relinquishes it as its last action.
+        // Fail closed: if a worker will not exit, leave the JVM in STOPPING
+        // and let the existing UI offer process-level recovery. Never
+        // release this heap or start a replacement JVM in that state.
+        unsigned waits = 0;
+        while (threadlist_count_active(jvm) > 0 ||
+               jarbox_session_worker_count(jvm->session) != 0) {
+            if (waits == 150 || (waits > 150 && waits % 250 == 0)) {
+                jvm_printf("[JarBoxVM][Lifecycle] STOPPING: active=%d native_workers=%u; heap retained\n",
+                           threadlist_count_active(jvm),
+                           jarbox_session_worker_count(jvm->session));
+            }
             threadSleep(20);
-            wait_count++;
-        }
-        if (threadlist_count_active(jvm) > 0) {
-            jvm_printf("[WARN]%d threads still active after %dms timeout, force-zombie\n",
-                       threadlist_count_active(jvm), max_wait * 20);
-            thread_zombie_all(jvm);
+            if (waits < 1000000u) ++waits;
         }
     }
 

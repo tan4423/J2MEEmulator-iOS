@@ -611,11 +611,10 @@ void jvm_bridge_destroy(void) {
         // own condition variable without waking or modifying another VM.
         j2me_input_release_vm(g_bridge_vm.jvm);
 
-        // Step 5: jvm_destroy waits up to 3s for threads, then force-zombies.
-        // After this, threads either exited or are zombie (status only — pthread
-        // may still be running but owner stop denies new 2D handle acquisitions).
-        // Note: force-zombied pthreads may still execute briefly — class_clinit
-        // and print_exception have is_stop / jvm_state guards to avoid crashes.
+        // Step 5: jvm_destroy waits for all real native Java worker leases,
+        // not just the Java ZOMBIE status. It retains the JVM heap if a
+        // pthread is stuck and keeps the single-JVM gate occupied. The UI
+        // already exposes an explicit process-exit recovery for stuck games.
         jvm_destroy(g_bridge_vm.jvm);
         // The JVM address remains the registration key until this release;
         // no code dereferences it after jvm_destroy.

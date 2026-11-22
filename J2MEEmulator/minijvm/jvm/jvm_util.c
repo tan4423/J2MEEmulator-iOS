@@ -805,8 +805,8 @@ s32 jthread_run(void *para) {
     push_ref(runtime->stack, (__refer) jthread);
     execute_method_impl(method, runtime);
 
-    runtime->thrd_info->thread_status = THREAD_STATUS_ZOMBIE;
-
+    // The worker is still native-live during monitor/UTF8 cleanup. Do not
+    // publish ZOMBIE yet: GC may finalize the Java Runtime on that status.
     if (runtime->thrd_info->curThreadLock) {
         jthread_unlock(runtime->thrd_info->curThreadLock, runtime);
     }
@@ -817,7 +817,11 @@ s32 jthread_run(void *para) {
     s64 spent = currentTimeMillis() - startAt;
     jvm_printf("[INFO]thread over %llx , return %d , spent : %lld\n", (s64) (intptr_t) jthread, ret, spent);
 #endif
-    thrd_exit(ret);
+    // No Runtime or JavaThreadInfo dereference after this status store.
+    // The native worker lease is the independent teardown barrier, not
+    // THREAD_STATUS_ZOMBIE (which only guides Java-side finalization).
+    runtime->thrd_info->thread_status = THREAD_STATUS_ZOMBIE;
+    jarbox_session_worker_done(jvm->session);
     return ret;
 }
 
@@ -837,12 +841,28 @@ s32 jthread_run_finalize(Runtime *runtime) {
 }
 
 thrd_t jthread_start(Instance *ins, Runtime *parent) {//
+    thrd_t failed = {0};
+    if (!parent || !parent->jvm || !parent->jvm->session) return failed;
+    JarBoxSession *session = parent->jvm->session;
+    // Reserve before creating pthread; teardown may begin between these calls.
+    if (!jarbox_session_reserve_worker(session)) return failed;
     Runtime *runtime = jthread_get_stackframe_value(parent->jvm, ins);
+    if (!runtime) {
+        jarbox_session_worker_done(session);
+        return failed;
+    }
     runtime->thrd_info->jthread = ins;
     runtime->thrd_info->context_classloader = parent->thrd_info->context_classloader;//copy context classloader
 
     jthread_init(runtime->jvm, ins);
-    thrd_create(&runtime->thrd_info->pthread, jthread_run, runtime);
+    if (thrd_create(&runtime->thrd_info->pthread, jthread_run, runtime)
+        != thrd_success) {
+        // An unstarted Runtime must not remain visible as an active worker.
+        threadlist_remove(runtime);
+        jthread_set_stackframe_value(parent->jvm, ins, NULL);
+        jarbox_session_worker_done(session);
+        return failed;
+    }
     return runtime->thrd_info->pthread;
 }
 
