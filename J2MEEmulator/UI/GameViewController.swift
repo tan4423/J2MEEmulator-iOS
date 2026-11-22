@@ -3982,13 +3982,15 @@ class GameViewController: UIViewController {
         // MIDP render owner for every deferred Alert action and timeout.
         guard ownsLiveGameSession() else { return }
         let originToken = gameSessionToken
-        let originKey = j2me_ui_focused_owner_key()
-        guard originKey != 0,
-              j2me_render_visible_owner_key() == originKey else { return }
         if libraryIsPresented {
+            // Keep the pending game Alert when Deep Treo revoked native
+            // visibility; the token and owner are validated upon resume.
             deferredGameAlert = true
             return
         }
+        let originKey = j2me_ui_focused_owner_key()
+        guard originKey != 0,
+              j2me_render_visible_owner_key() == originKey else { return }
         let revision = j2me_ui_revision()
         // A revision alone is not enough: A and B may use the same value.
         // An Alert created by A must never post input to the focused B.
@@ -4071,8 +4073,7 @@ private func dispatchMIDPScreenAction(_ action: Int32, _ revision: Int32,
               j2me_render_visible_owner_key() == ownerKey,
               j2me_ui_focused_owner_key() == ownerKey,
               let vc = activeGameViewController,
-              vc.ownsLiveGameSession(),
-              vc.gameSessionToken == sourceToken else { return }
+              vc.ownsLiveGameSession() else { return }
         switch action {
         case Int32(J2ME_UI_ACTION_SHOW_FORM), Int32(J2ME_UI_ACTION_SHOW_TEXTBOX),
              Int32(J2ME_UI_ACTION_SHOW_LIST), Int32(J2ME_UI_ACTION_SHOW_ALERT):
