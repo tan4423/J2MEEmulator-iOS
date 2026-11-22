@@ -24,6 +24,7 @@ extern "C" {
 #include "../utils/bytebuf.h"
 #include "../utils/hashset.h"
 #include "jarbox_treo_state.h"
+#include "jarbox_session.h"
 
 //=======================  micro define  =============================
 //_JVM_DEBUG  01=thread info, 02=garage&jit info  , 03=class load, 04=method call,  06=all bytecode
@@ -1971,6 +1972,9 @@ struct _MiniJVM {
     // GC/AFK lifecycle belongs to this MiniJVM allocation. State is
     // zero-initialized by jvm_calloc and is never reused by a newer JVM.
     JarBoxTreoState treo_state;
+    // Stable session identity is independent from the MiniJVM address;
+    // full Treo/Canvas state migration follows this lifecycle foundation.
+    JarBoxSession *session;
     s32 jvm_state;
 };
 

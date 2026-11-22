@@ -294,6 +294,8 @@ int jvm_bridge_park_session(uint64_t token) {
     MiniJVM *owner = atomic_load_explicit(&g_bridge_vm.jvm, memory_order_acquire);
     if (owner) j2me_render_release_vm(owner);
     jarbox_focus_park_all(&g_bridge_focus);
+    if (owner && owner->session)
+        (void)jarbox_session_park(owner->session);
     return jarbox_focus_is_parked(&g_bridge_focus, token) == 1;
 }
 
@@ -307,7 +309,10 @@ int jvm_bridge_focus_session(uint64_t token) {
     // most recent Form/List/Canvas. Physical input goes only to this VM.
     if (!j2me_render_focus_vm(owner) || !j2me_input_focus_vm(owner) ||
         !j2me_ui_focus_vm(owner)) return 0;
-    return jarbox_focus_select(&g_bridge_focus, token);
+    const int selected = jarbox_focus_select(&g_bridge_focus, token);
+    if (selected && owner->session)
+        (void)jarbox_session_enter_foreground(owner->session);
+    return selected;
 }
 
 int jvm_bridge_session_is_parked(uint64_t token) {
@@ -445,6 +450,9 @@ int jvm_bridge_init(const char *res_root, const char *save_root, const char *mid
         printf("[JVM Bridge] ERROR: jvm_create() failed\n");
         return -2;
     }
+    (void)jarbox_session_bind_token(
+        g_bridge_vm.jvm->session,
+        atomic_load_explicit(&g_bridge_vm.token, memory_order_acquire));
 
     g_bridge_vm.jvm->jdwp_enable = 0;
     g_bridge_vm.jvm->jdwp_suspend_on_start = 0;
@@ -545,6 +553,8 @@ int jvm_bridge_run_midlet(const char *midlet_jar_path) {
         printf("[JarBoxVM][Lifecycle] MIDlet start cancelled before call_main\n");
         return -9;
     }
+    if (g_bridge_vm.jvm && g_bridge_vm.jvm->session)
+        (void)jarbox_session_enter_foreground(g_bridge_vm.jvm->session);
     jvm_bridge_note_net_trace("vm_stage:midlet_runner_enter");
     printf("[JVM Bridge] Running MIDlet from: %s\n", midlet_jar_path);
 

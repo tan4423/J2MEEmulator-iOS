@@ -244,6 +244,13 @@ MiniJVM *jvm_create() {
         jvm_printf("jvm create error.");
         return NULL;
     }
+    // Allocate the session independently: future retained callbacks may
+    // outlive the JVM without reinterpreting its recycled memory address.
+    jvm->session = jarbox_session_create(jvm);
+    if (!jvm->session) {
+        jvm_free(jvm);
+        return NULL;
+    }
     jvm->env = &jnienv;
     jvm->max_heap_size = MAX_HEAP_SIZE_DEFAULT;
     jvm->heap_overload_percent = GARBAGE_OVERLOAD_DEFAULT;
@@ -404,6 +411,7 @@ void jvm_destroy(MiniJVM *jvm) {
         threadSleep(20);
     }
     set_jvm_state(jvm, JVM_STATUS_STOPED);
+    jarbox_session_begin_stop(jvm->session);
     //waiting for daemon thread terminate
     thread_stop_all(jvm);
 
@@ -442,6 +450,12 @@ void jvm_destroy(MiniJVM *jvm) {
     set_jvm_state(jvm, JVM_STATUS_UNKNOW);
     if (jvm->startup_dir) {
         utf8_destroy(jvm->startup_dir);
+    }
+    if (jvm->session) {
+        // All native worker leases must have ended before this point.
+        (void)jarbox_session_mark_dead(jvm->session);
+        jarbox_session_release(jvm->session);
+        jvm->session = NULL;
     }
     jvm_free(jvm);
 }
