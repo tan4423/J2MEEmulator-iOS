@@ -4339,8 +4339,14 @@ void j2me_render_cleanup_for_owner(uint64_t owner_key) {
         fprintf(stderr, "[J2ME Render] Reject cleanup with missing owner key\n");
         return;
     }
-    process_dead_shells();
-    process_dead_shells();
+    // The dead-shell queues are shared. Draining twice during a foreign
+    // VM's teardown would bypass another VM's two-frame ABA grace period.
+    // Only the currently enforced single-VM runtime may force-drain.
+    const int single_vm_shutdown = jvm_bridge_supported_concurrent_sessions() == 1;
+    if (single_vm_shutdown) {
+        process_dead_shells();
+        process_dead_shells();
+    }
 
     int rc_count = 0, img_count = 0;
     RenderContext *rc;
@@ -4367,16 +4373,25 @@ void j2me_render_cleanup_for_owner(uint64_t owner_key) {
             native_heap_sub(owner_key, img->width * img->height * 4);
         free(img);
     }
-    process_dead_shells();
-    process_dead_shells();
+    // On a multi-VM runtime, the normal frame drain reclaims dead shells
+    // after its grace period. Never force-free a different owner's queue.
+    if (single_vm_shutdown) {
+        process_dead_shells();
+        process_dead_shells();
+    }
 
     // Haptics remain process-wide; don't stop another active VM's engine.
-    if (jvm_bridge_active_session_count() <= 1) {
+    const uint64_t haptic_owner = atomic_load_explicit(
+        &g_haptic_player_owner_key, memory_order_acquire);
+    if (jvm_bridge_active_session_count() <= 1 &&
+        (haptic_owner == owner_key || haptic_owner == 0)) {
         if (@available(iOS 13.0, *)) {
             if (g_hapticPlayer) {
                 NSError *err = nil;
                 [g_hapticPlayer stopAtTime:0 error:&err];
                 g_hapticPlayer = nil;
+                atomic_store_explicit(&g_haptic_player_owner_key, 0,
+                                      memory_order_release);
             }
             if (g_hapticEngine) {
                 [g_hapticEngine stopWithCompletionHandler:nil];
