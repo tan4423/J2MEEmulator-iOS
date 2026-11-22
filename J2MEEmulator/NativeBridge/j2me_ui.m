@@ -11,6 +11,7 @@
 #include "garbage.h"
 #include "j2me_render.h"
 #include "j2me_input.h"
+#include "jarbox_ui_generation.h"
 #include "jvm.h"
 #include "jvm_util.h"
 
@@ -69,7 +70,7 @@ typedef struct {
 
 typedef struct {
     _Atomic(MiniJVM *) owner;
-    uint64_t heap_key; // generation-bound, never just a reused JVM address
+    _Atomic uint64_t heap_key; // generation-bound, never just a reused JVM address
     char form_title[256];
     FormItem form_items[MAX_FORM_ITEMS];
     int form_item_count;
@@ -99,12 +100,25 @@ static atomic_int g_ui_focused_index = -1;
 // -1: ordinary UIKit thread (uses visible context); -2: stale Java
 // runtime with NO registered owner (must never inherit the visible screen).
 static _Thread_local int g_ui_thread_index = -1;
+static _Thread_local uint64_t g_ui_thread_key = 0;
 static _Atomic uint32_t g_ui_new_session_revision = 1;
 static j2me_ui_callback g_ui_callback = NULL;
 static j2me_ui_callback_owned g_owned_ui_callback = NULL;
 
+// Main-thread UIKit access must not inherit a released/recycled UI slot.
+static uint64_t ui_focused_owner_key(void) {
+    const int index = atomic_load_explicit(&g_ui_focused_index, memory_order_acquire);
+    if (index < 0 || index >= JARBOX_UI_CONTEXT_CAPACITY) return 0;
+    JarBoxUIScreenContext *ctx = &g_ui_contexts[index];
+    if (!atomic_load_explicit(&ctx->owner, memory_order_acquire)) return 0;
+    return atomic_load_explicit(&ctx->heap_key, memory_order_acquire);
+}
+
 static void ui_publish_action(int action, int revision, uint64_t owner_key) {
-    if (!owner_key) return;
+    // Check BOTH native destinations before invoking even the C callback.
+    // Swift independently repeats this after its asynchronous main hop.
+    if (!jarbox_ui_may_present(owner_key, ui_focused_owner_key(),
+                               j2me_render_visible_owner_key())) return;
     if (g_owned_ui_callback) g_owned_ui_callback(action, revision, owner_key);
     else if (g_ui_callback) g_ui_callback(action, revision);
 }
@@ -137,21 +151,39 @@ static JarBoxUIScreenContext *ui_context(void) {
     if (index == -2) return &g_empty_ui_context;
     if (index == -1)
         index = atomic_load_explicit(&g_ui_focused_index, memory_order_acquire);
-    return index < 0 || index >= JARBOX_UI_CONTEXT_CAPACITY
-        ? &g_empty_ui_context : &g_ui_contexts[index];
+    if (index < 0 || index >= JARBOX_UI_CONTEXT_CAPACITY)
+        return &g_empty_ui_context;
+    JarBoxUIScreenContext *ctx = &g_ui_contexts[index];
+    if (!atomic_load_explicit(&ctx->owner, memory_order_acquire))
+        return &g_empty_ui_context;
+    const uint64_t key = atomic_load_explicit(&ctx->heap_key, memory_order_acquire);
+    // Java threads keep their original generation, not just the slot number.
+    // UIKit getters (-1) use only the current explicitly focused generation.
+    if (index == g_ui_thread_index &&
+        !jarbox_ui_generation_matches(g_ui_thread_key, key))
+        return &g_empty_ui_context;
+    return key ? ctx : &g_empty_ui_context;
 }
 
 static void ui_bind_runtime(Runtime *runtime) {
     // A stale Java thread cannot select an unrelated game by its UI focus.
     pthread_once(&g_ui_contexts_once, init_ui_contexts);
-    int index = ui_slot_for_vm(runtime ? runtime->jvm : NULL);
-    // Missing binding means stale or invalid Java context, NOT focused UI.
-    g_ui_thread_index = index >= 0 ? index : -2;
+    MiniJVM *vm = runtime ? runtime->jvm : NULL;
+    int index = ui_slot_for_vm(vm);
+    const uint64_t key = index >= 0 ? jarbox_native_heap_key_for_vm(vm) : 0;
+    const uint64_t slot_key = index >= 0
+        ? atomic_load_explicit(&g_ui_contexts[index].heap_key, memory_order_acquire) : 0;
+    // A slot number alone cannot authorize access after VM generation reuse.
+    const int valid = index >= 0 && jarbox_ui_generation_matches(key, slot_key);
+    g_ui_thread_key = valid ? key : 0;
+    g_ui_thread_index = valid ? index : -2;
 }
 
 static int ui_is_focused_owner(void) {
-    int visible = atomic_load_explicit(&g_ui_focused_index, memory_order_acquire);
-    return visible >= 0 && g_ui_thread_index == visible;
+    const int visible = atomic_load_explicit(&g_ui_focused_index, memory_order_acquire);
+    return visible >= 0 && g_ui_thread_index == visible &&
+        jarbox_ui_may_present(g_ui_thread_key, ui_focused_owner_key(),
+                              j2me_render_visible_owner_key());
 }
 
 static JarBoxUIScreenObjects *ui_objects(void) {
@@ -197,8 +229,9 @@ static int ui_register_vm(MiniJVM *vm) {
                 [objects->choices removeAllObjects];
                 [objects->icons removeAllObjects];
                 [objects->pendingText removeAllObjects];
-                ctx->heap_key = jarbox_native_heap_key_for_vm(vm);
-                if (!ctx->heap_key) { index = -1; break; }
+                const uint64_t key = jarbox_native_heap_key_for_vm(vm);
+                if (!key) { index = -1; break; }
+                atomic_store_explicit(&ctx->heap_key, key, memory_order_release);
                 atomic_store_explicit(&ctx->owner, vm, memory_order_release);
                 break;
             }
@@ -226,7 +259,7 @@ int j2me_ui_focus_vm(MiniJVM *vm) {
         // never replay a different JVM's Form or Alert.
         action = ctx->last_action;
         revision = atomic_load_explicit(&ctx->screen_revision, memory_order_acquire);
-        ownerKey = ctx->heap_key;
+        ownerKey = atomic_load_explicit(&ctx->heap_key, memory_order_acquire);
     }
     pthread_mutex_unlock(&g_ui_contexts_lock);
     if (action) ui_publish_action(action, revision, ownerKey);
@@ -241,7 +274,7 @@ void j2me_ui_release_vm(MiniJVM *vm) {
         if (atomic_load_explicit(&g_ui_focused_index, memory_order_acquire) == index)
             atomic_store_explicit(&g_ui_focused_index, -1, memory_order_release);
         atomic_store_explicit(&ctx->owner, NULL, memory_order_release);
-        ctx->heap_key = 0;
+        atomic_store_explicit(&ctx->heap_key, 0, memory_order_release);
         ctx->last_action = 0;
     }
     pthread_mutex_unlock(&g_ui_contexts_lock);
@@ -533,7 +566,7 @@ static s32 n_formShow(Runtime *runtime, JClass *clazz) {
     }
     ui_context()->last_action = action;
     if (ui_is_focused_owner())
-        ui_publish_action(action, j2me_ui_revision(), ui_context()->heap_key);
+        ui_publish_action(action, j2me_ui_revision(), g_ui_thread_key);
     return RUNTIME_STATUS_NORMAL;
 }
 
@@ -563,7 +596,7 @@ static s32 n_showCanvas(Runtime *runtime, JClass *clazz) {
     ui_context()->last_action = J2ME_UI_ACTION_SHOW_CANVAS;
     if (ui_is_focused_owner()) {
         ui_publish_action(J2ME_UI_ACTION_SHOW_CANVAS, revision,
-                          ui_context()->heap_key);
+                          g_ui_thread_key);
     }
     return RUNTIME_STATUS_NORMAL;
 }
