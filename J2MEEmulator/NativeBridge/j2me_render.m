@@ -1988,11 +1988,18 @@ static s32 n_flushToScreen(Runtime *runtime, JClass *clazz) {
             if (image) TREO_PROF_ADD(snapshots, 1);
         }
         if (image) {
-            atomic_fetch_add_explicit(&sw_frames, 1, memory_order_relaxed);
-            if (g_owned_flush_callback)
-                g_owned_flush_callback(image, rc->width, rc->height, rc->heap_key);
-            else
-                g_flush_callback(image, rc->width, rc->height);
+            // Focus may have changed while creating this CGImage snapshot.
+            // UIKit also validates the generation when draining queued frames.
+            if (callerKey != atomic_load_explicit(
+                    &g_visible_render_owner_key, memory_order_acquire)) {
+                CGImageRelease(image);
+            } else {
+                atomic_fetch_add_explicit(&sw_frames, 1, memory_order_relaxed);
+                if (g_owned_flush_callback)
+                    g_owned_flush_callback(image, rc->width, rc->height, rc->heap_key);
+                else
+                    g_flush_callback(image, rc->width, rc->height);
+            }
         }
     }
     rc_release(rc);
