@@ -431,6 +431,12 @@ It **does not** enable two simultaneously running miniJVMs.
   Swift also checks the **focused MIDP generation** alongside render ownership
   before and after locking screen data, then verifies its revision. A queued
   event is discarded when either destination has switched Tabs.
+- MIDP screen locking now pins the exact `JarBoxUIScreenContext` to the
+  calling pthread. A focus switch while UIKit holds screen A cannot cause
+  `unlock_screen` to unlock screen B or read B's Form data under A's mutex.
+  The host regression in `tools/tests/test_multivm_ui_lock_pin.py` extracts
+  and compiles the real lock/unlock pair. A corresponding ASan/UBSan host
+  reproduction passed; Xcode/UIKit integration is still outstanding.
 - `platformRequest` copies the Java URL text before freeing its buffer, then
   checks the captured owner generation again **inside** its main-queue block.
   A request queued by a parked/replaced session cannot unexpectedly open
