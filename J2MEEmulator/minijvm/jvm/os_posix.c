@@ -293,6 +293,7 @@ s32 conv_platform_encoding_2_utf8(Utf8String *dst, const c8 *src) {
     return src_len;
 }
 
+#include <limits.h>   // take the platform PATH_MAX (4096 on Linux, 1024 on iOS) before the fallback
 #ifndef PATH_MAX
 #define PATH_MAX 1024
 #endif

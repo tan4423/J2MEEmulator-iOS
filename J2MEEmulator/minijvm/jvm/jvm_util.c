@@ -2117,7 +2117,7 @@ Instance *build_stack_element(Runtime *runtime, Runtime *target) {
 }
 
 
-void init_jni_func_table(MiniJVM *jvm) {
+static void init_jni_func_table_once(void) {
     jnienv.data_type_bytes = (s32 *) &DATA_TYPE_BYTES;
     jnienv.native_reg_lib = native_reg_lib;
     jnienv.native_remove_lib = native_remove_lib;
@@ -2185,4 +2185,13 @@ void init_jni_func_table(MiniJVM *jvm) {
     jnienv.jthread_get_daemon_value = jthread_get_daemon_value;
     jnienv.jthread_set_daemon_value = jthread_set_daemon_value;
     jnienv.get_jvm_state = get_jvm_state;
+}
+
+/* The JNI table holds only function pointers and is identical for every JVM.
+ * Publish it exactly once: concurrent jvm_init() calls (Multi-JVM) used to rewrite
+ * the shared table (ThreadSanitizer data race on `jnienv`). */
+static pthread_once_t g_jni_func_table_once = PTHREAD_ONCE_INIT;
+void init_jni_func_table(MiniJVM *jvm) {
+    (void)jvm;
+    pthread_once(&g_jni_func_table_once, init_jni_func_table_once);
 }
