@@ -1784,6 +1784,7 @@ static RenderContext *createRenderContext(MiniJVM *owner, int width, int height)
     if (!rc) return NULL;
     atomic_init(&rc->refcount, 1);
     rc->heap_key = jarbox_native_heap_key_for_vm(owner);
+    if (!rc->heap_key) { free(rc); return NULL; }
     rc->width = width;
     rc->height = height;
 
@@ -1830,9 +1831,14 @@ static void destroyRenderContext(RenderContext *rc) {
 // ============================================================
 
 static RenderImage *createMutableImage(MiniJVM *owner, int width, int height) {
+    if (width <= 0 || height <= 0 ||
+        (uint64_t)width * (uint64_t)height > INT32_MAX / 4) return NULL;
+    const uint64_t owner_key = jarbox_native_heap_key_for_vm(owner);
+    if (!owner_key) return NULL;
     RenderImage *img = (RenderImage *)calloc(1, sizeof(RenderImage));
+    if (!img) return NULL;
     atomic_init(&img->refcount, 1);
-    img->heap_key = jarbox_native_heap_key_for_vm(owner);
+    img->heap_key = owner_key;
     img->width = width;
     img->height = height;
     img->isMutable = 1;
@@ -1840,6 +1846,7 @@ static RenderImage *createMutableImage(MiniJVM *owner, int width, int height) {
     CGColorSpaceRef cs = getColorSpace();
     img->ctx = CGBitmapContextCreate(NULL, width, height, 8, width * 4,
                                       cs, kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Little);
+    if (!img->ctx) { free(img); return NULL; }
     CGContextClearRect(img->ctx, CGRectMake(0, 0, width, height));
     CGContextTranslateCTM(img->ctx, 0, height);
     CGContextScaleCTM(img->ctx, 1.0, -1.0);
@@ -1850,12 +1857,16 @@ static RenderImage *createMutableImage(MiniJVM *owner, int width, int height) {
 }
 
 static RenderImage *createImageFromData(MiniJVM *owner, const uint8_t *data, int length) {
+    const uint64_t owner_key = jarbox_native_heap_key_for_vm(owner);
+    if (!owner_key || !data || length <= 0) return NULL;
     RenderImage *img = (RenderImage *)calloc(1, sizeof(RenderImage));
+    if (!img) return NULL;
     atomic_init(&img->refcount, 1);
-    img->heap_key = jarbox_native_heap_key_for_vm(owner);
+    img->heap_key = owner_key;
     img->isMutable = 0;
 
     CFDataRef cfData = CFDataCreate(NULL, data, length);
+    if (!cfData) { free(img); return NULL; }
     CGImageSourceRef source = CGImageSourceCreateWithData(cfData, NULL);
     CFRelease(cfData);
 
@@ -1870,12 +1881,26 @@ static RenderImage *createImageFromData(MiniJVM *owner, const uint8_t *data, int
         return NULL;
     }
 
-    img->width = (int)CGImageGetWidth(cgImage);
-    img->height = (int)CGImageGetHeight(cgImage);
+    const size_t imageWidth = CGImageGetWidth(cgImage);
+    const size_t imageHeight = CGImageGetHeight(cgImage);
+    if (!imageWidth || !imageHeight ||
+        imageWidth > INT32_MAX || imageHeight > INT32_MAX ||
+        (uint64_t)imageWidth * (uint64_t)imageHeight > INT32_MAX / 4) {
+        CGImageRelease(cgImage);
+        free(img);
+        return NULL;
+    }
+    img->width = (int)imageWidth;
+    img->height = (int)imageHeight;
 
     CGColorSpaceRef cs = getColorSpace();
     img->ctx = CGBitmapContextCreate(NULL, img->width, img->height, 8, img->width * 4,
                                       cs, kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Little);
+    if (!img->ctx) {
+        CGImageRelease(cgImage);
+        free(img);
+        return NULL;
+    }
     CGContextClearRect(img->ctx, CGRectMake(0, 0, img->width, img->height));
     CGContextDrawImage(img->ctx, CGRectMake(0, 0, img->width, img->height), cgImage);
     CGImageRelease(cgImage);
