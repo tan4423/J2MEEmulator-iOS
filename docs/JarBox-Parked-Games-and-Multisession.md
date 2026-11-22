@@ -412,3 +412,39 @@ and Smart GC, UIKit destination ownership, haptics, 3D, sockets and final
 VM/thread shutdown still need independent per-generation resource ownership
 and on-device verification. Neither the multi-JVM readiness gate nor the
 Codemagic workflow has been unlocked.
+
+
+## MIDP UI generation and native icon ownership checkpoint (2026-11-22)
+
+This checkpoint extends generation isolation beyond render/frame publication.
+It **does not** enable two simultaneously running miniJVMs.
+
+- A Java MIDP native call binds both its context slot and the current native
+  heap generation, using `g_ui_thread_key`. The slot's generation is atomic,
+  invalidated on release, and checked before a Java thread can resolve a
+  Form/List/Alert buffer. A recycled slot number alone is not authority.
+- UIKit actions are emitted only when the originating JVM generation matches
+  both the currently focused MIDP UI context and the visible render owner.
+  Swift still rechecks owner and screen revision when processing queued events.
+- `platformRequest` copies the Java URL text before freeing its buffer, then
+  checks the captured owner generation again **inside** its main-queue block.
+  A request queued by a parked/replaced session cannot unexpectedly open
+  Safari for the newly selected Tab.
+- The MIDP List-icon path now calls
+  `j2me_render_copy_image_for_vm(handle, runtime->jvm)`. This uncommon path
+  validates a candidate handle against the live image registry, checks its
+  creating generation and increments the refcount while the registry is
+  locked. A stale/foreign pointer is rejected before dereferencing it.
+  Ordinary hot-path 2D drawing handles **still** use a less isolated raw
+  acquisition path and remain a concurrency blocker.
+- The new `jarbox_ui_generation.h` policy is tested by
+  `tools/tests/test_multivm_ui_generation.py`; a separate compiled C harness
+  in `tools/tests/test_multivm_icon_handles.py` extracts the real image
+  lookup. Matching host reproductions of these policies passed pthread
+  stress with UBSan in this coding session. Full repository test discovery,
+  Codemagic build and iPhone stress testing have not been executed here.
+
+Remaining runtime work includes UIKit per-session controller destinations,
+all 2D hot-path handle acquisition, scoped renderer stop/Metal caches, Treo
+and Smart GC, 3D, callback/socket teardown and the true multi-VM registry.
+The existing one-live-JVM guard remains mandatory.
