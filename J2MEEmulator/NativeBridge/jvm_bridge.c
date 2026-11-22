@@ -527,6 +527,10 @@ void jvm_bridge_destroy(void) {
     pthread_mutex_unlock(&g_bridge_lifecycle_lock);
     if (g_bridge_vm.jvm) {
         MiniJVM *const destroyed_owner = g_bridge_vm.jvm;
+        // The heap ledger generation outlives the MiniJVM allocation and
+        // prevents cleanup from mistaking a reused VM pointer for this one.
+        const uint64_t destroyed_render_key =
+            jarbox_native_heap_key_for_vm(destroyed_owner);
         printf("[JVM Bridge] Destroying JVM\n");
 
         // Step 1: Revoke this JVM's right to publish pixels before stopping
@@ -563,12 +567,12 @@ void jvm_bridge_destroy(void) {
         g_bridge_vm.jvm = NULL;
 
         // Step 6: Clean up other native subsystems — safe because:
-        // - render_stop blocks all render acquire calls
+        // - render_stop blocks new render acquires (still global until Multi-JVM ready)
         // - jvm_destroy gave threads 3s to exit
         // Input reset is no longer global; that JVM was released above.
         j2me_micro3d_gl_cleanup();
         j2me_m3g_cleanup();
-        j2me_render_cleanup(); // also resets render_stopped flag
+        j2me_render_cleanup_for_owner(destroyed_render_key); // only this VM's 2D handles
         // The C native ledger is independent of the freed Java heap pointer.
         // Dereference is never required; compare identity and invalidate key.
         jarbox_native_heap_unregister_vm(destroyed_owner);
