@@ -4380,24 +4380,25 @@ void j2me_render_cleanup_for_owner(uint64_t owner_key) {
         process_dead_shells();
     }
 
-    // Haptics remain process-wide; don't stop another active VM's engine.
-    const uint64_t haptic_owner = atomic_load_explicit(
-        &g_haptic_player_owner_key, memory_order_acquire);
-    if (jvm_bridge_active_session_count() <= 1 &&
-        (haptic_owner == owner_key || haptic_owner == 0)) {
-        if (@available(iOS 13.0, *)) {
-            if (g_hapticPlayer) {
-                NSError *err = nil;
-                [g_hapticPlayer stopAtTime:0 error:&err];
-                g_hapticPlayer = nil;
-                atomic_store_explicit(&g_haptic_player_owner_key, 0,
-                                      memory_order_release);
+    // The CHHapticEngine and player are main-queue UI resources. Cleanup must
+    // not touch them from the JVM teardown worker or stop a newly focused VM.
+    // Keep process-wide haptic engine teardown only for the one-JVM runtime.
+    if (jvm_bridge_supported_concurrent_sessions() == 1) {
+        const uint64_t teardown_key = owner_key;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            // A new Tab may have focused between teardown and this block.
+            if (j2me_render_visible_owner_key() != 0) return;
+            const uint64_t haptic_owner = atomic_load_explicit(
+                &g_haptic_player_owner_key, memory_order_acquire);
+            if (haptic_owner != 0 && haptic_owner != teardown_key) return;
+            if (@available(iOS 13.0, *)) {
+                stop_afk_haptics();
+                if (g_hapticEngine) {
+                    [g_hapticEngine stopWithCompletionHandler:nil];
+                    g_hapticEngine = nil;
+                }
             }
-            if (g_hapticEngine) {
-                [g_hapticEngine stopWithCompletionHandler:nil];
-                g_hapticEngine = nil;
-            }
-        }
+        });
     }
     // The legacy global stop barrier stays until all native state is scoped.
     atomic_store_explicit(&g_render_stopped, 0, memory_order_release);
