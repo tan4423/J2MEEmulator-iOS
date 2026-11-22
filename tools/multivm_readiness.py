@@ -19,6 +19,9 @@ FILES = {
     "render": "J2MEEmulator/NativeBridge/j2me_render.m",
     "lcd_ui": "J2MEEmulator/NativeBridge/j2me_ui.m",
     "gc": "J2MEEmulator/minijvm/jvm/garbage.c",
+    "runtime": "J2MEEmulator/minijvm/jvm/runtime.c",
+    "input_runtime": "J2MEEmulator/NativeBridge/j2me_input.c",
+    "vm_jvm": "J2MEEmulator/minijvm/jvm/jvm.h",
     "vm": "J2MEEmulator/minijvm/jvm/jvm.h",
     "3d": "J2MEEmulator/NativeBridge/jvm_bridge.c",
 }
@@ -38,6 +41,12 @@ def audit(root=ROOT):
         "g_audio_owners", "g_midi_owners",
         "j2me_audio_stop_for_vm(MiniJVM *vm)",
         "audio_owned_by_vm(runtime->jvm", "j2me_input_post_key_to_vm"))
+    runtime_generation_owned = (
+        "uint64_t jarbox_native_generation;" in src["vm_jvm"]
+        and "runtime->thrd_info->jarbox_native_generation" in src["runtime"]
+        and "jarbox_native_heap_key_for_runtime(runtime)" in src["render"]
+        and "jarbox_native_heap_key_for_runtime(runtime)" in src["lcd_ui"]
+        and "context_for_runtime(runtime)" in src["input_runtime"])
     native_heap_owned = all(x in src["gc"] for x in (
         "jarbox_native_heap_register_vm(MiniJVM *jvm)",
         "jarbox_native_heap_for_vm(collector->jvm)",
@@ -99,7 +108,8 @@ def audit(root=ROOT):
     # all shared-state blockers must disappear, and the single-VM guard must
     # remain until an independent runtime/device validation changes this gate.
     ready = (lifecycle and input_owned and audio_owned and ui_owned
-             and native_heap_owned and not any(blockers.values())
+             and native_heap_owned and runtime_generation_owned
+             and not any(blockers.values())
              and not one_vm_gate)
     # No automated source scan proves safe concurrent execution on iOS.
     # Require a separately reviewed runtime/device validation before enabling.
@@ -117,6 +127,7 @@ def audit(root=ROOT):
             "wav_midi_players": bool(audio_owned),
             "lcd_ui_screen_buffers": bool(ui_owned),
             "gc_native_graphics_accounting": bool(native_heap_owned),
+            "java_runtime_generation": bool(runtime_generation_owned),
             "treo_gc_afk_state": bool(treo_gc_owned),
         },
         "unisolated_native_blockers": {
@@ -128,6 +139,7 @@ def audit(root=ROOT):
             "LCDUI slot bindings, Form/List buffers and queued URL actions now check VM generation; UIKit controller registration remains process-wide.",
             "MIDP List icons and ordinary 2D Canvas/Image acquire paths now validate JVM generation; live handle address reuse after a zombie thread and VM pointer reuse still require lifetime binding.",
             "Smart GC/probe state is now per-MiniJVM; Treo Canvas guard, Metal, JAR worker, NSO flags and render stop are still process-wide.",
+            "Java thread roots snapshot native generation; nested Runtime frames share it. Render, LCDUI and Display Input reject stale runtime generations after pointer reuse.",
             "Network, classloader, JIT, sockets, native image handles, and teardown still need device validation.",
             "Do not enable another JVM while there are unisolated native blockers.",
         ],

@@ -189,7 +189,8 @@ static void ui_bind_runtime(Runtime *runtime) {
     pthread_once(&g_ui_contexts_once, init_ui_contexts);
     MiniJVM *vm = runtime ? runtime->jvm : NULL;
     int index = ui_slot_for_vm(vm);
-    const uint64_t key = index >= 0 ? jarbox_native_heap_key_for_vm(vm) : 0;
+    const uint64_t key = index >= 0
+        ? jarbox_native_heap_key_for_runtime(runtime) : 0;
     const uint64_t slot_key = index >= 0
         ? atomic_load_explicit(&g_ui_contexts[index].heap_key, memory_order_acquire) : 0;
     // A slot number alone cannot authorize access after VM generation reuse.
@@ -633,7 +634,8 @@ static s32 n_showCanvas(Runtime *runtime, JClass *clazz) {
 
 static s32 n_listSetLastIcon(Runtime *runtime, JClass *clazz) {
     ui_bind_runtime(runtime);
-    if (g_list_item_count <= 0) return RUNTIME_STATUS_NORMAL;
+    if (!jarbox_native_heap_key_for_runtime(runtime) ||
+        g_list_item_count <= 0) return RUNTIME_STATUS_NORMAL;
     JniEnv *env = runtime->jnienv;
     s64 handle = env->localvar_getLong_2slot(runtime->localvar, 0);
     CGImageRef icon = j2me_render_copy_image_for_vm(handle, runtime->jvm);

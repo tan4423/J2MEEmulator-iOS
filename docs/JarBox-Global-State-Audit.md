@@ -190,3 +190,31 @@ workspace, JIT, sockets or UI controller ownership. Runtime and device
 validation and lifetime-safe zombie thread binding are still required.
 No game JAR, Codemagic workflow, main, save/RMS or network code changed.
 The bridge remains capped to one live JVM by default.
+
+## 2026-11-22: Late UIKit callbacks and recycled MiniJVM pointers
+
+For the NSO/Avatar/TeaMobi 2D path:
+- Swift MIDP screen actions require the origin owner key AND native session
+  token after their main-queue hop. The old unowned callback fails closed.
+- Alert buttons and timeout dismissal revalidate session, render owner and
+  screen revision when delivering input. Alerts while parked remain deferred.
+- Controller deinit and late JVM-worker completion cannot reset another
+  session's process-wide Treo/GC flags.
+- A `JavaThreadInfo` captures `jarbox_native_generation` at the root
+  `runtime_create()`. Nested stack frames reuse the same thread info.
+  `jarbox_native_heap_key_for_runtime()` compares that immutable key against
+  the currently registered JVM ledger key. Display native input, LCDUI and
+  the 2D Canvas/Image draw and creation paths now fail closed when an old
+  Java runtime has a reused `MiniJVM*` address.
+
+Root bootstrap runtimes created before native ledger registration retain
+generation zero and cannot access the MIDP 2D native bridge; the MIDlet
+execution runtime is created after native registration. No new timer,
+poller, game/network/RMS change, or second JVM activation was introduced.
+
+**Still outstanding:** A forced-zombie pthread executing after the
+`Runtime` or `JavaThreadInfo` allocation is freed still risks use-after-free.
+This source-level generation check prevents *authorizing B* by comparing only
+the recycled JVM pointer, but does NOT solve every JVM teardown memory
+lifetime issue, pending Metal callbacks, or the full concurrent JVM registry.
+The default single-JVM limit remains 1. iPhone/TSan proof is pending.

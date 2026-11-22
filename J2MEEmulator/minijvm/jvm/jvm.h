@@ -1326,6 +1326,9 @@ JClass *getClassByConstantClassRef(JClass *clazz, s32 index, Runtime *runtime);
 
 struct _JavaThreadInfo {
 //    MiniJVM *jvm;
+    // Immutable at each Java thread root. Child frames share this record.
+    // A stale Java thread never inherits a newer JVM's recycled address.
+    uint64_t jarbox_native_generation;
     Instance *jthread;
     Instance *context_classloader;
     Runtime *top_runtime;

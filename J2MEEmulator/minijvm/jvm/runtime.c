@@ -123,7 +123,10 @@ Runtime *runtime_create(MiniJVM *jvm) {
     }
     Runtime *runtime = runtime_create_inl(NULL);
     runtime->jvm = jvm;
-//    runtime->jvm = jvm;
+    // Capture the exact native ledger generation once. Bootstrap threads
+    // before native registration stay unbound (zero), never guessed later.
+    runtime->thrd_info->jarbox_native_generation =
+        jarbox_native_heap_key_for_vm(jvm);
     return runtime;
 }
 

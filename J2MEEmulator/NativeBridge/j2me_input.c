@@ -65,6 +65,12 @@ static J2MEInputContext *context_for_vm(MiniJVM *vm) {
     return NULL;
 }
 
+// Never choose B's input slot for A's stale Java Runtime.
+static J2MEInputContext *context_for_runtime(Runtime *runtime) {
+    if (!jarbox_native_heap_key_for_runtime(runtime)) return NULL;
+    return context_for_vm(runtime->jvm);
+}
+
 static J2MEInputContext *visible_input_context(void) {
     return atomic_load_explicit(&g_visible_input_context, memory_order_acquire);
 }
@@ -238,7 +244,7 @@ static s32 n_pollInputEvent(Runtime *runtime, JClass *clazz) {
     JniEnv *env = runtime->jnienv;
     JarBoxInputEvent evt;
 
-    if (!dequeue_event(context_for_vm(runtime->jvm), &evt)) {
+    if (!dequeue_event(context_for_runtime(runtime), &evt)) {
         env->push_ref(runtime->stack, NULL);
         return RUNTIME_STATUS_NORMAL;
     }
@@ -283,7 +289,10 @@ static s32 n_reportLaunchError(Runtime *runtime, JClass *clazz) {
 // ============================================================
 
 static s32 n_isStopRequested(Runtime *runtime, JClass *clazz) {
-    push_int(runtime->stack, jvm_bridge_is_stop_requested_for_vm(runtime->jvm) ? 1 : 0);
+    // A stale A Runtime reports stop even if A and B share a pointer value.
+    const int stale = !jarbox_native_heap_key_for_runtime(runtime);
+    push_int(runtime->stack,
+             stale || jvm_bridge_is_stop_requested_for_vm(runtime->jvm) ? 1 : 0);
     return RUNTIME_STATUS_NORMAL;
 }
 
@@ -292,13 +301,13 @@ static s32 n_isStopRequested(Runtime *runtime, JClass *clazz) {
 // paths not wired to the input bridge (safe stop even if a signal is missed).
 // ============================================================
 static s32 n_displayWaitEnabled(Runtime *runtime, JClass *clazz) {
-    J2MEInputContext *ctx = context_for_vm(runtime->jvm);
+    J2MEInputContext *ctx = context_for_runtime(runtime);
     push_int(runtime->stack, ctx &&
         atomic_load_explicit(&ctx->display_wait_enabled, memory_order_acquire));
     return RUNTIME_STATUS_NORMAL;
 }
 static s32 n_displayWaitVersion(Runtime *runtime, JClass *clazz) {
-    J2MEInputContext *ctx = context_for_vm(runtime->jvm);
+    J2MEInputContext *ctx = context_for_runtime(runtime);
     if (!ctx) {
         push_int(runtime->stack, 0);
         return RUNTIME_STATUS_NORMAL;
@@ -315,7 +324,7 @@ static s32 n_displayWaitIfUnchanged(Runtime *runtime, JClass *clazz) {
     if (milliseconds < 1) milliseconds = 1;
     if (milliseconds > 250) milliseconds = 250;
 
-    J2MEInputContext *ctx = context_for_vm(runtime->jvm);
+    J2MEInputContext *ctx = context_for_runtime(runtime);
     if (!ctx) {
         push_int(runtime->stack, 0);
         return RUNTIME_STATUS_NORMAL;
@@ -358,7 +367,7 @@ static s32 n_displayWaitIfUnchanged(Runtime *runtime, JClass *clazz) {
     return RUNTIME_STATUS_NORMAL;
 }
 static s32 n_displayWake(Runtime *runtime, JClass *clazz) {
-    wake_input_context(context_for_vm(runtime->jvm));
+    wake_input_context(context_for_runtime(runtime));
     return RUNTIME_STATUS_NORMAL;
 }
 
