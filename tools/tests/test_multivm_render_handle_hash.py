@@ -1,0 +1,185 @@
+"""Compile exact production 2D handle hash/acquire/stop helpers for POSIX.
+
+This exercises two *simulated owner generations* and pthread contention,
+not two MiniJVMs, UIKit, CoreGraphics, Metal or a running MIDlet.
+"""
+import shutil
+import subprocess
+import tempfile
+import unittest
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]
+RENDER = ROOT / "J2MEEmulator/NativeBridge/j2me_render.m"
+
+PREAMBLE = r"""
+#include <stdint.h>
+#include <stddef.h>
+#include <stdatomic.h>
+#include <pthread.h>
+#include <sched.h>
+#include <stdio.h>
+#include <stdlib.h>
+typedef long long s64;
+typedef struct RenderContext {
+    uint64_t heap_key;
+    _Atomic int32_t refcount;
+    _Atomic int java_owned;
+    struct RenderContext *next_live;
+} RenderContext;
+typedef struct RenderImage {
+    uint64_t heap_key;
+    _Atomic int32_t refcount;
+    _Atomic int java_owned;
+    struct RenderImage *next_live;
+} RenderImage;
+typedef struct { atomic_int held; } spinlock_t;
+static spinlock_t g_track_lock = {0};
+#define TRACK_MAX 8192
+static RenderContext *g_live_rc[TRACK_MAX];
+static int g_live_rc_count;
+static RenderImage *g_live_img[TRACK_MAX];
+static int g_live_img_count;
+#define RENDER_HANDLE_BUCKETS 8192u
+static RenderContext *g_rc_live_buckets[RENDER_HANDLE_BUCKETS];
+static RenderImage *g_img_live_buckets[RENDER_HANDLE_BUCKETS];
+static void spin_lock(spinlock_t *lock) {
+    while (atomic_exchange_explicit(&lock->held, 1, memory_order_acquire))
+        sched_yield();
+}
+static void spin_unlock(spinlock_t *lock) {
+    atomic_store_explicit(&lock->held, 0, memory_order_release);
+}
+"""
+PROGRAM = r"""
+typedef struct { s64 handle; uint64_t owner; int is_image; int failed; } Job;
+static void *worker(void *arg) {
+    Job *j = arg;
+    for (int i = 0; i < 18000; ++i) {
+        if (j->is_image) {
+            RenderImage *p = img_acquire(j->handle, j->owner);
+            if (!p || p->heap_key != j->owner) { j->failed++; continue; }
+            atomic_fetch_sub(&p->refcount, 1);
+        } else {
+            RenderContext *p = rc_acquire(j->handle, j->owner);
+            if (!p || p->heap_key != j->owner) { j->failed++; continue; }
+            atomic_fetch_sub(&p->refcount, 1);
+        }
+    }
+    return NULL;
+}
+int main(void) {
+    RenderContext a = {0}, b = {0};
+    RenderImage ai = {0}, bi = {0};
+    a.heap_key = ai.heap_key = 101;
+    b.heap_key = bi.heap_key = 202;
+    atomic_init(&a.refcount, 1); atomic_init(&b.refcount, 1);
+    atomic_init(&ai.refcount, 1); atomic_init(&bi.refcount, 1);
+    atomic_init(&a.java_owned, 1); atomic_init(&b.java_owned, 1);
+    if (!track_rc(&a) || !track_rc(&b) ||
+        !track_img(&ai) || !track_img(&bi)) return 1;
+    if (rc_acquire((s64)(intptr_t)&a, 202)) return 2;
+    if (img_acquire((s64)(intptr_t)&ai, 202)) return 3;
+    if (rc_acquire((s64)0x1234, 101)) return 4;
+    if (img_acquire((s64)0x1234, 101)) return 5;
+    Job jobs[4] = {
+        {(s64)(intptr_t)&a, 101, 0, 0},
+        {(s64)(intptr_t)&ai, 101, 1, 0},
+        {(s64)(intptr_t)&b, 202, 0, 0},
+        {(s64)(intptr_t)&bi, 202, 1, 0}};
+    pthread_t threads[4];
+    for (int i = 0; i < 4; ++i)
+        if (pthread_create(&threads[i], NULL, worker, &jobs[i])) return 6;
+    for (int i = 0; i < 4; ++i) pthread_join(threads[i], NULL);
+    for (int i = 0; i < 4; ++i) if (jobs[i].failed) return 7;
+    if (atomic_load(&a.refcount) != 1 ||
+        atomic_load(&ai.refcount) != 1 ||
+        atomic_load(&b.refcount) != 1 ||
+        atomic_load(&bi.refcount) != 1) return 8;
+    j2me_render_stop_for_owner(101);
+    if (rc_acquire((s64)(intptr_t)&a, 101) ||
+        img_acquire((s64)(intptr_t)&ai, 101)) return 9;
+    RenderContext *bRef = rc_acquire((s64)(intptr_t)&b, 202);
+    RenderImage *biRef = img_acquire((s64)(intptr_t)&bi, 202);
+    if (bRef != &b || biRef != &bi) return 10;
+    atomic_fetch_sub(&b.refcount, 1);
+    atomic_fetch_sub(&bi.refcount, 1);
+    if (take_rc_for_owner(101) != &a || take_img_for_owner(101) != &ai)
+        return 11;
+    if (rc_acquire((s64)(intptr_t)&a, 101) ||
+        img_acquire((s64)(intptr_t)&ai, 101)) return 12;
+    bRef = rc_acquire((s64)(intptr_t)&b, 202);
+    if (bRef != &b) return 13;
+    atomic_fetch_sub(&b.refcount, 1);
+    if (take_rc_for_owner(202) != &b ||
+        take_img_for_owner(202) != &bi) return 14;
+    if (g_live_rc_count || g_live_img_count) return 15;
+    for (int i = 0; i < 8192; ++i)
+        if (g_rc_live_buckets[i] || g_img_live_buckets[i]) return 16;
+    if (atomic_exchange(&a.java_owned, 0) != 1) return 17;
+    if (atomic_exchange(&a.java_owned, 0) != 0) return 18;
+    puts("2D owned handle host harness: OK (two generations, threads, stop A / retain B)");
+    return 0;
+}
+"""
+
+def section(code, start, end):
+    first = code.index(start)
+    second = code.index(end, first)
+    return code[first:second]
+
+class MultiVMRenderHandleHashTest(unittest.TestCase):
+    def test_prod_2d_registry_and_owner_stop(self):
+        cc = shutil.which("cc") or shutil.which("clang")
+        if cc is None:
+            self.skipTest("C compiler missing")
+        code = RENDER.read_text(encoding="utf-8")
+        source = (
+            PREAMBLE +
+            section(code, "#define RENDER_STOP_OWNER_SLOTS",
+                    "// Global tracking arrays") +
+            section(code, "static inline unsigned render_handle_bucket(",
+                    "static int track_rc(") +
+            section(code, "static int track_rc(",
+                    "// Each graphics handle carries") +
+            section(code, "static inline RenderContext *rc_acquire(",
+                    "static inline void rc_release(") +
+            section(code, "static inline RenderImage *img_acquire(",
+                    "// LCDUI icon reads") +
+            section(code, "void j2me_render_stop_for_owner(",
+                    "// Ownership is by native JVM generation") +
+            section(code, "static RenderContext *take_rc_for_owner(",
+                    "void j2me_render_cleanup_for_owner(") +
+            PROGRAM)
+        self.assertIn("render_owner_stopped_locked(owner_key)", source)
+        self.assertIn("candidate->heap_key == owner_key", source)
+        self.assertIn("g_rc_live_buckets", source)
+        with tempfile.TemporaryDirectory(prefix="jarbox-render-hash-") as t:
+            src = Path(t) / "owned.c"
+            exe = Path(t) / "owned"
+            src.write_text(source, encoding="utf-8")
+            build = subprocess.run(
+                [cc, "-std=c11", "-O1", "-Wall", "-Wextra", "-pthread",
+                 str(src), "-o", str(exe)],
+                capture_output=True, text=True, timeout=45)
+            self.assertEqual(build.returncode, 0,
+                             build.stdout + build.stderr)
+            run = subprocess.run([str(exe)], capture_output=True,
+                                 text=True, timeout=30)
+            self.assertEqual(run.returncode, 0,
+                             run.stdout + run.stderr)
+            self.assertIn("2D owned handle host harness: OK", run.stdout)
+
+    def test_no_raw_dereference_in_any_java_2d_native_acquire(self):
+        code = RENDER.read_text(encoding="utf-8")
+        self.assertNotIn("g_render_stopped", code)
+        self.assertNotIn("RenderContext *rc = (RenderContext *)(intptr_t)handle;", code)
+        self.assertNotIn("RenderImage *img = (RenderImage *)(intptr_t)handle;", code)
+        self.assertIn("rc->heap_key = img->heap_key;", code)
+        self.assertIn("atomic_exchange_explicit(&rc->java_owned, 0,", code)
+        self.assertIn("atomic_exchange_explicit(&img->java_owned, 0,", code)
+        self.assertIn("if (!track_rc(rc))", code)
+        self.assertIn("if (!track_img(img))", code)
+
+if __name__ == "__main__":
+    unittest.main()

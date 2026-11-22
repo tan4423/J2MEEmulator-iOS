@@ -29,7 +29,10 @@ typedef struct { atomic_int busy; } spinlock_t;
 static spinlock_t g_track_lock = {0};
 static RenderImage *g_live_img[16];
 static int g_live_img_count = 0;
-static _Atomic int g_render_stopped = 0;
+static uint64_t stopped_owner;
+static int render_owner_stopped_locked(uint64_t key) {
+    return key == stopped_owner;
+}
 static void spin_lock(spinlock_t *l) {
     while (atomic_exchange_explicit(&l->busy, 1, memory_order_acquire))
         sched_yield();
@@ -82,9 +85,11 @@ int main(void) {
     if (wa.failed || wb.failed ||
         atomic_load(&a.refcount) != 1 ||
         atomic_load(&b.refcount) != 1) return 7;
-    atomic_store(&g_render_stopped, 1);
+    stopped_owner = 101;
     if (img_acquire_for_owner((s64)(intptr_t)&a, 101)) return 8;
-    atomic_store(&g_render_stopped, 0);
+    if (!img_acquire_for_owner((s64)(intptr_t)&b, 202)) return 11;
+    atomic_fetch_sub(&b.refcount, 1);
+    stopped_owner = 0;
     // Simulate a new native VM generation reusing the same tracked slot.
     a.heap_key = 303;
     if (img_acquire_for_owner((s64)(intptr_t)&a, 101)) return 9;

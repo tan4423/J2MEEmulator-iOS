@@ -124,9 +124,9 @@ def audit(root=ROOT):
         },
         "notes": [
             "Input contexts (capacity four) are not four working JVM sessions.",
-            "Renderer context/image teardown is generation-filtered, but the global stop barrier, Metal cache and haptics are shared.",
+            "2D handle lookups use generation-checked hashed membership and the render stop is keyed by owner; Metal cache, UIKit destinations and haptics are still shared.",
             "LCDUI slot bindings, Form/List buffers and queued URL actions now check VM generation; UIKit controller registration remains process-wide.",
-            "MIDP List icon snapshots are VM-owned, but ordinary render acquire paths still trust raw native handles.",
+            "MIDP List icons and ordinary 2D Canvas/Image acquire paths now validate JVM generation; live handle address reuse after a zombie thread and VM pointer reuse still require lifetime binding.",
             "Smart GC/probe state is now per-MiniJVM; Treo Canvas guard, Metal, JAR worker, NSO flags and render stop are still process-wide.",
             "Network, classloader, JIT, sockets, native image handles, and teardown still need device validation.",
             "Do not enable another JVM while there are unisolated native blockers.",

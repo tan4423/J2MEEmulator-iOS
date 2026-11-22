@@ -20,13 +20,21 @@ PREAMBLE = r"""
 #include <sched.h>
 #include <stdlib.h>
 #include <stdio.h>
-typedef struct { uint64_t heap_key; int id; } RenderContext;
-typedef struct { uint64_t heap_key; int id; } RenderImage;
+typedef long long s64;
+typedef struct RenderContext {
+    uint64_t heap_key; int id; struct RenderContext *next_live;
+} RenderContext;
+typedef struct RenderImage {
+    uint64_t heap_key; int id; struct RenderImage *next_live;
+} RenderImage;
 typedef struct { atomic_int held; } spinlock_t;
 static spinlock_t g_track_lock = {0};
 static RenderContext *g_live_rc[1024];
 static RenderImage *g_live_img[1024];
 static int g_live_rc_count, g_live_img_count;
+#define RENDER_HANDLE_BUCKETS 8192u
+static RenderContext *g_rc_live_buckets[RENDER_HANDLE_BUCKETS];
+static RenderImage *g_img_live_buckets[RENDER_HANDLE_BUCKETS];
 static void spin_lock(spinlock_t *l) {
     while (atomic_exchange_explicit(&l->held, 1, memory_order_acquire))
         sched_yield();
@@ -64,6 +72,12 @@ int main(void) {
         rc[i].id = img[i].id = i;
         g_live_rc[g_live_rc_count++] = &rc[i];
         g_live_img[g_live_img_count++] = &img[i];
+        unsigned rb = render_handle_bucket((s64)(intptr_t)&rc[i]);
+        unsigned ib = render_handle_bucket((s64)(intptr_t)&img[i]);
+        rc[i].next_live = g_rc_live_buckets[rb];
+        g_rc_live_buckets[rb] = &rc[i];
+        img[i].next_live = g_img_live_buckets[ib];
+        g_img_live_buckets[ib] = &img[i];
     }
     if (take_rc_for_owner(0) || take_img_for_owner(0)) return 1;
     Work a = {A, 0, 0}, b = {B, 0, 0};
@@ -99,13 +113,16 @@ class MultiVMRenderCleanupTest(unittest.TestCase):
         start = src.index("static RenderContext *take_rc_for_owner(")
         end = src.index("\nvoid j2me_render_cleanup_for_owner(", start)
         production = src[start:end]
+        hash_start = src.index("static inline unsigned render_handle_bucket(")
+        hash_end = src.index("\nstatic int track_rc(", hash_start)
+        hash_lookup = src[hash_start:hash_end]
         self.assertIn("g_live_rc[i]->heap_key == key", production)
         self.assertIn("g_live_img[i]->heap_key == key", production)
         with tempfile.TemporaryDirectory(prefix="jarbox-render-owner-") as tmp:
             path = Path(tmp)
             c_file = path / "partition.c"
             exe = path / "partition"
-            c_file.write_text(PREAMBLE + production + "\n" + TEST)
+            c_file.write_text(PREAMBLE + hash_lookup + production + "\n" + TEST)
             subprocess.run(
                 [cc, "-std=c11", "-O2", "-Wall", "-Wextra", "-pthread",
                  str(c_file), "-o", str(exe)],
@@ -133,7 +150,7 @@ class MultiVMRenderCleanupTest(unittest.TestCase):
         self.assertIn("atomic_store_explicit(&g_haptic_player_owner_key, owner_key", render)
         self.assertIn("atomic_load_explicit(&g_haptic_player_owner_key, memory_order_acquire)", render)
 
-    def test_bridge_cleanup_sequence_and_global_stop_are_truthful(self):
+    def test_bridge_cleanup_sequence_and_scoped_stop_are_truthful(self):
         render = RENDER.read_text(encoding="utf-8")
         bridge = BRIDGE.read_text(encoding="utf-8")
         start = bridge.index("void jvm_bridge_destroy(void)")
@@ -147,14 +164,18 @@ class MultiVMRenderCleanupTest(unittest.TestCase):
         self.assertIn("take_img_for_owner(owner_key)", cleanup)
         self.assertNotIn("g_live_rc_count = 0;", cleanup)
         self.assertNotIn("g_live_img_count = 0;", cleanup)
-        self.assertIn("atomic_store_explicit(&g_render_stopped, 0, memory_order_release);", cleanup)
+        self.assertIn("g_stopped_render_owners[i] == owner_key", cleanup)
+        self.assertIn("if (*cursor) *cursor = found->next_live;", render)
         self.assertIn("jvm_bridge_supported_concurrent_sessions() == 1", cleanup)
         self.assertIn("dispatch_async(dispatch_get_main_queue(), ^{", cleanup)
         self.assertIn("haptic_owner != teardown_key", cleanup)
         self.assertIn("single_vm_shutdown = jvm_bridge_supported_concurrent_sessions() == 1", cleanup)
-        # The fatal global stop is not yet per-VM. Never unlock concurrency.
-        self.assertIn("atomic_store_explicit(&g_render_stopped, 1, memory_order_release);", render)
-        self.assertIn("j2me_render_stop();", bridge)
+        # A stopped A must not disable B. The one-JVM gate is kept for the
+        # remaining shared UI/Metal/Treo components, not this 2D stop bit.
+        self.assertNotIn("g_render_stopped", render)
+        self.assertIn("j2me_render_stop_for_owner(destroyed_render_key);", bridge)
+        self.assertIn("render_owner_stopped_locked(owner_key)", render)
+        self.assertIn("int jvm_bridge_supported_concurrent_sessions(void) {\n    return 1;", bridge)
 
 if __name__ == "__main__":
     unittest.main()

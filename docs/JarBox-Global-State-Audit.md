@@ -35,9 +35,9 @@ Risk: **H** can corrupt/steal state between JVMs, **M** logic/behaviour leak or 
 | `jvm_bridge.c:101` | `g_bridge_vm` (single JVM) | P | **H** | The one-JVM limit itself. Replace with a session registry (UUID, generation, state, stop flag, controller). |
 | `jvm_bridge.c:20,24`, `treo_*` | `treo_exact_ninja_verified`, `treo_nso_init_target_active`, NSO traces | P | **H** | Treo/NSO state is per-process; one game's Canvas guard can change another's mode. |
 | `j2me_render.m:197,289-342` | `treo_afk_mode`, `g_afk_refresh`, `g_afk_needs_redraw`, guarded-AFK flags | P | **H** | Deep-Treo mode is global: parking A would park B. Must move into a per-VM `TreoState`. |
-| `j2me_render.m:1586` | `g_render_stopped` | P | **H** | `j2me_render_stop()` is called from every JVM's shutdown and stops *all* rendering (see `jvm_bridge.c` Step 1-2 comment). |
+| `j2me_render.m`, `jvm_bridge.c` | 2D stop registry (`g_stopped_render_owners`) | **V by generation** | M | **Fixed in source for 2D lookup:** teardown stops only the identified generation; other owners can still acquire their live 2D handles. The stop table is protected by `g_track_lock` and fails closed if full. Does not isolate shared Metal/3D/Treo or UI callback lifetime; concurrency gate stays 1. |
 | `j2me_render.m:167-176` | `g_flush_callback`, `g_visible_render_owner_key`, `g_haptic_player_owner_key` | P | M | Owner-checked now, but single destination. Needs per-VM display destination. |
-| `j2me_render.m:1591-1674` | `g_live_rc[]`, `g_live_img[]`, `g_dead_*` | P/V | M | Handles carry owner key; list is shared with one lock. Acceptable if every lookup is owner-checked (open item: raw-handle paths). |
+| `j2me_render.m` | 2D live handles and hash buckets | **V by generation** | M | **Fixed in source for Canvas/Image:** native handle lookups check live registry membership and generation before dereference. Hashed buckets keep the hot drawing path near O(1); destroy is once-only, and owner teardown unlinks both list and buckets. Shared dead-shell drainage and stale zombie pointer address reuse still need on-device validation. |
 | `j2me_render.m:1426-1430` | `treo_jar_worker*` | P | **H** | One worker thread/period for all games. |
 | `j2me_render.m:2786-3136` | `treo_replay_*`, `treo_live_*` (textures, GPU lock) | P | **H** | Live-Treo GPU texture cache shared. |
 | `j2me_ui.m:95-109` | `g_ui_contexts[]` (V), `g_ui_focused_index`, `g_ui_callback` | V/P | M | Contexts are per-VM; callback/focus still single. Needs per-VM UIKit controller. |
@@ -57,7 +57,7 @@ above; none of them is exercised by the host harness (render/UI/audio/3D are stu
 
 1. `jnienv` one-time init, `ca_inited` guard, PRNG per VM (small, safe).
 2. Per-VM `TreoState`: GC probe/Smart GC are now instance-owned; migrate Canvas guard, render mode, NSO flags and worker next — highest behavioural risk.
-3. Per-VM render stop flag instead of `j2me_render_stop()` global.
+3. **2D render stop and raw handle validation implemented in source.** Remaining: per-Tab presentation callback, Metal/shared-state and full runtime lifetime checks.
 4. Micro3D / M3G context ownership.
 5. Session registry replacing `g_bridge_vm`; then, and only then, lift the one-JVM cap.
 
@@ -163,3 +163,30 @@ JAR worker, NSO flags, global render-stop, Metal/3D, UIKit destinations and
 shutdown rules. The source gate `jvm_bridge_supported_concurrent_sessions()`
 continues to return **1**. Do not change default or Codemagic workflow until
 device testing covers those remaining components.
+
+## 2026-11-22: 2D Canvas/Image ownership and scoped stop
+
+This checkpoint prioritizes NSO/Avatar/TeaMobi 2D, without expanding 3D
+support. `rc_acquire` / `img_acquire` no longer dereference a raw Java
+`long` before checking membership: they use locked 8192-bucket live
+registries, generation checks and atomic refcount claims. The optimized
+drawRegion path carries the caller's generation explicitly, as does
+Image.Graphics, which previously created a wrapper with no `heap_key`.
+Java destruction releases its base ref at most once; stale/foreign fake
+handles are ignored. Registry capacity is fail-closed (no untracked handle
+is returned to Java).
+
+`j2me_render_stop_for_owner(key)` replaces the global stop barrier. It
+blocks acquisition only for the stopped generation and cleanup unlinks
+that generation from both live arrays and hash buckets. B's handles remain
+eligible while A is stopped. The stop table has 16 entries against the
+existing maximum eight registered native heap owners and fails closed
+if unexpectedly saturated.
+
+**Scope:** This is a source-level native-handle safety improvement, not
+evidence of multiple simultaneous iPhone JVMs. It does not yet address
+process-wide Treo/AFK Canvas guard, singleton flush destination, Metal
+workspace, JIT, sockets or UI controller ownership. Runtime and device
+validation and lifetime-safe zombie thread binding are still required.
+No game JAR, Codemagic workflow, main, save/RMS or network code changed.
+The bridge remains capped to one live JVM by default.

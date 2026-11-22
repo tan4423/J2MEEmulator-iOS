@@ -29,11 +29,11 @@ class MultiVMReadinessTest(unittest.TestCase):
         self.assertNotIn("gc_single_native_memory_account", blockers)
         self.assertNotIn("gc_single_smart_treo_scheduler", blockers)
         self.assertNotIn("render_global_stop_and_cleanup", blockers)
+        self.assertNotIn("render_global_stop_barrier", blockers)
+        self.assertNotIn("render_raw_unscoped_handle_acquire", blockers)
         for item in (
             "render_single_flush_callback",
-            "render_global_stop_barrier",
             "render_shared_metal_workspace",
-            "render_raw_unscoped_handle_acquire",
             "render_global_haptic_teardown",
             "lcd_ui_single_callback",
             "treo_single_global_mode",
@@ -49,6 +49,7 @@ class MultiVMReadinessTest(unittest.TestCase):
         self.assertFalse(report["concurrent_jvms_safe_to_enable"])
         self.assertIn("Input contexts (capacity four) are not four working JVM sessions.",
                       report["notes"])
+        self.assertTrue(any("2D handle lookups" in note for note in report["notes"]))
 
 
 if __name__ == "__main__":
