@@ -101,6 +101,9 @@ static atomic_int g_ui_focused_index = -1;
 // runtime with NO registered owner (must never inherit the visible screen).
 static _Thread_local int g_ui_thread_index = -1;
 static _Thread_local uint64_t g_ui_thread_key = 0;
+// Keep the exact context held by the current pthread, regardless of focus
+// switching asynchronously on a different thread.
+static _Thread_local JarBoxUIScreenContext *g_ui_locked_context = NULL;
 static _Atomic uint32_t g_ui_new_session_revision = 1;
 static j2me_ui_callback g_ui_callback = NULL;
 static j2me_ui_callback_owned g_owned_ui_callback = NULL;
@@ -155,6 +158,16 @@ static JarBoxUIScreenContext *ui_context(void) {
     pthread_once(&g_ui_contexts_once, init_ui_contexts);
     int index = g_ui_thread_index;
     if (index == -2) return &g_empty_ui_context;
+    if (g_ui_locked_context) {
+        // UIKit's getters must read the screen whose mutex they hold,
+        // not a different screen selected midway through presentation.
+        if (index >= 0 &&
+            !jarbox_ui_generation_matches(
+                g_ui_thread_key, atomic_load_explicit(
+                    &g_ui_locked_context->heap_key, memory_order_acquire)))
+            return &g_empty_ui_context;
+        return g_ui_locked_context;
+    }
     if (index == -1)
         index = atomic_load_explicit(&g_ui_focused_index, memory_order_acquire);
     if (index < 0 || index >= JARBOX_UI_CONTEXT_CAPACITY)
@@ -325,8 +338,19 @@ CGImageRef j2me_ui_copy_list_icon(int index) {
 int j2me_ui_revision(void) {
     return atomic_load_explicit(&g_screen_revision, memory_order_acquire);
 }
-void j2me_ui_lock_screen(void) { pthread_mutex_lock(&g_screen_lock); }
-void j2me_ui_unlock_screen(void) { pthread_mutex_unlock(&g_screen_lock); }
+void j2me_ui_lock_screen(void) {
+    JarBoxUIScreenContext *const ctx = ui_context();
+    pthread_mutex_lock(&ctx->screen_lock);
+    g_ui_locked_context = ctx;
+}
+void j2me_ui_unlock_screen(void) {
+    // Focus may have moved to another Tab after lock_screen(). Never unlock
+    // a different JVM's pthread_mutex or dereference a recycled slot.
+    JarBoxUIScreenContext *const ctx = g_ui_locked_context;
+    if (!ctx) return;
+    g_ui_locked_context = NULL;
+    pthread_mutex_unlock(&ctx->screen_lock);
+}
 static s32 n_lockScreen(Runtime *runtime, JClass *clazz) {
     ui_bind_runtime(runtime);
     jthread_block_enter(runtime);
