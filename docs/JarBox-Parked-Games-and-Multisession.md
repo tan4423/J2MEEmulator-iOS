@@ -388,6 +388,14 @@ The single-JVM safety gate is **still on**. This checkpoint splits the *native
 - Bitmap creation now checks the live owner generation, allocations and decoded
   image dimensions before constructing native handles. The shared immutable
   `CGColorSpace` is initialized with `dispatch_once`.
+- Haptic requests capture the creating VM generation and re-check it on
+  UIKit's main queue; stale requests cannot replace a newer Tab's player.
+  Release callbacks only cancel a player if its generation still matches.
+  The haptic engine itself is still shared and is not multi-JVM-complete.
+- Forced dead-shell queue drains only occur while the single-JVM safety gate
+  is active; otherwise shared queues retain their normal two-generation
+  reclamation grace period. The shared stop flag is atomic but not yet
+  per-VM.
 - Native flush re-checks the visible generation after snapshot construction;
   a frame captured while focus switches is released rather than queued.
   UIKit still independently checks ownership when the queued frame arrives.
