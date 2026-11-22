@@ -51,6 +51,14 @@ def audit(root=ROOT):
     blockers = {
         "render_single_flush_callback":
             "static j2me_flush_callback g_flush_callback" in src["render"],
+        "render_global_stop_and_cleanup":
+            "void j2me_render_stop(void)" in src["render"]
+            and "g_render_stopped = 1" in src["render"]
+            and "void j2me_render_cleanup(void)" in src["render"]
+            and "g_live_rc_count = 0" in src["render"]
+            and "g_live_img_count = 0" in src["render"],
+        "render_global_haptic_teardown":
+            "g_hapticEngine stopWithCompletionHandler" in src["render"],
         "lcd_ui_single_form_state":
             "static char g_form_title" in src["lcd_ui"],
         "lcd_ui_single_callback":
@@ -67,12 +75,23 @@ def audit(root=ROOT):
     # This gate must stay on while the above shared mutable state exists.
     one_vm_gate = ("atomic_compare_exchange_strong_explicit(&g_bridge_vm.active"
                    in src["lifecycle"])
-    ready = lifecycle and input_owned and audio_owned and not any(blockers.values())
+    # A source-shape gate may only block unsafe concurrency; it cannot certify
+    # thread safety or device behavior. All known owned components must pass,
+    # all shared-state blockers must disappear, and the single-VM guard must
+    # remain until an independent runtime/device validation changes this gate.
+    ready = (lifecycle and input_owned and audio_owned and ui_owned
+             and native_heap_owned and not any(blockers.values())
+             and not one_vm_gate)
+    # No automated source scan proves safe concurrent execution on iOS.
+    # Require a separately reviewed runtime/device validation before enabling.
+    runtime_device_validated = False
+    ready = ready and runtime_device_validated
     return {
         "schema": "jarbox-multivm-readiness-v1",
         "concurrent_jvms_safe_to_enable": bool(ready),
         "enforced_single_active_jvm": bool(one_vm_gate),
         "verified_source_structure_only": True,
+        "runtime_device_concurrency_validated": runtime_device_validated,
         "owned_native_components": {
             "vm_lifecycle": bool(lifecycle),
             "input_queue_display_wait": bool(input_owned),
