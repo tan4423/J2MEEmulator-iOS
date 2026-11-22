@@ -62,7 +62,13 @@ class ParkedGameLibraryTest(unittest.TestCase):
         self.assertIn('libraryIsPresented', self.game)
         self.assertIn('overlay.dismiss(animated: false)', self.game)
         self.assertIn('JarBoxLibraryNavigationController(rootViewController: library)', self.game)
-        self.assertIn('if libraryIsPresented {\n            deferredGameAlert = true', self.game)
+        # Source semantics, not byte-for-byte adjacency: the parked Alert
+        # branch intentionally documents why owner verification is deferred.
+        # Whitespace and explanatory comments must not break this guard.
+        self.assertRegex(
+            self.game,
+            r'if libraryIsPresented\s*\{(?:\s*//[^\n]*\n)*\s*deferredGameAlert\s*=\s*true'
+        )
         self.assertIn('if self.deferredGameAlert', self.game)
         self.assertIn('self.showAlert()', self.game)
 
