@@ -189,7 +189,12 @@ CGImageRef _Nullable j2me_render_copy_image(int64_t handle) CF_RETURNS_RETAINED;
 /// Must be called before cleanup to protect against zombie threads.
 void j2me_render_stop(void);
 
-/// Clean up all render resources. Call between game sessions (after j2me_render_stop).
+/// Release only native contexts/images owned by this JVM generation.
+/// Called AFTER jvm_destroy and BEFORE its heap ledger is unregistered.
+/// Global renderer stop is still needed while the one-JVM gate remains.
+void j2me_render_cleanup_for_owner(uint64_t owner_key);
+
+/// Legacy unscoped entry point: intentionally fails closed.
 void j2me_render_cleanup(void);
 
 #ifdef __cplusplus
