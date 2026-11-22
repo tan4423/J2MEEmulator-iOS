@@ -1734,6 +1734,37 @@ static inline RenderImage *img_acquire(s64 handle) {
     return img;
 }
 
+// LCDUI icon reads are infrequent, so validate the handle in the live
+// registry BEFORE dereferencing it. A stale/foreign pointer must not be
+// treated as a RenderImage merely because it has a nonzero address.
+static RenderImage *img_acquire_for_owner(s64 handle, uint64_t owner_key) {
+    if (!handle || !owner_key ||
+        atomic_load_explicit(&g_render_stopped, memory_order_acquire))
+        return NULL;
+    RenderImage *result = NULL;
+    RenderImage *target = (RenderImage *)(intptr_t)handle;
+    spin_lock(&g_track_lock);
+    for (int i = 0; i < g_live_img_count; ++i) {
+        RenderImage *candidate = g_live_img[i];
+        if (candidate != target) continue;
+        if (candidate->heap_key == owner_key) {
+            int32_t previous = atomic_load_explicit(&candidate->refcount,
+                                                    memory_order_relaxed);
+            while (previous > 0) {
+                if (atomic_compare_exchange_weak_explicit(
+                        &candidate->refcount, &previous, previous + 1,
+                        memory_order_acquire, memory_order_relaxed)) {
+                    result = candidate;
+                    break;
+                }
+            }
+        }
+        break;
+    }
+    spin_unlock(&g_track_lock);
+    return result;
+}
+
 static inline void img_release(RenderImage *img) {
     if (!img) return;
     if (atomic_fetch_sub_explicit(&img->refcount, 1, memory_order_release) == 1) {
@@ -1959,6 +1990,15 @@ static s32 n_destroyContext(Runtime *runtime, JClass *clazz) {
 
 CGImageRef j2me_render_copy_image(int64_t handle) {
     RenderImage *img = img_acquire(handle);
+    if (!img) return NULL;
+    CGImageRef image = copyImageSnapshot(img);
+    img_release(img);
+    return image;
+}
+
+CGImageRef j2me_render_copy_image_for_vm(int64_t handle, MiniJVM *vm) {
+    const uint64_t owner_key = jarbox_native_heap_key_for_vm(vm);
+    RenderImage *img = img_acquire_for_owner(handle, owner_key);
     if (!img) return NULL;
     CGImageRef image = copyImageSnapshot(img);
     img_release(img);
