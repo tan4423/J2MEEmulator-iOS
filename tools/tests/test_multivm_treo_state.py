@@ -74,5 +74,27 @@ class MultiVMTreoStateTest(unittest.TestCase):
             self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
             self.assertIn("TreoState host model: OK", run.stdout)
 
+    def test_collector_and_lifecycle_bridge_are_generation_scoped(self):
+        collector = (ROOT / "J2MEEmulator/minijvm/jvm/garbage.c").read_text()
+        vm = (ROOT / "J2MEEmulator/minijvm/jvm/jvm.h").read_text()
+        bridge = (ROOT / "J2MEEmulator/NativeBridge/jvm_bridge.c").read_text()
+        renderer = (ROOT / "J2MEEmulator/NativeBridge/j2me_render.m").read_text()
+        self.assertIn("JarBoxTreoState treo_state;", vm)
+        self.assertIn("jarbox_treo_smart_period(&jvm->treo_state)", collector)
+        self.assertIn("jarbox_treo_probe_period(&jvm->treo_state)", collector)
+        self.assertIn("jarbox_treo_smart_force_safe(&jvm->treo_state)", collector)
+        self.assertIn("jarbox_treo_probe_fallback(&jvm->treo_state)", collector)
+        self.assertIn("jarbox_treo_smart_record_gc(&jvm->treo_state", collector)
+        self.assertNotIn("static int treo_gc_probe_requested_ms;", collector)
+        self.assertNotIn("static int treo_gc_smart_enabled,", collector)
+        self.assertIn("void jvm_bridge_visit_running_vm(", bridge)
+        self.assertIn("pthread_mutex_lock(&g_bridge_lifecycle_lock);", bridge)
+        self.assertIn("memory_order_acquire) == BRIDGE_RUNNING", bridge)
+        self.assertIn("treo_gc_set_afk_mode_for_current(mode);", renderer)
+
+    def test_still_rejects_parallel_jvm(self):
+        bridge = (ROOT / "J2MEEmulator/NativeBridge/jvm_bridge.c").read_text()
+        self.assertIn("int jvm_bridge_supported_concurrent_sessions(void) {\n    return 1;", bridge)
+
 if __name__ == "__main__":
     unittest.main()

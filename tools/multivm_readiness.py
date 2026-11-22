@@ -19,6 +19,7 @@ FILES = {
     "render": "J2MEEmulator/NativeBridge/j2me_render.m",
     "lcd_ui": "J2MEEmulator/NativeBridge/j2me_ui.m",
     "gc": "J2MEEmulator/minijvm/jvm/garbage.c",
+    "vm": "J2MEEmulator/minijvm/jvm/jvm.h",
     "3d": "J2MEEmulator/NativeBridge/jvm_bridge.c",
 }
 
@@ -43,6 +44,11 @@ def audit(root=ROOT):
         "slot->key == key")) and all(x in src["render"] for x in (
         "uint64_t heap_key;", "jarbox_native_heap_key_for_vm(owner)",
         "native_heap_sub(rc->heap_key, pixels)"))
+    treo_gc_owned = ("JarBoxTreoState treo_state;" in src["vm"]
+                     and "jarbox_treo_smart_period(&jvm->treo_state)" in src["gc"]
+                     and "jarbox_treo_probe_period(&jvm->treo_state)" in src["gc"]
+                     and "jvm_bridge_visit_running_vm" in src["gc"]
+                     and "treo_gc_set_afk_mode_for_current(mode);" in src["render"])
     ui_owned = all(x in src["lcd_ui"] for x in (
         "JarBoxUIScreenContext", "ui_slot_for_vm(vm)",
         "j2me_ui_release_vm(MiniJVM *vm)",
@@ -111,6 +117,7 @@ def audit(root=ROOT):
             "wav_midi_players": bool(audio_owned),
             "lcd_ui_screen_buffers": bool(ui_owned),
             "gc_native_graphics_accounting": bool(native_heap_owned),
+            "treo_gc_afk_state": bool(treo_gc_owned),
         },
         "unisolated_native_blockers": {
             name: found for name, found in sorted(blockers.items()) if found
@@ -120,6 +127,7 @@ def audit(root=ROOT):
             "Renderer context/image teardown is generation-filtered, but the global stop barrier, Metal cache and haptics are shared.",
             "LCDUI slot bindings, Form/List buffers and queued URL actions now check VM generation; UIKit controller registration remains process-wide.",
             "MIDP List icon snapshots are VM-owned, but ordinary render acquire paths still trust raw native handles.",
+            "Smart GC/probe state is now per-MiniJVM; Treo Canvas guard, Metal, JAR worker, NSO flags and render stop are still process-wide.",
             "Network, classloader, JIT, sockets, native image handles, and teardown still need device validation.",
             "Do not enable another JVM while there are unisolated native blockers.",
         ],

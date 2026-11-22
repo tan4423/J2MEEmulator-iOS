@@ -23,7 +23,7 @@ Risk: **H** can corrupt/steal state between JVMs, **M** logic/behaviour leak or 
 | `interpreter.c:24-285` | `treo_vm_*`, `paint_*`, `treo_array_diag_*` | P | L | Profiling counters and a global `paint_global[]` table keyed by `MethodInfo*`. `MethodInfo*` from two JVMs can collide after free/realloc → wrong attribution only. Fix: tag by JVM or disable outside diagnostics. |
 | `jvm_util.c:27-29` | `logfile`, `last_flush`, `nano_sec_start_at` | P | M | Log file and start-time shared. `nano_sec_start_at` makes `System.nanoTime()` relative to the first JVM. Make per-VM or document. |
 | `jvm_util.c:374-375` | monitor contention counters | P | L | Counters. |
-| `garbage.c:321` | `treo_gc_probe_requested_ms` | P | M | Smart-GC probe interval is global → Treo of one JVM changes GC cadence of another. Part of Treo/Smart-GC per-VM work. |
+| `jarbox_treo_state.h`, `jvm.h`, `garbage.c` | `JarBoxTreoState` Smart GC and probe metrics | **V** | — | **Fixed in source for GC cadence:** Each MiniJVM owns AFK-mode mirror, Smart GC enabled/fallback, heap/CPU/cycle statistics, and GC probe period/peak/fallback. Collector reads its own JVM; bridge callback pins running session under lifecycle mutex for UIKit control. No concurrent JVM runtime proof yet. |
 | `garbage.c:400-402` | `g_native_heaps[]` ledger | V | — | Already per-JVM with generation key (done). |
 | `hashset.c`, `hashtable.c` | default-size statics | P | — | Read-only after init (not truly mutable). |
 | `ssl_client.c` | `ca_crt_rsa` / `g_ca_bundle_once` | P | M | **Fixed in source:** CA bundle assembled under `pthread_once` and read as immutable thereafter. Full ssl_client/mTLS host and iOS builds not rerun; harness stubs TLS. |
@@ -56,7 +56,7 @@ above; none of them is exercised by the host harness (render/UI/audio/3D are stu
 ## D. Suggested order
 
 1. `jnienv` one-time init, `ca_inited` guard, PRNG per VM (small, safe).
-2. Per-VM `TreoState` (Treo mode, guarded-AFK, GC probe) — highest behavioural risk.
+2. Per-VM `TreoState`: GC probe/Smart GC are now instance-owned; migrate Canvas guard, render mode, NSO flags and worker next — highest behavioural risk.
 3. Per-VM render stop flag instead of `j2me_render_stop()` global.
 4. Micro3D / M3G context ownership.
 5. Session registry replacing `g_bridge_vm`; then, and only then, lift the one-JVM cap.
@@ -136,3 +136,30 @@ method resolution fails before the logger's `IOException` handler, but it is
 Do not rewrite the game JAR, seed fake server entries, modify network
 protocols, or enable concurrent JVMs on the strength of this log. Collect
 a fresh `JarBoxNET` report from the built IPA if the selector remains empty.
+
+## 2026-11-22: TreoState GC/AFK isolation checkpoint
+
+Changes on `loader-ios-jit-probe` create `JarBoxTreoState` inside every
+`MiniJVM` allocation. The collector calls the GC probe/Smart GC operations
+on `collector->jvm->treo_state` directly; UIKit controls are synchronous
+visitors dispatched only to a RUNNING VM while holding the existing bridge
+lifecycle mutex. The AFK mode is mirrored from the existing render setter
+into that JVM's GC state; there are no additional timers or polling loops.
+Existing Deep Treo modes (including mode 8 and fallback mode 1), the heap
+safety threshold, 500/2000 ms GC periods, game packets and save roots remain
+unchanged.
+
+`tools/tests/test_multivm_treo_state.py` compiles the actual standalone
+policy header into a POSIX pthread harness to verify two independent
+session states and fallback isolation. The header model was compiled and
+run with ASan+UBSan on Linux in this development session. The bundled
+miniJVM, iOS renderer and full Codemagic build were **not** executed locally;
+the on-device report that NSO now loads is user-provided validation of
+the previous RMS fix, **not** proof of two concurrent miniJVMs.
+
+**Still unsafe for parallel JVMs:** renderer-side
+`treo_afk_mode`/`g_afk_refresh`/`g_afk_needs_redraw`, guarded-AFK state,
+JAR worker, NSO flags, global render-stop, Metal/3D, UIKit destinations and
+shutdown rules. The source gate `jvm_bridge_supported_concurrent_sessions()`
+continues to return **1**. Do not change default or Codemagic workflow until
+device testing covers those remaining components.
