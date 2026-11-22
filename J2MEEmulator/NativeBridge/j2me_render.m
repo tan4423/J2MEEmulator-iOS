@@ -1583,7 +1583,7 @@ static CGColorSpaceRef g_colorSpace = NULL;
 
 // Set by jvm_bridge before native cleanup. All acquire functions
 // check this and return NULL, so zombie threads can't touch freed resources.
-static volatile int g_render_stopped = 0;
+static _Atomic int g_render_stopped = 0;
 
 // Global tracking arrays for forced cleanup between game sessions.
 // Protected by g_track_lock. Entries are added on create, removed on release (refcount→0).
@@ -1691,7 +1691,7 @@ static void process_dead_shells(void) {
 // ============================================================
 
 static inline RenderContext *rc_acquire(s64 handle) {
-    if (g_render_stopped || handle == 0) return NULL;
+    if (atomic_load_explicit(&g_render_stopped, memory_order_acquire) || handle == 0) return NULL;
     RenderContext *rc = (RenderContext *)(intptr_t)handle;
     int32_t old = atomic_load_explicit(&rc->refcount, memory_order_relaxed);
     do {
@@ -1723,7 +1723,7 @@ static inline void rc_release(RenderContext *rc) {
 }
 
 static inline RenderImage *img_acquire(s64 handle) {
-    if (g_render_stopped || handle == 0) return NULL;
+    if (atomic_load_explicit(&g_render_stopped, memory_order_acquire) || handle == 0) return NULL;
     RenderImage *img = (RenderImage *)(intptr_t)handle;
     int32_t old = atomic_load_explicit(&img->refcount, memory_order_relaxed);
     do {
@@ -1952,7 +1952,7 @@ static s32 n_createContext(Runtime *runtime, JClass *clazz) {
 static s32 n_destroyContext(Runtime *runtime, JClass *clazz) {
     JniEnv *env = runtime->jnienv;
     s64 handle = env->localvar_getLong_2slot(runtime->localvar, 0);
-    if (g_render_stopped || handle == 0) return RUNTIME_STATUS_NORMAL;
+    if (atomic_load_explicit(&g_render_stopped, memory_order_acquire) || handle == 0) return RUNTIME_STATUS_NORMAL;
     destroyRenderContext((RenderContext *)(intptr_t)handle);
     return RUNTIME_STATUS_NORMAL;
 }
@@ -2555,7 +2555,7 @@ static s32 n_createImageFromData(Runtime *runtime, JClass *clazz) {
 static s32 n_destroyImage(Runtime *runtime, JClass *clazz) {
     JniEnv *env = runtime->jnienv;
     s64 handle = env->localvar_getLong_2slot(runtime->localvar, 0);
-    if (g_render_stopped || handle == 0) return RUNTIME_STATUS_NORMAL;
+    if (atomic_load_explicit(&g_render_stopped, memory_order_acquire) || handle == 0) return RUNTIME_STATUS_NORMAL;
     destroyImage((RenderImage *)(intptr_t)handle);
     return RUNTIME_STATUS_NORMAL;
 }
@@ -4301,7 +4301,7 @@ void j2me_render_reg_natives(MiniJVM *jvm) {
 }
 
 void j2me_render_stop(void) {
-    g_render_stopped = 1;
+    atomic_store_explicit(&g_render_stopped, 1, memory_order_release);
 }
 
 // Ownership is by native JVM generation. Never free a foreign VM's context.
@@ -4400,7 +4400,7 @@ void j2me_render_cleanup_for_owner(uint64_t owner_key) {
         }
     }
     // The legacy global stop barrier stays until all native state is scoped.
-    g_render_stopped = 0;
+    atomic_store_explicit(&g_render_stopped, 0, memory_order_release);
     printf("[J2ME Render] Owner %llu cleanup: %d contexts, %d images\n",
            (unsigned long long)owner_key, rc_count, img_count);
 }
