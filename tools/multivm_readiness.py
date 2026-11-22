@@ -53,7 +53,7 @@ def audit(root=ROOT):
             "static j2me_flush_callback g_flush_callback" in src["render"],
         "render_global_stop_and_cleanup":
             "void j2me_render_stop(void)" in src["render"]
-            and "g_render_stopped = 1" in src["render"]
+            and "atomic_store_explicit(&g_render_stopped, 1, memory_order_release)" in src["render"]
             and "void j2me_render_cleanup(void)" in src["render"]
             and "g_live_rc_count = 0" in src["render"].rsplit(
                 "void j2me_render_cleanup(void) {", 1)[-1]
@@ -62,8 +62,8 @@ def audit(root=ROOT):
         "render_global_haptic_teardown":
             "g_hapticEngine stopWithCompletionHandler" in src["render"],
         "render_global_stop_barrier":
-            "g_render_stopped = 1" in src["render"]
-            and "static volatile int g_render_stopped = 0" in src["render"],
+            "atomic_store_explicit(&g_render_stopped, 1, memory_order_release)" in src["render"]
+            and "static _Atomic int g_render_stopped = 0" in src["render"],
         "render_shared_metal_workspace":
             "static id<MTLCommandQueue> treo_live_queue" in src["render"]
             and "static id<MTLTexture> treo_live_target" in src["render"],
