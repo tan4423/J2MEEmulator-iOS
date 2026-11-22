@@ -20,7 +20,7 @@ class MultiVMUIIsolationTests(unittest.TestCase):
             with self.subTest(member=member):
                 self.assertIn(member, self.ui)
         self.assertIn("JarBoxUIScreenContext", self.ui)
-        self.assertIn("ui_slot_for_vm(runtime ? runtime->jvm : NULL)", self.ui)
+        self.assertIn("ui_slot_for_vm(vm)", self.ui)
         self.assertIn("ui_register_vm(MiniJVM *vm)", self.ui)
         self.assertIn("j2me_ui_release_vm(MiniJVM *vm)", self.ui)
         self.assertIn("j2me_ui_focus_vm(MiniJVM *vm)", self.ui)
@@ -33,6 +33,7 @@ class MultiVMUIIsolationTests(unittest.TestCase):
         self.assertIn("if (index == -2) return &g_empty_ui_context", self.ui)
         self.assertIn("jarbox_ui_may_present(g_ui_thread_key, ui_focused_owner_key()", self.ui)
         self.assertIn("g_ui_new_session_revision", self.ui)
+        self.assertIn("j2me_render_copy_image_for_vm(handle, runtime->jvm)", self.ui)
 
     def test_async_url_is_copied_before_java_string_free(self):
         source = self.ui
