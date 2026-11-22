@@ -113,6 +113,19 @@ class MultiVMRenderCleanupTest(unittest.TestCase):
             subprocess.run([str(exe)], check=True, capture_output=True,
                            text=True, timeout=15)
 
+    def test_image_creation_and_frame_publish_are_generation_guarded(self):
+        render = RENDER.read_text(encoding="utf-8")
+        self.assertIn("if (!rc->heap_key) { free(rc); return NULL; }", render)
+        self.assertIn("if (!owner_key || !data || length <= 0) return NULL;", render)
+        self.assertIn("if (!img->ctx) { free(img); return NULL; }", render)
+        self.assertIn("CGImageRelease(cgImage);\n        free(img);", render)
+        flush = render[render.index("static s32 n_flushToScreen("):
+                       render.index("// --- Color & State ---", render.index("static s32 n_flushToScreen("))]
+        self.assertIn("callerKey != visibleKey", flush)
+        self.assertIn("callerKey != atomic_load_explicit(", flush)
+        self.assertIn("CGImageRelease(image);", flush)
+        self.assertIn("g_owned_flush_callback(image, rc->width, rc->height, rc->heap_key)", flush)
+
     def test_bridge_cleanup_sequence_and_global_stop_are_truthful(self):
         render = RENDER.read_text(encoding="utf-8")
         bridge = BRIDGE.read_text(encoding="utf-8")
