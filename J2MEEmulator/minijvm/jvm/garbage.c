@@ -322,26 +322,26 @@ void gc_dump_runtime(GcCollector *collector) {
 // Thresholds / 250ms pressure checks / Deep Treo fallback remain unchanged.
 #if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__
 static void treo_probe_set_active(MiniJVM *vm, void *arg) {
-    jarbox_treo_probe_set(&vm->treo_state, *(int *)arg);
+    jarbox_treo_probe_set(&vm->session->treo_state, *(int *)arg);
 }
 void treo_gc_probe_set_period_ms(int requested) {
     jvm_bridge_visit_running_vm(treo_probe_set_active, &requested);
 }
 static void treo_smart_set_active(MiniJVM *vm, void *arg) {
-    jarbox_treo_smart_set(&vm->treo_state, *(int *)arg);
+    jarbox_treo_smart_set(&vm->session->treo_state, *(int *)arg);
 }
 void treo_gc_smart_set(int enabled) {
     jvm_bridge_visit_running_vm(treo_smart_set_active, &enabled);
 }
 static void treo_force_safe_active(MiniJVM *vm, void *arg) {
     (void)arg;
-    jarbox_treo_smart_force_safe(&vm->treo_state);
+    jarbox_treo_smart_force_safe(&vm->session->treo_state);
 }
 void treo_gc_smart_force_safe(void) {
     jvm_bridge_visit_running_vm(treo_force_safe_active, NULL);
 }
 static void treo_afk_mode_active(MiniJVM *vm, void *arg) {
-    jarbox_treo_mode_set(&vm->treo_state, *(int *)arg);
+    jarbox_treo_mode_set(&vm->session->treo_state, *(int *)arg);
 }
 void treo_gc_set_afk_mode_for_current(int mode) {
     jvm_bridge_visit_running_vm(treo_afk_mode_active, &mode);
@@ -352,7 +352,7 @@ typedef struct {
 } TreoGCSnapshot;
 static void treo_gc_snapshot_active(MiniJVM *vm, void *arg) {
     TreoGCSnapshot *s = (TreoGCSnapshot *)arg;
-    JarBoxTreoState *t = &vm->treo_state;
+    JarBoxTreoState *t = &vm->session->treo_state;
     s->probe_ms = jarbox_treo_probe_period(t);
     s->probe_peak = __atomic_load_n(&t->probe_heap_peak, __ATOMIC_ACQUIRE);
     s->probe_fallbacks = __atomic_load_n(&t->probe_fallback_count, __ATOMIC_ACQUIRE);
@@ -523,23 +523,23 @@ s32 _gc_thread_run(void *para) {
         s64 desired = jvm->garbage_collect_period_ms;
 #if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__
         if (heap >= 0) {
-            jarbox_treo_peak_note(&jvm->treo_state.probe_heap_peak, (uint64_t)heap);
-            jarbox_treo_smart_note_heap(&jvm->treo_state, (uint64_t)heap);
+            jarbox_treo_peak_note(&jvm->session->treo_state.probe_heap_peak, (uint64_t)heap);
+            jarbox_treo_smart_note_heap(&jvm->session->treo_state, (uint64_t)heap);
         }
         // Keep the Java/native heap pressure threshold unchanged. If the
         // memory headroom shrinks, latch at 500 ms until the user leaves AFK.
-        if (jarbox_treo_smart_period(&jvm->treo_state) > desired) {
+        if (jarbox_treo_smart_period(&jvm->session->treo_state) > desired) {
             if (heap >= threshold * 3 / 4) {
-                jarbox_treo_smart_force_safe(&jvm->treo_state);
+                jarbox_treo_smart_force_safe(&jvm->session->treo_state);
             } else {
                 desired = 2000;
             }
         }
-        int probe = jarbox_treo_probe_period(&jvm->treo_state);
+        int probe = jarbox_treo_probe_period(&jvm->session->treo_state);
         if (probe > desired) {
             if (heap >= threshold * 3 / 4) {
                 // Conservative exit if heap reaches 52.5% of max_heap_size.
-                jarbox_treo_probe_fallback(&jvm->treo_state);
+                jarbox_treo_probe_fallback(&jvm->session->treo_state);
             } else {
                 desired = probe;
             }
@@ -555,15 +555,15 @@ s32 _gc_thread_run(void *para) {
             s64 heap_before = heap;
 #if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__
             treo_diag_gc_cycle_begin();
-            const int smartRecord = __atomic_load_n(&jvm->treo_state.smart_enabled, __ATOMIC_ACQUIRE);
+            const int smartRecord = __atomic_load_n(&jvm->session->treo_state.smart_enabled, __ATOMIC_ACQUIRE);
             const uint64_t smartCpuStart = smartRecord ? treo_gc_smart_thread_cpu() : 0;
 #endif
             _garbage_collect(collector);
 #if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__
-            if (smartCpuStart && __atomic_load_n(&jvm->treo_state.smart_enabled, __ATOMIC_ACQUIRE)) {
+            if (smartCpuStart && __atomic_load_n(&jvm->session->treo_state.smart_enabled, __ATOMIC_ACQUIRE)) {
                 const uint64_t smartCpuEnd = treo_gc_smart_thread_cpu();
                 if (smartCpuEnd >= smartCpuStart) {
-                    jarbox_treo_smart_record_gc(&jvm->treo_state,
+                    jarbox_treo_smart_record_gc(&jvm->session->treo_state,
                                                 smartCpuEnd - smartCpuStart);
                 }
             }

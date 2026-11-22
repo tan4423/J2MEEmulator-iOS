@@ -23,6 +23,7 @@ FILES = {
     "input_runtime": "J2MEEmulator/NativeBridge/j2me_input.c",
     "vm_jvm": "J2MEEmulator/minijvm/jvm/jvm.h",
     "vm": "J2MEEmulator/minijvm/jvm/jvm.h",
+    "session": "J2MEEmulator/minijvm/jvm/jarbox_session.h",
     "3d": "J2MEEmulator/NativeBridge/jvm_bridge.c",
 }
 
@@ -54,9 +55,10 @@ def audit(root=ROOT):
         "slot->key == key")) and all(x in src["render"] for x in (
         "uint64_t heap_key;", "jarbox_native_heap_key_for_vm(owner)",
         "native_heap_sub(rc->heap_key, pixels)"))
-    treo_gc_owned = ("JarBoxTreoState treo_state;" in src["vm"]
-                     and "jarbox_treo_smart_period(&jvm->treo_state)" in src["gc"]
-                     and "jarbox_treo_probe_period(&jvm->treo_state)" in src["gc"]
+    treo_gc_owned = ("JarBoxTreoState treo_state;" in src["session"]
+                     and "JarBoxSession *session;" in src["vm"]
+                     and "jarbox_treo_smart_period(&jvm->session->treo_state)" in src["gc"]
+                     and "jarbox_treo_probe_period(&jvm->session->treo_state)" in src["gc"]
                      and "jvm_bridge_visit_running_vm" in src["gc"]
                      and "treo_gc_set_afk_mode_for_current(mode);" in src["render"])
     ui_owned = all(x in src["lcd_ui"] for x in (

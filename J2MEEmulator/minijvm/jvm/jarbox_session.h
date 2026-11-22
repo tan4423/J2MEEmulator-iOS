@@ -2,6 +2,7 @@
 #define JARBOX_SESSION_H
 #include <stdint.h>
 #include <stdlib.h>
+#include "jarbox_treo_state.h"
 
 /*
  * One Java heap, one JarBoxSession. The owner JVM holds the initial ref;
@@ -26,6 +27,10 @@ typedef struct JarBoxSession {
     unsigned references;      /* JVM owner + independently retained clients */
     unsigned java_workers;    /* reserved before pthread creation */
     unsigned phase;
+    // GC and AFK diagnostics now live in this session, never on a shared
+    // process-global scheduler. Guarded Canvas/NSO/JAR worker migration
+    // remains a separate prerequisite for parallel JVM startup.
+    JarBoxTreoState treo_state;
 } JarBoxSession;
 
 static inline JarBoxSession *jarbox_session_create(void *vm) {

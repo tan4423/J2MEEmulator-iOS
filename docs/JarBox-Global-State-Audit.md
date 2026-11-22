@@ -218,3 +218,41 @@ This source-level generation check prevents *authorizing B* by comparing only
 the recycled JVM pointer, but does NOT solve every JVM teardown memory
 lifetime issue, pending Metal callbacks, or the full concurrent JVM registry.
 The default single-JVM limit remains 1. iPhone/TSan proof is pending.
+
+## 2026-11-23: Session-owned Java workers and GC; one visible game target
+
+The iPhone build at `61a76cb` was reported successful by the user.
+It did NOT demonstrate two running miniJVMs.
+
+Lifecycle foundation now allocates a separate `JarBoxSession` when a
+`MiniJVM` is created, and binds the bridge's nonreusable session token.
+States: STARTING, FOREGROUND, PARKED, STOPPING, DEAD. The focus bridge
+updates those states; only one game window is visible, so the eventual
+multi-JVM display model is a focus/token switch (no second window).
+
+The session owns `JarBoxTreoState` (Smart GC, probe and AFK mode mirror);
+`garbage.c` now reads `jvm->session->treo_state`. The existing
+Canvas guard, NSO fast-path and JAR worker still contain process globals:
+these are **explicit blockers** to running two JVMs concurrently.
+
+Java pthreads reserve a reference/worker lease on their session *before*
+`thrd_create` and release it after their final VM access. Closing a
+session prevents new reservations. `jvm_destroy` no longer treats the
+`THREAD_STATUS_ZOMBIE` label as native thread exit, never force-zombies
+after three seconds, and retains the MiniJVM heap while a native Java
+worker still exists. If a thread is unresponsive, the worker remains in
+STOPPING; the existing explicit JarBox process-exit recovery is safer
+than a use-after-free. No new UI timer or worker thread is introduced.
+
+**Not yet solved:** JVM-owned collector/shutdown hook edge cases, all
+pending native callbacks, Treo/Canvas/NSO/JAR worker singleton migration,
+per-session bridge registry and independent concurrent MIDlet runners,
+memory admission based on iOS pressure, and full device execution.
+Native 3D remains irrelevant for the two TeaMobi 2D JAR target; it
+must not cross sessions. `jvm_bridge_supported_concurrent_sessions()`
+remains exactly **1**. No iPhone test of parallel JVMs has been done.
+
+Validation for this checkpoint: a host C11 JarBoxSession model compiled
+and executed with ASan+UBSan using a locally verified Git blob SHA, plus
+source-structure regression tests added to the repository. Full unit
+suite, Xcode/Codemagic and device/Tsan remain to be run on this HEAD.

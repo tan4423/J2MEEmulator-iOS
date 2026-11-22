@@ -39,6 +39,10 @@ int main(void) {
         jarbox_session_bind_token(a, 103)) return 2;
     if (!jarbox_session_enter_foreground(a) ||
         !jarbox_session_enter_foreground(b) || !jarbox_session_park(a)) return 3;
+    jarbox_treo_mode_set(&a->treo_state, 8);
+    jarbox_treo_smart_set(&a->treo_state, 1);
+    if (jarbox_treo_smart_period(&a->treo_state) != 2000 ||
+        jarbox_treo_smart_period(&b->treo_state) != 500) return 12;
     Worker wa = {.session = a};
     if (!jarbox_session_reserve_worker(a)) return 4;
     pthread_t t;

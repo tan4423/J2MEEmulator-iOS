@@ -1969,11 +1969,8 @@ struct _MiniJVM {
     // Non-cryptographic Math.random state belongs to this JVM. Updated with
     // __atomic CAS so Java threads of the same JVM cannot race.
     u64 math_random_state;
-    // GC/AFK lifecycle belongs to this MiniJVM allocation. State is
-    // zero-initialized by jvm_calloc and is never reused by a newer JVM.
-    JarBoxTreoState treo_state;
-    // Stable session identity is independent from the MiniJVM address;
-    // full Treo/Canvas state migration follows this lifecycle foundation.
+    // The independent JarBoxSession owns Treo/GC and the Java thread leases.
+    // JVM addresses may be recycled, but the session token is immutable.
     JarBoxSession *session;
     s32 jvm_state;
 };
