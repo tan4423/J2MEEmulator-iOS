@@ -199,24 +199,24 @@ class CloneInstanceStorageTest(unittest.TestCase):
                 capture_output=True, text=True, timeout=70)
             self.assertEqual(
                 compile_result.returncode, 0,
-                "Swift storage harness compilation failed.\\n"
+                "Swift storage harness compilation failed.\n"
                 + compile_result.stdout + compile_result.stderr)
             run_result = subprocess.run(
                 [str(exe)], capture_output=True, text=True, timeout=30)
             self.assertEqual(
                 run_result.returncode, 0,
-                "Swift storage harness runtime failed.\\n"
+                "Swift storage harness runtime failed.\n"
                 + run_result.stdout + run_result.stderr)
 
     def test_storage_helpers_are_in_compilable_extracted_enum(self):
         source = SWIFT.read_text(encoding="utf-8")
         begin = source.index("enum JarBoxGameStorage {")
-        end = source.index("\\n}\\n\\n// The parked library", begin) + 2
+        end = source.index("\n}\n\n// The parked library", begin) + 2
         storage = source[begin:end]
         self.assertIn("func legacyOwners(jarPath: String,", storage)
         self.assertIn("func isSymbolicLink(_ path: String)", storage)
         self.assertIn("values?.isSymbolicLink ?? true", storage)
-        self.assertIn("name.lowercased().hasSuffix(\\\".jar\\\")", storage)
+        self.assertIn('name.lowercased().hasSuffix(".jar")', storage)
 
     def test_launch_carries_instance_uuid_to_save_root(self):
         source = GAME.read_text(encoding="utf-8")
