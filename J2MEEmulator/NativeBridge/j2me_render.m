@@ -171,6 +171,10 @@ static j2me_flush_callback_owned g_owned_flush_callback = NULL;
 // Java rendering into offscreen buffers may continue, but only the VM
 // currently owning the visible screen can publish its pixels to UIKit.
 static _Atomic uint64_t g_visible_render_owner_key;
+// A queued UIKit haptic request must still belong to the visible VM when
+// it runs on the main thread. Process-wide engine remains shared.
+static _Atomic uint64_t g_haptic_player_owner_key;
+static void render_haptic_release_owner(uint64_t owner_key);
 
 int j2me_render_focus_vm(MiniJVM *vm) {
     const uint64_t key = jarbox_native_heap_key_for_vm(vm);
@@ -185,6 +189,9 @@ void j2me_render_release_vm(MiniJVM *vm) {
     (void)atomic_compare_exchange_strong_explicit(
         &g_visible_render_owner_key, &expected, 0,
         memory_order_acq_rel, memory_order_acquire);
+    // The main-queue stop verifies the generation again; a later VM's
+    // haptic player can never be stopped by this old release callback.
+    render_haptic_release_owner(key);
 }
 
 _Atomic int treo_afk_mode = 0;
@@ -4155,18 +4162,32 @@ static void stop_afk_haptics(void) {
             [g_hapticPlayer stopAtTime:0 error:nil];
             g_hapticPlayer = nil;
         }
+        atomic_store_explicit(&g_haptic_player_owner_key, 0, memory_order_release);
     }
 }
 
+static void render_haptic_release_owner(uint64_t owner_key) {
+    if (!owner_key) return;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (atomic_load_explicit(&g_haptic_player_owner_key, memory_order_acquire) ==
+            owner_key) stop_afk_haptics();
+    });
+}
+
 static s32 n_vibrate(Runtime *runtime, JClass *clazz) {
-    if (j2me_render_is_afk_suspended()) return RUNTIME_STATUS_NORMAL;
+    const uint64_t owner_key = jarbox_native_heap_key_for_vm(runtime->jvm);
+    if (!owner_key || owner_key != j2me_render_visible_owner_key() ||
+        j2me_render_is_afk_suspended()) return RUNTIME_STATUS_NORMAL;
     s32 durationMs = runtime->jnienv->localvar_getInt(runtime->localvar, 0);
     dispatch_async(dispatch_get_main_queue(), ^{
+        // An old Tab must never vibrate or stop a new Tab's player.
+        if (owner_key != j2me_render_visible_owner_key()) return;
         if (@available(iOS 13.0, *)) {
             if (g_hapticPlayer) {
                 NSError *err = nil;
                 [g_hapticPlayer stopAtTime:0 error:&err];
                 g_hapticPlayer = nil;
+                atomic_store_explicit(&g_haptic_player_owner_key, 0, memory_order_release);
             }
             if (durationMs <= 0 || j2me_render_is_afk_suspended()) return;
 
@@ -4191,7 +4212,8 @@ static s32 n_vibrate(Runtime *runtime, JClass *clazz) {
             if (err) return;
 
             g_hapticPlayer = [g_hapticEngine createPlayerWithPattern:pattern error:&err];
-            if (err) return;
+            if (err || !g_hapticPlayer) return;
+            atomic_store_explicit(&g_haptic_player_owner_key, owner_key, memory_order_release);
 
             [g_hapticPlayer startAtTime:0 error:&err];
         }
