@@ -192,7 +192,8 @@ CGImageRef _Nullable j2me_render_copy_image_for_vm(int64_t handle, MiniJVM *vm)
 
 /// Signal render subsystem to stop (all acquire calls return NULL).
 /// Must be called before cleanup to protect against zombie threads.
-void j2me_render_stop(void);
+// Stop new 2D native handle acquisitions only for this exact JVM generation.
+void j2me_render_stop_for_owner(uint64_t owner_key);
 
 /// Release only native contexts/images owned by this JVM generation.
 /// Called AFTER jvm_destroy and BEFORE its heap ledger is unregistered.

@@ -1588,9 +1588,18 @@ static s32 n_profilePaintEnd(Runtime *runtime, JClass *clazz) {
 
 static CGColorSpaceRef g_colorSpace = NULL;
 
-// Set by jvm_bridge before native cleanup. All acquire functions
-// check this and return NULL, so zombie threads can't touch freed resources.
-static _Atomic int g_render_stopped = 0;
+// A VM can stop while other tabs keep running. New handle acquisitions
+// check the exact owning JVM generation under g_track_lock; never use a
+// process-wide renderer stop bit to stop an unrelated session.
+#define RENDER_STOP_OWNER_SLOTS 16
+static uint64_t g_stopped_render_owners[RENDER_STOP_OWNER_SLOTS];
+static int g_stopped_render_owner_count;
+static inline int render_owner_stopped_locked(uint64_t key) {
+    if (!key) return 1;
+    for (int i = 0; i < g_stopped_render_owner_count; ++i)
+        if (g_stopped_render_owners[i] == key) return 1;
+    return 0;
+}
 
 // Global tracking arrays for forced cleanup between game sessions.
 // Protected by g_track_lock. Entries are added on create, removed on release (refcount→0).
@@ -1729,12 +1738,15 @@ static void process_dead_shells(void) {
 // ============================================================
 
 static inline RenderContext *rc_acquire(s64 handle, uint64_t owner_key) {
-    if (!handle || !owner_key ||
-        atomic_load_explicit(&g_render_stopped, memory_order_acquire)) return NULL;
+    if (!handle || !owner_key) return NULL;
     // Compare the address as an integer; don't dereference until live
     // membership AND JVM generation are both validated under the same lock.
     RenderContext *result = NULL;
     spin_lock(&g_track_lock);
+    if (render_owner_stopped_locked(owner_key)) {
+        spin_unlock(&g_track_lock);
+        return NULL;
+    }
     RenderContext *target = (RenderContext *)(intptr_t)handle;
     for (RenderContext *candidate = g_rc_live_buckets[render_handle_bucket(handle)];
          candidate; candidate = candidate->next_live) {
@@ -1777,10 +1789,13 @@ static inline void rc_release(RenderContext *rc) {
 }
 
 static inline RenderImage *img_acquire(s64 handle, uint64_t owner_key) {
-    if (!handle || !owner_key ||
-        atomic_load_explicit(&g_render_stopped, memory_order_acquire)) return NULL;
+    if (!handle || !owner_key) return NULL;
     RenderImage *result = NULL;
     spin_lock(&g_track_lock);
+    if (render_owner_stopped_locked(owner_key)) {
+        spin_unlock(&g_track_lock);
+        return NULL;
+    }
     RenderImage *target = (RenderImage *)(intptr_t)handle;
     for (RenderImage *candidate = g_img_live_buckets[render_handle_bucket(handle)];
          candidate; candidate = candidate->next_live) {
@@ -1806,12 +1821,14 @@ static inline RenderImage *img_acquire(s64 handle, uint64_t owner_key) {
 // registry BEFORE dereferencing it. A stale/foreign pointer must not be
 // treated as a RenderImage merely because it has a nonzero address.
 static RenderImage *img_acquire_for_owner(s64 handle, uint64_t owner_key) {
-    if (!handle || !owner_key ||
-        atomic_load_explicit(&g_render_stopped, memory_order_acquire))
-        return NULL;
+    if (!handle || !owner_key) return NULL;
     RenderImage *result = NULL;
     RenderImage *target = (RenderImage *)(intptr_t)handle;
     spin_lock(&g_track_lock);
+    if (render_owner_stopped_locked(owner_key)) {
+        spin_unlock(&g_track_lock);
+        return NULL;
+    }
     for (int i = 0; i < g_live_img_count; ++i) {
         RenderImage *candidate = g_live_img[i];
         if (candidate != target) continue;
@@ -4422,8 +4439,16 @@ void j2me_render_reg_natives(MiniJVM *jvm) {
            sizeof(j2me_render_methods) / sizeof(java_native_method));
 }
 
-void j2me_render_stop(void) {
-    atomic_store_explicit(&g_render_stopped, 1, memory_order_release);
+void j2me_render_stop_for_owner(uint64_t owner_key) {
+    if (!owner_key) return;
+    spin_lock(&g_track_lock);
+    if (!render_owner_stopped_locked(owner_key) &&
+        g_stopped_render_owner_count < RENDER_STOP_OWNER_SLOTS) {
+        g_stopped_render_owners[g_stopped_render_owner_count++] = owner_key;
+    }
+    // Fail closed on overflow instead of allowing an unprotected stop:
+    // cap is larger than the eight native heap owner slots.
+    spin_unlock(&g_track_lock);
 }
 
 // Ownership is by native JVM generation. Never free a foreign VM's context.
@@ -4435,6 +4460,11 @@ static RenderContext *take_rc_for_owner(uint64_t key) {
         if (g_live_rc[i]->heap_key == key) {
             found = g_live_rc[i];
             g_live_rc[i] = g_live_rc[--g_live_rc_count];
+            unsigned bucket = render_handle_bucket((s64)(intptr_t)found);
+            RenderContext **cursor = &g_rc_live_buckets[bucket];
+            while (*cursor && *cursor != found) cursor = &(*cursor)->next_live;
+            if (*cursor) *cursor = found->next_live;
+            found->next_live = NULL;
             break;
         }
     }
@@ -4448,6 +4478,11 @@ static RenderImage *take_img_for_owner(uint64_t key) {
         if (g_live_img[i]->heap_key == key) {
             found = g_live_img[i];
             g_live_img[i] = g_live_img[--g_live_img_count];
+            unsigned bucket = render_handle_bucket((s64)(intptr_t)found);
+            RenderImage **cursor = &g_img_live_buckets[bucket];
+            while (*cursor && *cursor != found) cursor = &(*cursor)->next_live;
+            if (*cursor) *cursor = found->next_live;
+            found->next_live = NULL;
             break;
         }
     }
@@ -4522,8 +4557,17 @@ void j2me_render_cleanup_for_owner(uint64_t owner_key) {
             }
         });
     }
-    // The legacy global stop barrier stays until all native state is scoped.
-    atomic_store_explicit(&g_render_stopped, 0, memory_order_release);
+    // Retire only the owner whose resources have just been reclaimed.
+    // Other render generations remain enabled and their bucket chains remain.
+    spin_lock(&g_track_lock);
+    for (int i = 0; i < g_stopped_render_owner_count; ++i) {
+        if (g_stopped_render_owners[i] == owner_key) {
+            g_stopped_render_owners[i] =
+                g_stopped_render_owners[--g_stopped_render_owner_count];
+            break;
+        }
+    }
+    spin_unlock(&g_track_lock);
     printf("[J2ME Render] Owner %llu cleanup: %d contexts, %d images\n",
            (unsigned long long)owner_key, rc_count, img_count);
 }

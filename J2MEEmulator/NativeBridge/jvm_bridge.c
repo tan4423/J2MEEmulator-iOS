@@ -582,9 +582,9 @@ void jvm_bridge_destroy(void) {
         // Step 1: Revoke this JVM's right to publish pixels before stopping
         // native render calls. Delayed frames must never reach a later tab.
         j2me_render_release_vm(g_bridge_vm.jvm);
-        // Existing renderer shutdown still stops all native rendering, so
-        // native parallel VM startup remains prohibited until that is scoped.
-        j2me_render_stop();
+        // Stop only this JVM's native 2D handles. A different session's
+        // frame generation must remain eligible to draw after A is stopped.
+        j2me_render_stop_for_owner(destroyed_render_key);
 
         // Step 2: Signal JVM shutdown and stop all threads.
         // exit_flag makes jvm_destroy's non-daemon wait loop exit immediately;
@@ -603,7 +603,7 @@ void jvm_bridge_destroy(void) {
 
         // Step 5: jvm_destroy waits up to 3s for threads, then force-zombies.
         // After this, threads either exited or are zombie (status only — pthread
-        // may still be running but render_stop prevents them touching freed resources).
+        // may still be running but owner stop denies new 2D handle acquisitions).
         // Note: force-zombied pthreads may still execute briefly — class_clinit
         // and print_exception have is_stop / jvm_state guards to avoid crashes.
         jvm_destroy(g_bridge_vm.jvm);
@@ -613,7 +613,7 @@ void jvm_bridge_destroy(void) {
         g_bridge_vm.jvm = NULL;
 
         // Step 6: Clean up other native subsystems — safe because:
-        // - render_stop blocks new render acquires (still global until Multi-JVM ready)
+        // - the generation-scoped stop denies new render acquires for this VM
         // - jvm_destroy gave threads 3s to exit
         // Input reset is no longer global; that JVM was released above.
         j2me_micro3d_gl_cleanup();
