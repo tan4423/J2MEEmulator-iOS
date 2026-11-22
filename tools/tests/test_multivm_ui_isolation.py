@@ -29,9 +29,9 @@ class MultiVMUIIsolationTests(unittest.TestCase):
         self.assertNotIn('static char g_form_title[256]', self.ui)
 
     def test_stale_java_call_cannot_inherit_focused_ui(self):
-        self.assertIn("g_ui_thread_index = index >= 0 ? index : -2", self.ui)
+        self.assertIn("g_ui_thread_index = valid ? index : -2", self.ui)
         self.assertIn("if (index == -2) return &g_empty_ui_context", self.ui)
-        self.assertIn("ui_is_focused_owner() && g_ui_callback", self.ui)
+        self.assertIn("jarbox_ui_may_present(g_ui_thread_key, ui_focused_owner_key()", self.ui)
         self.assertIn("g_ui_new_session_revision", self.ui)
 
     def test_async_url_is_copied_before_java_string_free(self):
@@ -43,12 +43,30 @@ class MultiVMUIIsolationTests(unittest.TestCase):
         self.assertLess(freed, callback)
         self.assertIn("if (!urlString || !ui_is_focused_owner())", source)
 
+    def test_generation_binding_survives_slot_reuse_and_park(self):
+        self.assertIn("static _Thread_local uint64_t g_ui_thread_key = 0;", self.ui)
+        self.assertIn("_Atomic uint64_t heap_key;", self.ui)
+        self.assertIn("jarbox_ui_generation_matches(g_ui_thread_key, key)", self.ui)
+        self.assertIn("jarbox_ui_generation_matches(key, slot_key)", self.ui)
+        self.assertIn("atomic_store_explicit(&ctx->heap_key, 0, memory_order_release)", self.ui)
+        self.assertIn("jarbox_ui_may_present(owner_key, ui_focused_owner_key()", self.ui)
+
+    def test_queued_platform_request_rechecks_owner_on_main_queue(self):
+        source = self.ui
+        begin = source.index("static s32 n_platformRequest(")
+        end = source.index("// Native method table", begin)
+        body = source[begin:end]
+        self.assertIn("const uint64_t ownerKey = g_ui_thread_key;", body)
+        self.assertIn("dispatch_async(dispatch_get_main_queue(), ^{", body)
+        self.assertIn("jarbox_ui_may_present(ownerKey, ui_focused_owner_key()", body)
+        self.assertLess(body.index("dispatch_async("), body.index("jarbox_ui_may_present("))
+
     def test_owned_midp_ui_callback_survives_async_focus_switch(self):
         game = (ROOT / "J2MEEmulator/UI/GameViewController.swift").read_text(encoding="utf-8")
         header = (ROOT / "J2MEEmulator/NativeBridge/j2me_ui.h").read_text(encoding="utf-8")
         self.assertIn("j2me_ui_callback_owned", header)
         self.assertIn("ui_publish_action(int action, int revision, uint64_t owner_key)", self.ui)
-        self.assertIn("ui_context()->heap_key", self.ui)
+        self.assertIn("g_ui_thread_key", self.ui)
         self.assertIn("j2me_ui_set_owned_callback(ownedGameUICallback)", game)
         self.assertIn("let ownedGameUICallback: @convention(c)", game)
         self.assertIn("j2me_render_visible_owner_key() == ownerKey", game)
