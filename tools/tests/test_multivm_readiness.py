@@ -31,6 +31,7 @@ class MultiVMReadinessTest(unittest.TestCase):
             "render_single_flush_callback",
             "render_global_stop_barrier",
             "render_shared_metal_workspace",
+            "render_raw_unscoped_handle_acquire",
             "render_global_haptic_teardown",
             "lcd_ui_single_callback",
             "treo_single_global_mode",
