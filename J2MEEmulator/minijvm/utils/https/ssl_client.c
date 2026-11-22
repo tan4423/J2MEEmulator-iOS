@@ -1,13 +1,15 @@
 
 #include "ssl_client.h"
 #include "ca_cert.h"
+#include <pthread.h>
 
 //#define SERVER_PORT "443"
 //#define SERVER_NAME "www.baidu.com"
 //#define GET_REQUEST "GET / HTTP/1.0\r\n\r\n"
 
 #define DEBUG_LEVEL 4
-int ca_inited = 0;
+// The trust bundle is immutable after a single process-wide build.
+static pthread_once_t g_ca_bundle_once = PTHREAD_ONCE_INIT;
 char ca_crt_rsa[ca_crt_rsa_size];
 char *ca_ders[] = {
 //        "##\r\n"
@@ -3602,6 +3604,28 @@ static void my_debug(void *ctx, int level,
 //    entry->pers = "ssl_client1";
 static char *LETTERS = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890~!@#$%^&*()_+`{}[]|\\:\"<>?;',./";
 
+// Never expose a half-populated shared trust bundle to another JVM.
+static void sslc_init_ca_bundle(void) {
+    int ca_len = 0;
+    int lenarr[ca_der_count];
+    for (int i = 0; i < ca_der_count; ++i) {
+        const char *str = ca_ders[i];
+        lenarr[i] = (int)strlen(str);
+        ca_len += lenarr[i];
+    }
+    if (ca_len + 1 != ca_crt_rsa_size) {
+        SSL_LOG_PRINTF("ssl cert init error");
+        fflush(stdout);
+    }
+    memset(ca_crt_rsa, 0, ca_crt_rsa_size);
+    int p = 0;
+    for (int i = 0; i < ca_der_count; ++i) {
+        memmove(ca_crt_rsa + p, ca_ders[i], lenarr[i]);
+        p += lenarr[i];
+    }
+    ca_crt_rsa[p] = 0;
+}
+
 int sslc_init(SSLC_Entry *entry) {
     int ret;
 
@@ -3635,27 +3659,7 @@ int sslc_init(SSLC_Entry *entry) {
         return -1;
     }
 
-    if (!ca_inited) {
-        ca_inited = 1;
-        int ca_len = 0;
-        int lenarr[ca_der_count];
-        for (i = 0; i < ca_der_count; i++) {
-            char *str = ca_ders[i];
-            lenarr[i] = strlen(str);
-            ca_len += lenarr[i];
-        }
-        if (ca_len + 1 != ca_crt_rsa_size) {
-            SSL_LOG_PRINTF("ssl cert init error");
-            fflush(stdout);
-        }
-        memset(ca_crt_rsa, 0, ca_crt_rsa_size);
-        int p = 0;
-        for (i = 0; i < ca_der_count; i++) {
-            memmove(ca_crt_rsa + p, ca_ders[i], lenarr[i]);
-            p += lenarr[i];
-        }
-        ca_crt_rsa[p] = 0;
-    }
+    pthread_once(&g_ca_bundle_once, sslc_init_ca_bundle);
     SSL_LOG_PRINTF(" ok\n");
     return 0;
 }
