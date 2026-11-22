@@ -30,12 +30,17 @@ class MultiVMFrameOwnershipTest(unittest.TestCase):
             "g_visible_render_owner_key",
             "j2me_render_focus_vm(MiniJVM *vm)",
             "j2me_render_release_vm(MiniJVM *vm)",
-            "jarbox_native_heap_key_for_vm(runtime->jvm)",
+            "jarbox_native_heap_key_for_runtime(runtime)",
             "callerKey != rc->heap_key",
             "callerKey != visibleKey",
             "g_owned_flush_callback(image, rc->width, rc->height, rc->heap_key)",
         ):
             self.assertIn(needle, self.render)
+        # Every Java draw/flush must authorize its immutable thread key,
+        # not rediscover identity from a possibly recycled MiniJVM pointer.
+        self.assertNotIn("jarbox_native_heap_key_for_vm(runtime->jvm)", self.render)
+        self.assertIn("const uint64_t callerKey = jarbox_native_heap_key_for_runtime(runtime);",
+                      self.render)
         self.assertIn("j2me_render_release_vm(g_bridge_vm.jvm)", self.bridge)
 
     def test_pending_frame_keeps_its_own_vm_key(self):
