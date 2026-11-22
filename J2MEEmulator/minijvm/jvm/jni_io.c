@@ -9,6 +9,7 @@
 #include "jvm.h"
 #include "garbage.h"
 #include "jvm_util.h"
+#include "socket_compat.h"
 #include "../utils/miniz_wrapper.h"
 
 #if defined(__APPLE__)
@@ -102,6 +103,7 @@ typedef struct _VmSock {
     u8 net_read_once;
     u8 net_send_error_once;
     u8 net_read_error_once;
+    u8 net_available_once;
 #endif
 } VmSock;
 
@@ -590,11 +592,27 @@ s32 org_mini_net_SocketNative_writeByte(Runtime *runtime, JClass *clazz) {
 }
 
 s32 org_mini_net_SocketNative_available0(Runtime *runtime, JClass *clazz) {
+    // java.net.SocketInputStream.available() must report bytes already queued
+    // by the OS. Returning 0 unconditionally hides server replies from
+    // MIDlets which use available() before consuming initial server lists.
+    Instance *vmarr = localvar_getRefer(runtime->localvar, 0);
+    s32 available = 0;
+    if (vmarr && vmarr->arr_length >= (s32)sizeof(VmSock)) {
+        VmSock *sock = (VmSock *)vmarr->arr_body;
+        available = jarbox_socket_bytes_available(sock->contex.fd);
+#if defined(__APPLE__)
+        if (available > 0 &&
+            !__atomic_exchange_n(&sock->net_available_once, 1, __ATOMIC_RELAXED)) {
+            // One metadata event per socket, never a payload or URL.
+            jvm_bridge_note_net_trace("tcp_first_available:has_pending_bytes");
+        }
+#endif
+    }
 #if _JVM_DEBUG_LOG_LEVEL > 5
     invoke_deepth(runtime);
     jvm_printf("org_mini_net_SocketNative_available0  \n");
 #endif
-    push_int(runtime->stack, 0);
+    push_int(runtime->stack, available);
     return 0;
 }
 
