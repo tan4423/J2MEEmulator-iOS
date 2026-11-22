@@ -35,7 +35,7 @@ def audit(root=ROOT):
                  and "g_bridge_vm.stop_requested" in src["lifecycle"]
                  and "jvm_bridge_is_stop_requested_for_vm" in src["lifecycle"])
     input_owned = all(x in src["input"] for x in (
-        "JarBoxInputRing ring;", "context_for_vm(runtime->jvm)",
+        "JarBoxInputRing ring;", "context_for_runtime(runtime)",
         "j2me_input_binding_generation", "j2me_input_release_vm"))
     audio_owned = all(x in src["audio"] for x in (
         "g_audio_owners", "g_midi_owners",
@@ -46,7 +46,8 @@ def audit(root=ROOT):
         and "runtime->thrd_info->jarbox_native_generation" in src["runtime"]
         and "jarbox_native_heap_key_for_runtime(runtime)" in src["render"]
         and "jarbox_native_heap_key_for_runtime(runtime)" in src["lcd_ui"]
-        and "context_for_runtime(runtime)" in src["input_runtime"])
+        and "context_for_runtime(runtime)" in src["input_runtime"]
+        and '#include "garbage.h"' in src["input_runtime"])
     native_heap_owned = all(x in src["gc"] for x in (
         "jarbox_native_heap_register_vm(MiniJVM *jvm)",
         "jarbox_native_heap_for_vm(collector->jvm)",

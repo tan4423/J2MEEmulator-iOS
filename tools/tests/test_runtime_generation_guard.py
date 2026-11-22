@@ -71,6 +71,7 @@ class RuntimeGenerationGuardTest(unittest.TestCase):
         self.assertIn("? jarbox_native_heap_key_for_runtime(runtime) : 0;", ui)
         self.assertIn("if (!jarbox_native_heap_key_for_runtime(runtime) ||", ui)
         self.assertIn("static J2MEInputContext *context_for_runtime(", inputs)
+        self.assertIn('#include "garbage.h"', inputs)
         self.assertGreaterEqual(inputs.count("context_for_runtime(runtime)"), 5)
         self.assertIn(
             "const int stale = !jarbox_native_heap_key_for_runtime(runtime);",

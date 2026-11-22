@@ -10,6 +10,7 @@
 #include "jvm_bridge.h"
 #include "jvm.h"
 #include "jvm_util.h"
+#include "garbage.h" // jarbox_native_heap_key_for_runtime: immutable Java thread generation
 #include <stdio.h>
 #include <stdatomic.h>
 #include <pthread.h>
