@@ -1745,9 +1745,9 @@ static inline void img_release(RenderImage *img) {
 // ============================================================
 
 static CGColorSpaceRef getColorSpace(void) {
-    if (!g_colorSpace) {
-        g_colorSpace = CGColorSpaceCreateDeviceRGB();
-    }
+    // Immutable shared color space, safely initialized by competing VM threads.
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ g_colorSpace = CGColorSpaceCreateDeviceRGB(); });
     return g_colorSpace;
 }
 
@@ -4250,19 +4250,48 @@ void j2me_render_stop(void) {
     g_render_stopped = 1;
 }
 
-void j2me_render_cleanup(void) {
-    // g_render_stopped must already be set (via j2me_render_stop).
-    // Two passes needed: first frees gen1 and promotes gen0→gen1,
-    // second frees promoted gen1 (was gen0). After both, all dead shells are freed.
+// Ownership is by native JVM generation. Never free a foreign VM's context.
+// Release outside g_track_lock: cache disposal can re-enter untrack_img().
+static RenderContext *take_rc_for_owner(uint64_t key) {
+    RenderContext *found = NULL;
+    spin_lock(&g_track_lock);
+    for (int i = 0; i < g_live_rc_count; ++i) {
+        if (g_live_rc[i]->heap_key == key) {
+            found = g_live_rc[i];
+            g_live_rc[i] = g_live_rc[--g_live_rc_count];
+            break;
+        }
+    }
+    spin_unlock(&g_track_lock);
+    return found;
+}
+static RenderImage *take_img_for_owner(uint64_t key) {
+    RenderImage *found = NULL;
+    spin_lock(&g_track_lock);
+    for (int i = 0; i < g_live_img_count; ++i) {
+        if (g_live_img[i]->heap_key == key) {
+            found = g_live_img[i];
+            g_live_img[i] = g_live_img[--g_live_img_count];
+            break;
+        }
+    }
+    spin_unlock(&g_track_lock);
+    return found;
+}
+
+void j2me_render_cleanup_for_owner(uint64_t owner_key) {
+    // Capture the ledger key before jvm_destroy, even if JVM address is reused.
+    if (!owner_key) {
+        fprintf(stderr, "[J2ME Render] Reject cleanup with missing owner key\n");
+        return;
+    }
     process_dead_shells();
     process_dead_shells();
 
-    // Force-release all still-live RenderContexts (never destroyed by Java).
-    // These are guaranteed valid: untrack_rc removed freed ones from the array.
-    spin_lock(&g_track_lock);
-    int rc_count = g_live_rc_count;
-    for (int i = 0; i < g_live_rc_count; i++) {
-        RenderContext *rc = g_live_rc[i];
+    int rc_count = 0, img_count = 0;
+    RenderContext *rc;
+    while ((rc = take_rc_for_owner(owner_key)) != NULL) {
+        ++rc_count;
         treo_live_discard(rc);
         if (rc->ctx) { CGContextRelease(rc->ctx); rc->ctx = NULL; }
         free(rc->softwarePixels);
@@ -4270,45 +4299,44 @@ void j2me_render_cleanup(void) {
         CTFontRef font = rc->font;
         rc->font = NULL;
         if (font) CFRelease(font);
+        if (rc->ownsPixels && rc->width > 0 && rc->height > 0)
+            native_heap_sub(owner_key, rc->width * rc->height * 4);
         free(rc);
     }
-    g_live_rc_count = 0;
-
-    // Force-release all still-live RenderImages
-    int img_count = g_live_img_count;
-    for (int i = 0; i < g_live_img_count; i++) {
-        RenderImage *img = g_live_img[i];
+    // Cache disposal above may release tracked RenderImages, so scan anew.
+    RenderImage *img;
+    while ((img = take_img_for_owner(owner_key)) != NULL) {
+        ++img_count;
         if (img->immutableSnapshot) CGImageRelease(img->immutableSnapshot);
         if (img->ctx) { CGContextRelease(img->ctx); img->ctx = NULL; }
+        if (img->width > 0 && img->height > 0)
+            native_heap_sub(owner_key, img->width * img->height * 4);
         free(img);
     }
-    g_live_img_count = 0;
-    spin_unlock(&g_track_lock);
+    process_dead_shells();
+    process_dead_shells();
 
-    // Clear dead queues
-    os_unfair_lock_lock(&g_dead_drain_lock);
-    atomic_store_explicit(&g_dead_rc_gen0, NULL, memory_order_relaxed);
-    g_dead_rc_gen1 = NULL;
-    atomic_store_explicit(&g_dead_img_gen0, NULL, memory_order_relaxed);
-    g_dead_img_gen1 = NULL;
-    os_unfair_lock_unlock(&g_dead_drain_lock);
-
-    // Each JVM's native accounting is released after its own render
-    // teardown. Never globally reset another tab's memory quota.
-
-    // Stop haptic engine
-    if (@available(iOS 13.0, *)) {
-        if (g_hapticPlayer) {
-            NSError *err = nil;
-            [g_hapticPlayer stopAtTime:0 error:&err];
-            g_hapticPlayer = nil;
-        }
-        if (g_hapticEngine) {
-            [g_hapticEngine stopWithCompletionHandler:nil];
-            g_hapticEngine = nil;
+    // Haptics remain process-wide; don't stop another active VM's engine.
+    if (jvm_bridge_active_session_count() <= 1) {
+        if (@available(iOS 13.0, *)) {
+            if (g_hapticPlayer) {
+                NSError *err = nil;
+                [g_hapticPlayer stopAtTime:0 error:&err];
+                g_hapticPlayer = nil;
+            }
+            if (g_hapticEngine) {
+                [g_hapticEngine stopWithCompletionHandler:nil];
+                g_hapticEngine = nil;
+            }
         }
     }
+    // The legacy global stop barrier stays until all native state is scoped.
+    g_render_stopped = 0;
+    printf("[J2ME Render] Owner %llu cleanup: %d contexts, %d images\n",
+           (unsigned long long)owner_key, rc_count, img_count);
+}
 
-    g_render_stopped = 0; // ready for next game session
-    printf("[J2ME Render] Cleanup: %d contexts, %d images released\n", rc_count, img_count);
+// Unscoped cleanup must not guess an owner from the foreground Tab.
+void j2me_render_cleanup(void) {
+    fprintf(stderr, "[J2ME Render] Reject unscoped cleanup; owner key required\n");
 }
