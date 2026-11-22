@@ -30,6 +30,30 @@ enum JarBoxGameStorage {
                                   options: .regularExpression)
     }
 
+    // Reject symlink save directories before any migration or destructive
+    // operation. If metadata cannot be read, fail closed (treat as unsafe).
+    nonisolated private static func isSymbolicLink(_ path: String) -> Bool {
+        let values = try? URL(fileURLWithPath: path).resourceValues(
+            forKeys: [.isSymbolicLinkKey])
+        return values?.isSymbolicLink ?? true
+    }
+
+    // Legacy saves were keyed by a sanitized JAR basename. Different JARs
+    // can collapse to the same name (e.g. "A B.jar" and "A@B.jar").
+    // Never migrate or inherit a legacy RMS directory unless precisely one
+    // installed source JAR is a possible owner.
+    nonisolated private static func legacyOwners(jarPath: String,
+                                                 documents: String) -> [String] {
+        let games = (documents as NSString).appendingPathComponent("games")
+        guard let names = try? FileManager.default.contentsOfDirectory(
+            atPath: games) else { return [] }
+        let legacyName = legacyId(for: jarPath)
+        return names.filter { name in
+            name.lowercased().hasSuffix(".jar") &&
+                legacyId(for: (games as NSString).appendingPathComponent(name)) == legacyName
+        }.sorted()
+    }
+
     /// The original keeps its current save directory for backward compatibility.
     /// Every clone gets a sibling directory, never a child of the original:
     /// deleting the original must never delete another instance's RMS.
