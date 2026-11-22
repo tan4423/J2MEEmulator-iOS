@@ -317,6 +317,21 @@ uint64_t jvm_bridge_visible_session_token(void) {
     return jarbox_focus_visible(&g_bridge_focus);
 }
 
+// UI diagnostics and automatic Treo actions execute on a different thread
+// from the collector. Pin the live JVM under the lifecycle lock; teardown
+// transitions phase to CLEANUP under the same lock before destroying memory.
+// NEVER return the VM pointer to an asynchronous caller.
+void jvm_bridge_visit_running_vm(void (*visitor)(MiniJVM *, void *), void *arg) {
+    if (!visitor) return;
+    pthread_mutex_lock(&g_bridge_lifecycle_lock);
+    const int running = atomic_load_explicit(&g_bridge_vm.phase,
+                                             memory_order_acquire) == BRIDGE_RUNNING;
+    MiniJVM *vm = running ?
+        atomic_load_explicit(&g_bridge_vm.jvm, memory_order_acquire) : NULL;
+    if (vm) visitor(vm, arg);
+    pthread_mutex_unlock(&g_bridge_lifecycle_lock);
+}
+
 int jvm_bridge_session_phase(void) {
     return atomic_load_explicit(&g_bridge_vm.phase, memory_order_acquire);
 }

@@ -23,6 +23,7 @@ extern "C" {
 #include "../utils/pairlist.h"
 #include "../utils/bytebuf.h"
 #include "../utils/hashset.h"
+#include "jarbox_treo_state.h"
 
 //=======================  micro define  =============================
 //_JVM_DEBUG  01=thread info, 02=garage&jit info  , 03=class load, 04=method call,  06=all bytecode
@@ -1964,6 +1965,9 @@ struct _MiniJVM {
     // Non-cryptographic Math.random state belongs to this JVM. Updated with
     // __atomic CAS so Java threads of the same JVM cannot race.
     u64 math_random_state;
+    // GC/AFK lifecycle belongs to this MiniJVM allocation. State is
+    // zero-initialized by jvm_calloc and is never reused by a newer JVM.
+    JarBoxTreoState treo_state;
     s32 jvm_state;
 };
 

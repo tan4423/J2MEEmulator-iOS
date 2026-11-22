@@ -91,6 +91,11 @@ uint64_t jarbox_native_heap_key_for_vm(MiniJVM *jvm);
 void jarbox_native_heap_account(uint64_t key, s64 delta_bytes);
 s64 jarbox_native_heap_for_vm(MiniJVM *jvm);
 void jarbox_native_heap_unregister_vm(MiniJVM *jvm);
+#if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__
+// Called by the existing renderer mode switch. Tracks current JVM GC cadence
+// only; the renderer mode itself still needs separate per-VM ownership.
+void treo_gc_set_afk_mode_for_current(int mode);
+#endif
 
 
 #ifdef __cplusplus

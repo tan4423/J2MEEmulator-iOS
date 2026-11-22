@@ -15,6 +15,11 @@ extern int g_render_3d_scale;
 int jvm_bridge_try_begin_session(void);
 /// 0 idle, 1 starting, 2 running, 3 tearing down.
 int jvm_bridge_session_phase(void);
+struct _MiniJVM;
+// Synchronous visitor, allowed only while this session is RUNNING. The VM
+// pointer is never returned outside the lifecycle lock. No new poller/thread.
+void jvm_bridge_visit_running_vm(void (*visitor)(struct _MiniJVM *, void *),
+                                 void *arg);
 /// Check the actual ownership flag (phase may briefly be idle during start).
 int jvm_bridge_session_is_active(void);
 /// Truthful number of live native VM slots (currently 0 or 1).

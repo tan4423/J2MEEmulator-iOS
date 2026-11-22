@@ -746,6 +746,9 @@ void treo_render_set_afk_mode(int mode) {
     if ((mode >= 2 && mode <= 4) || mode == 6 || mode == 7 || mode == 8)
         atomic_store(&g_afk_needs_redraw, 1);
     int previous = atomic_exchange(&treo_afk_mode, mode);
+    // Keep Smart GC's AFK decision on the running MiniJVM, not the global
+    // render mode. No new timers, threads or user-facing Treo options.
+    treo_gc_set_afk_mode_for_current(mode);
     if (mode) {
         atomic_store(&g_afk_refresh, 0);
         if (!previous) stop_afk_haptics();
