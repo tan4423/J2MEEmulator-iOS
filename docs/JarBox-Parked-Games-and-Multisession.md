@@ -423,9 +423,14 @@ It **does not** enable two simultaneously running miniJVMs.
   heap generation, using `g_ui_thread_key`. The slot's generation is atomic,
   invalidated on release, and checked before a Java thread can resolve a
   Form/List/Alert buffer. A recycled slot number alone is not authority.
+  This does not prove that a zombie Java thread whose `MiniJVM *` address
+  has been recycled cannot rebind: full JVM/thread retirement and session
+  lifetime tokens must be validated before enabling parallel sessions.
 - UIKit actions are emitted only when the originating JVM generation matches
   both the currently focused MIDP UI context and the visible render owner.
-  Swift still rechecks owner and screen revision when processing queued events.
+  Swift also checks the **focused MIDP generation** alongside render ownership
+  before and after locking screen data, then verifies its revision. A queued
+  event is discarded when either destination has switched Tabs.
 - `platformRequest` copies the Java URL text before freeing its buffer, then
   checks the captured owner generation again **inside** its main-queue block.
   A request queued by a parked/replaced session cannot unexpectedly open
