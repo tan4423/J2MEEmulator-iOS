@@ -166,20 +166,19 @@ s32 sock_option(VmSock *vmsock, s32 opType, s32 opValue, s32 opValue2) {
             break;
         }
         case SOCK_OP_TYPE_LINGER: {
-            struct {
-                u16 l_onoff;
-                u16 l_linger;
-            } m_sLinger;
-            // (Allow lingering when closesocket() is called, but there is still data that has not been fully sent)
-            // If m_sLinger.l_onoff = 0, it functions the same as in 2.)
-            m_sLinger.l_onoff = opValue;
-            m_sLinger.l_linger = opValue2;// The allowed lingering time is 5 seconds
-            ret = setsockopt(vmsock->contex.fd, SOL_SOCKET, SO_RCVTIMEO, (const c8 *) &m_sLinger, sizeof(m_sLinger));
+            // Linger must not overwrite the receive timeout of a live game
+            // socket: the old SO_RCVTIMEO mapping could stall packet reads.
+            struct linger setting;
+            setting.l_onoff = opValue != 0;
+            setting.l_linger = opValue2 > 0 ? opValue2 : 0;
+            ret = setsockopt(vmsock->contex.fd, SOL_SOCKET, SO_LINGER,
+                             (const c8 *)&setting, sizeof(setting));
             break;
         }
         case SOCK_OP_TYPE_KEEPALIVE: {
-            s32 val = opValue;
-            ret = setsockopt(vmsock->contex.fd, SOL_SOCKET, SO_RCVTIMEO, (const c8 *) &val, sizeof(val));
+            s32 enabled = opValue != 0;
+            ret = setsockopt(vmsock->contex.fd, SOL_SOCKET, SO_KEEPALIVE,
+                             (const c8 *)&enabled, sizeof(enabled));
             break;
         }
     }
@@ -236,22 +235,20 @@ s32 sock_get_option(VmSock *vmsock, s32 opType) {
             break;
         }
         case SOCK_OP_TYPE_LINGER: {
-            struct {
-                u16 l_onoff;
-                u16 l_linger;
-            } m_sLinger;
-            // (Allow lingering when closesocket() is called, but there is still data that has not been fully sent)
-            // If m_sLinger.l_onoff = 0, it behaves the same as in 2.)
-            m_sLinger.l_onoff = 0;
-            m_sLinger.l_linger = 0;// The allowed lingering time is 5 seconds
-            len = sizeof(m_sLinger);
-            getsockopt(vmsock->contex.fd, SOL_SOCKET, SO_RCVTIMEO, (void *) &m_sLinger, &len);
-            ret = *((s32 *) &m_sLinger);
+            struct linger setting = {0};
+            len = sizeof(setting);
+            if (getsockopt(vmsock->contex.fd, SOL_SOCKET, SO_LINGER,
+                           (void *)&setting, &len) != 0) {
+                ret = -1;
+            } else {
+                ret = setting.l_onoff ? setting.l_linger : -1;
+            }
             break;
         }
         case SOCK_OP_TYPE_KEEPALIVE: {
             len = sizeof(ret);
-            getsockopt(vmsock->contex.fd, SOL_SOCKET, SO_RCVTIMEO, (void *) &ret, &len);
+            if (getsockopt(vmsock->contex.fd, SOL_SOCKET, SO_KEEPALIVE,
+                           (void *)&ret, &len) != 0) ret = -1;
             break;
         }
     }

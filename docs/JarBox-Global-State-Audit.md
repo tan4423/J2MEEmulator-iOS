@@ -66,3 +66,35 @@ above; none of them is exercised by the host harness (render/UI/audio/3D are stu
 - `git am` on a temporary empty checkout failed because original miniJVM source files are not present; the supplied patch was applied as exact Git blobs through GitHub's Git API instead (all eight blob hashes matched the format-patch).
 - `tools/host_multivm_smoke/run.sh plain 2`, `asan 17`, and `tsan 3` returned exit code 2 before compilation because this execution environment could not fetch the complete repository. Old TSan logs were cleared first. These commands do **not** revalidate either `jnienv` or the CA/RNG changes.
 - The documented 51/51 sanitizer result is user-provided earlier evidence only; the host harness does not exercise UIKit, render, audio, 3D, TLS, or JIT. The single-JVM safety limit remains in place.
+
+
+## 2026-11-22: NSO server selector / JVM socket transport checkpoint
+
+User observed that the NSO login server selector was blank on iPhone.
+The cause is **not yet confirmed on-device**. Two concrete native TCP defects
+were found and fixed without changing any JAR, external server address, network
+protocol, RMS, login logic or background task cadence:
+
+1. `org_mini_net_SocketNative_available0` returned zero regardless of queued
+   bytes; now uses the OS `FIONREAD` query for the **existing** socket.
+   This changes no polling schedule and does not consume data. A single
+   metadata-only `tcp_first_available` trace is emitted when bytes are seen.
+2. Native `KEEPALIVE` and `LINGER` setters/getters incorrectly used
+   `SO_RCVTIMEO`. They now use `SO_KEEPALIVE` / `SO_LINGER` and leave
+   the receive timeout unchanged. No fake server values or bypasses.
+
+`tools/tests/test_socket_available.py` and
+`tools/tests/test_socket_options.py` compile production POSIX helpers
+and socket option functions in a loopback/socketpair harness. These tests
+cover **OS TCP/socket behavior only**; they cannot prove that NSO's mod server
+responded or that the full Java client parsed its response.
+
+**Remaining network ownership:** Each `VmSock` is stored in a VM-owned Java
+byte array, but the JNI entry points do not all enforce a native generation
+token. Graceful shutdown, outstanding socket I/O, late callbacks, and
+TLS per-session teardown must be validated before concurrent miniJVMs.
+Keep the single-live-JVM gate. On iPhone, collect `Chẩn đoán kết nối`
+from one NSO login attempt, especially `api_stage`, `tcp_connect`,
+`tcp_first_available`, `tcp_first_read`, `tcp_first_write`,
+`tcp_close`, and `game_net_exception` entries. Empty entries are evidence
+too. Do not log credentials, URL or packet bodies.
