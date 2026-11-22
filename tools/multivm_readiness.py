@@ -55,8 +55,10 @@ def audit(root=ROOT):
             "void j2me_render_stop(void)" in src["render"]
             and "g_render_stopped = 1" in src["render"]
             and "void j2me_render_cleanup(void)" in src["render"]
-            and "g_live_rc_count = 0" in src["render"]
-            and "g_live_img_count = 0" in src["render"],
+            and "g_live_rc_count = 0" in src["render"].rsplit(
+                "void j2me_render_cleanup(void) {", 1)[-1]
+            and "g_live_img_count = 0" in src["render"].rsplit(
+                "void j2me_render_cleanup(void) {", 1)[-1],
         "render_global_haptic_teardown":
             "g_hapticEngine stopWithCompletionHandler" in src["render"],
         "render_global_stop_barrier":
