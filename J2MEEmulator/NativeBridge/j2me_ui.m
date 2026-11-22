@@ -671,7 +671,12 @@ static s32 n_platformRequest(Runtime *runtime, JClass *clazz) {
     NSString *urlString = urlStr ? [NSString stringWithUTF8String:urlStr] : nil;
     utf8_destroy(u);
     if (!urlString || !ui_is_focused_owner()) return RUNTIME_STATUS_NORMAL;
+    const uint64_t ownerKey = g_ui_thread_key;
     dispatch_async(dispatch_get_main_queue(), ^{
+        // An old Java Tab may have requested a URL just before being parked
+        // or destroyed. Don't launch Safari on behalf of the next Tab.
+        if (!jarbox_ui_may_present(ownerKey, ui_focused_owner_key(),
+                                   j2me_render_visible_owner_key())) return;
         NSURL *url = [NSURL URLWithString:urlString];
         if (url) {
             [[UIApplication sharedApplication] openURL:url options:@{} completionHandler:nil];
