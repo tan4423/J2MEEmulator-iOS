@@ -126,6 +126,20 @@ static atomic_int g_mod_loop_exception_notes;
 static atomic_int g_mod_dispatch_probe_notes;
 static atomic_int g_mod_method_missing_notes;
 static atomic_int g_mod_protocol_notes;
+/* A few caught Java exceptions before network I/O help diagnose an empty
+ * game selector. No Java strings, network payloads or game-specific hacks. */
+static atomic_int g_bridge_early_exception_notes;
+int jvm_bridge_early_exception_note_slot(void) {
+    int prior = atomic_load_explicit(&g_bridge_early_exception_notes,
+                                     memory_order_relaxed);
+    while (prior < 12) {
+        if (atomic_compare_exchange_weak_explicit(
+                &g_bridge_early_exception_notes, &prior, prior + 1,
+                memory_order_relaxed, memory_order_relaxed)) return 1;
+    }
+    return 0;
+}
+
 int jvm_bridge_mod_protocol_note_slot(void) {
     return atomic_fetch_add_explicit(&g_mod_protocol_notes, 1,
                                      memory_order_relaxed) < 20;
@@ -254,6 +268,7 @@ int jvm_bridge_try_begin_session(void) {
     atomic_store_explicit(&g_mod_dispatch_probe_notes, 0, memory_order_release);
     atomic_store_explicit(&g_mod_method_missing_notes, 0, memory_order_release);
     atomic_store_explicit(&g_mod_protocol_notes, 0, memory_order_release);
+    atomic_store_explicit(&g_bridge_early_exception_notes, 0, memory_order_release);
     atomic_store_explicit(&g_bridge_vm.phase, BRIDGE_STARTING, memory_order_release);
     // Visible from the first frame in Chẩn đoán kết nối, regardless of
     // which Java network API the game calls. Detects an older installed IPA.
@@ -382,6 +397,15 @@ int jvm_bridge_init(const char *res_root, const char *save_root, const char *mid
     atomic_store_explicit(&treo_exact_ninja_verified, ninja_match, memory_order_release);
     printf("[JarBoxVM][NinjaDeep] profile=%s (NSO resource family)\n",
            ninja_match ? "matched" : "generic");
+    // Historical mod probes only recognize one set of class signatures.
+    // Zero does NOT mean that another NSO JAR failed to start.
+    {
+        char event[80];
+        snprintf(event, sizeof(event), "vm_stage:legacy_mod_probe_match=%d",
+                 atomic_load_explicit(&treo_nso_init_target_active,
+                                      memory_order_acquire) ? 1 : 0);
+        jvm_bridge_note_net_trace(event);
+    }
 #endif
     // Note: g_bridge_vm.stop_requested is NOT reset here — it is reset in
     // jvm_bridge_destroy() after the previous session.  Resetting it here
@@ -487,6 +511,7 @@ int jvm_bridge_init(const char *res_root, const char *save_root, const char *mid
     printf("[JVM Bridge] Screen size: %dx%d, 3D render scale: %s, FPS limit: %d\n",
            screen_width, screen_height, ss, fps_limit);
 
+    jvm_bridge_note_net_trace("vm_stage:core_initialized");
     printf("[JVM Bridge] JVM initialized successfully\n");
     return 0;
 }
@@ -505,6 +530,7 @@ int jvm_bridge_run_midlet(const char *midlet_jar_path) {
         printf("[JarBoxVM][Lifecycle] MIDlet start cancelled before call_main\n");
         return -9;
     }
+    jvm_bridge_note_net_trace("vm_stage:midlet_runner_enter");
     printf("[JVM Bridge] Running MIDlet from: %s\n", midlet_jar_path);
 
     ArrayList *java_para = arraylist_create(0);
@@ -517,6 +543,11 @@ int jvm_bridge_run_midlet(const char *midlet_jar_path) {
     pthread_mutex_lock(&g_bridge_lifecycle_lock);
     atomic_store_explicit(&g_bridge_vm.phase, BRIDGE_CLEANUP, memory_order_release);
     pthread_mutex_unlock(&g_bridge_lifecycle_lock);
+    {
+        char event[96];
+        snprintf(event, sizeof(event), "vm_stage:midlet_runner_exit:code=%d", ret);
+        jvm_bridge_note_net_trace(event);
+    }
     printf("[JVM Bridge] MIDlet finished with code %d\n", ret);
     return ret;
 }
