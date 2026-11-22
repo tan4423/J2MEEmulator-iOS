@@ -114,6 +114,12 @@ static uint64_t ui_focused_owner_key(void) {
     return atomic_load_explicit(&ctx->heap_key, memory_order_acquire);
 }
 
+// UIKit can independently validate the MIDP focus even if rendering
+// changes focus between two asynchronous callback delivery stages.
+uint64_t j2me_ui_focused_owner_key(void) {
+    return ui_focused_owner_key();
+}
+
 static void ui_publish_action(int action, int revision, uint64_t owner_key) {
     // Check BOTH native destinations before invoking even the C callback.
     // Swift independently repeats this after its asynchronous main hop.
