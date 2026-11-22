@@ -1594,7 +1594,9 @@ static CGColorSpaceRef g_colorSpace = NULL;
 #define RENDER_STOP_OWNER_SLOTS 16
 static uint64_t g_stopped_render_owners[RENDER_STOP_OWNER_SLOTS];
 static int g_stopped_render_owner_count;
+static int g_render_stop_registry_overflow; // fail closed if impossible cap exceeded
 static inline int render_owner_stopped_locked(uint64_t key) {
+    if (g_render_stop_registry_overflow) return 1;
     if (!key) return 1;
     for (int i = 0; i < g_stopped_render_owner_count; ++i)
         if (g_stopped_render_owners[i] == key) return 1;
@@ -1621,15 +1623,18 @@ static inline unsigned render_handle_bucket(s64 handle) {
     return (unsigned)(bits >> 51);
 }
 
-static void track_rc(RenderContext *rc) {
+static int track_rc(RenderContext *rc) {
     spin_lock(&g_track_lock);
     if (g_live_rc_count < TRACK_MAX) {
         g_live_rc[g_live_rc_count++] = rc;
         unsigned bucket = render_handle_bucket((s64)(intptr_t)rc);
         rc->next_live = g_rc_live_buckets[bucket];
         g_rc_live_buckets[bucket] = rc;
+        spin_unlock(&g_track_lock);
+        return 1;
     }
     spin_unlock(&g_track_lock);
+    return 0;
 }
 static void untrack_rc(RenderContext *rc) {
     spin_lock(&g_track_lock);
@@ -1646,15 +1651,18 @@ static void untrack_rc(RenderContext *rc) {
     rc->next_live = NULL;
     spin_unlock(&g_track_lock);
 }
-static void track_img(RenderImage *img) {
+static int track_img(RenderImage *img) {
     spin_lock(&g_track_lock);
     if (g_live_img_count < TRACK_MAX) {
         g_live_img[g_live_img_count++] = img;
         unsigned bucket = render_handle_bucket((s64)(intptr_t)img);
         img->next_live = g_img_live_buckets[bucket];
         g_img_live_buckets[bucket] = img;
+        spin_unlock(&g_track_lock);
+        return 1;
     }
     spin_unlock(&g_track_lock);
+    return 0;
 }
 static void untrack_img(RenderImage *img) {
     spin_lock(&g_track_lock);
@@ -1940,7 +1948,15 @@ static RenderContext *createRenderContext(MiniJVM *owner, int width, int height)
     rc->liveColor = 0xff000000u;
     rc->regionClipBounds = CGRectMake(0, 0, width, height);
 
-    track_rc(rc);
+    if (!track_rc(rc)) {
+        // Never hand Java an untracked native pointer. No native heap
+        // accounting has been charged at this point.
+        if (rc->ctx) CGContextRelease(rc->ctx);
+        if (rc->font) CFRelease(rc->font);
+        free(rc->softwarePixels);
+        free(rc);
+        return NULL;
+    }
     native_heap_add(rc->heap_key, width * height * 4);
     return rc;
 }
@@ -1976,7 +1992,11 @@ static RenderImage *createMutableImage(MiniJVM *owner, int width, int height) {
     CGContextTranslateCTM(img->ctx, 0, height);
     CGContextScaleCTM(img->ctx, 1.0, -1.0);
 
-    track_img(img);
+    if (!track_img(img)) {
+        if (img->ctx) CGContextRelease(img->ctx);
+        free(img);
+        return NULL;
+    }
     native_heap_add(img->heap_key, width * height * 4);
     return img;
 }
@@ -2039,7 +2059,12 @@ static RenderImage *createImageFromData(MiniJVM *owner, const uint8_t *data, int
     atomic_init(&img->softwareVerified, 0);
     atomic_init(&img->softwareRejected, 0);
 
-    track_img(img);
+    if (!track_img(img)) {
+        if (img->immutableSnapshot) CGImageRelease(img->immutableSnapshot);
+        if (img->ctx) CGContextRelease(img->ctx);
+        free(img);
+        return NULL;
+    }
     native_heap_add(img->heap_key, img->width * img->height * 4);
     return img;
 }
@@ -2718,8 +2743,13 @@ static s32 n_getImageContext(Runtime *runtime, JClass *clazz) {
     RenderImage *img = img_acquire(handle, jarbox_native_heap_key_for_vm(runtime->jvm));
     if (img && img->isMutable && img->ctx) {
         RenderContext *rc = (RenderContext *)calloc(1, sizeof(RenderContext));
+        if (!rc) {
+            img_release(img);
+            env->push_long(runtime->stack, 0);
+            return RUNTIME_STATUS_NORMAL;
+        }
         atomic_init(&rc->refcount, 1);
-    atomic_init(&rc->java_owned, 1);
+        atomic_init(&rc->java_owned, 1);
         rc->ctx = img->ctx;
         CGContextRetain(rc->ctx);
         rc->width = img->width;
@@ -2728,7 +2758,14 @@ static s32 n_getImageContext(Runtime *runtime, JClass *clazz) {
         rc->font = CTFontCreateWithName(CFSTR("Helvetica"), 14.0, NULL);
         rc->ownsPixels = 0; // pixels owned by the RenderImage, not this wrapper
         rc->heap_key = img->heap_key;
-        track_rc(rc);
+        if (!track_rc(rc)) {
+            CGContextRelease(rc->ctx);
+            if (rc->font) CFRelease(rc->font);
+            free(rc);
+            img_release(img);
+            env->push_long(runtime->stack, 0);
+            return RUNTIME_STATUS_NORMAL;
+        }
         img_release(img);
         env->push_long(runtime->stack, (s64)(intptr_t)rc);
     } else {
@@ -4442,12 +4479,14 @@ void j2me_render_reg_natives(MiniJVM *jvm) {
 void j2me_render_stop_for_owner(uint64_t owner_key) {
     if (!owner_key) return;
     spin_lock(&g_track_lock);
-    if (!render_owner_stopped_locked(owner_key) &&
-        g_stopped_render_owner_count < RENDER_STOP_OWNER_SLOTS) {
-        g_stopped_render_owners[g_stopped_render_owner_count++] = owner_key;
+    if (!render_owner_stopped_locked(owner_key)) {
+        if (g_stopped_render_owner_count < RENDER_STOP_OWNER_SLOTS)
+            g_stopped_render_owners[g_stopped_render_owner_count++] = owner_key;
+        else
+            g_render_stop_registry_overflow = 1;
     }
-    // Fail closed on overflow instead of allowing an unprotected stop:
-    // cap is larger than the eight native heap owner slots.
+    // The native heap ledger holds at most eight owners. Overflow should
+    // be unreachable; should it occur, block every new render acquire.
     spin_unlock(&g_track_lock);
 }
 
