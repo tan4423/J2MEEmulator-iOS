@@ -133,6 +133,8 @@ typedef struct RenderContext {
     uint64_t heap_key; // owning JVM generation for native GC
     _Atomic int32_t refcount;
     struct RenderContext *next_dead;
+    struct RenderContext *next_live; // collision chain in safe handle lookup
+    _Atomic int java_owned; // exactly one Java handle owns the base reference
 } RenderContext;
 
 typedef struct RenderImage {
@@ -147,6 +149,8 @@ typedef struct RenderImage {
     uint64_t heap_key;
     _Atomic int32_t refcount;
     struct RenderImage *next_dead;
+    struct RenderImage *next_live;
+    _Atomic int java_owned;
 } RenderImage;
 
 static atomic_int treo_replay_state; // 0 idle/done, 1 capture, 2 benchmark
@@ -1596,10 +1600,26 @@ static int            g_live_rc_count = 0;
 static RenderImage   *g_live_img[TRACK_MAX];
 static int            g_live_img_count = 0;
 static spinlock_t     g_track_lock = {0, 0, 0};
+// Indexed membership avoids dereferencing untrusted Java long handles.
+// Collisions are rare at the 8K image cap; all walks are under g_track_lock.
+#define RENDER_HANDLE_BUCKETS 8192u
+static RenderContext *g_rc_live_buckets[RENDER_HANDLE_BUCKETS];
+static RenderImage *g_img_live_buckets[RENDER_HANDLE_BUCKETS];
+static inline unsigned render_handle_bucket(s64 handle) {
+    uint64_t bits = (uint64_t)(uintptr_t)handle >> 4;
+    bits ^= bits >> 17;
+    bits *= UINT64_C(0x9e3779b97f4a7c15);
+    return (unsigned)(bits >> 51);
+}
 
 static void track_rc(RenderContext *rc) {
     spin_lock(&g_track_lock);
-    if (g_live_rc_count < TRACK_MAX) g_live_rc[g_live_rc_count++] = rc;
+    if (g_live_rc_count < TRACK_MAX) {
+        g_live_rc[g_live_rc_count++] = rc;
+        unsigned bucket = render_handle_bucket((s64)(intptr_t)rc);
+        rc->next_live = g_rc_live_buckets[bucket];
+        g_rc_live_buckets[bucket] = rc;
+    }
     spin_unlock(&g_track_lock);
 }
 static void untrack_rc(RenderContext *rc) {
@@ -1610,11 +1630,21 @@ static void untrack_rc(RenderContext *rc) {
             break;
         }
     }
+    unsigned bucket = render_handle_bucket((s64)(intptr_t)rc);
+    RenderContext **cursor = &g_rc_live_buckets[bucket];
+    while (*cursor && *cursor != rc) cursor = &(*cursor)->next_live;
+    if (*cursor) *cursor = rc->next_live;
+    rc->next_live = NULL;
     spin_unlock(&g_track_lock);
 }
 static void track_img(RenderImage *img) {
     spin_lock(&g_track_lock);
-    if (g_live_img_count < TRACK_MAX) g_live_img[g_live_img_count++] = img;
+    if (g_live_img_count < TRACK_MAX) {
+        g_live_img[g_live_img_count++] = img;
+        unsigned bucket = render_handle_bucket((s64)(intptr_t)img);
+        img->next_live = g_img_live_buckets[bucket];
+        g_img_live_buckets[bucket] = img;
+    }
     spin_unlock(&g_track_lock);
 }
 static void untrack_img(RenderImage *img) {
@@ -1625,6 +1655,11 @@ static void untrack_img(RenderImage *img) {
             break;
         }
     }
+    unsigned bucket = render_handle_bucket((s64)(intptr_t)img);
+    RenderImage **cursor = &g_img_live_buckets[bucket];
+    while (*cursor && *cursor != img) cursor = &(*cursor)->next_live;
+    if (*cursor) *cursor = img->next_live;
+    img->next_live = NULL;
     spin_unlock(&g_track_lock);
 }
 
@@ -1693,16 +1728,32 @@ static void process_dead_shells(void) {
 // Reference counting: acquire / release
 // ============================================================
 
-static inline RenderContext *rc_acquire(s64 handle) {
-    if (atomic_load_explicit(&g_render_stopped, memory_order_acquire) || handle == 0) return NULL;
-    RenderContext *rc = (RenderContext *)(intptr_t)handle;
-    int32_t old = atomic_load_explicit(&rc->refcount, memory_order_relaxed);
-    do {
-        if (old <= 0) return NULL;
-    } while (!atomic_compare_exchange_weak_explicit(
-        &rc->refcount, &old, old + 1,
-        memory_order_acquire, memory_order_relaxed));
-    return rc;
+static inline RenderContext *rc_acquire(s64 handle, uint64_t owner_key) {
+    if (!handle || !owner_key ||
+        atomic_load_explicit(&g_render_stopped, memory_order_acquire)) return NULL;
+    // Compare the address as an integer; don't dereference until live
+    // membership AND JVM generation are both validated under the same lock.
+    RenderContext *result = NULL;
+    spin_lock(&g_track_lock);
+    RenderContext *target = (RenderContext *)(intptr_t)handle;
+    for (RenderContext *candidate = g_rc_live_buckets[render_handle_bucket(handle)];
+         candidate; candidate = candidate->next_live) {
+        if (candidate != target) continue;
+        if (candidate->heap_key == owner_key) {
+            int32_t prev = atomic_load_explicit(&candidate->refcount, memory_order_relaxed);
+            while (prev > 0) {
+                if (atomic_compare_exchange_weak_explicit(
+                        &candidate->refcount, &prev, prev + 1,
+                        memory_order_acquire, memory_order_relaxed)) {
+                    result = candidate;
+                    break;
+                }
+            }
+        }
+        break;
+    }
+    spin_unlock(&g_track_lock);
+    return result;
 }
 
 static inline void rc_release(RenderContext *rc) {
@@ -1725,16 +1776,30 @@ static inline void rc_release(RenderContext *rc) {
     }
 }
 
-static inline RenderImage *img_acquire(s64 handle) {
-    if (atomic_load_explicit(&g_render_stopped, memory_order_acquire) || handle == 0) return NULL;
-    RenderImage *img = (RenderImage *)(intptr_t)handle;
-    int32_t old = atomic_load_explicit(&img->refcount, memory_order_relaxed);
-    do {
-        if (old <= 0) return NULL;
-    } while (!atomic_compare_exchange_weak_explicit(
-        &img->refcount, &old, old + 1,
-        memory_order_acquire, memory_order_relaxed));
-    return img;
+static inline RenderImage *img_acquire(s64 handle, uint64_t owner_key) {
+    if (!handle || !owner_key ||
+        atomic_load_explicit(&g_render_stopped, memory_order_acquire)) return NULL;
+    RenderImage *result = NULL;
+    spin_lock(&g_track_lock);
+    RenderImage *target = (RenderImage *)(intptr_t)handle;
+    for (RenderImage *candidate = g_img_live_buckets[render_handle_bucket(handle)];
+         candidate; candidate = candidate->next_live) {
+        if (candidate != target) continue;
+        if (candidate->heap_key == owner_key) {
+            int32_t prev = atomic_load_explicit(&candidate->refcount, memory_order_relaxed);
+            while (prev > 0) {
+                if (atomic_compare_exchange_weak_explicit(
+                        &candidate->refcount, &prev, prev + 1,
+                        memory_order_acquire, memory_order_relaxed)) {
+                    result = candidate;
+                    break;
+                }
+            }
+        }
+        break;
+    }
+    spin_unlock(&g_track_lock);
+    return result;
 }
 
 // LCDUI icon reads are infrequent, so validate the handle in the live
@@ -1824,6 +1889,7 @@ static RenderContext *createRenderContext(MiniJVM *owner, int width, int height)
     RenderContext *rc = (RenderContext *)calloc(1, sizeof(RenderContext));
     if (!rc) return NULL;
     atomic_init(&rc->refcount, 1);
+    atomic_init(&rc->java_owned, 1);
     rc->heap_key = jarbox_native_heap_key_for_vm(owner);
     if (!rc->heap_key) { free(rc); return NULL; }
     rc->width = width;
@@ -1879,6 +1945,7 @@ static RenderImage *createMutableImage(MiniJVM *owner, int width, int height) {
     RenderImage *img = (RenderImage *)calloc(1, sizeof(RenderImage));
     if (!img) return NULL;
     atomic_init(&img->refcount, 1);
+    atomic_init(&img->java_owned, 1);
     img->heap_key = owner_key;
     img->width = width;
     img->height = height;
@@ -1903,6 +1970,7 @@ static RenderImage *createImageFromData(MiniJVM *owner, const uint8_t *data, int
     RenderImage *img = (RenderImage *)calloc(1, sizeof(RenderImage));
     if (!img) return NULL;
     atomic_init(&img->refcount, 1);
+    atomic_init(&img->java_owned, 1);
     img->heap_key = owner_key;
     img->isMutable = 0;
 
@@ -1986,17 +2054,19 @@ static s32 n_createContext(Runtime *runtime, JClass *clazz) {
 static s32 n_destroyContext(Runtime *runtime, JClass *clazz) {
     JniEnv *env = runtime->jnienv;
     s64 handle = env->localvar_getLong_2slot(runtime->localvar, 0);
-    if (atomic_load_explicit(&g_render_stopped, memory_order_acquire) || handle == 0) return RUNTIME_STATUS_NORMAL;
-    destroyRenderContext((RenderContext *)(intptr_t)handle);
+    RenderContext *rc = rc_acquire(handle, jarbox_native_heap_key_for_vm(runtime->jvm));
+    if (rc) {
+        if (atomic_exchange_explicit(&rc->java_owned, 0, memory_order_acq_rel))
+            destroyRenderContext(rc); // Java base reference, once
+        rc_release(rc); // temporary safe lookup reference
+    }
     return RUNTIME_STATUS_NORMAL;
 }
 
 CGImageRef j2me_render_copy_image(int64_t handle) {
-    RenderImage *img = img_acquire(handle);
-    if (!img) return NULL;
-    CGImageRef image = copyImageSnapshot(img);
-    img_release(img);
-    return image;
+    // Retained for ABI compatibility; no VM argument means no owner proof.
+    (void)handle;
+    return NULL;
 }
 
 CGImageRef j2me_render_copy_image_for_vm(int64_t handle, MiniJVM *vm) {
@@ -2029,7 +2099,7 @@ static s32 n_flushToScreen(Runtime *runtime, JClass *clazz) {
     const int afk = j2me_render_is_afk_suspended();
     JniEnv *env = runtime->jnienv;
     s64 handle = env->localvar_getLong_2slot(runtime->localvar, 0);
-    RenderContext *rc = rc_acquire(handle);
+    RenderContext *rc = rc_acquire(handle, jarbox_native_heap_key_for_vm(runtime->jvm));
     if (rc && rc->cpuCache) treo_cpu_batch_drain(rc);
     if (rc && rc->liveRun) {
         const uint64_t start = treo_profile_active() ? treo_thread_cpu_ns() : 0;
@@ -2087,7 +2157,7 @@ static s32 n_setColor(Runtime *runtime, JClass *clazz) {
     JniEnv *env = runtime->jnienv;
     s64 handle = env->localvar_getLong_2slot(runtime->localvar, 0);
     s32 argb = env->localvar_getInt(runtime->localvar, 2);
-    RenderContext *rc = rc_acquire(handle);
+    RenderContext *rc = rc_acquire(handle, jarbox_native_heap_key_for_vm(runtime->jvm));
     if (rc) {
         if (rc->ownsPixels && rc->clipSaved && treo_afk_fast_canvas() && rc->liveColor == (uint32_t)argb)
             ++rc->fastState;
@@ -2105,7 +2175,7 @@ static s32 n_setClip(Runtime *runtime, JClass *clazz) {
     s32 y = env->localvar_getInt(runtime->localvar, 3);
     s32 w = env->localvar_getInt(runtime->localvar, 4);
     s32 h = env->localvar_getInt(runtime->localvar, 5);
-    RenderContext *rc = rc_acquire(handle);
+    RenderContext *rc = rc_acquire(handle, jarbox_native_heap_key_for_vm(runtime->jvm));
     if (rc) {
         CGRect nextClip = CGRectIntersection(CGRectMake(0, 0, rc->width, rc->height),
                                              CGRectStandardize(CGRectMake(x, y, w, h)));
@@ -2164,7 +2234,7 @@ static s32 n_setStrokeStyle(Runtime *runtime, JClass *clazz) {
     JniEnv *env = runtime->jnienv;
     s64 handle = env->localvar_getLong_2slot(runtime->localvar, 0);
     s32 style = env->localvar_getInt(runtime->localvar, 2);
-    RenderContext *rc = rc_acquire(handle);
+    RenderContext *rc = rc_acquire(handle, jarbox_native_heap_key_for_vm(runtime->jvm));
     if (rc) {
         if (rc->ownsPixels && rc->clipSaved && treo_afk_fast_canvas() && rc->liveStroke == style)
             ++rc->fastState;
@@ -2184,7 +2254,7 @@ static s32 n_drawLine(Runtime *runtime, JClass *clazz) {
     s32 y1 = env->localvar_getInt(runtime->localvar, 3);
     s32 x2 = env->localvar_getInt(runtime->localvar, 4);
     s32 y2 = env->localvar_getInt(runtime->localvar, 5);
-    RenderContext *rc = rc_acquire(handle);
+    RenderContext *rc = rc_acquire(handle, jarbox_native_heap_key_for_vm(runtime->jvm));
     if (rc && treo_afk_skip_draw(rc)) { rc_release(rc); return RUNTIME_STATUS_NORMAL; }
     if (rc) {
         TreoShapeDraw draw = ^(CGContextRef target) {
@@ -2256,7 +2326,7 @@ static s32 n_fillRect(Runtime *runtime, JClass *clazz) {
     s32 y = env->localvar_getInt(runtime->localvar, 3);
     s32 w = env->localvar_getInt(runtime->localvar, 4);
     s32 h = env->localvar_getInt(runtime->localvar, 5);
-    RenderContext *rc = rc_acquire(handle);
+    RenderContext *rc = rc_acquire(handle, jarbox_native_heap_key_for_vm(runtime->jvm));
     if (rc && treo_afk_skip_draw(rc)) { rc_release(rc); return RUNTIME_STATUS_NORMAL; }
     if (rc && !treo_fast_opaque_rect(rc, x, y, w, h) && !treo_live_rect(rc, x, y, w, h)) {
         treo_live_barrier(rc);
@@ -2273,7 +2343,7 @@ static s32 n_drawRect(Runtime *runtime, JClass *clazz) {
     s32 y = env->localvar_getInt(runtime->localvar, 3);
     s32 w = env->localvar_getInt(runtime->localvar, 4);
     s32 h = env->localvar_getInt(runtime->localvar, 5);
-    RenderContext *rc = rc_acquire(handle);
+    RenderContext *rc = rc_acquire(handle, jarbox_native_heap_key_for_vm(runtime->jvm));
     if (rc && treo_afk_skip_draw(rc)) { rc_release(rc); return RUNTIME_STATUS_NORMAL; }
     if (rc) {
         TreoShapeDraw draw = ^(CGContextRef target) {
@@ -2298,7 +2368,7 @@ static s32 n_fillArc(Runtime *runtime, JClass *clazz) {
     s32 h = env->localvar_getInt(runtime->localvar, 5);
     s32 startAngle = env->localvar_getInt(runtime->localvar, 6);
     s32 arcAngle = env->localvar_getInt(runtime->localvar, 7);
-    RenderContext *rc = rc_acquire(handle);
+    RenderContext *rc = rc_acquire(handle, jarbox_native_heap_key_for_vm(runtime->jvm));
     if (rc && treo_afk_skip_draw(rc)) { rc_release(rc); return RUNTIME_STATUS_NORMAL; }
     if (rc) {
         TreoShapeDraw draw = ^(CGContextRef target) {
@@ -2335,7 +2405,7 @@ static s32 n_drawArc(Runtime *runtime, JClass *clazz) {
     s32 h = env->localvar_getInt(runtime->localvar, 5);
     s32 startAngle = env->localvar_getInt(runtime->localvar, 6);
     s32 arcAngle = env->localvar_getInt(runtime->localvar, 7);
-    RenderContext *rc = rc_acquire(handle);
+    RenderContext *rc = rc_acquire(handle, jarbox_native_heap_key_for_vm(runtime->jvm));
     if (rc && treo_afk_skip_draw(rc)) { rc_release(rc); return RUNTIME_STATUS_NORMAL; }
     if (rc) {
         TreoShapeDraw draw = ^(CGContextRef target) {
@@ -2370,7 +2440,7 @@ static s32 n_fillRoundRect(Runtime *runtime, JClass *clazz) {
     s32 h = env->localvar_getInt(runtime->localvar, 5);
     s32 aw = env->localvar_getInt(runtime->localvar, 6);
     s32 ah = env->localvar_getInt(runtime->localvar, 7);
-    RenderContext *rc = rc_acquire(handle);
+    RenderContext *rc = rc_acquire(handle, jarbox_native_heap_key_for_vm(runtime->jvm));
     if (rc && treo_afk_skip_draw(rc)) { rc_release(rc); return RUNTIME_STATUS_NORMAL; }
     if (rc) {
         TreoShapeDraw draw = ^(CGContextRef target) {
@@ -2399,7 +2469,7 @@ static s32 n_drawRoundRect(Runtime *runtime, JClass *clazz) {
     s32 h = env->localvar_getInt(runtime->localvar, 5);
     s32 aw = env->localvar_getInt(runtime->localvar, 6);
     s32 ah = env->localvar_getInt(runtime->localvar, 7);
-    RenderContext *rc = rc_acquire(handle);
+    RenderContext *rc = rc_acquire(handle, jarbox_native_heap_key_for_vm(runtime->jvm));
     if (rc && treo_afk_skip_draw(rc)) { rc_release(rc); return RUNTIME_STATUS_NORMAL; }
     if (rc) {
         TreoShapeDraw draw = ^(CGContextRef target) {
@@ -2427,7 +2497,7 @@ static s32 n_setFont(Runtime *runtime, JClass *clazz) {
     s32 face = env->localvar_getInt(runtime->localvar, 2);
     s32 style = env->localvar_getInt(runtime->localvar, 3);
     s32 size = env->localvar_getInt(runtime->localvar, 4);
-    RenderContext *rc = rc_acquire(handle);
+    RenderContext *rc = rc_acquire(handle, jarbox_native_heap_key_for_vm(runtime->jvm));
     if (rc) {
         if (rc->ownsPixels && treo_afk_fast_canvas() && rc->font && rc->fastFontValid &&
             rc->fastFontFace == face && rc->fastFontStyle == style && rc->fastFontSize == size) {
@@ -2475,7 +2545,7 @@ static s32 n_drawString(Runtime *runtime, JClass *clazz) {
     s32 x = env->localvar_getInt(runtime->localvar, 3);
     s32 y = env->localvar_getInt(runtime->localvar, 4);
     s32 anchor = env->localvar_getInt(runtime->localvar, 5);
-    RenderContext *rc = rc_acquire(handle);
+    RenderContext *rc = rc_acquire(handle, jarbox_native_heap_key_for_vm(runtime->jvm));
     if (rc && treo_afk_skip_draw(rc)) { rc_release(rc); return RUNTIME_STATUS_NORMAL; }
 
     if (!rc || !jstr) { rc_release(rc); return RUNTIME_STATUS_NORMAL; }
@@ -2527,7 +2597,7 @@ static s32 n_getStringWidth(Runtime *runtime, JClass *clazz) {
     JniEnv *env = runtime->jnienv;
     s64 handle = env->localvar_getLong_2slot(runtime->localvar, 0);
     Instance *jstr = env->localvar_getRefer(runtime->localvar, 2);
-    RenderContext *rc = rc_acquire(handle);
+    RenderContext *rc = rc_acquire(handle, jarbox_native_heap_key_for_vm(runtime->jvm));
 
     if (!rc || !jstr) { rc_release(rc); env->push_int(runtime->stack, 0); return RUNTIME_STATUS_NORMAL; }
 
@@ -2552,7 +2622,7 @@ static s32 n_getStringWidth(Runtime *runtime, JClass *clazz) {
 static s32 n_getFontHeight(Runtime *runtime, JClass *clazz) {
     JniEnv *env = runtime->jnienv;
     s64 handle = env->localvar_getLong_2slot(runtime->localvar, 0);
-    RenderContext *rc = rc_acquire(handle);
+    RenderContext *rc = rc_acquire(handle, jarbox_native_heap_key_for_vm(runtime->jvm));
     if (!rc) { env->push_int(runtime->stack, 14); return RUNTIME_STATUS_NORMAL; }
     CGFloat ascent = CTFontGetAscent(rc->font);
     CGFloat descent = CTFontGetDescent(rc->font);
@@ -2564,7 +2634,7 @@ static s32 n_getFontHeight(Runtime *runtime, JClass *clazz) {
 static s32 n_getFontAscent(Runtime *runtime, JClass *clazz) {
     JniEnv *env = runtime->jnienv;
     s64 handle = env->localvar_getLong_2slot(runtime->localvar, 0);
-    RenderContext *rc = rc_acquire(handle);
+    RenderContext *rc = rc_acquire(handle, jarbox_native_heap_key_for_vm(runtime->jvm));
     if (!rc) { env->push_int(runtime->stack, 12); return RUNTIME_STATUS_NORMAL; }
     CGFloat ascent = CTFontGetAscent(rc->font);
     rc_release(rc);
@@ -2598,15 +2668,19 @@ static s32 n_createImageFromData(Runtime *runtime, JClass *clazz) {
 static s32 n_destroyImage(Runtime *runtime, JClass *clazz) {
     JniEnv *env = runtime->jnienv;
     s64 handle = env->localvar_getLong_2slot(runtime->localvar, 0);
-    if (atomic_load_explicit(&g_render_stopped, memory_order_acquire) || handle == 0) return RUNTIME_STATUS_NORMAL;
-    destroyImage((RenderImage *)(intptr_t)handle);
+    RenderImage *img = img_acquire(handle, jarbox_native_heap_key_for_vm(runtime->jvm));
+    if (img) {
+        if (atomic_exchange_explicit(&img->java_owned, 0, memory_order_acq_rel))
+            destroyImage(img); // Java base reference, once
+        img_release(img); // temporary safe lookup reference
+    }
     return RUNTIME_STATUS_NORMAL;
 }
 
 static s32 n_getImageWidth(Runtime *runtime, JClass *clazz) {
     JniEnv *env = runtime->jnienv;
     s64 handle = env->localvar_getLong_2slot(runtime->localvar, 0);
-    RenderImage *img = img_acquire(handle);
+    RenderImage *img = img_acquire(handle, jarbox_native_heap_key_for_vm(runtime->jvm));
     env->push_int(runtime->stack, img ? img->width : 0);
     img_release(img);
     return RUNTIME_STATUS_NORMAL;
@@ -2615,7 +2689,7 @@ static s32 n_getImageWidth(Runtime *runtime, JClass *clazz) {
 static s32 n_getImageHeight(Runtime *runtime, JClass *clazz) {
     JniEnv *env = runtime->jnienv;
     s64 handle = env->localvar_getLong_2slot(runtime->localvar, 0);
-    RenderImage *img = img_acquire(handle);
+    RenderImage *img = img_acquire(handle, jarbox_native_heap_key_for_vm(runtime->jvm));
     env->push_int(runtime->stack, img ? img->height : 0);
     img_release(img);
     return RUNTIME_STATUS_NORMAL;
@@ -2624,10 +2698,11 @@ static s32 n_getImageHeight(Runtime *runtime, JClass *clazz) {
 static s32 n_getImageContext(Runtime *runtime, JClass *clazz) {
     JniEnv *env = runtime->jnienv;
     s64 handle = env->localvar_getLong_2slot(runtime->localvar, 0);
-    RenderImage *img = img_acquire(handle);
+    RenderImage *img = img_acquire(handle, jarbox_native_heap_key_for_vm(runtime->jvm));
     if (img && img->isMutable && img->ctx) {
         RenderContext *rc = (RenderContext *)calloc(1, sizeof(RenderContext));
         atomic_init(&rc->refcount, 1);
+    atomic_init(&rc->java_owned, 1);
         rc->ctx = img->ctx;
         CGContextRetain(rc->ctx);
         rc->width = img->width;
@@ -2635,6 +2710,7 @@ static s32 n_getImageContext(Runtime *runtime, JClass *clazz) {
         rc->fontSize = 14.0;
         rc->font = CTFontCreateWithName(CFSTR("Helvetica"), 14.0, NULL);
         rc->ownsPixels = 0; // pixels owned by the RenderImage, not this wrapper
+        rc->heap_key = img->heap_key;
         track_rc(rc);
         img_release(img);
         env->push_long(runtime->stack, (s64)(intptr_t)rc);
@@ -2653,9 +2729,9 @@ static s32 n_drawImage(Runtime *runtime, JClass *clazz) {
     s32 y = env->localvar_getInt(runtime->localvar, 5);
     s32 anchor = env->localvar_getInt(runtime->localvar, 6);
 
-    RenderContext *rc = rc_acquire(ctxHandle);
+    RenderContext *rc = rc_acquire(ctxHandle, jarbox_native_heap_key_for_vm(runtime->jvm));
     if (rc && treo_afk_skip_draw(rc)) { rc_release(rc); return RUNTIME_STATUS_NORMAL; }
-    RenderImage *img = img_acquire(imgHandle);
+    RenderImage *img = img_acquire(imgHandle, jarbox_native_heap_key_for_vm(runtime->jvm));
     if (!rc || !img) { img_release(img); rc_release(rc); return RUNTIME_STATUS_NORMAL; }
 
     int imgW = img->width, imgH = img->height;
@@ -3754,6 +3830,7 @@ static int treo_sw_draw(RenderContext *rc, RenderImage *img, int64_t x, int64_t 
 typedef struct {
     s64 ctx, img;
     s32 sx, sy, w, h, transform, x, y, anchor;
+    uint64_t owner_key;
 } TreoRegionArgs;
 
 static s32 treo_draw_region(const TreoRegionArgs *p, int direct) {
@@ -3761,7 +3838,7 @@ static s32 treo_draw_region(const TreoRegionArgs *p, int direct) {
     s32 xSrc = p->sx, ySrc = p->sy, wSrc = p->w, hSrc = p->h, transform = p->transform;
     int64_t xDst = p->x, yDst = p->y;
     s32 anchor = p->anchor;
-    RenderContext *rc = rc_acquire(ctxHandle);
+    RenderContext *rc = rc_acquire(ctxHandle, p->owner_key);
     if (!rc) return RUNTIME_STATUS_NORMAL;
     if (treo_afk_skip_draw(rc)) { rc_release(rc); return RUNTIME_STATUS_NORMAL; }
     if (direct && rc->ownsPixels) rc->swDirect++;
@@ -3786,7 +3863,7 @@ static s32 treo_draw_region(const TreoRegionArgs *p, int direct) {
         return RUNTIME_STATUS_NORMAL;
     }
 
-    RenderImage *img = img_acquire(imgHandle);
+    RenderImage *img = img_acquire(imgHandle, p->owner_key);
     if (!img) { rc_release(rc); return RUNTIME_STATUS_NORMAL; }
     // AFK SIMD keeps producing canvas pixels, but never presents them.
     // Use the same verified raster and CG fallback as the visible backend.
@@ -3863,7 +3940,8 @@ static s32 n_profiledDrawRegion(Runtime *runtime, JClass *clazz) {
     s32 anchor = env->localvar_getInt(runtime->localvar, 11);
 
     const TreoRegionArgs p = {ctxHandle, imgHandle, xSrc, ySrc, wSrc, hSrc,
-                              transform, (s32)xDst, (s32)yDst, anchor};
+                              transform, (s32)xDst, (s32)yDst, anchor,
+                              jarbox_native_heap_key_for_vm(runtime->jvm)};
     return treo_profiled_region(&p, 0);
 }
 
@@ -3935,10 +4013,11 @@ int treo_try_graphics_draw_region(Runtime *runtime, JClass *clazz) {
     const TreoRegionArgs p = {ctx, img, localvar_getInt(locals, 2), localvar_getInt(locals, 3),
         localvar_getInt(locals, 4), localvar_getInt(locals, 5), localvar_getInt(locals, 6),
         (s32)((u32)localvar_getInt(locals, 7) + (u32)tx),
-        (s32)((u32)localvar_getInt(locals, 8) + (u32)ty), localvar_getInt(locals, 9)};
+        (s32)((u32)localvar_getInt(locals, 8) + (u32)ty), localvar_getInt(locals, 9),
+        jarbox_native_heap_key_for_vm(runtime->jvm)};
     // The AFK shortcut stays on screen Canvas only; Image Graphics uses Java.
     if (fastCanvas) {
-        RenderContext *target = rc_acquire(ctx);
+        RenderContext *target = rc_acquire(ctx, p.owner_key);
         int canvas = target && target->ownsPixels;
         rc_release(target);
         if (!canvas) return 0;
@@ -3961,7 +4040,7 @@ static s32 n_drawRGB(Runtime *runtime, JClass *clazz) {
     s32 h = env->localvar_getInt(runtime->localvar, 8);
     s32 processAlpha = env->localvar_getInt(runtime->localvar, 9);
 
-    RenderContext *rc = rc_acquire(ctxHandle);
+    RenderContext *rc = rc_acquire(ctxHandle, jarbox_native_heap_key_for_vm(runtime->jvm));
     if (rc && treo_afk_skip_draw(rc)) { rc_release(rc); return RUNTIME_STATUS_NORMAL; }
     if (!rc || !arr || w <= 0 || h <= 0) { rc_release(rc); return RUNTIME_STATUS_NORMAL; }
 
@@ -4031,7 +4110,7 @@ static s32 n_getImageRGB(Runtime *runtime, JClass *clazz) {
     s32 w = env->localvar_getInt(runtime->localvar, 7);
     s32 h = env->localvar_getInt(runtime->localvar, 8);
 
-    RenderImage *img = img_acquire(imgHandle);
+    RenderImage *img = img_acquire(imgHandle, jarbox_native_heap_key_for_vm(runtime->jvm));
     if (!img || !arr) { img_release(img); return RUNTIME_STATUS_NORMAL; }
 
     s32 *dstData = (s32 *)arr->arr_body;
@@ -4061,7 +4140,7 @@ static s32 n_fillPolygon(Runtime *runtime, JClass *clazz) {
     Instance *xArr = env->localvar_getRefer(runtime->localvar, 2);
     Instance *yArr = env->localvar_getRefer(runtime->localvar, 3);
     s32 nPoints = env->localvar_getInt(runtime->localvar, 4);
-    RenderContext *rc = rc_acquire(handle);
+    RenderContext *rc = rc_acquire(handle, jarbox_native_heap_key_for_vm(runtime->jvm));
     if (rc && treo_afk_skip_draw(rc)) { rc_release(rc); return RUNTIME_STATUS_NORMAL; }
     if (!rc || !xArr || !yArr || nPoints < 3) { rc_release(rc); return RUNTIME_STATUS_NORMAL; }
     s32 *xPts = (s32 *)xArr->arr_body;
@@ -4103,7 +4182,7 @@ static s32 n_drawPolygon(Runtime *runtime, JClass *clazz) {
     Instance *xArr = env->localvar_getRefer(runtime->localvar, 2);
     Instance *yArr = env->localvar_getRefer(runtime->localvar, 3);
     s32 nPoints = env->localvar_getInt(runtime->localvar, 4);
-    RenderContext *rc = rc_acquire(handle);
+    RenderContext *rc = rc_acquire(handle, jarbox_native_heap_key_for_vm(runtime->jvm));
     if (rc && treo_afk_skip_draw(rc)) { rc_release(rc); return RUNTIME_STATUS_NORMAL; }
     if (!rc || !xArr || !yArr || nPoints < 3) { rc_release(rc); return RUNTIME_STATUS_NORMAL; }
     s32 *xPts = (s32 *)xArr->arr_body;
@@ -4150,7 +4229,7 @@ static s32 n_copyArea(Runtime *runtime, JClass *clazz) {
     s32 h = env->localvar_getInt(runtime->localvar, 5);
     s32 xDst = env->localvar_getInt(runtime->localvar, 6);
     s32 yDst = env->localvar_getInt(runtime->localvar, 7);
-    RenderContext *rc = rc_acquire(handle);
+    RenderContext *rc = rc_acquire(handle, jarbox_native_heap_key_for_vm(runtime->jvm));
     if (rc && treo_afk_skip_draw(rc)) { rc_release(rc); return RUNTIME_STATUS_NORMAL; }
     if (!rc || w <= 0 || h <= 0) { rc_release(rc); return RUNTIME_STATUS_NORMAL; }
     treo_live_barrier(rc);
