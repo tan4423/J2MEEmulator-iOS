@@ -69,6 +69,9 @@ def audit(root=ROOT):
         "render_shared_metal_workspace":
             "static id<MTLCommandQueue> treo_live_queue" in src["render"]
             and "static id<MTLTexture> treo_live_target" in src["render"],
+        "render_raw_unscoped_handle_acquire":
+            "RenderContext *rc = (RenderContext *)(intptr_t)handle;" in src["render"]
+            and "RenderImage *img = (RenderImage *)(intptr_t)handle;" in src["render"],
         "lcd_ui_single_form_state":
             "static char g_form_title" in src["lcd_ui"],
         "lcd_ui_single_callback":
@@ -115,7 +118,8 @@ def audit(root=ROOT):
         "notes": [
             "Input contexts (capacity four) are not four working JVM sessions.",
             "Renderer context/image teardown is generation-filtered, but the global stop barrier, Metal cache and haptics are shared.",
-            "LCDUI Form/List buffers are VM-owned, but UIKit callbacks and native renderer remain shared.",
+            "LCDUI slot bindings, Form/List buffers and queued URL actions now check VM generation; UIKit controller registration remains process-wide.",
+            "MIDP List icon snapshots are VM-owned, but ordinary render acquire paths still trust raw native handles.",
             "Network, classloader, JIT, sockets, native image handles, and teardown still need device validation.",
             "Do not enable another JVM while there are unisolated native blockers.",
         ],
