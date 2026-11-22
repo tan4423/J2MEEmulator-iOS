@@ -115,6 +115,57 @@ struct CloneHarness {
             jarPath: jar, documents: docs).isEmpty, "group not emptied")
         require(fm.fileExists(atPath: original), "base deleted with final tab")
         require(fm.fileExists(atPath: jar), "shared source JAR deleted")
+
+        // Two installed JARs can have the same sanitized legacy save name.
+        // Never guess which one owns the old account data.
+        let collidingA = (gameDir as NSString).appendingPathComponent("Shared name.jar")
+        let collidingB = (gameDir as NSString).appendingPathComponent("Shared@name.jar")
+        try Data([0x50, 0x4b]).write(to: URL(fileURLWithPath: collidingA))
+        try Data([0x50, 0x4b]).write(to: URL(fileURLWithPath: collidingB))
+        let collision = (docs as NSString).appendingPathComponent("Games Data/Shared_name")
+        try fm.createDirectory(atPath: collision, withIntermediateDirectories: true)
+        let collisionSave = (collision as NSString).appendingPathComponent("account.rsr")
+        try Data("UNTOUCHED_LEGACY_SAVE".utf8).write(to: URL(fileURLWithPath: collisionSave))
+        do {
+            _ = try JarBoxGameStorage.prepareRoot(jarPath: collidingA, documents: docs)
+            fatalError("ambiguous legacy migration was allowed")
+        } catch let error as NSError {
+            require(error.domain == "JarBox.GameStorage" && error.code == 2,
+                    "unexpected ambiguous migration error")
+        }
+        require(String(data: try Data(contentsOf: URL(fileURLWithPath: collisionSave)),
+                       encoding: .utf8) == "UNTOUCHED_LEGACY_SAVE",
+                "ambiguous migration touched legacy RMS")
+        require(!fm.fileExists(atPath: JarBoxGameStorage.rootPath(
+            jarPath: collidingA, documents: docs)),
+                "created new root after migration was rejected")
+
+        // A unique owner may still migrate legacy RMS by an atomic rename.
+        let only = (gameDir as NSString).appendingPathComponent("Only Owner.jar")
+        try Data([0x50, 0x4b]).write(to: URL(fileURLWithPath: only))
+        let oldRoot = (docs as NSString).appendingPathComponent("Games Data/Only_Owner")
+        try fm.createDirectory(atPath: oldRoot, withIntermediateDirectories: true)
+        let oldSave = (oldRoot as NSString).appendingPathComponent("account.rsr")
+        try Data("PRESERVED".utf8).write(to: URL(fileURLWithPath: oldSave))
+        let moved = try JarBoxGameStorage.prepareRoot(jarPath: only, documents: docs)
+        require(!fm.fileExists(atPath: oldRoot), "unique legacy root not moved")
+        require(String(data: try Data(contentsOf: URL(fileURLWithPath:
+                    (moved as NSString).appendingPathComponent("account.rsr"))),
+                       encoding: .utf8) == "PRESERVED",
+                "unique legacy account changed during migration")
+
+        // Existing symbolic links must never become save roots.
+        let linkedJAR = (gameDir as NSString).appendingPathComponent("Linked.jar")
+        try Data([0x50, 0x4b]).write(to: URL(fileURLWithPath: linkedJAR))
+        let linkedRoot = JarBoxGameStorage.rootPath(jarPath: linkedJAR, documents: docs)
+        try fm.createSymbolicLink(atPath: linkedRoot, withDestinationPath: moved)
+        do {
+            _ = try JarBoxGameStorage.prepareRoot(jarPath: linkedJAR, documents: docs)
+            fatalError("symbolic link save root accepted")
+        } catch let error as NSError {
+            require(error.domain == "JarBox.GameStorage" && error.code == 1,
+                    "unexpected symlink validation error")
+        }
     }
 }
 '''
@@ -142,12 +193,30 @@ class CloneInstanceStorageTest(unittest.TestCase):
             src = Path(temp) / "CloneHarness.swift"
             exe = Path(temp) / "CloneHarness"
             src.write_text(HARNESS + storage + "\n" + MAIN)
-            subprocess.run(
+            compile_result = subprocess.run(
                 [swiftc, "-swift-version", "5", "-parse-as-library",
                  str(src), "-o", str(exe)],
-                check=True, capture_output=True, text=True, timeout=70)
-            subprocess.run([str(exe)], check=True,
-                           capture_output=True, text=True, timeout=30)
+                capture_output=True, text=True, timeout=70)
+            self.assertEqual(
+                compile_result.returncode, 0,
+                "Swift storage harness compilation failed.\\n"
+                + compile_result.stdout + compile_result.stderr)
+            run_result = subprocess.run(
+                [str(exe)], capture_output=True, text=True, timeout=30)
+            self.assertEqual(
+                run_result.returncode, 0,
+                "Swift storage harness runtime failed.\\n"
+                + run_result.stdout + run_result.stderr)
+
+    def test_storage_helpers_are_in_compilable_extracted_enum(self):
+        source = SWIFT.read_text(encoding="utf-8")
+        begin = source.index("enum JarBoxGameStorage {")
+        end = source.index("\\n}\\n\\n// The parked library", begin) + 2
+        storage = source[begin:end]
+        self.assertIn("func legacyOwners(jarPath: String,", storage)
+        self.assertIn("func isSymbolicLink(_ path: String)", storage)
+        self.assertIn("values?.isSymbolicLink ?? true", storage)
+        self.assertIn("name.lowercased().hasSuffix(\\\".jar\\\")", storage)
 
     def test_launch_carries_instance_uuid_to_save_root(self):
         source = GAME.read_text(encoding="utf-8")
