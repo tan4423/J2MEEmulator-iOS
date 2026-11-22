@@ -147,10 +147,11 @@ class MultiVMRenderCleanupTest(unittest.TestCase):
         self.assertIn("take_img_for_owner(owner_key)", cleanup)
         self.assertNotIn("g_live_rc_count = 0;", cleanup)
         self.assertNotIn("g_live_img_count = 0;", cleanup)
-        self.assertIn("g_render_stopped = 0;", cleanup)
+        self.assertIn("atomic_store_explicit(&g_render_stopped, 0, memory_order_release);", cleanup)
         self.assertIn("jvm_bridge_active_session_count() <= 1", cleanup)
+        self.assertIn("single_vm_shutdown = jvm_bridge_supported_concurrent_sessions() == 1", cleanup)
         # The fatal global stop is not yet per-VM. Never unlock concurrency.
-        self.assertIn("g_render_stopped = 1;", render)
+        self.assertIn("atomic_store_explicit(&g_render_stopped, 1, memory_order_release);", render)
         self.assertIn("j2me_render_stop();", bridge)
 
 if __name__ == "__main__":
