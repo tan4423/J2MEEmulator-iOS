@@ -765,6 +765,9 @@ s32 jthread_run(void *para) {
     Runtime *runtime = (Runtime *) para;
     Instance *jthread = runtime->thrd_info->jthread;
     MiniJVM *jvm = runtime->jvm;
+    // The jthread_start reservation pins this session until the native
+    // function has completely stopped using Java heap state.
+    JarBoxSession *const held_session = jvm->session;
 
 #if _JVM_DEBUG_LOG_LEVEL > 1
     s64 startAt = currentTimeMillis();
@@ -772,6 +775,14 @@ s32 jthread_run(void *para) {
 #endif
     s32 ret = 0;
     runtime->thrd_info->pthread = thrd_current();
+    // A start that races teardown (after thread_stop_all traversed the list)
+    // must not execute Java code without the stop signal. The reservation
+    // still guarantees that the JVM stays allocated until we return.
+    if (jarbox_session_phase(held_session) >= JARBOX_SESSION_STOPPING) {
+        runtime->thrd_info->thread_status = THREAD_STATUS_ZOMBIE;
+        jarbox_session_worker_done(held_session);
+        return 0;
+    }
 
     Utf8String *methodName = utf8_create_c("run");
     Utf8String *methodType = utf8_create_c("()V");
@@ -821,7 +832,7 @@ s32 jthread_run(void *para) {
     // The native worker lease is the independent teardown barrier, not
     // THREAD_STATUS_ZOMBIE (which only guides Java-side finalization).
     runtime->thrd_info->thread_status = THREAD_STATUS_ZOMBIE;
-    jarbox_session_worker_done(jvm->session);
+    jarbox_session_worker_done(held_session);
     return ret;
 }
 
@@ -855,6 +866,14 @@ thrd_t jthread_start(Instance *ins, Runtime *parent) {//
     runtime->thrd_info->context_classloader = parent->thrd_info->context_classloader;//copy context classloader
 
     jthread_init(runtime->jvm, ins);
+    // Re-check after registering the Runtime. If stop won this race,
+    // do not spawn a new pthread after thread_stop_all has completed.
+    if (jarbox_session_phase(session) >= JARBOX_SESSION_STOPPING) {
+        threadlist_remove(runtime);
+        jthread_set_stackframe_value(parent->jvm, ins, NULL);
+        jarbox_session_worker_done(session);
+        return failed;
+    }
     if (thrd_create(&runtime->thrd_info->pthread, jthread_run, runtime)
         != thrd_success) {
         // An unstarted Runtime must not remain visible as an active worker.

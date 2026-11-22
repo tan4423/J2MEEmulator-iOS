@@ -19,6 +19,10 @@ class JarBoxThreadTeardownTest(unittest.TestCase):
         self.assertIn("jarbox_session_worker_done(session);", src)
         self.assertIn("jarbox_session_worker_done(jvm->session);", src)
         self.assertNotIn("thrd_exit(ret);", src)
+        self.assertIn("JarBoxSession *const held_session = jvm->session;", src)
+        self.assertIn("jarbox_session_phase(held_session) >= JARBOX_SESSION_STOPPING", src)
+        self.assertIn("jarbox_session_phase(session) >= JARBOX_SESSION_STOPPING", src)
+        self.assertIn("jarbox_session_worker_done(held_session);", src)
 
     def test_timeout_does_not_force_zombie_or_destroy_still_running_worker(self):
         src = (JVM / "jvm.c").read_text()
