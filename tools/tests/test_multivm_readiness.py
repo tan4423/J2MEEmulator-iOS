@@ -26,9 +26,11 @@ class MultiVMReadinessTest(unittest.TestCase):
         blockers = report["unisolated_native_blockers"]
         self.assertNotIn("lcd_ui_single_form_state", blockers)
         self.assertNotIn("gc_single_native_memory_account", blockers)
+        self.assertNotIn("render_global_stop_and_cleanup", blockers)
         for item in (
             "render_single_flush_callback",
-            "render_global_stop_and_cleanup",
+            "render_global_stop_barrier",
+            "render_shared_metal_workspace",
             "render_global_haptic_teardown",
             "lcd_ui_single_callback",
             "treo_single_global_mode",
