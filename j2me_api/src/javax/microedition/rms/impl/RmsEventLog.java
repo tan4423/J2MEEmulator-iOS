@@ -46,7 +46,12 @@ public final class RmsEventLog {
                      "\tbytes=" + Math.max(-1, bytes) + "\n";
         FileOutputStream out = null;
         try {
-            out = new FileOutputStream(log, true);
+            // miniJVM's boot java.io.FileOutputStream implements the
+            // (String, boolean) append constructor, not (File, boolean).
+            // Using the unsupported overload raises NoSuchMethodError during
+            // RMS metadata logging, which can interrupt an otherwise valid
+            // game save before any IOException can be caught.
+            out = new FileOutputStream(log.getPath(), true);
             out.write(row.getBytes("UTF-8"));
             count++;
         } catch (IOException ignored) {
