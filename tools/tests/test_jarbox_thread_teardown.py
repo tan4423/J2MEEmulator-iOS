@@ -17,7 +17,9 @@ class JarBoxThreadTeardownTest(unittest.TestCase):
         self.assertLess(src.index("jarbox_session_reserve_worker(session)"),
                         src.index("thrd_create(&runtime->thrd_info->pthread"))
         self.assertIn("jarbox_session_worker_done(session);", src)
-        self.assertIn("jarbox_session_worker_done(jvm->session);", src)
+        # jthread_run caches the session before its last Java heap access.
+        # Both early-stop and normal-exit paths must return this held lease.
+        self.assertGreaterEqual(src.count("jarbox_session_worker_done(held_session);"), 2)
         self.assertNotIn("thrd_exit(ret);", src)
         self.assertIn("JarBoxSession *const held_session = jvm->session;", src)
         self.assertIn("jarbox_session_phase(held_session) >= JARBOX_SESSION_STOPPING", src)
@@ -27,10 +29,13 @@ class JarBoxThreadTeardownTest(unittest.TestCase):
     def test_timeout_does_not_force_zombie_or_destroy_still_running_worker(self):
         src = (JVM / "jvm.c").read_text()
         self.assertIn("jarbox_session_begin_stop(jvm->session);", src)
-        self.assertIn("jarbox_session_worker_count(jvm->session) != 0", src)
+        # The teardown barrier now covers native callbacks as well as workers.
+        self.assertIn("jarbox_session_active_lease_count(jvm->session) != 0", src)
+        self.assertIn("jarbox_session_worker_count(jvm->session)", src)
+        self.assertIn("jarbox_session_callback_count(jvm->session)", src)
         self.assertIn("heap retained", src)
         self.assertNotIn("thread_zombie_all(jvm);", src)
-        self.assertLess(src.index("jarbox_session_worker_count(jvm->session) != 0"),
+        self.assertLess(src.index("jarbox_session_active_lease_count(jvm->session) != 0"),
                         src.index("gc_destroy(jvm);"))
         self.assertIn("jarbox_session_mark_dead(jvm->session)", src)
         self.assertIn("jarbox_session_release(jvm->session)", src)
