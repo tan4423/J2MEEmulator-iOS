@@ -333,7 +333,13 @@ void jvm_bridge_visit_running_vm(void (*visitor)(MiniJVM *, void *), void *arg) 
                                              memory_order_acquire) == BRIDGE_RUNNING;
     MiniJVM *vm = running ?
         atomic_load_explicit(&g_bridge_vm.jvm, memory_order_acquire) : NULL;
-    if (vm) visitor(vm, arg);
+    // The lifecycle lock keeps this pointer live while admitting a lease;
+    // teardown may not free the VM until the native visitor returns.
+    if (vm && vm->session && jarbox_session_reserve_callback(vm->session)) {
+        JarBoxSession *const held_session = vm->session;
+        visitor(vm, arg);
+        jarbox_session_callback_done(held_session);
+    }
     pthread_mutex_unlock(&g_bridge_lifecycle_lock);
 }
 

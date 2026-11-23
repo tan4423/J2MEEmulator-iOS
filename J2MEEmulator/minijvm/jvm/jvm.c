@@ -428,11 +428,13 @@ void jvm_destroy(MiniJVM *jvm) {
         // release this heap or start a replacement JVM in that state.
         unsigned waits = 0;
         while (threadlist_count_active(jvm) > 0 ||
-               jarbox_session_worker_count(jvm->session) != 0) {
+               jarbox_session_active_lease_count(jvm->session) != 0) {
             if (waits == 150 || (waits > 150 && waits % 250 == 0)) {
-                jvm_printf("[JarBoxVM][Lifecycle] STOPPING: active=%d native_workers=%u; heap retained\n",
+                jvm_printf("[JarBoxVM][Lifecycle] STOPPING: active=%d native_workers=%u callbacks=%u leases=%u; heap retained\n",
                            threadlist_count_active(jvm),
-                           jarbox_session_worker_count(jvm->session));
+                           jarbox_session_worker_count(jvm->session),
+                           jarbox_session_callback_count(jvm->session),
+                           jarbox_session_active_lease_count(jvm->session));
             }
             threadSleep(20);
             if (waits < 1000000u) ++waits;
