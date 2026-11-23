@@ -13,6 +13,19 @@ extern int g_render_3d_scale;
 /// Acquire the sole in-process JVM slot BEFORE dispatching the worker.
 /// Returns 1 if acquired, 0 if another game is launching/running/tearing down.
 int jvm_bridge_try_begin_session(void);
+/// Atomic launch admission + immutable session token for the Swift worker.
+/// Never infer a worker's token from the global visible/foreground session.
+int jvm_bridge_try_begin_session_with_token(uint64_t *out_token);
+/// Per-worker execution/cleanup entry points. Reject a different generation;
+/// they are not yet an independently runnable second JVM context.
+int jvm_bridge_init_for_token(uint64_t token, const char *res_root,
+                              const char *save_root, const char *midlet_jar,
+                              int screen_width, int screen_height,
+                              int render_3d_scale, int fps_limit);
+int jvm_bridge_run_midlet_for_token(uint64_t token, const char *midlet_jar_path);
+int jvm_bridge_is_stop_requested_for_token(uint64_t token);
+int jvm_bridge_destroy_for_token(uint64_t token);
+int jvm_bridge_finish_session_for_token(uint64_t token);
 /// 0 idle, 1 starting, 2 running, 3 tearing down.
 int jvm_bridge_session_phase(void);
 struct _MiniJVM;

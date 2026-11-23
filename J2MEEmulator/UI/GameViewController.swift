@@ -3485,12 +3485,16 @@ class GameViewController: UIViewController {
             return
         }
 
-        guard jvm_bridge_try_begin_session() != 0 else {
+        // Reserve this worker's token together with its native slot. The
+        // background launcher never reads a token that might belong to B.
+        var acquiredToken: UInt64 = 0
+        guard jvm_bridge_try_begin_session_with_token(&acquiredToken) != 0,
+              acquiredToken != 0 else {
             showBlockedSessionAlert()
             return
         }
         ownsJVMSession = true
-        gameSessionToken = jvm_bridge_session_token()
+        gameSessionToken = acquiredToken
         setGlobalEmulatorView(emulatorView)
         j2me_render_set_afk_suspended(0)
         j2me_render_set_flush_callback(flushCallback)
@@ -3513,7 +3517,7 @@ class GameViewController: UIViewController {
             let failure = GameViewController.runMIDlet(
                 resRoot: resRoot, jarPath: gamePath, width: width,
                 height: height, scale: scale, fps: fps,
-                cloneID: instanceCloneID
+                cloneID: instanceCloneID, token: launchingToken
             )
             DispatchQueue.main.async { [weak self] in
                 guard let self, self.ownsJVMSession,
@@ -3651,10 +3655,11 @@ class GameViewController: UIViewController {
     nonisolated private static func runMIDlet(resRoot: String, jarPath: String,
                                               width: Int32, height: Int32,
                                               scale: Int32, fps: Int32,
-                                              cloneID: UUID? = nil) -> String? {
-        // Only the owning worker releases the exclusive JVM slot after
-        // native cleanup, including startup errors and cancellations.
-        defer { jvm_bridge_finish_session() }
+                                              cloneID: UUID? = nil,
+                                              token: UInt64) -> String? {
+        // Every bridge operation is guarded by THIS worker's admission
+        // token, not the most recently launched/visible tab.
+        defer { _ = jvm_bridge_finish_session_for_token(token) }
         let docs = NSSearchPathForDirectoriesInDomains(
             .documentDirectory, .userDomainMask, true).first ?? NSTemporaryDirectory()
         let saveRoot: String
@@ -3670,21 +3675,22 @@ class GameViewController: UIViewController {
                                             event: "SESSION_START", cloneID: cloneID)
 
         NSLog("[J2ME Treo] Entering JVM initialization")
-        let initResult = jvm_bridge_init(resRoot, saveRoot, jarPath, width, height, scale, fps)
+        let initResult = jvm_bridge_init_for_token(token, resRoot, saveRoot,
+                                                    jarPath, width, height, scale, fps)
         NSLog("[J2ME Treo] JVM initialization returned %d", initResult)
         guard initResult == 0 else { return "Java runtime initialization failed (\(initResult))." }
-        if jvm_bridge_is_stop_requested() != 0 {
+        if jvm_bridge_is_stop_requested_for_token(token) != 0 {
             NSLog("[JarBoxVM][Lifecycle] cancelled after JVM init, before MIDlet start")
-            jvm_bridge_destroy()
+            _ = jvm_bridge_destroy_for_token(token)
             return "Game startup cancelled."
         }
 
         NSLog("[J2ME Treo] Entering MIDlet runner")
-        let runResult = jvm_bridge_run_midlet(jarPath)
+        let runResult = jvm_bridge_run_midlet_for_token(token, jarPath)
         NSLog("[J2ME Treo] MIDlet runner returned %d; cleaning up", runResult)
         let javaError = String(cString: jvm_bridge_last_error())
         let nsoInitTrace = String(cString: jvm_bridge_nso_init_trace())
-        jvm_bridge_destroy()
+        _ = jvm_bridge_destroy_for_token(token)
         JarBoxGameStorage.appendSettingEvent(jarPath: jarPath, documents: docs,
                                             event: "SESSION_END", value: String(runResult),
                                             cloneID: cloneID)

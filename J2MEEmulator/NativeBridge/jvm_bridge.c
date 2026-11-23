@@ -238,7 +238,13 @@ const char *jvm_bridge_last_error(void) {
 }
 
 
-int jvm_bridge_try_begin_session(void) {
+/* Every launch receives its immutable token in the SAME admission call.
+ * Never ask the asynchronous Swift worker to discover its owner by reading
+ * the process's latest foreground token. The current runtime still has one
+ * execution slot; this is a lifetime-safe contract for its future pool. */
+int jvm_bridge_try_begin_session_with_token(uint64_t *out_token) {
+    if (!out_token) return 0;
+    *out_token = 0;
     int expected = 0;
     if (!atomic_compare_exchange_strong_explicit(&g_bridge_vm.active,
             &expected, 1, memory_order_acq_rel, memory_order_acquire))
@@ -281,7 +287,12 @@ int jvm_bridge_try_begin_session(void) {
     jvm_bridge_note_net_trace("probe:java8_localtime_boot_patch=v1");
     jvm_bridge_note_net_trace("probe:vm_opcode_guard=v1");
     printf("[JarBoxVM][Lifecycle] session=acquired phase=starting\n");
+    *out_token = token;
     return 1;
+}
+int jvm_bridge_try_begin_session(void) {
+    uint64_t acquired = 0;
+    return jvm_bridge_try_begin_session_with_token(&acquired);
 }
 /* Token-based synchronous VM pin. The lifecycle lock establishes a
  * consistent admission point; the callback lease keeps the heap alive while
@@ -719,6 +730,41 @@ void jvm_bridge_request_stop(void) {
 
 int jvm_bridge_is_stop_requested(void) {
     return atomic_load_explicit(&g_bridge_vm.stop_requested, memory_order_acquire);
+}
+
+/* Explicit worker-scoped bridge APIs. All of them fail closed when a
+ * stale/foreign worker token is presented; the single-VM implementation
+ * remains the only executor until a second real context is installed.
+ * These wrappers do not make the singleton concurrently reentrant. */
+static int bridge_token_matches_active(uint64_t token) {
+    return token &&
+        atomic_load_explicit(&g_bridge_vm.active, memory_order_acquire) &&
+        atomic_load_explicit(&g_bridge_vm.token, memory_order_acquire) == token;
+}
+int jvm_bridge_init_for_token(uint64_t token,
+        const char *res_root, const char *save_root, const char *midlet_jar,
+        int screen_width, int screen_height, int render_3d_scale, int fps_limit) {
+    if (!bridge_token_matches_active(token)) return -10;
+    return jvm_bridge_init(res_root, save_root, midlet_jar, screen_width,
+                           screen_height, render_3d_scale, fps_limit);
+}
+int jvm_bridge_run_midlet_for_token(uint64_t token, const char *midlet_jar_path) {
+    if (!bridge_token_matches_active(token)) return -10;
+    return jvm_bridge_run_midlet(midlet_jar_path);
+}
+int jvm_bridge_is_stop_requested_for_token(uint64_t token) {
+    return !bridge_token_matches_active(token) ||
+        atomic_load_explicit(&g_bridge_vm.stop_requested, memory_order_acquire);
+}
+int jvm_bridge_destroy_for_token(uint64_t token) {
+    if (!bridge_token_matches_active(token)) return 0;
+    jvm_bridge_destroy();
+    return 1;
+}
+int jvm_bridge_finish_session_for_token(uint64_t token) {
+    if (!bridge_token_matches_active(token)) return 0;
+    jvm_bridge_finish_session();
+    return !jarbox_registry_contains_token(&g_bridge_registry, token);
 }
 
 // Java native polling must read the stop flag of the JVM that made the

@@ -35,12 +35,21 @@ class ParkedGameLibraryTest(unittest.TestCase):
         self.assertIn('requestGameStop(reason: "library_stop")', self.game)
 
     def test_native_token_still_guards_single_vm(self):
-        self.assertIn('jvm_bridge_try_begin_session()', self.game)
+        self.assertIn('jvm_bridge_try_begin_session_with_token(&acquiredToken)', self.game)
+        self.assertIn('gameSessionToken = acquiredToken', self.game)
+        self.assertIn('cloneID: instanceCloneID, token: launchingToken', self.game)
+        self.assertIn('jvm_bridge_init_for_token(token, resRoot, saveRoot', self.game)
+        self.assertIn('jvm_bridge_run_midlet_for_token(token, jarPath)', self.game)
+        self.assertIn('jvm_bridge_destroy_for_token(token)', self.game)
+        self.assertIn('jvm_bridge_finish_session_for_token(token)', self.game)
         self.assertIn('jvm_bridge_session_token() == gameSessionToken', self.game)
         self.assertIn('jvm_bridge_session_is_active()', self.game)
         self.assertIn('jvm_bridge_request_stop_for_token(token)', self.game)
         self.assertIn('extern int g_render_3d_scale;', self.bridge)
         self.assertIn('jvm_bridge_try_begin_session(void)', self.bridge)
+        self.assertIn('int jvm_bridge_try_begin_session_with_token(uint64_t *out_token)', self.bridge)
+        self.assertIn('static int bridge_token_matches_active(uint64_t token)', self.bridge)
+        self.assertIn('if (!bridge_token_matches_active(token)) return -10;', self.bridge)
 
     def test_automatic_treo_on_library_transition(self):
         self.assertIn('setGlobalEmulatorView(nil)', self.game)
