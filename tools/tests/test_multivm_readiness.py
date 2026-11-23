@@ -31,8 +31,15 @@ class MultiVMReadinessTest(unittest.TestCase):
         self.assertNotIn("render_global_stop_and_cleanup", blockers)
         self.assertNotIn("render_global_stop_barrier", blockers)
         self.assertNotIn("render_raw_unscoped_handle_acquire", blockers)
+        # Frame callbacks are now captured in the generation-scoped
+        # JarBoxFlushRoutes registry, not the old singleton pointer.
+        self.assertNotIn("render_single_flush_callback", blockers)
+        render = (ROOT / "J2MEEmulator/NativeBridge/j2me_render.m").read_text()
+        routes = (ROOT / "J2MEEmulator/NativeBridge/jarbox_flush_routes.h").read_text()
+        self.assertIn("jarbox_flush_route_lookup(&g_flush_routes, callerKey", render)
+        self.assertIn("jarbox_flush_route_unbind(&g_flush_routes, owner_key)", render)
+        self.assertIn("JARBOX_FLUSH_MAX_ROUTES", routes)
         for item in (
-            "render_single_flush_callback",
             "render_shared_metal_workspace",
             "render_global_haptic_teardown",
             "lcd_ui_single_callback",

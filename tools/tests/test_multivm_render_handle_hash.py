@@ -20,6 +20,13 @@ PREAMBLE = r"""
 #include <sched.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include "jarbox_flush_routes.h"
+// The production stop helper now revokes the matching generation's
+// callback route as well as its Canvas handle generation.
+static JarBoxFlushRoutes g_flush_routes = JARBOX_FLUSH_ROUTES_INITIALIZER;
+static void host_flush(void *image, int width, int height, uint64_t owner_key) {
+    (void)image; (void)width; (void)height; (void)owner_key;
+}
 typedef long long s64;
 typedef struct RenderContext {
     uint64_t heap_key;
@@ -78,6 +85,10 @@ int main(void) {
     atomic_init(&a.java_owned, 1); atomic_init(&b.java_owned, 1);
     if (!track_rc(&a) || !track_rc(&b) ||
         !track_img(&ai) || !track_img(&bi)) return 1;
+    // Bind callbacks for both owner generations before the real stop code.
+    jarbox_flush_default_owned(&g_flush_routes, host_flush);
+    if (!jarbox_flush_route_bind(&g_flush_routes, 101) ||
+        !jarbox_flush_route_bind(&g_flush_routes, 202)) return 19;
     if (rc_acquire((s64)(intptr_t)&a, 202)) return 2;
     if (img_acquire((s64)(intptr_t)&ai, 202)) return 3;
     if (rc_acquire((s64)0x1234, 101)) return 4;
@@ -97,6 +108,12 @@ int main(void) {
         atomic_load(&b.refcount) != 1 ||
         atomic_load(&bi.refcount) != 1) return 8;
     j2me_render_stop_for_owner(101);
+    // Revoking A must leave B's frame callback and handles intact.
+    JarBoxFlushLegacy legacy = NULL;
+    JarBoxFlushOwned owned = NULL;
+    if (jarbox_flush_route_lookup(&g_flush_routes, 101, &legacy, &owned) ||
+        !jarbox_flush_route_lookup(&g_flush_routes, 202, &legacy, &owned) ||
+        owned != host_flush) return 20;
     if (rc_acquire((s64)(intptr_t)&a, 101) ||
         img_acquire((s64)(intptr_t)&ai, 101)) return 9;
     RenderContext *bRef = rc_acquire((s64)(intptr_t)&b, 202);
@@ -159,8 +176,8 @@ class MultiVMRenderHandleHashTest(unittest.TestCase):
             exe = Path(t) / "owned"
             src.write_text(source, encoding="utf-8")
             build = subprocess.run(
-                [cc, "-std=c11", "-O1", "-Wall", "-Wextra", "-pthread",
-                 str(src), "-o", str(exe)],
+                [cc, "-std=c11", "-O1", "-Wall", "-Wextra", "-Werror",
+                 "-pthread", "-I", str(RENDER.parent), str(src), "-o", str(exe)],
                 capture_output=True, text=True, timeout=45)
             self.assertEqual(build.returncode, 0,
                              build.stdout + build.stderr)
