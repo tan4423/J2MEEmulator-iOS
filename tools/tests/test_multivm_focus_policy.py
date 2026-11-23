@@ -134,8 +134,8 @@ class MultiVMFocusPolicyTest(unittest.TestCase):
         self.assertIn("jvm_bridge_park_session(gameSessionToken)", game)
         self.assertIn("jvm_bridge_focus_session(self.gameSessionToken)", game)
         # Existing Treo-8 path must not be replaced by an inefficient fake.
-        self.assertIn("treo_gc_smart_set(1)", game)
-        self.assertIn("treo_render_set_afk_mode(8)", game)
+        self.assertIn("treo_gc_smart_set_for_token(gameSessionToken, 1)", game)
+        self.assertIn("treo_render_set_afk_mode_for_token(gameSessionToken, 8)", game)
         # Never unlock a second VM while global rendering/Treo persists.
         self.assertIn("atomic_compare_exchange_strong_explicit(&g_bridge_vm.active", source)
         self.assertIn("int jvm_bridge_supported_concurrent_sessions(void) {\n    return 1;", source)

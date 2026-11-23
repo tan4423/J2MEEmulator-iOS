@@ -333,6 +333,10 @@ static void treo_smart_set_active(MiniJVM *vm, void *arg) {
 void treo_gc_smart_set(int enabled) {
     jvm_bridge_visit_running_vm(treo_smart_set_active, &enabled);
 }
+int treo_gc_smart_set_for_token(uint64_t token, int enabled) {
+    return jvm_bridge_visit_running_vm_for_token(token, treo_smart_set_active,
+                                                  &enabled);
+}
 static void treo_force_safe_active(MiniJVM *vm, void *arg) {
     (void)arg;
     jarbox_treo_smart_force_safe(&vm->session->treo_state);

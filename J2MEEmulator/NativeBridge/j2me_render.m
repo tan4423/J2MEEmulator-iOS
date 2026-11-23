@@ -363,12 +363,22 @@ static void treo_guard_set_visitor(MiniJVM *vm, void *arg) {
 void treo_afk_guard_auto_set(int enabled) {
     jvm_bridge_visit_running_vm(treo_guard_set_visitor, &enabled);
 }
+int treo_afk_guard_auto_set_for_token(uint64_t token, int enabled) {
+    return jvm_bridge_visit_running_vm_for_token(token, treo_guard_set_visitor,
+                                                  &enabled);
+}
 static void treo_guard_read_visitor(MiniJVM *vm, void *arg) {
     *(int *)arg = jarbox_treo_guard_fell_back(&vm->session->treo_state);
 }
 int treo_afk_guard_auto_fell_back(void) {
     int result = 0;
     jvm_bridge_visit_running_vm(treo_guard_read_visitor, &result);
+    return result;
+}
+int treo_afk_guard_auto_fell_back_for_token(uint64_t token) {
+    int result = 0;
+    (void)jvm_bridge_visit_running_vm_for_token(token, treo_guard_read_visitor,
+                                                &result);
     return result;
 }
 uint64_t treo_afk_guarded_paints(void) { return atomic_load_explicit(&treo_guarded_paints, memory_order_relaxed); }
@@ -794,6 +804,21 @@ void treo_render_set_afk_mode(int mode) {
     treo_gc_set_afk_mode_for_current(mode);
     if (mode && !previous) stop_afk_haptics();
     j2me_display_wake();
+}
+/* During single-VM operation preserve all legacy UI/haptics/Display wake
+ * behavior. In a future multi-slot runtime, background A must update only
+ * its own JVM and 2D render handles, never B's global GPU compatibility
+ * mode or physical input destination. This is NOT a concurrency unlock. */
+int treo_render_set_afk_mode_for_token(uint64_t token, int mode) {
+    if (!token || !jvm_bridge_session_is_active_for_token(token)) return 0;
+    if (jvm_bridge_active_session_count() == 1) {
+        if (jvm_bridge_session_token() != token) return 0;
+        treo_render_set_afk_mode(mode);
+        return 1;
+    }
+    const TreoModeChange change = {mode, treo_afk_now_ns()};
+    return jvm_bridge_visit_running_vm_for_token(token, treo_render_mode_visitor,
+                                                 (void *)&change);
 }
 void j2me_render_set_afk_suspended(int enabled) { treo_render_set_afk_mode(enabled ? 1 : 0); }
 

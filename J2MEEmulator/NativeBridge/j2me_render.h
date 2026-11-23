@@ -39,6 +39,9 @@ int j2me_render_is_afk_suspended(void);
 // 0: visible, 1: legacy blackout, 2: native suppression, 3: headless Graphics,
 // 4: headless VM elision, 5: blackout with canvas raster kept on SIMD.
 void treo_render_set_afk_mode(int mode);
+/// Per-session Treo mode. For single-VM it preserves compatibility side
+/// effects; for multiple live sessions it updates only this owner's state.
+int treo_render_set_afk_mode_for_token(uint64_t token, int mode);
 uint64_t treo_afk_skipped_draws(void);
 uint64_t treo_afk_skipped_paints(void);
 void treo_jar_audit_set(int enabled);
@@ -53,6 +56,7 @@ uint64_t treo_jar_audit_ticks(int active);
 // Explicitly enabled ONLY in cross-thread diagnostic A/B/A.
 // JarBox-wide safe AFK GC: native presentation off, fallback at heap pressure.
 void treo_gc_smart_set(int enabled);
+int treo_gc_smart_set_for_token(uint64_t token, int enabled);
 void treo_gc_smart_force_safe(void);
 int treo_gc_smart_period_ms(void);
 int treo_gc_smart_fell_back(void);
@@ -104,6 +108,8 @@ uint64_t treo_image_cache_stored_bytes(void);
 // Opt-in safety fallback for JarBox's generic guarded Java Canvas AFK.
 void treo_afk_guard_auto_set(int enabled);
 int treo_afk_guard_auto_fell_back(void);
+int treo_afk_guard_auto_set_for_token(uint64_t token, int enabled);
+int treo_afk_guard_auto_fell_back_for_token(uint64_t token);
 // One dedicated A/B/A test of redundant GameCanvas Image->Canvas blits.
 void treo_afk_buffer_audit_set(int enabled, int skip);
 uint64_t treo_afk_buffer_copied(void);

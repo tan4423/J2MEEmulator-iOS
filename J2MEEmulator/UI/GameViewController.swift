@@ -3782,9 +3782,9 @@ class GameViewController: UIViewController {
         parkedSkippedDrawsStart = treo_afk_skipped_draws()
         parkedGuardedPaintsStart = treo_afk_guarded_paints()
         parkedGCCyclesStart = treo_gc_smart_count()
-        treo_afk_guard_auto_set(1)
-        treo_gc_smart_set(1)
-        treo_render_set_afk_mode(8)
+        _ = treo_afk_guard_auto_set_for_token(gameSessionToken, 1)
+        _ = treo_gc_smart_set_for_token(gameSessionToken, 1)
+        _ = treo_render_set_afk_mode_for_token(gameSessionToken, 8)
         // Only park Display's polling thread for the structurally verified
         // NSO Canvas; arbitrary games retain their normal event semantics.
         parkedNSODeepIdle = treo_ninja_deep_verified() != 0 &&
@@ -3827,8 +3827,7 @@ class GameViewController: UIViewController {
         // The native session can finish before this controller's deferred
         // completion. Never reset Treo of an unrelated newly acquired tab.
         guard gameSessionToken != 0 &&
-              jvm_bridge_session_token() == gameSessionToken &&
-              jvm_bridge_session_is_active() != 0 else {
+              jvm_bridge_session_is_active_for_token(gameSessionToken) != 0 else {
             parkedTreoActive = false
             parkedNSODeepIdle = false
             parkedStartedAt = nil
@@ -3836,7 +3835,7 @@ class GameViewController: UIViewController {
             return
         }
         parkedTreoActive = false
-        let fallback = treo_afk_guard_auto_fell_back() != 0
+        let fallback = treo_afk_guard_auto_fell_back_for_token(gameSessionToken) != 0
         let elapsed = parkedStartedAt.map {
             max(0.001, ProcessInfo.processInfo.systemUptime - $0)
         } ?? 0
@@ -3854,9 +3853,9 @@ class GameViewController: UIViewController {
             _ = treo_display_wait_set_for_token(gameSessionToken, 0)
             parkedNSODeepIdle = false
         }
-        treo_afk_guard_auto_set(0)
-        treo_gc_smart_set(0)
-        treo_render_set_afk_mode(0)
+        _ = treo_afk_guard_auto_set_for_token(gameSessionToken, 0)
+        _ = treo_gc_smart_set_for_token(gameSessionToken, 0)
+        _ = treo_render_set_afk_mode_for_token(gameSessionToken, 0)
         NSLog("[JarBoxVM][ParkTreo] disabled elapsed=%.1fs process_CPU=%@%% canvas_fallback=%d",
               elapsed, percent, fallback ? 1 : 0)
     }
