@@ -44,8 +44,26 @@ class JarBoxThreadTeardownTest(unittest.TestCase):
         src = BRIDGE.read_text()
         self.assertIn("JarBoxSession *session;", (JVM / "jvm.h").read_text())
         self.assertIn("jarbox_session_bind_token(", src)
-        self.assertIn("jarbox_session_park(owner->session)", src)
-        self.assertIn("jarbox_session_enter_foreground(owner->session)", src)
+        # Validate the complete park/focus ownership contract, not the
+        # spelling of a VM field: native operations must run under the
+        # session held by bridge_pin_running_owner(), then return the lease.
+        pin = src.split("static MiniJVM *bridge_pin_running_owner(", 1)[1].split(
+            "int jvm_bridge_park_session(", 1)[0]
+        park = src.split("int jvm_bridge_park_session(uint64_t token) {", 1)[1].split(
+            "int jvm_bridge_focus_session(", 1)[0]
+        focus = src.split("int jvm_bridge_focus_session(uint64_t token) {", 1)[1].split(
+            "int jvm_bridge_session_is_parked(", 1)[0]
+        self.assertIn("jarbox_registry_pin_vm(&g_bridge_registry, token, held)", pin)
+        self.assertIn("bridge_pin_running_owner(token, &held)", park)
+        self.assertIn("(void)jarbox_session_park(held)", park)
+        self.assertIn("jarbox_session_callback_done(held)", park)
+        self.assertLess(park.index("jarbox_session_park(held)"),
+                        park.index("jarbox_session_callback_done(held)"))
+        self.assertIn("bridge_pin_running_owner(token, &held)", focus)
+        self.assertIn("jarbox_session_enter_foreground(held)", focus)
+        self.assertIn("jarbox_session_callback_done(held)", focus)
+        self.assertLess(focus.index("jarbox_session_enter_foreground(held)"),
+                        focus.index("jarbox_session_callback_done(held)"))
         self.assertIn("int jvm_bridge_supported_concurrent_sessions(void) {\n    return 1;", src)
         self.assertIn("j2me_render_stop_for_owner(destroyed_render_key)", src)
 
