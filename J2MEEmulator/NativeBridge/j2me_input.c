@@ -166,6 +166,24 @@ void treo_display_wait_set(int enabled) {
     // Also wake when disabled, so a pending native timed wait ends now.
     signal_display_wait(ctx);
 }
+/* Set the Display wait mode for the *actual JVM token*, not whichever Tab
+ * happens to own the physical input destination. The bridge lease protects
+ * the JVM while the input-context mutex protects slot reuse. */
+static void treo_wait_visitor(MiniJVM *vm, void *arg) {
+    const int enabled = *(const int *)arg;
+    pthread_mutex_lock(&g_input_context_lock);
+    J2MEInputContext *ctx = context_for_vm(vm);
+    if (ctx) {
+        atomic_store_explicit(&ctx->display_wait_enabled, enabled != 0,
+                              memory_order_release);
+        signal_display_wait(ctx);
+    }
+    pthread_mutex_unlock(&g_input_context_lock);
+}
+int treo_display_wait_set_for_token(uint64_t token, int enabled) {
+    if (!token) return 0;
+    return jvm_bridge_visit_running_vm_for_token(token, treo_wait_visitor, &enabled);
+}
 uint64_t treo_display_poll_calls(void) { return atomic_load_explicit(&g_display_poll_calls, memory_order_relaxed); }
 uint64_t treo_display_wait_calls(void) { return atomic_load_explicit(&g_display_wait_calls, memory_order_relaxed); }
 uint64_t treo_display_gc_safe_wait_calls(void) { return atomic_load_explicit(&g_display_gc_safe_wait_calls, memory_order_relaxed); }

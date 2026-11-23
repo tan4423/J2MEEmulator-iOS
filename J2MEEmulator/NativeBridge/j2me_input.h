@@ -52,6 +52,9 @@ void j2me_input_reset(void);
 
 // Diagnostic idle Display wait; defaults off and never affects normal mode.
 void treo_display_wait_set(int enabled);
+/// Park/unpark only the owner with this immutable session token. Returns 0
+/// when the token is stale, STOPPING, or not yet bound to a live JVM.
+int treo_display_wait_set_for_token(uint64_t token, int enabled);
 void j2me_display_wake(void);
 uint64_t treo_display_poll_calls(void);
 uint64_t treo_display_wait_calls(void);

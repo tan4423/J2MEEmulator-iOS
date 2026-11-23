@@ -139,7 +139,11 @@ class MultiVMInputIsolationTest(unittest.TestCase):
         self.assertIn('JarBoxVMContext', bridge)
         self.assertIn('atomic_int stop_requested;', bridge)
         self.assertIn('jvm_bridge_is_stop_requested_for_vm', bridge)
-        self.assertIn('owner != vm', bridge)
+        self.assertIn('jarbox_registry_should_stop_vm(&g_bridge_registry, vm)', bridge)
+        self.assertIn('jvm_bridge_visit_running_vm_for_token(', bridge)
+        self.assertIn('treo_display_wait_set_for_token(uint64_t token, int enabled)', native)
+        self.assertIn('jvm_bridge_visit_running_vm_for_token(token, treo_wait_visitor, &enabled)', native)
+        self.assertIn('pthread_mutex_lock(&g_input_context_lock);', native)
         self.assertIn('_Atomic uint64_t token;', bridge)
         # Keep the global singleton gate until every native subsystem is isolated.
         self.assertIn('atomic_compare_exchange_strong_explicit(&g_bridge_vm.active', bridge)

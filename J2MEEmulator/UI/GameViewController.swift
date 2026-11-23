@@ -430,7 +430,7 @@ class GameViewController: UIViewController {
                 // deinit may not be actor-isolated under strict Swift checks.
                 // Keep this last-resort native reset direct, without
                 // invoking an actor-isolated instance method from deinit.
-                if parkedNSODeepIdle { treo_display_wait_set(0) }
+                if parkedNSODeepIdle { _ = treo_display_wait_set_for_token(gameSessionToken, 0) }
                 treo_afk_guard_auto_set(0)
                 treo_gc_smart_set(0)
                 treo_render_set_afk_mode(0)
@@ -3783,7 +3783,7 @@ class GameViewController: UIViewController {
         // NSO Canvas; arbitrary games retain their normal event semantics.
         parkedNSODeepIdle = treo_ninja_deep_verified() != 0 &&
                             treo_nso_canvas_recognized() != 0
-        if parkedNSODeepIdle { treo_display_wait_set(1) }
+        if parkedNSODeepIdle { _ = treo_display_wait_set_for_token(gameSessionToken, 1) }
         NSLog("[JarBoxVM][ParkTreo] enabled token=%llu deep_idle=%d",
               gameSessionToken, parkedNSODeepIdle ? 1 : 0)
     }
@@ -3845,7 +3845,7 @@ class GameViewController: UIViewController {
         parkedCPUStart = nil
         // Restore the Display waiter before waking/refreshing the Canvas.
         if parkedNSODeepIdle {
-            treo_display_wait_set(0)
+            _ = treo_display_wait_set_for_token(gameSessionToken, 0)
             parkedNSODeepIdle = false
         }
         treo_afk_guard_auto_set(0)

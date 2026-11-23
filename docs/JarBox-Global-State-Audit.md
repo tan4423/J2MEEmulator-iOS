@@ -383,3 +383,18 @@ No second Java runner is allocated or started. The runtime capacity remains
 one. A separately designed multi-runner bridge and a tab coordinator are
 required before two NSO instances can safely be exposed. The existing
 one-VM behavior and Deep Treo 8 were preserved for device regression.
+
+## 2026-11-23: Display idle-wait selection by immutable tab token
+
+The Deep Treo Display wait control now pins the exact RUNNING JVM via
+`jvm_bridge_visit_running_vm_for_token`, locates its dedicated input
+context under the registry mutex, and wakes only that context. Parking A
+cannot set B's `display_wait_enabled` flag merely because B became the
+foreground input owner. Both the parked controller and its last-resort
+cleanup use the token-scoped entry point. The old visible-context API
+remains for existing non-tab diagnostics.
+
+The system still runs only one actual `g_bridge_vm`; there is no second
+independent native executor or tab coordinator yet. **Do not change the
+1-JVM admission cap** until those two are implemented and exercised on
+iPhone. This commit alters no network protocol, game JAR or save data.
