@@ -125,7 +125,7 @@ class MultiVMFocusPolicyTest(unittest.TestCase):
         self.assertIn("j2me_render_focus_vm(owner)", source)
         self.assertIn("j2me_input_focus_vm(owner)", source)
         self.assertIn("j2me_ui_focus_vm(owner)", source)
-        self.assertIn("jarbox_focus_unregister(&g_bridge_focus", source)
+        self.assertIn("jarbox_registry_finish(&g_bridge_registry, &g_bridge_focus", source)
         self.assertIn("jvm_bridge_park_session(gameSessionToken)", game)
         self.assertIn("jvm_bridge_focus_session(self.gameSessionToken)", game)
         # Existing Treo-8 path must not be replaced by an inefficient fake.

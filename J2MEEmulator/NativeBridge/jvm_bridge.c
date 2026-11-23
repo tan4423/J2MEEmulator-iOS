@@ -1,5 +1,6 @@
 #include "jvm_bridge.h"
 #include "jarbox_focus_policy.h"
+#include "jarbox_session_registry.h"
 #include "jvm.h"
 #include "jvm_util.h"
 #include "garbage.h"
@@ -103,6 +104,9 @@ static JarBoxVMContext g_bridge_vm = {0};
 static _Atomic uint64_t g_bridge_session_sequence;
 // One visible window; every other live tab remains parked (never stopped).
 static JarBoxFocusPolicy g_bridge_focus = JARBOX_FOCUS_POLICY_INITIALIZER;
+// Registry owns a session pin per token; runtime cap stays one until the
+// native render, Treo, UI, audio and 3D state becomes fully isolated.
+static JarBoxSessionRegistry g_bridge_registry = JARBOX_SESSION_REGISTRY_INITIALIZER;
 // Protect the JVM pointer/phase while the cancellation watchdog interrupts
 // Java threads; normal VM execution never takes this mutex.
 static pthread_mutex_t g_bridge_lifecycle_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -243,7 +247,8 @@ int jvm_bridge_try_begin_session(void) {
         &g_bridge_session_sequence, 1, memory_order_relaxed) + 1;
     // Every VM token is registered with the single-visible policy before
     // its async startup worker is scheduled. A new VM cannot steal focus.
-    if (!jarbox_focus_register(&g_bridge_focus, token)) {
+    if (!jarbox_registry_claim(&g_bridge_registry, &g_bridge_focus,
+                               token, 1 /* safe single-VM limit */)) {
         atomic_store_explicit(&g_bridge_vm.active, 0, memory_order_release);
         return 0;
     }
@@ -331,12 +336,13 @@ void jvm_bridge_visit_running_vm(void (*visitor)(MiniJVM *, void *), void *arg) 
     pthread_mutex_lock(&g_bridge_lifecycle_lock);
     const int running = atomic_load_explicit(&g_bridge_vm.phase,
                                              memory_order_acquire) == BRIDGE_RUNNING;
+    JarBoxSession *held_session = NULL;
+    const uint64_t token = atomic_load_explicit(&g_bridge_vm.token,
+                                                memory_order_acquire);
     MiniJVM *vm = running ?
-        atomic_load_explicit(&g_bridge_vm.jvm, memory_order_acquire) : NULL;
-    // The lifecycle lock keeps this pointer live while admitting a lease;
-    // teardown may not free the VM until the native visitor returns.
-    if (vm && vm->session && jarbox_session_reserve_callback(vm->session)) {
-        JarBoxSession *const held_session = vm->session;
+        (MiniJVM *)jarbox_registry_pin_vm(&g_bridge_registry, token, &held_session)
+        : NULL;
+    if (vm) {
         visitor(vm, arg);
         jarbox_session_callback_done(held_session);
     }
@@ -355,7 +361,7 @@ int jvm_bridge_supported_concurrent_sessions(void) {
     return 1;
 }
 int jvm_bridge_active_session_count(void) {
-    return atomic_load_explicit(&g_bridge_vm.active, memory_order_acquire) ? 1 : 0;
+    return jarbox_registry_active_count(&g_bridge_registry);
 }
 uint64_t jvm_bridge_session_token(void) {
     return atomic_load_explicit(&g_bridge_vm.token, memory_order_acquire);
@@ -367,9 +373,14 @@ void jvm_bridge_finish_session(void) {
         return;
     }
     pthread_mutex_lock(&g_bridge_lifecycle_lock);
-    // A stopped foreground tab never auto-unparks a different tab.
-    (void)jarbox_focus_unregister(&g_bridge_focus,
-        atomic_load_explicit(&g_bridge_vm.token, memory_order_acquire));
+    // Fail closed: stuck Java/native leases keep this slot occupied.
+    const uint64_t token = atomic_load_explicit(&g_bridge_vm.token,
+                                                memory_order_acquire);
+    if (!jarbox_registry_finish(&g_bridge_registry, &g_bridge_focus, token)) {
+        pthread_mutex_unlock(&g_bridge_lifecycle_lock);
+        printf("[JarBoxVM][Lifecycle] ERROR: live registry owner cannot retire\n");
+        return;
+    }
     atomic_store_explicit(&g_bridge_vm.phase, BRIDGE_IDLE, memory_order_release);
     atomic_store_explicit(&g_bridge_vm.stop_requested, 0, memory_order_release);
     atomic_store_explicit(&g_bridge_vm.token, 0, memory_order_release);
@@ -473,6 +484,16 @@ int jvm_bridge_init(const char *res_root, const char *save_root, const char *mid
         g_bridge_vm.jvm = NULL;
         atomic_store_explicit(&treo_exact_ninja_verified, 0, memory_order_release);
         return -3;
+    }
+    // The registry retains an independently owned JarBoxSession reference
+    // until DEAD; token/pointer reuse cannot expose a freed session.
+    if (!jarbox_registry_bind(&g_bridge_registry,
+            atomic_load_explicit(&g_bridge_vm.token, memory_order_acquire),
+            g_bridge_vm.jvm->session)) {
+        printf("[JarBoxVM][Lifecycle] failed to bind JVM registry owner\n");
+        jvm_destroy(g_bridge_vm.jvm);
+        g_bridge_vm.jvm = NULL;
+        return -8;
     }
 
     // GC's native-memory ledger is separate for each JVM and guarded by
@@ -586,6 +607,8 @@ int jvm_bridge_run_midlet(const char *midlet_jar_path) {
 void jvm_bridge_destroy(void) {
     pthread_mutex_lock(&g_bridge_lifecycle_lock);
     atomic_store_explicit(&g_bridge_vm.phase, BRIDGE_CLEANUP, memory_order_release);
+    jarbox_registry_begin_stop(&g_bridge_registry,
+        atomic_load_explicit(&g_bridge_vm.token, memory_order_acquire));
     pthread_mutex_unlock(&g_bridge_lifecycle_lock);
     if (g_bridge_vm.jvm) {
         MiniJVM *const destroyed_owner = g_bridge_vm.jvm;
@@ -651,8 +674,10 @@ int jvm_bridge_request_stop_for_token(uint64_t token) {
     const int matching =
         atomic_load_explicit(&g_bridge_vm.active, memory_order_acquire) &&
         atomic_load_explicit(&g_bridge_vm.token, memory_order_acquire) == token;
-    if (matching)
+    if (matching) {
         atomic_store_explicit(&g_bridge_vm.stop_requested, 1, memory_order_release);
+        (void)jarbox_registry_request_stop(&g_bridge_registry, token);
+    }
     pthread_mutex_unlock(&g_bridge_lifecycle_lock);
     if (matching) {
         printf("[JarBoxVM][Lifecycle] stop_requested token=%llu\n",

@@ -273,3 +273,23 @@ current environment; no sanitizer, Codemagic or device pass is claimed.
 an independently acquired owner/session reference, GC collector and shutdown
 hook ordering, and the bridge/renderer/Treo process singletons. Keep the
 concurrent-session capacity at one until these paths are audited and tested.
+
+## 2026-11-23: Native lease gate and owned session registry (capacity remains one)
+
+The unified atomic lease gate closes worker and native callback admission before
+JVM teardown and tracks every granted lease independently of diagnostic counters.
+The bridge visitor now pins its VM through a token-keyed session registry;
+the registry retains its own session reference after binding and rejects
+retirement until the Java heap is DEAD with no active leases.
+The bridge claims max_live=1, while the registry's two-slot model exists only
+for future validation. The runtime-reported concurrency limit remains 1.
+
+Host development: a 10,000-iteration callback/shutdown C11 pthread model
+passed unsanitized and with ASan+UBSan and TSan; a separate two-slot registry
+model passed unsanitized and with ASan+UBSan and TSan. These tests compile
+equivalent portable headers, not a complete iOS app. The new Python tests
+and Codemagic/device build still need a separate run.
+
+Outstanding: collector and shutdown-hook safety, late native callbacks
+outside the guarded visitor, per-VM Treo/Canvas/NSO/JAR worker state,
+Metal/3D ownership, and real two-MIDlet scheduling. Do not unlock 2 JVMs.
