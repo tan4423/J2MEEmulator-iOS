@@ -256,3 +256,20 @@ Validation for this checkpoint: a host C11 JarBoxSession model compiled
 and executed with ASan+UBSan using a locally verified Git blob SHA, plus
 source-structure regression tests added to the repository. Full unit
 suite, Xcode/Codemagic and device/Tsan remain to be run on this HEAD.
+
+## 2026-11-23: Worker-lease versus STOPPING race regression
+
+Commit `7fdaaecd936b0da3f16d3f99bb7b57fe786c0753` extends
+`tools/tests/test_jarbox_session_host.py` with 1,000 fresh-session iterations
+racing a native worker reservation against `jarbox_session_begin_stop`.
+The test asserts leases are fully returned after joining the contender,
+STOPPING denies new leases, DEAD cannot regain foreground, and unique
+session tokens are not recycled despite identical synthetic VM pointers.
+This is a C11 header-level regression, not a UIKit or real multi-JVM test.
+**Execution status at this checkpoint:** committed but not executed in the
+current environment; no sanitizer, Codemagic or device pass is claimed.
+
+**Outstanding lifetime blockers:** callback entry points that do not hold
+an independently acquired owner/session reference, GC collector and shutdown
+hook ordering, and the bridge/renderer/Treo process singletons. Keep the
+concurrent-session capacity at one until these paths are audited and tested.
