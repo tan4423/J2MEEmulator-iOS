@@ -33,7 +33,7 @@ class MultiVMFrameOwnershipTest(unittest.TestCase):
             "jarbox_native_heap_key_for_runtime(runtime)",
             "callerKey != rc->heap_key",
             "callerKey != visibleKey",
-            "g_owned_flush_callback(image, rc->width, rc->height, rc->heap_key)",
+            "owned_flush(image, rc->width, rc->height, rc->heap_key)",
         ):
             self.assertIn(needle, self.render)
         # Every Java draw/flush must authorize its immutable thread key,
@@ -61,10 +61,11 @@ class MultiVMFrameOwnershipTest(unittest.TestCase):
             self.render.index("static s32 n_flushToScreen"):], re.DOTALL)
         self.assertIsNotNone(match)
         block = match.group(1)
-        self.assertIn("if (g_owned_flush_callback)", block)
-        self.assertIn("else", block)
-        self.assertLess(block.index("g_owned_flush_callback(image,"),
-                        block.index("g_flush_callback(image,"))
+        self.assertIn("jarbox_flush_route_lookup(&g_flush_routes, callerKey", block)
+        self.assertIn("else if (owned_flush)", block)
+        self.assertIn("else if (legacy_flush && jvm_bridge_supported_concurrent_sessions() == 1)", block)
+        self.assertLess(block.index("owned_flush(image,"),
+                        block.index("legacy_flush(image,"))
         # The legacy callback may remain in source for compatibility,
         # but the owner-aware callback is installed by every GameVC.
         self.assertIn("let ownedFlushCallback: @convention(c)", self.view)

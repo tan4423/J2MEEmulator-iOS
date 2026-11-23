@@ -19,6 +19,7 @@
 #endif
 #import <CoreHaptics/CoreHaptics.h>
 #include "j2me_render.h"
+#include "jarbox_flush_routes.h"
 #include "jvm_bridge.h"
 #include "j2me_input.h"
 #include "jvm.h"
@@ -168,8 +169,9 @@ static int treo_live_image(RenderContext *rc, CGImageRef image, int64_t x, int64
                            int sx, int sy, int w, int h, int transform, int cacheable);
 static int treo_live_enqueue(RenderContext *rc, RenderImage *img, int64_t x, int64_t y,
                              int sx, int sy, int w, int h, int transform);
-static j2me_flush_callback g_flush_callback = NULL;
-static j2me_flush_callback_owned g_owned_flush_callback = NULL;
+// Copy each callback into an immutable owner route when a JVM generation
+// registers; a later launch must not overwrite a still-live tab's route.
+static JarBoxFlushRoutes g_flush_routes = JARBOX_FLUSH_ROUTES_INITIALIZER;
 // Frame publication is controlled by a *generation* bound to one VM,
 // never by JAR path (clones all share the same binary) or stale pointers.
 // Java rendering into offscreen buffers may continue, but only the VM
@@ -1907,10 +1909,10 @@ static CGColorSpaceRef getColorSpace(void) {
 }
 
 void j2me_render_set_flush_callback(j2me_flush_callback callback) {
-    g_flush_callback = callback;
+    jarbox_flush_default_legacy(&g_flush_routes, callback);
 }
 void j2me_render_set_owned_flush_callback(j2me_flush_callback_owned callback) {
-    g_owned_flush_callback = callback;
+    jarbox_flush_default_owned(&g_flush_routes, callback);
 }
 uint64_t j2me_render_visible_owner_key(void) {
     return atomic_load_explicit(&g_visible_render_owner_key, memory_order_acquire);
@@ -2196,7 +2198,10 @@ static s32 n_flushToScreen(Runtime *runtime, JClass *clazz) {
     }
     const int profiling = treo_profile_active();
     if (profiling) TREO_PROF_ADD(flushes, 1);
-    if (rc && (g_flush_callback || g_owned_flush_callback)) {
+    JarBoxFlushLegacy legacy_flush = NULL;
+    JarBoxFlushOwned owned_flush = NULL;
+    if (rc && jarbox_flush_route_lookup(&g_flush_routes, callerKey,
+                                        &legacy_flush, &owned_flush)) {
         const uint64_t begin = profiling ? treo_thread_cpu_ns() : 0;
         CGImageRef image = treo_canvas_snapshot(rc);
         if (profiling && treo_profile_active()) {
@@ -2210,12 +2215,21 @@ static s32 n_flushToScreen(Runtime *runtime, JClass *clazz) {
             if (callerKey != atomic_load_explicit(
                     &g_visible_render_owner_key, memory_order_acquire)) {
                 CGImageRelease(image);
-            } else {
+            } else if (!jarbox_flush_route_lookup(&g_flush_routes, callerKey,
+                                                  &legacy_flush, &owned_flush)) {
+                // Unregistered during CGImage snapshot: no callback is sent
+                // after the owner has begun native teardown.
+                CGImageRelease(image);
+            } else if (owned_flush) {
                 atomic_fetch_add_explicit(&sw_frames, 1, memory_order_relaxed);
-                if (g_owned_flush_callback)
-                    g_owned_flush_callback(image, rc->width, rc->height, rc->heap_key);
-                else
-                    g_flush_callback(image, rc->width, rc->height);
+                owned_flush(image, rc->width, rc->height, rc->heap_key);
+            } else if (legacy_flush && jvm_bridge_supported_concurrent_sessions() == 1) {
+                // The old no-owner ABI is allowed only with the exclusive
+                // single-JVM gate; a future 2-JVM mode requires owned frames.
+                atomic_fetch_add_explicit(&sw_frames, 1, memory_order_relaxed);
+                legacy_flush(image, rc->width, rc->height);
+            } else {
+                CGImageRelease(image);
             }
         }
     }
@@ -4516,6 +4530,10 @@ void j2me_render_reg_natives(MiniJVM *jvm) {
     if (atomic_load_explicit(&g_visible_render_owner_key,
                              memory_order_acquire) == 0)
         (void)j2me_render_focus_vm(jvm);
+    const uint64_t owner_key = jarbox_native_heap_key_for_vm(jvm);
+    if (!jarbox_flush_route_bind(&g_flush_routes, owner_key))
+        fprintf(stderr, "[J2ME Render] no owned frame callback for JVM generation %llu\n",
+                (unsigned long long)owner_key);
     native_reg_lib(jvm, j2me_render_methods,
                    sizeof(j2me_render_methods) / sizeof(java_native_method));
     printf("[J2ME Render] Registered %lu native methods\n",
@@ -4524,6 +4542,9 @@ void j2me_render_reg_natives(MiniJVM *jvm) {
 
 void j2me_render_stop_for_owner(uint64_t owner_key) {
     if (!owner_key) return;
+    // Revoke frame delivery before unhooking this generation's 2D handles.
+    // B's route is untouched, including during an A/B focus transition.
+    (void)jarbox_flush_route_unbind(&g_flush_routes, owner_key);
     spin_lock(&g_track_lock);
     if (!render_owner_stopped_locked(owner_key)) {
         if (g_stopped_render_owner_count < RENDER_STOP_OWNER_SLOTS)

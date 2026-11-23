@@ -309,3 +309,26 @@ The separate early-Back regression (`ae0c8b5`) permits a STOP-requested
 STARTING slot to bind its JVM for safe cleanup, but does not allow callback
 admission after cancellation. Codemagic and device tests for these changes
 have not yet been run.
+
+## 2026-11-23: Per-generation Canvas AFK and frame callback routing
+
+Commits `9d1a138`, `b029ee5` and this change move interpreter Canvas
+elision to the invoking Runtime's session mode; reject stale thread-local
+Canvas contexts by immutable native generation; and move Canvas auto-fallback,
+AFK repaint-refresh, bypass deadlines and 200-ms paint allowance into the
+owning `JarBoxTreoState`. Legacy process-wide `treo_afk_mode` remains as
+a compatibility mirror for native 2D/Metal paths, **not** an authorization
+for Java bytecode elision. Remaining GPU/guarded instrumentation globals
+still prevent 2-JVM enablement.
+
+The renderer now snapshots the flush callback for each native heap generation
+at registration and checks registration again before invoking it. Stopping A
+unregisters only A; an outdated frame is also filtered by generation at
+UIKit drain. The unowned callback ABI is fail-closed when concurrency is
+not restricted to one; future multiple JVMs must use owned callbacks.
+
+Portable production-header tests cover A/B callback routing, stale owners,
+stop-one-keep-other, and independent AFK/Canvas fallback semantics. They do
+**not** establish a complete iOS compile or on-device 2-JVM concurrency.
+Single-VM admission and existing Treo modes stay unchanged. No Codemagic,
+JAR, save or network code is modified.

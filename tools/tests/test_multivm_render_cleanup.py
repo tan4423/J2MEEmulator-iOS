@@ -141,7 +141,7 @@ class MultiVMRenderCleanupTest(unittest.TestCase):
         self.assertIn("callerKey != visibleKey", flush)
         self.assertIn("callerKey != atomic_load_explicit(", flush)
         self.assertIn("CGImageRelease(image);", flush)
-        self.assertIn("g_owned_flush_callback(image, rc->width, rc->height, rc->heap_key)", flush)
+        self.assertIn("owned_flush(image, rc->width, rc->height, rc->heap_key)", flush)
 
     def test_haptic_callbacks_require_live_foreground_vm_generation(self):
         render = RENDER.read_text(encoding="utf-8")
