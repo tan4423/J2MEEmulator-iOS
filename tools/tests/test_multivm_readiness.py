@@ -56,7 +56,16 @@ class MultiVMReadinessTest(unittest.TestCase):
         self.assertFalse(report["concurrent_jvms_safe_to_enable"])
         self.assertIn("Input contexts (capacity four) are not four working JVM sessions.",
                       report["notes"])
-        self.assertTrue(any("2D handle lookups" in note for note in report["notes"]))
+        # The audit wording evolves as raster/Metal ownership is improved.
+        # Check the actual safety disclosures, not a frozen sentence fragment.
+        self.assertTrue(any(
+            "2D" in note and "handle" in note and "generation" in note
+            for note in report["notes"]
+        ))
+        self.assertTrue(any(
+            "Metal" in note and "shared" in note
+            for note in report["notes"]
+        ))
 
 
 if __name__ == "__main__":
