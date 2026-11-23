@@ -177,8 +177,11 @@ class MultiVMRenderHandleHashTest(unittest.TestCase):
                     "// Global tracking arrays") +
             section(code, "static inline unsigned render_handle_bucket(",
                     "static int track_rc(") +
+            # Only extract the 2D live registry helpers. The following
+            # per-owner AFK-mode updater has its own exact-source pthread test
+            # and requires RenderContext.afk_mode, absent from this mock struct.
             section(code, "static int track_rc(",
-                    "// Each graphics handle carries") +
+                    "/* A transition never mutates buffers") +
             section(code, "static inline RenderContext *rc_acquire(",
                     "static inline void rc_release(") +
             section(code, "static inline RenderImage *img_acquire(",
