@@ -84,9 +84,11 @@ def audit(root=ROOT):
         "render_global_stop_barrier":
             "atomic_store_explicit(&g_render_stopped, 1, memory_order_release)" in src["render"]
             and "static _Atomic int g_render_stopped = 0" in src["render"],
+        # Device/queue/vertex buffers remain shared but serialized. Per-owner
+        # render targets and texture caches alone are not proof of full isolation.
         "render_shared_metal_workspace":
             "static id<MTLCommandQueue> treo_live_queue" in src["render"]
-            and "static id<MTLTexture> treo_live_target" in src["render"],
+            and "static id<MTLBuffer> treo_live_vertices" in src["render"],
         "render_raw_unscoped_handle_acquire":
             "RenderContext *rc = (RenderContext *)(intptr_t)handle;" in src["render"]
             and "RenderImage *img = (RenderImage *)(intptr_t)handle;" in src["render"],

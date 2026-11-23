@@ -3345,20 +3345,44 @@ static id<MTLDevice> treo_live_device;
 static id<MTLCommandQueue> treo_live_queue;
 static id<MTLRenderPipelineState> treo_live_pipeline;
 static id<MTLBuffer> treo_live_vertices;
-static id<MTLTexture> treo_live_target;
-static NSMutableDictionary *treo_live_textures;
-static size_t treo_live_texture_bytes;
+/* The GPU queue, pipeline and vertex buffer are serialized by
+ * treo_live_gpu_lock; mutable textures/targets belong to a heap generation.
+ * A parked A's CG textures must never be found by B, even if a pointer recurs. */
+static NSMutableDictionary *treo_live_owner_targets;       // NSNumber(key) -> MTLTexture
+static NSMutableDictionary *treo_live_owner_textures;      // NSNumber(key) -> image cache
+static NSMutableDictionary *treo_live_owner_texture_bytes; // NSNumber(key) -> NSNumber(bytes)
+static void treo_live_release_owner(uint64_t owner_key) {
+    if (!owner_key) return;
+    os_unfair_lock_lock(&treo_live_gpu_lock);
+    NSNumber *key = @(owner_key);
+    [treo_live_owner_targets removeObjectForKey:key];
+    [treo_live_owner_textures removeObjectForKey:key];
+    [treo_live_owner_texture_bytes removeObjectForKey:key];
+    os_unfair_lock_unlock(&treo_live_gpu_lock);
+}
 
-static id<MTLTexture> treo_live_texture(CGImageRef image, int cacheable) {
-    // NSDictionary retains its CF object key through an NSValue/array entry.
+static id<MTLTexture> treo_live_texture(CGImageRef image, int cacheable,
+                                       uint64_t owner_key) {
+    if (!owner_key) return nil;
+    // Accessed only with the GPU workspace lock held. Every owner has an
+    // independent 16 MB cache and its own image identity namespace.
+    NSNumber *owner = @(owner_key);
+    NSMutableDictionary *cache = treo_live_owner_textures[owner];
+    if (cacheable && !cache) {
+        cache = [NSMutableDictionary new];
+        treo_live_owner_textures[owner] = cache;
+    }
     NSValue *key = [NSValue valueWithPointer:image];
-    NSArray *entry = cacheable ? treo_live_textures[key] : nil;
+    NSArray *entry = cacheable ? cache[key] : nil;
     if (entry) return entry[1];
     size_t w = CGImageGetWidth(image), h = CGImageGetHeight(image);
     size_t bytes = w * h * 4;
-    if (cacheable && treo_live_texture_bytes + bytes > 16u * 1024u * 1024u) {
-        [treo_live_textures removeAllObjects];
-        treo_live_texture_bytes = 0;
+    size_t used = [treo_live_owner_texture_bytes[owner] unsignedLongLongValue];
+    if (cacheable && (bytes > 16u * 1024u * 1024u ||
+                      used > 16u * 1024u * 1024u - bytes)) {
+        [cache removeAllObjects];
+        treo_live_owner_texture_bytes[owner] = @0;
+        used = 0;
     }
     MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:
         MTLPixelFormatBGRA8Unorm width:w height:h mipmapped:NO];
@@ -3374,9 +3398,9 @@ static id<MTLTexture> treo_live_texture(CGImageRef image, int cacheable) {
     [tex replaceRegion:MTLRegionMake2D(0, 0, w, h) mipmapLevel:0
              withBytes:CGBitmapContextGetData(bitmap) bytesPerRow:w * 4];
     CGContextRelease(bitmap);
-    if (cacheable) {
-        treo_live_textures[key] = @[(__bridge id)image, tex];
-        treo_live_texture_bytes += bytes;
+    if (cacheable && bytes <= 16u * 1024u * 1024u) {
+        cache[key] = @[(__bridge id)image, tex];
+        treo_live_owner_texture_bytes[owner] = @(used + bytes);
     }
     return tex;
 }
@@ -3408,26 +3432,31 @@ static int treo_live_render(RenderContext *rc, TreoLiveRun *run) {
         treo_live_pipeline = treo_sprite_pipeline(treo_live_device, NULL);
         treo_live_vertices = [treo_live_device newBufferWithLength:TreoLiveCapacity * 6 * sizeof(TreoVertex)
                                                            options:MTLResourceStorageModeShared];
-        treo_live_textures = [NSMutableDictionary new];
-        treo_live_texture_bytes = 0;
+        treo_live_owner_targets = [NSMutableDictionary new];
+        treo_live_owner_textures = [NSMutableDictionary new];
+        treo_live_owner_texture_bytes = [NSMutableDictionary new];
     }
-    if (!treo_live_pipeline || !treo_live_queue || !treo_live_vertices) return 0;
+    if (!treo_live_pipeline || !treo_live_queue || !treo_live_vertices ||
+        !rc->heap_key) return 0;
     size_t w = rc->width, h = rc->height;
-    if (!treo_live_target || treo_live_target.width != w || treo_live_target.height != h) {
+    NSNumber *owner = @(rc->heap_key);
+    id<MTLTexture> target = treo_live_owner_targets[owner];
+    if (!target || target.width != w || target.height != h) {
         MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:
             MTLPixelFormatBGRA8Unorm width:w height:h mipmapped:NO];
         td.storageMode = MTLStorageModeShared;
         td.usage = MTLTextureUsageRenderTarget;
-        treo_live_target = [treo_live_device newTextureWithDescriptor:td];
+        target = [treo_live_device newTextureWithDescriptor:td];
+        if (target) treo_live_owner_targets[owner] = target;
     }
-    if (!treo_live_target) return 0;
+    if (!target) return 0;
     NSMutableArray<id<MTLTexture>> *sources = [NSMutableArray arrayWithCapacity:run->count];
     NSMutableDictionary *solids = [NSMutableDictionary new];
     for (unsigned i = 0; i < run->count; i++) {
         TreoSprite *s = &run->sprites[i];
         id<MTLTexture> tex = s->kind == TreoRect ? treo_live_solid(s->color, solids)
             : i && s->image == run->sprites[i - 1].image ? sources.lastObject
-            : treo_live_texture(s->image, s->cacheable);
+            : treo_live_texture(s->image, s->cacheable, rc->heap_key);
         if (!tex) return 0;
         [sources addObject:tex];
     }
@@ -3436,10 +3465,10 @@ static int treo_live_render(RenderContext *rc, TreoLiveRun *run) {
     const void *base = CGBitmapContextGetData(rc->ctx);
     if (!base) return 0;
     MTLRegion rect = MTLRegionMake2D(0, 0, w, h);
-    [treo_live_target replaceRegion:rect mipmapLevel:0 withBytes:base
+    [target replaceRegion:rect mipmapLevel:0 withBytes:base
                         bytesPerRow:CGBitmapContextGetBytesPerRow(rc->ctx)];
     MTLRenderPassDescriptor *pass = [MTLRenderPassDescriptor renderPassDescriptor];
-    pass.colorAttachments[0].texture = treo_live_target;
+    pass.colorAttachments[0].texture = target;
     pass.colorAttachments[0].loadAction = MTLLoadActionLoad;
     pass.colorAttachments[0].storeAction = MTLStoreActionStore;
     id<MTLCommandBuffer> command = [treo_live_queue commandBuffer];
@@ -3473,7 +3502,7 @@ static int treo_live_render(RenderContext *rc, TreoLiveRun *run) {
     // partial repaints, copyArea and switching the backend without a restart.
     NSMutableData *bytes = [NSMutableData dataWithLength:w * h * 4];
     if (!bytes) return 0;
-    [treo_live_target getBytes:bytes.mutableBytes bytesPerRow:w * 4 fromRegion:rect mipmapLevel:0];
+    [target getBytes:bytes.mutableBytes bytesPerRow:w * 4 fromRegion:rect mipmapLevel:0];
     CGDataProviderRef provider = CGDataProviderCreateWithCFData((__bridge CFDataRef)bytes);
     if (!provider) return 0;
     CGImageRef image = CGImageCreate(w, h, 8, 32, w * 4, getColorSpace(),
@@ -4664,6 +4693,9 @@ void j2me_render_cleanup_for_owner(uint64_t owner_key) {
             native_heap_sub(owner_key, img->width * img->height * 4);
         free(img);
     }
+    // No Metal texture or framebuffer target of owner A may remain cached
+    // after A's native context teardown; B's targets remain intact.
+    treo_live_release_owner(owner_key);
     // On a multi-VM runtime, the normal frame drain reclaims dead shells
     // after its grace period. Never force-free a different owner's queue.
     if (single_vm_shutdown) {

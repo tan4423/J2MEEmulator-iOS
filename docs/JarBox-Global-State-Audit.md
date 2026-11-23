@@ -347,3 +347,22 @@ window; the single-visible UI target and other native singletons persist.
 
 No Codemagic workflow, NSO JAR, socket, RMS, save or power policy was changed.
 Do not report two independent live JVMs until device/runtime tests pass.
+
+## 2026-11-23: Owner-scoped 2D raster/Metal target and texture caches
+
+Native 2D Canvas RenderContext now owns an atomic AFK mode initialized from
+its JVM and updated only when the matching immutable heap generation changes
+mode. Fast Canvas, opaque fill, image draw, region culling, native replay and
+Metal recording check their RenderContext rather than the process-wide AFK
+flag. The global flag is retained for older UI/diagnostics and unrelated
+pipeline switches; not an authority for another session's 2D draws.
+
+The shared Metal device, command queue, pipeline, vertex buffer and GPU lock
+remain process-level; GPU submission is serialized and waited synchronously.
+Mutable GPU texture caches and render targets are now dictionary entries
+keyed by the native heap generation, not single mutable globals. Each owner
+has its own 16 MiB cache bound and cleanup evicts *only* its own entries.
+GPU shared workspace and diagnostic Metal replay are **still** a concurrency
+blocker; before enabling two JVMs a real iPhone GPU and lifetime stress test
+must demonstrate isolation and acceptable memory pressure. This source
+checkpoint does not change multi-VM admission from one or enable a new mode.
