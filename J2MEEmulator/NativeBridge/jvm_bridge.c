@@ -331,22 +331,29 @@ uint64_t jvm_bridge_visible_session_token(void) {
 // from the collector. Pin the live JVM under the lifecycle lock; teardown
 // transitions phase to CLEANUP under the same lock before destroying memory.
 // NEVER return the VM pointer to an asynchronous caller.
-void jvm_bridge_visit_running_vm(void (*visitor)(MiniJVM *, void *), void *arg) {
-    if (!visitor) return;
+int jvm_bridge_visit_running_vm_for_token(
+        uint64_t token, void (*visitor)(MiniJVM *, void *), void *arg) {
+    if (!token || !visitor) return 0;
     pthread_mutex_lock(&g_bridge_lifecycle_lock);
     const int running = atomic_load_explicit(&g_bridge_vm.phase,
-                                             memory_order_acquire) == BRIDGE_RUNNING;
+                                             memory_order_acquire) == BRIDGE_RUNNING &&
+                        atomic_load_explicit(&g_bridge_vm.token,
+                                             memory_order_acquire) == token;
     JarBoxSession *held_session = NULL;
-    const uint64_t token = atomic_load_explicit(&g_bridge_vm.token,
-                                                memory_order_acquire);
     MiniJVM *vm = running ?
         (MiniJVM *)jarbox_registry_pin_vm(&g_bridge_registry, token, &held_session)
         : NULL;
-    if (vm) {
-        visitor(vm, arg);
-        jarbox_session_callback_done(held_session);
-    }
+    // The callback lease protects the VM after the short lifecycle lock.
+    // STOPPING can close admission but cannot free an in-flight visitor.
     pthread_mutex_unlock(&g_bridge_lifecycle_lock);
+    if (!vm) return 0;
+    visitor(vm, arg);
+    jarbox_session_callback_done(held_session);
+    return 1;
+}
+void jvm_bridge_visit_running_vm(void (*visitor)(MiniJVM *, void *), void *arg) {
+    (void)jvm_bridge_visit_running_vm_for_token(jvm_bridge_session_token(),
+                                                visitor, arg);
 }
 
 int jvm_bridge_session_phase(void) {
@@ -354,6 +361,9 @@ int jvm_bridge_session_phase(void) {
 }
 int jvm_bridge_session_is_active(void) {
     return atomic_load_explicit(&g_bridge_vm.active, memory_order_acquire);
+}
+int jvm_bridge_session_is_active_for_token(uint64_t token) {
+    return jarbox_registry_contains_token(&g_bridge_registry, token);
 }
 // Real runtime capacity, not the number of preallocated input contexts.
 // Raise this only after rendering/UI/Treo/GC/3D isolation is proven.
@@ -704,7 +714,5 @@ int jvm_bridge_is_stop_requested(void) {
 // call, never another foreground game. An unbound/tearing-down JVM is
 // instructed to stop instead of accidentally inheriting a later session.
 int jvm_bridge_is_stop_requested_for_vm(const void *vm) {
-    MiniJVM *owner = atomic_load_explicit(&g_bridge_vm.jvm, memory_order_acquire);
-    if (!vm || owner != vm) return 1;
-    return atomic_load_explicit(&g_bridge_vm.stop_requested, memory_order_acquire);
+    return jarbox_registry_should_stop_vm(&g_bridge_registry, vm);
 }

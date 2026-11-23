@@ -117,6 +117,37 @@ static inline void *jarbox_registry_pin_vm(JarBoxSessionRegistry *r,
     pthread_mutex_unlock(&r->mutex);
     return vm;
 }
+/* A UI controller keeps a generation token, never an unleased VM pointer.
+ * Claimed STARTING slots count as live; STOPPING remains live until finish. */
+static inline int jarbox_registry_contains_token(JarBoxSessionRegistry *r,
+                                                  uint64_t token) {
+    if (!r || !token) return 0;
+    pthread_mutex_lock(&r->mutex);
+    int found = 0;
+    for (int i = 0; i < JARBOX_REGISTRY_MAX_SLOTS; ++i)
+        if (r->entries[i].token == token) { found = 1; break; }
+    pthread_mutex_unlock(&r->mutex);
+    return found;
+}
+/* Java may poll stop from a non-UI pthread. Resolve by the *actual* VM
+ * address in a registry-protected generation binding, never foreground B.
+ * Missing/retired/STOPPING bindings must fail closed. */
+static inline int jarbox_registry_should_stop_vm(JarBoxSessionRegistry *r,
+                                                 const void *vm) {
+    if (!r || !vm) return 1;
+    pthread_mutex_lock(&r->mutex);
+    int stop = 1;
+    for (int i = 0; i < JARBOX_REGISTRY_MAX_SLOTS; ++i) {
+        const JarBoxRegistryEntry *e = &r->entries[i];
+        if (e->token && e->session && e->vm == vm) {
+            stop = e->stop_requested ||
+                jarbox_session_phase(e->session) >= JARBOX_SESSION_STOPPING;
+            break;
+        }
+    }
+    pthread_mutex_unlock(&r->mutex);
+    return stop;
+}
 static inline int jarbox_registry_active_count(JarBoxSessionRegistry *r) {
     if (!r) return 0;
     pthread_mutex_lock(&r->mutex);

@@ -3744,11 +3744,11 @@ class GameViewController: UIViewController {
         DispatchQueue.main.asyncAfter(deadline: .now() + 7, execute: rescue)
     }
 
-    /// Only the owner with the current native token may control this JVM.
+    /// A parked tab keeps its immutable token while another tab is focused.
+    /// Never decide whether A is alive by comparing against B's foreground.
     func ownsLiveGameSession(for path: String? = nil) -> Bool {
         ownsJVMSession && !gameStopRequested && gameSessionToken != 0 &&
-        jvm_bridge_session_is_active() != 0 &&
-        jvm_bridge_session_token() == gameSessionToken &&
+        jvm_bridge_session_is_active_for_token(gameSessionToken) != 0 &&
         (path == nil || path == jarPath)
     }
 

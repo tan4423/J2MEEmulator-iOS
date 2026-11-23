@@ -25,6 +25,10 @@ int main(void) {
     if(!a||!b||!jarbox_registry_claim(&r,&f,101,1)||
        jarbox_registry_claim(&r,&f,102,1)||
        !jarbox_registry_bind(&r,101,a)) return 1;
+    if(!jarbox_registry_contains_token(&r,101) ||
+       jarbox_registry_contains_token(&r,102) ||
+       jarbox_registry_should_stop_vm(&r,a->vm) ||
+       !jarbox_registry_should_stop_vm(&r,b->vm)) return 12;
     JarBoxSession *pin=NULL;
     if(jarbox_registry_pin_vm(&r,101,&pin)!=(void *)(uintptr_t)0x1234 ||
        pin!=a) return 2;
@@ -60,16 +64,24 @@ int main(void) {
        !jarbox_registry_claim(&r,&f,104,2)||
        !jarbox_registry_bind(&r,103,a)||
        !jarbox_registry_bind(&r,104,b)||
+       jarbox_registry_should_stop_vm(&r,a->vm) ||
+       jarbox_registry_should_stop_vm(&r,b->vm) ||
        jarbox_registry_active_count(&r)!=2 ||
        !jarbox_focus_select(&f,103)||
        !jarbox_focus_select(&f,104)||
        jarbox_focus_visible(&f)!=104) return 7;
+    if(!jarbox_registry_request_stop(&r,103) ||
+       !jarbox_registry_should_stop_vm(&r,a->vm) ||
+       jarbox_registry_should_stop_vm(&r,b->vm) ||
+       !jarbox_registry_contains_token(&r,104)) return 13;
     jarbox_registry_begin_stop(&r,103);
     if(!jarbox_session_mark_dead(a)||
        !jarbox_registry_finish(&r,&f,103)||
        jarbox_registry_active_count(&r)!=1 ||
        jarbox_focus_visible(&f)!=104) return 8;
     jarbox_session_release(a);
+    if(!jarbox_registry_should_stop_vm(&r,(void *)(uintptr_t)0x1234) ||
+       jarbox_registry_should_stop_vm(&r,b->vm)) return 14;
     jarbox_registry_begin_stop(&r,104);
     if(!jarbox_session_mark_dead(b)||
        !jarbox_registry_finish(&r,&f,104)) return 9;
