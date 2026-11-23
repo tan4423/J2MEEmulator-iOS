@@ -535,7 +535,7 @@ const char *treo_vm_paint_sample_report(void) {
 
 #if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__
 extern _Atomic int treo_afk_mode;
-extern int treo_afk_elide_graphics(JClass *clazz, Instance *receiver);
+extern int treo_afk_elide_graphics(Runtime *runtime, JClass *clazz, Instance *receiver);
 extern int treo_direct_graphics_enabled(void);
 
 static int treo_headless_eligible(MethodInfo *m) {
@@ -1361,7 +1361,10 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
     // Existing mode 4 behavior remains; mode 8 uses the guarded raster policy.
     // Offscreen Image graphics, setters/getters, pixel reads, synchronized,
     // native, unfamiliar ABIs and other methods always run normally.
-    const int treo_paint_mode = atomic_load_explicit(&treo_afk_mode, memory_order_relaxed);
+    // The interpreter must use the invoking VM's mode. A global AFK flag
+    // would suppress B's bytecode when only A is parked.
+    const int treo_paint_mode = pruntime->jvm && pruntime->jvm->session ?
+        jarbox_treo_mode_get(&pruntime->jvm->session->treo_state) : 0;
     if ((treo_paint_mode == 4 ||
          (TREO_VM_PAINT_BRIDGE && treo_paint_mode == 8)) &&
         method->para_slots >= 4 && method->return_slots == 0 &&
@@ -1371,7 +1374,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
         !pruntime->thrd_info->suspend_count && treo_headless_eligible(method)) {
         RuntimeStack *caller = pruntime->stack;
         StackEntry *args = caller->sp - method->para_slots;
-        if (treo_afk_elide_graphics(method->_this_class, args->ins)) {
+        if (treo_afk_elide_graphics(pruntime, method->_this_class, args->ins)) {
             caller->sp = args;
             return RUNTIME_STATUS_NORMAL;
         }

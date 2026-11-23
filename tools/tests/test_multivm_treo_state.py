@@ -114,6 +114,11 @@ class MultiVMTreoStateTest(unittest.TestCase):
         self.assertIn("jarbox_treo_mode_get(&runtime->jvm->session->treo_state)", renderer)
         self.assertIn("ninja_profile_for_runtime(runtime) && canvas", renderer)
         self.assertIn("ninja_deep_active(runtime)", renderer)
+        interpreter = (ROOT / "J2MEEmulator/minijvm/jvm/interpreter.c").read_text()
+        self.assertIn("jarbox_treo_mode_get(&pruntime->jvm->session->treo_state)", interpreter)
+        self.assertIn("treo_afk_elide_graphics(pruntime, method->_this_class, args->ins)", interpreter)
+        self.assertIn("g_afk_canvas_owner_key == callerKey", renderer)
+        self.assertIn("caller_key != g_afk_canvas_owner_key", renderer)
 
     def test_still_rejects_parallel_jvm(self):
         bridge = (ROOT / "J2MEEmulator/NativeBridge/jvm_bridge.c").read_text()

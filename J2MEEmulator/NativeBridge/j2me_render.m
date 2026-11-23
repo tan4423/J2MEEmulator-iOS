@@ -693,7 +693,10 @@ void treo_afk_wakes_set(int enabled) {
     }
 }
 uint64_t treo_afk_main_wakes(void) { return treo_main_wake_count; }
+/* A pthread may execute another generation after a prior MIDlet exits.
+ * Never let a TLS headless Canvas handle carry over to a different VM. */
 static _Thread_local s64 g_afk_canvas;
+static _Thread_local uint64_t g_afk_canvas_owner_key;
 static _Thread_local uint64_t g_afk_elided_local, g_afk_thread_id;
 static _Atomic uint64_t g_afk_elided, g_afk_paint_tid, g_afk_gc_tid;
 static atomic_bool treo_jar_auditing;
@@ -709,15 +712,25 @@ uint64_t treo_afk_skipped_draws(void) { return atomic_load_explicit(&g_afk_skipp
 uint64_t treo_afk_skipped_paints(void) { return atomic_load_explicit(&g_afk_skipped_paints, memory_order_relaxed); }
 
 static int treo_afk_skip_draw(RenderContext *rc) {
-    if (!g_afk_canvas || g_afk_canvas != (s64)(intptr_t)rc) return 0;
+    if (!g_afk_canvas || !g_afk_canvas_owner_key ||
+        g_afk_canvas_owner_key != rc->heap_key ||
+        g_afk_canvas != (s64)(intptr_t)rc) return 0;
     g_afk_draw_count++;
     return 1;
 }
 
 static s32 n_beginAfkPaint(Runtime *runtime, JClass *clazz) {
+    const uint64_t key = jarbox_native_heap_key_for_runtime(runtime);
+    // Reset stale TLS Canvas state on a generation switch, not only on a
+    // well-paired begin/end. No Java input is allowed to inherit this state.
+    if (!key || key != g_afk_canvas_owner_key) {
+        g_afk_canvas = 0;
+        g_afk_canvas_owner_key = key;
+    }
     s64 previous = g_afk_canvas;
     const int headless = runtime->jnienv->localvar_getInt(runtime->localvar, 2);
-    if (headless || atomic_load_explicit(&treo_afk_mode, memory_order_acquire) == 2) {
+    if (key && (headless ||
+        jarbox_treo_mode_get(&runtime->jvm->session->treo_state) == 2)) {
         s64 canvas = runtime->jnienv->localvar_getLong_2slot(runtime->localvar, 0);
         if (canvas) {
             g_afk_canvas = canvas;
@@ -728,7 +741,10 @@ static s32 n_beginAfkPaint(Runtime *runtime, JClass *clazz) {
     return RUNTIME_STATUS_NORMAL;
 }
 static s32 n_endAfkPaint(Runtime *runtime, JClass *clazz) {
-    g_afk_canvas = runtime->jnienv->localvar_getLong_2slot(runtime->localvar, 0);
+    const uint64_t key = jarbox_native_heap_key_for_runtime(runtime);
+    g_afk_canvas = key && key == g_afk_canvas_owner_key ?
+        runtime->jnienv->localvar_getLong_2slot(runtime->localvar, 0) : 0;
+    if (!g_afk_canvas) g_afk_canvas_owner_key = 0;
     if (!g_afk_canvas && g_afk_elided_local) {
         atomic_fetch_add_explicit(&g_afk_elided, g_afk_elided_local, memory_order_relaxed);
         g_afk_elided_local = 0;
@@ -2172,7 +2188,8 @@ static s32 n_flushToScreen(Runtime *runtime, JClass *clazz) {
         &g_visible_render_owner_key, memory_order_acquire);
     if (!rc || !callerKey || callerKey != rc->heap_key ||
         callerKey != visibleKey || afk ||
-        (g_afk_canvas && g_afk_canvas == handle)) {
+        (g_afk_canvas && g_afk_canvas_owner_key == callerKey &&
+         g_afk_canvas == handle)) {
         rc_release(rc);
         return RUNTIME_STATUS_NORMAL;
     }
@@ -4031,8 +4048,11 @@ static int treo_instance_offset(JClass *clazz, const char *name, const char *typ
     return -1;
 }
 
-int treo_afk_elide_graphics(JClass *clazz, Instance *receiver) {
-    if (!g_afk_canvas || !receiver || receiver->mb.clazz != clazz) return 0;
+int treo_afk_elide_graphics(Runtime *runtime, JClass *clazz, Instance *receiver) {
+    const uint64_t caller_key = jarbox_native_heap_key_for_runtime(runtime);
+    if (!caller_key || caller_key != g_afk_canvas_owner_key ||
+        !g_afk_canvas || !receiver || receiver->mb.clazz != clazz)
+        return 0;
     u64 layout = __atomic_load_n(&clazz->treo_afk_layout, __ATOMIC_RELAXED);
     if (!layout) {
         int ctx = treo_instance_offset(clazz, "nativeContext", "J", 8);
@@ -4079,7 +4099,10 @@ int treo_try_graphics_draw_region(Runtime *runtime, JClass *clazz) {
     }
     if ((io >> 48) != 2) return 0;
     u64 go = treo_graphics_offsets(clazz, 0);
-    if (!go || !io || g_afk_canvas) return 0;
+    if (!go || !io ||
+        (g_afk_canvas &&
+         g_afk_canvas_owner_key == jarbox_native_heap_key_for_runtime(runtime)))
+        return 0;
     s64 ctx, img;
     s32 tx, ty;
     memcpy(&ctx, graphics->obj_fields + (u16)go, sizeof(ctx));
