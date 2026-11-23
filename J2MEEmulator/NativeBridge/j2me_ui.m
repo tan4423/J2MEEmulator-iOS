@@ -10,6 +10,7 @@
 #include "j2me_ui.h"
 #include "garbage.h"
 #include "j2me_render.h"
+#include "jvm_bridge.h"
 #include "j2me_input.h"
 #include "jarbox_ui_generation.h"
 #include "jvm.h"
@@ -90,6 +91,10 @@ typedef struct {
     _Atomic uint64_t ui_saved_notices;
     int last_action;
     void *objects; // process-lifetime CF-retained ObjC holder
+    // Immutable once the generation is published; later launches may change
+    // default callbacks without redirecting A's pending LCDUI notices to B.
+    j2me_ui_callback ui_callback;
+    j2me_ui_callback_owned owned_ui_callback;
 } JarBoxUIScreenContext;
 
 static JarBoxUIScreenContext g_ui_contexts[JARBOX_UI_CONTEXT_CAPACITY];
@@ -128,8 +133,24 @@ static void ui_publish_action(int action, int revision, uint64_t owner_key) {
     // Swift independently repeats this after its asynchronous main hop.
     if (!jarbox_ui_may_present(owner_key, ui_focused_owner_key(),
                                j2me_render_visible_owner_key())) return;
-    if (g_owned_ui_callback) g_owned_ui_callback(action, revision, owner_key);
-    else if (g_ui_callback) g_ui_callback(action, revision);
+    j2me_ui_callback legacy = NULL;
+    j2me_ui_callback_owned owned = NULL;
+    pthread_mutex_lock(&g_ui_contexts_lock);
+    for (int i = 0; i < JARBOX_UI_CONTEXT_CAPACITY; ++i) {
+        const JarBoxUIScreenContext *ctx = &g_ui_contexts[i];
+        if (owner_key == atomic_load_explicit(&ctx->heap_key, memory_order_acquire) &&
+            atomic_load_explicit(&ctx->owner, memory_order_acquire)) {
+            legacy = ctx->ui_callback;
+            owned = ctx->owned_ui_callback;
+            break;
+        }
+    }
+    pthread_mutex_unlock(&g_ui_contexts_lock);
+    if (!jarbox_ui_may_present(owner_key, ui_focused_owner_key(),
+                               j2me_render_visible_owner_key())) return;
+    if (owned) owned(action, revision, owner_key);
+    else if (legacy && jvm_bridge_supported_concurrent_sessions() == 1)
+        legacy(action, revision);
 }
 
 static void init_ui_contexts(void) {
@@ -251,6 +272,10 @@ static int ui_register_vm(MiniJVM *vm) {
                 [objects->pendingText removeAllObjects];
                 const uint64_t key = jarbox_native_heap_key_for_vm(vm);
                 if (!key) { index = -1; break; }
+                // Capture callbacks before publishing this generation. A
+                // later GameVC can update the defaults without changing A.
+                ctx->ui_callback = g_ui_callback;
+                ctx->owned_ui_callback = g_owned_ui_callback;
                 atomic_store_explicit(&ctx->heap_key, key, memory_order_release);
                 atomic_store_explicit(&ctx->owner, vm, memory_order_release);
                 break;
@@ -295,6 +320,8 @@ void j2me_ui_release_vm(MiniJVM *vm) {
             atomic_store_explicit(&g_ui_focused_index, -1, memory_order_release);
         atomic_store_explicit(&ctx->owner, NULL, memory_order_release);
         atomic_store_explicit(&ctx->heap_key, 0, memory_order_release);
+        ctx->ui_callback = NULL;
+        ctx->owned_ui_callback = NULL;
         ctx->last_action = 0;
     }
     pthread_mutex_unlock(&g_ui_contexts_lock);
@@ -402,10 +429,14 @@ static s32 n_takeText(Runtime *runtime, JClass *clazz) {
 }
 
 void j2me_ui_set_callback(j2me_ui_callback callback) {
+    pthread_mutex_lock(&g_ui_contexts_lock);
     g_ui_callback = callback;
+    pthread_mutex_unlock(&g_ui_contexts_lock);
 }
 void j2me_ui_set_owned_callback(j2me_ui_callback_owned callback) {
+    pthread_mutex_lock(&g_ui_contexts_lock);
     g_owned_ui_callback = callback;
+    pthread_mutex_unlock(&g_ui_contexts_lock);
 }
 
 const char *j2me_ui_get_form_title(void) { return g_form_title; }

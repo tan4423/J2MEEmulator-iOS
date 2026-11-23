@@ -75,6 +75,15 @@ class MultiVMUIIsolationTests(unittest.TestCase):
         self.assertIn("uint64_t j2me_ui_focused_owner_key(void)", header)
         self.assertIn("guard revision == j2me_ui_revision()", game)
 
+    def test_lcdui_callback_cannot_migrate_to_recycled_generation(self):
+        self.assertIn("j2me_ui_callback_owned owned_ui_callback;", self.ui)
+        self.assertIn("ctx->owned_ui_callback = g_owned_ui_callback;", self.ui)
+        self.assertIn("ctx->owned_ui_callback = NULL;", self.ui)
+        self.assertIn("owner_key == atomic_load_explicit(&ctx->heap_key", self.ui)
+        self.assertIn("owned(action, revision, owner_key);", self.ui)
+        self.assertIn("legacy && jvm_bridge_supported_concurrent_sessions() == 1", self.ui)
+        self.assertIn("pthread_mutex_lock(&g_ui_contexts_lock);", self.ui)
+
     def test_not_claiming_full_multi(self):
         # UIKit presentation callback still needs token-scoped dispatch,
         # as do the global render and Smart Treo modes.

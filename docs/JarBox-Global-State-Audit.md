@@ -332,3 +332,18 @@ stop-one-keep-other, and independent AFK/Canvas fallback semantics. They do
 **not** establish a complete iOS compile or on-device 2-JVM concurrency.
 Single-VM admission and existing Treo modes stay unchanged. No Codemagic,
 JAR, save or network code is modified.
+
+## 2026-11-23: LCDUI callback generation snapshot
+
+`JarBoxUIScreenContext` now keeps its own snapshot of the owned/unowned
+MIDP callback function pointers when the native heap generation is first
+registered. UI notifications resolve only the matching still-live generation
+under the context mutex, then re-check focus/render owner before invoking.
+Releasing A clears only A's callbacks; a newer GameVC's defaults cannot
+rewrite an existing route. The unowned legacy ABI remains restricted to
+the enforced one-JVM mode. Swift still revalidates owner and revision after
+main-queue dispatch. This is callback ownership, **not** a per-JVM UIKit
+window; the single-visible UI target and other native singletons persist.
+
+No Codemagic workflow, NSO JAR, socket, RMS, save or power policy was changed.
+Do not report two independent live JVMs until device/runtime tests pass.
