@@ -13,6 +13,9 @@
 #include <stdatomic.h>
 #include "garbage.h"
 #include "jdwp.h"
+#if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__
+#include "../../NativeBridge/jvm_bridge.h"
+#endif
 
 #if __JVM_OS_ANDROID__
 
@@ -768,6 +771,10 @@ s32 jthread_run(void *para) {
     // The jthread_start reservation pins this session until the native
     // function has completely stopped using Java heap state.
     JarBoxSession *const held_session = jvm->session;
+#if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__
+    const uint64_t previous_token =
+        jvm_bridge_push_java_thread_token(held_session->token);
+#endif
 
 #if _JVM_DEBUG_LOG_LEVEL > 1
     s64 startAt = currentTimeMillis();
@@ -780,6 +787,9 @@ s32 jthread_run(void *para) {
     // still guarantees that the JVM stays allocated until we return.
     if (jarbox_session_phase(held_session) >= JARBOX_SESSION_STOPPING) {
         runtime->thrd_info->thread_status = THREAD_STATUS_ZOMBIE;
+#if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__
+        jvm_bridge_pop_java_thread_token(previous_token);
+#endif
         jarbox_session_worker_done(held_session);
         return 0;
     }
@@ -832,6 +842,9 @@ s32 jthread_run(void *para) {
     // The native worker lease is the independent teardown barrier, not
     // THREAD_STATUS_ZOMBIE (which only guides Java-side finalization).
     runtime->thrd_info->thread_status = THREAD_STATUS_ZOMBIE;
+#if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__
+    jvm_bridge_pop_java_thread_token(previous_token);
+#endif
     jarbox_session_worker_done(held_session);
     return ret;
 }

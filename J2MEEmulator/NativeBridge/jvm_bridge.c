@@ -102,6 +102,22 @@ typedef struct {
 static JarBoxVMContext g_bridge_vm = {0};
 // Tokens are never reused, even when this context is reset and acquired again.
 static _Atomic uint64_t g_bridge_session_sequence;
+/* Native Java Threads do not inherit the Swift launch worker's TLS.
+ * Bind each Java worker explicitly to its immutable session token so
+ * native callbacks never infer identity from the visible window.
+ * A token alone never pins a heap: all lookups still require a lease. */
+static _Thread_local uint64_t g_bridge_java_thread_token;
+uint64_t jvm_bridge_thread_token(void) {
+    return g_bridge_java_thread_token;
+}
+uint64_t jvm_bridge_push_java_thread_token(uint64_t token) {
+    uint64_t previous = g_bridge_java_thread_token;
+    g_bridge_java_thread_token = token;
+    return previous;
+}
+void jvm_bridge_pop_java_thread_token(uint64_t previous) {
+    g_bridge_java_thread_token = previous;
+}
 // One visible window; every other live tab remains parked (never stopped).
 static JarBoxFocusPolicy g_bridge_focus = JARBOX_FOCUS_POLICY_INITIALIZER;
 // Registry owns a session pin per token; runtime cap stays one until the
@@ -396,7 +412,9 @@ int jvm_bridge_active_session_count(void) {
     return jarbox_registry_active_count(&g_bridge_registry);
 }
 uint64_t jvm_bridge_session_token(void) {
-    return atomic_load_explicit(&g_bridge_vm.token, memory_order_acquire);
+    const uint64_t bound = jvm_bridge_thread_token();
+    return bound ? bound :
+        atomic_load_explicit(&g_bridge_vm.token, memory_order_acquire);
 }
 void jvm_bridge_finish_session(void) {
     // Only the owning startup worker calls this AFTER native teardown.
@@ -750,7 +768,10 @@ int jvm_bridge_init_for_token(uint64_t token,
 }
 int jvm_bridge_run_midlet_for_token(uint64_t token, const char *midlet_jar_path) {
     if (!bridge_token_matches_active(token)) return -10;
-    return jvm_bridge_run_midlet(midlet_jar_path);
+    const uint64_t previous = jvm_bridge_push_java_thread_token(token);
+    const int result = jvm_bridge_run_midlet(midlet_jar_path);
+    jvm_bridge_pop_java_thread_token(previous);
+    return result;
 }
 int jvm_bridge_is_stop_requested_for_token(uint64_t token) {
     return !bridge_token_matches_active(token) ||

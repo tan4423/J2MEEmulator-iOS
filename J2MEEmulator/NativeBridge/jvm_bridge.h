@@ -50,6 +50,11 @@ int jvm_bridge_supported_concurrent_sessions(void);
 /// Monotonically increasing ID of the active session, zero if none.
 /// Used to reject callbacks from a previously closed game instance.
 uint64_t jvm_bridge_session_token(void);
+/// Scoped to the current Java pthread; binds a token, never a VM pointer.
+/// push/pop must be paired along all Java worker exit paths.
+uint64_t jvm_bridge_thread_token(void);
+uint64_t jvm_bridge_push_java_thread_token(uint64_t token);
+void jvm_bridge_pop_java_thread_token(uint64_t previous);
 /// Focus invariant: at most one JVM is visible, all others stay parked.
 /// A zero visible token means library: every live session is in Treo.
 /// Currently only the existing one-JVM bridge slot can be operated on.

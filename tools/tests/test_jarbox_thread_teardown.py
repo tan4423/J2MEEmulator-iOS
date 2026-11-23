@@ -25,6 +25,10 @@ class JarBoxThreadTeardownTest(unittest.TestCase):
         self.assertIn("jarbox_session_phase(held_session) >= JARBOX_SESSION_STOPPING", src)
         self.assertIn("jarbox_session_phase(session) >= JARBOX_SESSION_STOPPING", src)
         self.assertIn("jarbox_session_worker_done(held_session);", src)
+        # Native pthreads keep the spawning JVM's immutable token. Each
+        # STOPPING/normal exit must restore its prior token before release.
+        self.assertIn("jvm_bridge_push_java_thread_token(held_session->token)", src)
+        self.assertEqual(src.count("jvm_bridge_pop_java_thread_token(previous_token);"), 2)
 
     def test_timeout_does_not_force_zombie_or_destroy_still_running_worker(self):
         src = (JVM / "jvm.c").read_text()
