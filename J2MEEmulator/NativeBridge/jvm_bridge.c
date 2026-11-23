@@ -470,6 +470,12 @@ int jvm_bridge_init(const char *res_root, const char *save_root, const char *mid
     (void)jarbox_session_bind_token(
         g_bridge_vm.jvm->session,
         atomic_load_explicit(&g_bridge_vm.token, memory_order_acquire));
+    // Copy the launch-only resource signature into this JVM before any
+    // Java classes execute. Later launches cannot change this owner's NSO
+    // recognition or give a foreign Canvas permission to use the fast path.
+    jarbox_treo_nso_profile_set(&g_bridge_vm.jvm->session->treo_state,
+        atomic_load_explicit(&treo_exact_ninja_verified, memory_order_acquire),
+        atomic_load_explicit(&treo_nso_init_target_active, memory_order_acquire));
 
     g_bridge_vm.jvm->jdwp_enable = 0;
     g_bridge_vm.jvm->jdwp_suspend_on_start = 0;

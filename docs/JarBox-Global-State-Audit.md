@@ -293,3 +293,19 @@ and Codemagic/device build still need a separate run.
 Outstanding: collector and shutdown-hook safety, late native callbacks
 outside the guarded visitor, per-VM Treo/Canvas/NSO/JAR worker state,
 Metal/3D ownership, and real two-MIDlet scheduling. Do not unlock 2 JVMs.
+
+## 2026-11-23: NSO fast-path signature ownership
+
+The bridge copies the launch-time NSO family / legacy initialization-target
+signature into the newly allocated `JarBoxSession.treo_state` before any Java
+classes execute. The two NSO native fast-path checks now consult the invoking
+Java Runtime's session and its per-session AFK mode, not the process-wide
+latest-JAR diagnostic flag. A two-state host regression rejects cross-session
+signature/mode leakage. The legacy NSO diagnostic counters, Canvas recognition
+telemetry, global renderer state, and JAR load-worker remain shared: this is
+**partial isolation only**, not permission to enable concurrent JVMs.
+
+The separate early-Back regression (`ae0c8b5`) permits a STOP-requested
+STARTING slot to bind its JVM for safe cleanup, but does not allow callback
+admission after cancellation. Codemagic and device tests for these changes
+have not yet been run.

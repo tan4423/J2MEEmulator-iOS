@@ -15,6 +15,9 @@ typedef struct JarBoxTreoState {
     uint64_t probe_fallback_count;
     int smart_enabled;
     int smart_fallback;
+    // Per-JVM NSO signature; do not let launching B change A's fast path.
+    int nso_family_verified;
+    int nso_init_target_active;
     uint64_t smart_heap_peak;
     uint64_t smart_cycles;
     uint64_t smart_cpu_ns;
@@ -22,6 +25,22 @@ typedef struct JarBoxTreoState {
 
 static inline void jarbox_treo_mode_set(JarBoxTreoState *state, int mode) {
     __atomic_store_n(&state->afk_mode, mode, __ATOMIC_RELEASE);
+}
+static inline int jarbox_treo_mode_get(const JarBoxTreoState *state) {
+    return state ? __atomic_load_n(&state->afk_mode, __ATOMIC_ACQUIRE) : 0;
+}
+static inline void jarbox_treo_nso_profile_set(JarBoxTreoState *state,
+                                               int family, int init_target) {
+    if (!state) return;
+    __atomic_store_n(&state->nso_init_target_active,
+                     family && init_target ? 1 : 0, __ATOMIC_RELEASE);
+    __atomic_store_n(&state->nso_family_verified, family != 0, __ATOMIC_RELEASE);
+}
+static inline int jarbox_treo_nso_family_verified(const JarBoxTreoState *state) {
+    return state ? __atomic_load_n(&state->nso_family_verified, __ATOMIC_ACQUIRE) : 0;
+}
+static inline int jarbox_treo_nso_init_target_active(const JarBoxTreoState *state) {
+    return state ? __atomic_load_n(&state->nso_init_target_active, __ATOMIC_ACQUIRE) : 0;
 }
 static inline void jarbox_treo_probe_set(JarBoxTreoState *state, int requested) {
     __atomic_store_n(&state->probe_requested_ms, requested == 2000 ? 2000 : 0, __ATOMIC_RELEASE);

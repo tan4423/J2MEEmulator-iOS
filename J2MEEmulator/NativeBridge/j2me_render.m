@@ -577,9 +577,16 @@ double treo_nso_last_repaint_gap_ms(void) {
     if (!treo_nso_canvas_recognized() || !last || now < last) return -1.0;
     return (double)(now - last) / 1000000.0;
 }
-static inline int ninja_deep_active(void) {
-    return treo_ninja_deep_verified() &&
-           atomic_load_explicit(&treo_afk_mode, memory_order_acquire) == 8;
+/* Java calls must read the owner JVM's Treo mode and NSO signature, never
+ * the most recently launched process-wide diagnostic flags. The live Java
+ * thread already holds its worker lease throughout this native invocation. */
+static inline int ninja_profile_for_runtime(const Runtime *runtime) {
+    return runtime && runtime->jvm && runtime->jvm->session &&
+           jarbox_treo_nso_family_verified(&runtime->jvm->session->treo_state);
+}
+static inline int ninja_deep_active(const Runtime *runtime) {
+    return ninja_profile_for_runtime(runtime) &&
+           jarbox_treo_mode_get(&runtime->jvm->session->treo_state) == 8;
 }
 /*
  * All three supplied NSO builds have a direct Canvas subclass with exactly:
@@ -625,7 +632,7 @@ static int treo_nso_simple_canvas_paint(JClass *canvas_class) {
     return safe_shape;
 }
 static s32 n_ninjaDeepActive(Runtime *runtime, JClass *clazz) {
-    push_int(runtime->stack, ninja_deep_active());
+    push_int(runtime->stack, ninja_deep_active(runtime));
     return RUNTIME_STATUS_NORMAL;
 }
 static s32 n_ninjaDeepSkip(Runtime *runtime, JClass *clazz) {
@@ -634,14 +641,14 @@ static s32 n_ninjaDeepSkip(Runtime *runtime, JClass *clazz) {
     // Recognition is allowed while visible, for a pre-Treo heartbeat
     // baseline. Only mode 8 may skip any actual rendering operation.
     const int qualified = stage >= 0 && stage <= 2 &&
-        treo_ninja_deep_verified() && canvas &&
+        ninja_profile_for_runtime(runtime) && canvas &&
         (canvas->mb.type & MEM_TYPE_INS) &&
         treo_nso_simple_canvas_paint(canvas->mb.clazz);
     if (qualified) {
         atomic_store_explicit(&treo_nso_canvas_seen, 1, memory_order_release);
         if (stage == 0) treo_nso_note_request();
     }
-    const int skip = qualified && ninja_deep_active();
+    const int skip = qualified && ninja_deep_active(runtime);
     if (skip)
         atomic_fetch_add_explicit(&treo_ninja_skips[stage], 1,
                                   memory_order_relaxed);

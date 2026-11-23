@@ -25,6 +25,21 @@ static void *work(void *ptr) {
 int main(void) {
     JarBoxTreoState a = {0}, b = {0};
     if (jarbox_treo_smart_period(&a) != 500) return 1;
+    // The same NSO signature belongs to A only; B must not inherit its
+    // fast-path eligibility even when B enters Deep Treo independently.
+    jarbox_treo_nso_profile_set(&a, 1, 1);
+    jarbox_treo_nso_profile_set(&b, 0, 0);
+    if (!jarbox_treo_nso_family_verified(&a) ||
+        !jarbox_treo_nso_init_target_active(&a) ||
+        jarbox_treo_nso_family_verified(&b) ||
+        jarbox_treo_nso_init_target_active(&b)) return 9;
+    jarbox_treo_mode_set(&b, 8);
+    if (jarbox_treo_mode_get(&a) || jarbox_treo_mode_get(&b) != 8)
+        return 10;
+    jarbox_treo_nso_profile_set(&b, 1, 0);
+    if (!jarbox_treo_nso_family_verified(&b) ||
+        jarbox_treo_nso_init_target_active(&b) ||
+        !jarbox_treo_nso_init_target_active(&a)) return 11;
     jarbox_treo_mode_set(&a, 8);
     jarbox_treo_smart_set(&a, 1);
     jarbox_treo_probe_set(&a, 2000);
@@ -94,6 +109,11 @@ class MultiVMTreoStateTest(unittest.TestCase):
         self.assertIn("pthread_mutex_lock(&g_bridge_lifecycle_lock);", bridge)
         self.assertIn("memory_order_acquire) == BRIDGE_RUNNING", bridge)
         self.assertIn("treo_gc_set_afk_mode_for_current(mode);", renderer)
+        self.assertIn("jarbox_treo_nso_profile_set(&g_bridge_vm.jvm->session->treo_state", bridge)
+        self.assertIn("jarbox_treo_nso_family_verified(&runtime->jvm->session->treo_state)", renderer)
+        self.assertIn("jarbox_treo_mode_get(&runtime->jvm->session->treo_state)", renderer)
+        self.assertIn("ninja_profile_for_runtime(runtime) && canvas", renderer)
+        self.assertIn("ninja_deep_active(runtime)", renderer)
 
     def test_still_rejects_parallel_jvm(self):
         bridge = (ROOT / "J2MEEmulator/NativeBridge/jvm_bridge.c").read_text()
