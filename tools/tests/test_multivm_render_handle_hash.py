@@ -135,6 +135,26 @@ int main(void) {
         if (g_rc_live_buckets[i] || g_img_live_buckets[i]) return 16;
     if (atomic_exchange(&a.java_owned, 0) != 1) return 17;
     if (atomic_exchange(&a.java_owned, 0) != 0) return 18;
+
+    /* The sliced production source also contains untrack_rc/untrack_img.
+     * Exercise real removal instead of disabling -Werror for unused helpers.
+     * A new generation's callbacks and handles must not inherit stale entries. */
+    RenderContext c = {0};
+    RenderImage ci = {0};
+    c.heap_key = ci.heap_key = 303;
+    atomic_init(&c.refcount, 1);
+    atomic_init(&ci.refcount, 1);
+    atomic_init(&c.java_owned, 1);
+    atomic_init(&ci.java_owned, 1);
+    if (!track_rc(&c) || !track_img(&ci)) return 21;
+    untrack_rc(&c);
+    untrack_img(&ci);
+    if (g_live_rc_count || g_live_img_count ||
+        rc_acquire((s64)(intptr_t)&c, 303) ||
+        img_acquire((s64)(intptr_t)&ci, 303)) return 22;
+    for (int i = 0; i < 8192; ++i)
+        if (g_rc_live_buckets[i] || g_img_live_buckets[i]) return 23;
+
     puts("2D owned handle host harness: OK (two generations, threads, stop A / retain B)");
     return 0;
 }
@@ -171,6 +191,8 @@ class MultiVMRenderHandleHashTest(unittest.TestCase):
         self.assertIn("render_owner_stopped_locked(owner_key)", source)
         self.assertIn("candidate->heap_key == owner_key", source)
         self.assertIn("g_rc_live_buckets", source)
+        self.assertIn("untrack_rc(&c);", source)
+        self.assertIn("untrack_img(&ci);", source)
         with tempfile.TemporaryDirectory(prefix="jarbox-render-hash-") as t:
             src = Path(t) / "owned.c"
             exe = Path(t) / "owned"
