@@ -51,7 +51,11 @@ static inline int jarbox_registry_bind(JarBoxSessionRegistry *r,
     for (int i = 0; i < JARBOX_REGISTRY_MAX_SLOTS; ++i) {
         JarBoxRegistryEntry *entry = &r->entries[i];
         if (entry->token != token) continue;
-        if (entry->session || entry->stop_requested) break;
+        // A stop request during STARTING does not destroy the VM. Bind the
+        // newly initialized JVM even when cancellation is already pending,
+        // so its owner can still unwind and retire the registry entry safely.
+        // pin_vm() continues to reject callbacks after stop_requested.
+        if (entry->session) break;
         /* Never bind identical live JVM pointers to different generations. */
         for (int j = 0; j < JARBOX_REGISTRY_MAX_SLOTS; ++j)
             if (j != i && r->entries[j].vm == s->vm) goto done;

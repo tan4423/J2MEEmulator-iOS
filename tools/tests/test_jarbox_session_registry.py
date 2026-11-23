@@ -43,6 +43,18 @@ int main(void) {
     if(!jarbox_session_mark_dead(b)||
        !jarbox_registry_finish(&r,&f,102)) return 6;
     jarbox_session_release(b);
+    /* Back can arrive before jvm_init finishes. The stopped STARTING slot
+     * still needs a session binding for safe teardown, but never a callback. */
+    JarBoxSession *early=make(105,0x9abc);
+    if(!early || !jarbox_registry_claim(&r,&f,105,1) ||
+       !jarbox_registry_request_stop(&r,105) ||
+       !jarbox_registry_bind(&r,105,early) ||
+       jarbox_registry_pin_vm(&r,105,&pin)) return 10;
+    jarbox_registry_begin_stop(&r,105);
+    if(!jarbox_session_mark_dead(early) ||
+       !jarbox_registry_finish(&r,&f,105) ||
+       jarbox_registry_active_count(&r)!=0) return 11;
+    jarbox_session_release(early);
     a=make(103,0x1234); b=make(104,0x5678);
     if(!a||!b||!jarbox_registry_claim(&r,&f,103,2)||
        !jarbox_registry_claim(&r,&f,104,2)||
