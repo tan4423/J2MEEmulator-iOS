@@ -132,6 +132,7 @@ typedef struct RenderContext {
     CGRect liveRawClip;
     int liveBlocked;
     uint64_t heap_key; // owning JVM generation for native GC
+    _Atomic int afk_mode; // JVM generation-owned 2D raster mode
     _Atomic int32_t refcount;
     struct RenderContext *next_dead;
     struct RenderContext *next_live; // collision chain in safe handle lookup
@@ -209,6 +210,12 @@ static JarBoxTreoState *treo_runtime_state(Runtime *r) {
 static int treo_runtime_mode(Runtime *r) {
     return jarbox_treo_mode_get(treo_runtime_state(r));
 }
+// Defined after live context registry, updates only the matching generation.
+static void treo_render_owner_mode_set(uint64_t owner_key, int mode);
+static inline int treo_rc_mode(const RenderContext *rc) {
+    return rc ? atomic_load_explicit(&rc->afk_mode, memory_order_acquire) : 0;
+}
+static inline int treo_rc_afk(const RenderContext *rc) { return treo_rc_mode(rc) != 0; }
 static void process_dead_shells(void);
 static uint64_t treo_afk_now_ns(void) {
     struct timespec ts;
@@ -777,6 +784,7 @@ typedef struct { int mode; uint64_t now_ns; } TreoModeChange;
 static void treo_render_mode_visitor(MiniJVM *vm, void *arg) {
     const TreoModeChange *change = arg;
     jarbox_treo_render_mode_set(&vm->session->treo_state, change->mode, change->now_ns);
+    treo_render_owner_mode_set(jarbox_native_heap_key_for_vm(vm), change->mode);
 }
 void treo_render_set_afk_mode(int mode) {
     const int previous = atomic_exchange(&treo_afk_mode, mode);
@@ -816,6 +824,9 @@ TreoFastCanvasStats treo_fast_canvas_stats(void) {
 }
 static inline int treo_afk_fast_canvas(void) {
     return atomic_load_explicit(&treo_afk_mode, memory_order_relaxed) == TreoAFKFastCanvas;
+}
+static inline int treo_rc_fast_canvas(const RenderContext *rc) {
+    return treo_rc_mode(rc) == TreoAFKFastCanvas;
 }
 int treo_direct_graphics_enabled(void) {
     return treo_afk_fast_canvas() || atomic_load_explicit(&treo_direct_graphics_on, memory_order_relaxed);
@@ -1706,6 +1717,19 @@ static void untrack_img(RenderImage *img) {
     spin_unlock(&g_track_lock);
 }
 
+/* A transition never mutates buffers owned by a different JVM. The live
+ * context registry lock also serializes new registration and retirement. */
+static void treo_render_owner_mode_set(uint64_t owner_key, int mode) {
+    if (!owner_key) return;
+    spin_lock(&g_track_lock);
+    for (int i = 0; i < g_live_rc_count; ++i) {
+        RenderContext *rc = g_live_rc[i];
+        if (rc && rc->heap_key == owner_key)
+            atomic_store_explicit(&rc->afk_mode, mode, memory_order_release);
+    }
+    spin_unlock(&g_track_lock);
+}
+
 // Each graphics handle carries an owning JVM generation; GC must never
 // include native memory used by a different game tab.
 static inline void native_heap_add(uint64_t key, s32 bytes) {
@@ -1943,6 +1967,8 @@ static RenderContext *createRenderContext(MiniJVM *owner, int width, int height)
     atomic_init(&rc->java_owned, 1);
     rc->heap_key = jarbox_native_heap_key_for_vm(owner);
     if (!rc->heap_key) { free(rc); return NULL; }
+    atomic_init(&rc->afk_mode, owner && owner->session ?
+                jarbox_treo_mode_get(&owner->session->treo_state) : 0);
     rc->width = width;
     rc->height = height;
 
@@ -2245,7 +2271,7 @@ static s32 n_setColor(Runtime *runtime, JClass *clazz) {
     s32 argb = env->localvar_getInt(runtime->localvar, 2);
     RenderContext *rc = rc_acquire(handle, jarbox_native_heap_key_for_runtime(runtime));
     if (rc) {
-        if (rc->ownsPixels && rc->clipSaved && treo_afk_fast_canvas() && rc->liveColor == (uint32_t)argb)
+        if (rc->ownsPixels && rc->clipSaved && treo_rc_fast_canvas(rc) && rc->liveColor == (uint32_t)argb)
             ++rc->fastState;
         else setColorFromARGB(rc->ctx, argb);
         rc->liveColor = (uint32_t)argb;
@@ -2267,7 +2293,7 @@ static s32 n_setClip(Runtime *runtime, JClass *clazz) {
                                              CGRectStandardize(CGRectMake(x, y, w, h)));
         if (rc->cpuCache) treo_cpu_batch_drain(rc);
         if (w < 0 || h < 0) treo_live_barrier(rc);
-        if (rc->ownsPixels && rc->clipSaved && treo_afk_fast_canvas() &&
+        if (rc->ownsPixels && rc->clipSaved && treo_rc_fast_canvas(rc) &&
             w >= 0 && h >= 0 && CGRectEqualToRect(rc->liveRawClip, CGRectMake(x, y, w, h)) &&
             rc->liveColor == rc->liveSavedColor && rc->liveStroke == rc->liveSavedStroke) {
             ++rc->fastState;
@@ -2322,7 +2348,7 @@ static s32 n_setStrokeStyle(Runtime *runtime, JClass *clazz) {
     s32 style = env->localvar_getInt(runtime->localvar, 2);
     RenderContext *rc = rc_acquire(handle, jarbox_native_heap_key_for_runtime(runtime));
     if (rc) {
-        if (rc->ownsPixels && rc->clipSaved && treo_afk_fast_canvas() && rc->liveStroke == style)
+        if (rc->ownsPixels && rc->clipSaved && treo_rc_fast_canvas(rc) && rc->liveStroke == style)
             ++rc->fastState;
         else treo_apply_stroke(rc->ctx, style);
         rc->liveStroke = style;
@@ -2363,7 +2389,7 @@ static s32 n_drawLine(Runtime *runtime, JClass *clazz) {
 // reference draws leave CG's pixels in place and permanently disable the fast
 // path for this context on mismatch. No assumptions about image/offscreen GCs.
 static int treo_fast_opaque_rect(RenderContext *rc, int x, int y, int w, int h) {
-    if (!rc->softwarePixels || !treo_afk_fast_canvas() || rc->fastFillRejected ||
+    if (!rc->softwarePixels || !treo_rc_fast_canvas(rc) || rc->fastFillRejected ||
         !rc->clipSaved || (rc->liveColor >> 24) != 255 || w <= 0 || h <= 0 ||
         rc->liveRawClip.size.width < 0 || rc->liveRawClip.size.height < 0) return 0;
     CGRect raw = CGRectMake(x, y, w, h);
@@ -2585,7 +2611,7 @@ static s32 n_setFont(Runtime *runtime, JClass *clazz) {
     s32 size = env->localvar_getInt(runtime->localvar, 4);
     RenderContext *rc = rc_acquire(handle, jarbox_native_heap_key_for_runtime(runtime));
     if (rc) {
-        if (rc->ownsPixels && treo_afk_fast_canvas() && rc->font && rc->fastFontValid &&
+        if (rc->ownsPixels && treo_rc_fast_canvas(rc) && rc->font && rc->fastFontValid &&
             rc->fastFontFace == face && rc->fastFontStyle == style && rc->fastFontSize == size) {
             ++rc->fastState;
             rc_release(rc);
@@ -2812,6 +2838,7 @@ static s32 n_getImageContext(Runtime *runtime, JClass *clazz) {
         rc->font = CTFontCreateWithName(CFSTR("Helvetica"), 14.0, NULL);
         rc->ownsPixels = 0; // pixels owned by the RenderImage, not this wrapper
         rc->heap_key = img->heap_key;
+        atomic_init(&rc->afk_mode, treo_runtime_mode(runtime));
         if (!track_rc(rc)) {
             CGContextRelease(rc->ctx);
             if (rc->font) CFRelease(rc->font);
@@ -2849,7 +2876,7 @@ static s32 n_drawImage(Runtime *runtime, JClass *clazz) {
     if (anchor & 32) y -= imgH;
 
     if (rc->cpuCache) treo_cpu_batch_drain(rc);
-    if (rc->softwarePixels && treo_afk_fast_canvas() &&
+    if (rc->softwarePixels && treo_rc_fast_canvas(rc) &&
         !atomic_load_explicit(&treo_replay_state, memory_order_relaxed)) {
         treo_live_barrier(rc);
         ++rc->swRegions;
@@ -3229,7 +3256,7 @@ char *treo_metal_replay_copy_report(void) {
 static void treo_replay_capture(RenderContext *rc, CGImageRef image, int64_t x, int64_t y,
                                 int sx, int sy, int w, int h, int transform) {
     if (atomic_load_explicit(&treo_replay_state, memory_order_relaxed) != 1 ||
-        !rc->ownsPixels || j2me_render_is_afk_suspended()) return;
+        !rc->ownsPixels || treo_rc_afk(rc)) return;
     size_t tw = CGImageGetWidth(image), th = CGImageGetHeight(image);
     if (rc->width <= 0 || rc->height <= 0 || rc->width > 2048 || rc->height > 2048 ||
         tw > 4096 || th > 4096 || sx < 0 || sy < 0 || w <= 0 || h <= 0 ||
@@ -3531,7 +3558,7 @@ static void treo_live_barrier(RenderContext *rc) {
 
 static int treo_live_recording(RenderContext *rc) {
     return rc->ownsPixels && !rc->liveBlocked && treo_metal_live_enabled() &&
-        !j2me_render_is_afk_suspended() &&
+        !treo_rc_afk(rc) &&
         !atomic_load_explicit(&treo_replay_state, memory_order_relaxed) &&
         rc->width > 0 && rc->height > 0 && rc->width <= 1024 && rc->height <= 1024;
 }
@@ -3797,7 +3824,7 @@ static void treo_cpu_batch_drain(RenderContext *rc) {
 static int treo_cpu_batch_enqueue(RenderContext *rc, RenderImage *img, int64_t x, int64_t y,
                                   int sx, int sy, int w, int h, int transform) {
     if (!rc->ownsPixels || !img->immutableSnapshot || !treo_cpu_batch_enabled() ||
-        treo_metal_live_enabled() || j2me_render_is_afk_suspended() ||
+        treo_metal_live_enabled() || treo_rc_afk(rc) ||
         atomic_load_explicit(&treo_replay_state, memory_order_relaxed) ||
         (rc->liveRun && rc->liveRun->count) || x < -32768 || x > 32768 || y < -32768 || y > 32768 ||
         transform < 0 || transform > 7 || sx < 0 || sy < 0 || w <= 0 || h <= 0 ||
@@ -3963,7 +3990,7 @@ static s32 treo_draw_region(const TreoRegionArgs *p, int direct) {
     if (anchor & 32) yDst -= outH;
 
     if (rc->ownsPixels && treo_render_region_cull_enabled() &&
-        !j2me_render_is_afk_suspended() && wSrc > 0 && hSrc > 0 &&
+        !treo_rc_afk(rc) && wSrc > 0 && hSrc > 0 &&
         transform >= 0 && transform <= 7 &&
         treo_region_outside_clip(rc->regionClipBounds, xDst, yDst, outW, outH)) {
         if (treo_profile_active()) TREO_PROF_ADD(region_culled, 1);
@@ -3975,7 +4002,7 @@ static s32 treo_draw_region(const TreoRegionArgs *p, int direct) {
     if (!img) { rc_release(rc); return RUNTIME_STATUS_NORMAL; }
     // AFK SIMD keeps producing canvas pixels, but never presents them.
     // Use the same verified raster and CG fallback as the visible backend.
-    const int afkMode = atomic_load_explicit(&treo_afk_mode, memory_order_relaxed);
+    const int afkMode = treo_rc_mode(rc);
     const int afkSIMD = afkMode == 5 || afkMode == TreoAFKFastCanvas;
     if (rc->softwarePixels &&
         (afkSIMD || (afkMode == 0 && treo_software_enabled() &&
