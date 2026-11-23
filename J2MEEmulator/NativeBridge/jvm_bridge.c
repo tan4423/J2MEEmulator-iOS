@@ -283,40 +283,51 @@ int jvm_bridge_try_begin_session(void) {
     printf("[JarBoxVM][Lifecycle] session=acquired phase=starting\n");
     return 1;
 }
-/* One visible session, all remaining JVMs parked. The existing one-JVM
- * guard remains while native Treo/renderer/GC and 3D contain globals.
- * The focus policy itself is multi-slot; these functions only act on the
- * VM we can prove owns the current bridge slot today.
- */
+/* Token-based synchronous VM pin. The lifecycle lock establishes a
+ * consistent admission point; the callback lease keeps the heap alive while
+ * UIKit/render/input callbacks finish, even when teardown starts meanwhile.
+ * STARTING slots are parked in the policy without dereferencing a half-built
+ * MiniJVM. Still single-live until the executor and UIKit routing are split. */
+static MiniJVM *bridge_pin_running_owner(uint64_t token, JarBoxSession **held) {
+    if (held) *held = NULL;
+    if (!token || !held) return NULL;
+    pthread_mutex_lock(&g_bridge_lifecycle_lock);
+    const int matches =
+        atomic_load_explicit(&g_bridge_vm.active, memory_order_acquire) &&
+        atomic_load_explicit(&g_bridge_vm.token, memory_order_acquire) == token &&
+        atomic_load_explicit(&g_bridge_vm.phase, memory_order_acquire) == BRIDGE_RUNNING;
+    MiniJVM *vm = matches ?
+        (MiniJVM *)jarbox_registry_pin_vm(&g_bridge_registry, token, held) : NULL;
+    pthread_mutex_unlock(&g_bridge_lifecycle_lock);
+    return vm;
+}
 int jvm_bridge_park_session(uint64_t token) {
-    if (!token || !atomic_load_explicit(&g_bridge_vm.active, memory_order_acquire) ||
-        atomic_load_explicit(&g_bridge_vm.token, memory_order_acquire) != token)
-        return 0;
-    // Park revokes the native foreground framebuffer immediately, so
-    // already-queued Canvas and MIDP callbacks cannot paint into the library.
-    // Do not clear the input context here: deep NSO Treo's Display waiter
-    // still needs its owning context until resume/stop.
-    MiniJVM *owner = atomic_load_explicit(&g_bridge_vm.jvm, memory_order_acquire);
+    if (!jarbox_registry_contains_token(&g_bridge_registry, token)) return 0;
+    JarBoxSession *held = NULL;
+    MiniJVM *owner = bridge_pin_running_owner(token, &held);
+    // The visible framebuffer is revoked before any deferred UIKit flush.
+    // A STARTING VM has no published renderer to release yet.
     if (owner) j2me_render_release_vm(owner);
     jarbox_focus_park_all(&g_bridge_focus);
-    if (owner && owner->session)
-        (void)jarbox_session_park(owner->session);
+    if (owner) {
+        (void)jarbox_session_park(held);
+        jarbox_session_callback_done(held);
+    }
     return jarbox_focus_is_parked(&g_bridge_focus, token) == 1;
 }
 
 int jvm_bridge_focus_session(uint64_t token) {
-    if (!token || !atomic_load_explicit(&g_bridge_vm.active, memory_order_acquire) ||
-        atomic_load_explicit(&g_bridge_vm.token, memory_order_acquire) != token)
-        return 0;
-    MiniJVM *owner = atomic_load_explicit(&g_bridge_vm.jvm, memory_order_acquire);
+    JarBoxSession *held = NULL;
+    MiniJVM *owner = bridge_pin_running_owner(token, &held);
     if (!owner) return 0;
-    // The renderer must own the next frame before LCDUI replays the
-    // most recent Form/List/Canvas. Physical input goes only to this VM.
-    if (!j2me_render_focus_vm(owner) || !j2me_input_focus_vm(owner) ||
-        !j2me_ui_focus_vm(owner)) return 0;
-    const int selected = jarbox_focus_select(&g_bridge_focus, token);
-    if (selected && owner->session)
-        (void)jarbox_session_enter_foreground(owner->session);
+    // Renderer, input and LCDUI must agree on the same owner generation.
+    // No callback may retain this raw pointer beyond the lease below.
+    const int ready = j2me_render_focus_vm(owner) &&
+                      j2me_input_focus_vm(owner) &&
+                      j2me_ui_focus_vm(owner);
+    const int selected = ready ? jarbox_focus_select(&g_bridge_focus, token) : 0;
+    if (selected) (void)jarbox_session_enter_foreground(held);
+    jarbox_session_callback_done(held);
     return selected;
 }
 
@@ -714,5 +725,13 @@ int jvm_bridge_is_stop_requested(void) {
 // call, never another foreground game. An unbound/tearing-down JVM is
 // instructed to stop instead of accidentally inheriting a later session.
 int jvm_bridge_is_stop_requested_for_vm(const void *vm) {
+    // jvm_init may query the native stop bridge before it has completed
+    // classpath initialization and attached to the registry. Preserve the
+    // old exact STARTING-owner behavior for this narrow pre-bind interval.
+    // After binding, a foreign/stale pointer always fails closed.
+    if (atomic_load_explicit(&g_bridge_vm.phase, memory_order_acquire) == BRIDGE_STARTING &&
+        atomic_load_explicit(&g_bridge_vm.jvm, memory_order_acquire) == vm &&
+        vm != NULL)
+        return atomic_load_explicit(&g_bridge_vm.stop_requested, memory_order_acquire);
     return jarbox_registry_should_stop_vm(&g_bridge_registry, vm);
 }

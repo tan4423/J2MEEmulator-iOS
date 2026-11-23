@@ -366,3 +366,20 @@ GPU shared workspace and diagnostic Metal replay are **still** a concurrency
 blocker; before enabling two JVMs a real iPhone GPU and lifetime stress test
 must demonstrate isolation and acceptable memory pressure. This source
 checkpoint does not change multi-VM admission from one or enable a new mode.
+
+## 2026-11-23: Explicit token read and callback leases for future tab workers
+
+Native registry now exposes token membership and generation-bound VM
+stop checks, rejecting foreign/stale VM pointers without inheriting another
+tab's foreground state. Swift `ownsLiveGameSession` uses its immutable token,
+not the latest bridge token. A new token-scoped synchronous visitor is
+available for future per-tab Treo controls. Focus and park now pin a callback
+lease before reading the VM and relinquish it after native operations; STARTING
+slots can still park without reading an incompletely initialized heap.
+
+**Not unlocked:** `jvm_bridge.c` still instantiates exactly one
+`g_bridge_vm`, and the Swift library uses a single parked controller.
+No second Java runner is allocated or started. The runtime capacity remains
+one. A separately designed multi-runner bridge and a tab coordinator are
+required before two NSO instances can safely be exposed. The existing
+one-VM behavior and Deep Treo 8 were preserved for device regression.

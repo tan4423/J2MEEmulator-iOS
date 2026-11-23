@@ -122,6 +122,11 @@ class MultiVMFocusPolicyTest(unittest.TestCase):
         self.assertIn("JarBoxFocusPolicy g_bridge_focus", source)
         self.assertIn("jvm_bridge_park_session(uint64_t token)", source)
         self.assertIn("jvm_bridge_focus_session(uint64_t token)", source)
+        # No use-after-free when STOPPING races with a UIKit focus/park.
+        self.assertIn("static MiniJVM *bridge_pin_running_owner(uint64_t token", source)
+        self.assertIn("jarbox_registry_pin_vm(&g_bridge_registry, token, held)", source)
+        self.assertIn("jarbox_session_callback_done(held);", source)
+        self.assertIn("jarbox_registry_contains_token(&g_bridge_registry, token)", source)
         self.assertIn("j2me_render_focus_vm(owner)", source)
         self.assertIn("j2me_input_focus_vm(owner)", source)
         self.assertIn("j2me_ui_focus_vm(owner)", source)
