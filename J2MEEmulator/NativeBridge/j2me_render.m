@@ -1579,7 +1579,7 @@ uint64_t treo_jar_audit_ticks(int active) {
 }
 static s32 n_profilePaintBegin(Runtime *runtime, JClass *clazz) {
     s64 start = 0;
-    if (j2me_render_is_afk_suspended() || treo_jar_audit_enabled()) {
+    if (treo_runtime_mode(runtime) != 0 || treo_jar_audit_enabled()) {
         if (!g_afk_thread_id) pthread_threadid_np(NULL, &g_afk_thread_id);
         atomic_store_explicit(&g_afk_paint_tid, g_afk_thread_id, memory_order_relaxed);
         start = -(s64)treo_thread_cpu_ns();
@@ -2169,7 +2169,7 @@ static CGImageRef treo_canvas_snapshot(RenderContext *rc) {
 
 static s32 n_flushToScreen(Runtime *runtime, JClass *clazz) {
     process_dead_shells();
-    const int afk = j2me_render_is_afk_suspended();
+    const int afk = treo_runtime_mode(runtime) != 0;
     JniEnv *env = runtime->jnienv;
     s64 handle = env->localvar_getLong_2slot(runtime->localvar, 0);
     RenderContext *rc = rc_acquire(handle, jarbox_native_heap_key_for_runtime(runtime));
@@ -4098,8 +4098,9 @@ static u64 treo_graphics_offsets(JClass *clazz, int image) {
 // The original Java bytecode stays available for the A/B baseline and any
 // incompatible layout. Only replace the tiny bundled Graphics API wrapper.
 int treo_try_graphics_draw_region(Runtime *runtime, JClass *clazz) {
-    const int fastCanvas = treo_afk_fast_canvas();
-    if (!fastCanvas && (!treo_software_enabled() || j2me_render_is_afk_suspended())) return 0;
+    const int currentMode = treo_runtime_mode(runtime);
+    const int fastCanvas = currentMode == TreoAFKFastCanvas;
+    if (!fastCanvas && (!treo_software_enabled() || currentMode != 0)) return 0;
     LocalVarItem *locals = runtime->localvar;
     Instance *graphics = localvar_getRefer(locals, 0);
     Instance *image = localvar_getRefer(locals, 1);
@@ -4413,7 +4414,7 @@ static void render_haptic_release_owner(uint64_t owner_key) {
 static s32 n_vibrate(Runtime *runtime, JClass *clazz) {
     const uint64_t owner_key = jarbox_native_heap_key_for_runtime(runtime);
     if (!owner_key || owner_key != j2me_render_visible_owner_key() ||
-        j2me_render_is_afk_suspended()) return RUNTIME_STATUS_NORMAL;
+        treo_runtime_mode(runtime) != 0) return RUNTIME_STATUS_NORMAL;
     s32 durationMs = runtime->jnienv->localvar_getInt(runtime->localvar, 0);
     dispatch_async(dispatch_get_main_queue(), ^{
         // An old Tab must never vibrate or stop a new Tab's player.
