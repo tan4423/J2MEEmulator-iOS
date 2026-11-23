@@ -10,6 +10,12 @@
 // guarded-AFK and NSO state remain separate, blocking concurrent JVMs.
 typedef struct JarBoxTreoState {
     int afk_mode;
+    int render_refresh;
+    int render_needs_redraw;
+    int guard_auto_enabled;
+    int guard_auto_fallback;
+    uint64_t render_bypass_deadline_ns;
+    uint64_t render_next_paint_ns;
     int probe_requested_ms;
     uint64_t probe_heap_peak;
     uint64_t probe_fallback_count;
@@ -28,6 +34,44 @@ static inline void jarbox_treo_mode_set(JarBoxTreoState *state, int mode) {
 }
 static inline int jarbox_treo_mode_get(const JarBoxTreoState *state) {
     return state ? __atomic_load_n(&state->afk_mode, __ATOMIC_ACQUIRE) : 0;
+}
+/* All Canvas/native-Java decisions are owned by the invoking JVM. */
+static inline void jarbox_treo_render_mode_set(JarBoxTreoState *s,
+                                                int mode, uint64_t now_ns) {
+    if (!s) return;
+    if (mode == 6 || mode == 7) {
+        __atomic_store_n(&s->render_next_paint_ns, 0, __ATOMIC_RELEASE);
+        __atomic_store_n(&s->render_bypass_deadline_ns,
+                         now_ns ? now_ns + (mode == 7 ? UINT64_C(65000000000) :
+                                            UINT64_C(60000000000)) : 0,
+                         __ATOMIC_RELEASE);
+    }
+    if ((mode >= 2 && mode <= 4) || mode == 6 || mode == 7 || mode == 8)
+        __atomic_store_n(&s->render_needs_redraw, 1, __ATOMIC_RELEASE);
+    int prior = __atomic_exchange_n(&s->afk_mode, mode, __ATOMIC_ACQ_REL);
+    if (mode) __atomic_store_n(&s->render_refresh, 0, __ATOMIC_RELEASE);
+    else if (prior)
+        __atomic_store_n(&s->render_refresh,
+            __atomic_exchange_n(&s->render_needs_redraw, 0, __ATOMIC_ACQ_REL) ? 2 : 1,
+            __ATOMIC_RELEASE);
+}
+static inline int jarbox_treo_render_take_refresh(JarBoxTreoState *s) {
+    return s ? __atomic_exchange_n(&s->render_refresh, 0, __ATOMIC_ACQ_REL) : 0;
+}
+static inline void jarbox_treo_guard_auto_set(JarBoxTreoState *s, int enabled) {
+    if (!s) return;
+    __atomic_store_n(&s->guard_auto_enabled, 0, __ATOMIC_RELEASE);
+    if (enabled) __atomic_store_n(&s->guard_auto_fallback, 0, __ATOMIC_RELEASE);
+    __atomic_store_n(&s->guard_auto_enabled, enabled != 0, __ATOMIC_RELEASE);
+}
+static inline int jarbox_treo_guard_fell_back(const JarBoxTreoState *s) {
+    return s ? __atomic_load_n(&s->guard_auto_fallback, __ATOMIC_ACQUIRE) : 0;
+}
+static inline int jarbox_treo_guard_note_late(JarBoxTreoState *s) {
+    if (!s || !__atomic_load_n(&s->guard_auto_enabled, __ATOMIC_ACQUIRE) ||
+        jarbox_treo_mode_get(s) != 8) return 0;
+    __atomic_store_n(&s->guard_auto_fallback, 1, __ATOMIC_RELEASE);
+    return 1;
 }
 static inline void jarbox_treo_nso_profile_set(JarBoxTreoState *state,
                                                int family, int init_target) {

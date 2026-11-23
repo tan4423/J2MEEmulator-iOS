@@ -198,8 +198,15 @@ void j2me_render_release_vm(MiniJVM *vm) {
     render_haptic_release_owner(key);
 }
 
+// Legacy process-wide raster/Metal compatibility mirror while cap=1.
 _Atomic int treo_afk_mode = 0;
-static _Atomic uint64_t treo_afk_bypass_deadline, treo_afk_bypassed, treo_afk_next_paint;
+static _Atomic uint64_t treo_afk_bypassed;
+static JarBoxTreoState *treo_runtime_state(Runtime *r) {
+    return r && r->jvm && r->jvm->session ? &r->jvm->session->treo_state : NULL;
+}
+static int treo_runtime_mode(Runtime *r) {
+    return jarbox_treo_mode_get(treo_runtime_state(r));
+}
 static void process_dead_shells(void);
 static uint64_t treo_afk_now_ns(void) {
     struct timespec ts;
@@ -211,16 +218,17 @@ uint64_t treo_afk_bypassed_paints(void) {
 }
 static s32 n_afkBypassPaint(Runtime *runtime, JClass *clazz) {
     int bypass = 0;
-    const int mode = atomic_load_explicit(&treo_afk_mode, memory_order_acquire);
-    if (mode == 6 || mode == 7) {
+    JarBoxTreoState *state = treo_runtime_state(runtime);
+    const int mode = treo_runtime_mode(runtime);
+    if (state && (mode == 6 || mode == 7)) {
         uint64_t now = treo_afk_now_ns();
-        bypass = now && now < atomic_load_explicit(&treo_afk_bypass_deadline, memory_order_relaxed);
+        bypass = now && now < __atomic_load_n(&state->render_bypass_deadline_ns, __ATOMIC_ACQUIRE);
         if (bypass && mode == 7) {
-            uint64_t next = atomic_load_explicit(&treo_afk_next_paint, memory_order_relaxed);
+            uint64_t next = __atomic_load_n(&state->render_next_paint_ns, __ATOMIC_RELAXED);
             // One genuine paint every >=200ms, across both possible caller threads.
             while (now >= next) {
-                if (atomic_compare_exchange_weak_explicit(&treo_afk_next_paint, &next,
-                        now + 200000000ULL, memory_order_relaxed, memory_order_relaxed)) {
+                if (__atomic_compare_exchange_n(&state->render_next_paint_ns, &next,
+                        now + UINT64_C(200000000), 1, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) {
                     bypass = 0;
                     break;
                 }
@@ -262,7 +270,7 @@ uint64_t treo_afk_buffer_copy_cpu_ns(void) {
 static s32 n_afkBufferBlitBegin(Runtime *runtime, JClass *clazz) {
     s64 stamp = 0;
     if (atomic_load_explicit(&g_afk_buffer_audit, memory_order_acquire) &&
-        atomic_load_explicit(&treo_afk_mode, memory_order_acquire) == 8) {
+        treo_runtime_mode(runtime) == 8) {
         const int w = runtime->jnienv->localvar_getInt(runtime->localvar, 0);
         const int h = runtime->jnienv->localvar_getInt(runtime->localvar, 1);
         const int safe = runtime->jnienv->localvar_getInt(runtime->localvar, 2);
@@ -290,8 +298,6 @@ static s32 n_afkBufferBlitEnd(Runtime *runtime, JClass *clazz) {
     }
     return RUNTIME_STATUS_NORMAL;
 }
-static atomic_int g_afk_refresh = 0;
-static atomic_bool g_afk_needs_redraw;
 static _Atomic uint64_t g_afk_skipped_draws, g_afk_skipped_paints;
 static _Atomic uint64_t g_afk_paint_count, g_afk_paint_cpu_ns;
 
@@ -342,15 +348,19 @@ static _Atomic uint64_t treo_guarded_paints, treo_guarded_real, treo_guarded_lat
 // unexpectedly reads its pixels/native context after guarded elision began,
 // fall back to compatible AFK presentation-only mode for the current session.
 // This opt-in guard does not affect the pre-existing mode-8 A/B/A diagnostics.
-static atomic_bool treo_guarded_afk_auto_enabled;
-static atomic_bool treo_guarded_afk_auto_fallback;
+static void treo_guard_set_visitor(MiniJVM *vm, void *arg) {
+    jarbox_treo_guard_auto_set(&vm->session->treo_state, *(int *)arg);
+}
 void treo_afk_guard_auto_set(int enabled) {
-    atomic_store_explicit(&treo_guarded_afk_auto_enabled, false, memory_order_release);
-    if (enabled) atomic_store_explicit(&treo_guarded_afk_auto_fallback, false, memory_order_relaxed);
-    atomic_store_explicit(&treo_guarded_afk_auto_enabled, enabled != 0, memory_order_release);
+    jvm_bridge_visit_running_vm(treo_guard_set_visitor, &enabled);
+}
+static void treo_guard_read_visitor(MiniJVM *vm, void *arg) {
+    *(int *)arg = jarbox_treo_guard_fell_back(&vm->session->treo_state);
 }
 int treo_afk_guard_auto_fell_back(void) {
-    return atomic_load_explicit(&treo_guarded_afk_auto_fallback, memory_order_acquire);
+    int result = 0;
+    jvm_bridge_visit_running_vm(treo_guard_read_visitor, &result);
+    return result;
 }
 uint64_t treo_afk_guarded_paints(void) { return atomic_load_explicit(&treo_guarded_paints, memory_order_relaxed); }
 uint64_t treo_afk_guarded_real(void) { return atomic_load_explicit(&treo_guarded_real, memory_order_relaxed); }
@@ -376,8 +386,7 @@ uint64_t treo_image_cache_stored_bytes(void) {
     return atomic_load_explicit(&g_image_cache_stored_bytes, memory_order_relaxed);
 }
 static s32 n_afkImageCacheEnabled(Runtime *runtime, JClass *clazz) {
-    push_int(runtime->stack, TREO_VM_IMAGE_CACHE &&
-        atomic_load_explicit(&treo_afk_mode, memory_order_acquire) == 8);
+    push_int(runtime->stack, TREO_VM_IMAGE_CACHE && treo_runtime_mode(runtime) == 8);
     return RUNTIME_STATUS_NORMAL;
 }
 static s32 n_imageCacheNote(Runtime *runtime, JClass *clazz) {
@@ -455,9 +464,9 @@ int treo_nso_work_qos(int phase) {
 uint64_t treo_nso_work_thread(void) {
     return atomic_load_explicit(&treo_nso_work_owner, memory_order_acquire);
 }
-static void treo_nso_work_probe(uint64_t now) {
+static void treo_nso_work_probe(Runtime *runtime, uint64_t now) {
     if (!now || pthread_main_np()) return;
-    const int mode = atomic_load_explicit(&treo_afk_mode, memory_order_relaxed);
+    const int mode = treo_runtime_mode(runtime);
     if (mode != 0 && mode != 8) return;
     const int phase = mode == 8 ? 1 : 0;
     // Reject 99%+ of calls before querying thread identity. Keep the
@@ -529,10 +538,10 @@ int treo_nso_canvas_recognized(void) {
 uint64_t treo_nso_repaint_requests(void) {
     return atomic_load_explicit(&treo_nso_request_count, memory_order_relaxed);
 }
-static void treo_nso_note_request(void) {
+static void treo_nso_note_request(Runtime *runtime) {
     const uint64_t ns = treo_afk_now_ns();
     // During and before Treo, a 5s-gated *same-thread* fixed-work sample.
-    treo_nso_work_probe(ns);
+    treo_nso_work_probe(runtime, ns);
     atomic_fetch_add_explicit(&treo_nso_request_count, 1, memory_order_relaxed);
     if (!ns) return;
     atomic_store_explicit(&treo_nso_last_request_ns, ns, memory_order_relaxed);
@@ -646,7 +655,7 @@ static s32 n_ninjaDeepSkip(Runtime *runtime, JClass *clazz) {
         treo_nso_simple_canvas_paint(canvas->mb.clazz);
     if (qualified) {
         atomic_store_explicit(&treo_nso_canvas_seen, 1, memory_order_release);
-        if (stage == 0) treo_nso_note_request();
+        if (stage == 0) treo_nso_note_request(runtime);
     }
     const int skip = qualified && ninja_deep_active(runtime);
     if (skip)
@@ -656,7 +665,7 @@ static s32 n_ninjaDeepSkip(Runtime *runtime, JClass *clazz) {
     return RUNTIME_STATUS_NORMAL;
 }
 static s32 n_afkPaintPolicy(Runtime *runtime, JClass *clazz) {
-    push_int(runtime->stack, atomic_load_explicit(&treo_afk_mode, memory_order_acquire));
+    push_int(runtime->stack, treo_runtime_mode(runtime));
     return RUNTIME_STATUS_NORMAL;
 }
 static s32 n_afkCanvasResult(Runtime *runtime, JClass *clazz) {
@@ -664,11 +673,12 @@ static s32 n_afkCanvasResult(Runtime *runtime, JClass *clazz) {
     atomic_fetch_add_explicit(outcome ? &treo_guarded_paints : &treo_guarded_real, 1, memory_order_relaxed);
     if (outcome == 2) {
         atomic_fetch_add_explicit(&treo_guarded_late, 1, memory_order_relaxed);
-        if (atomic_load_explicit(&treo_guarded_afk_auto_enabled, memory_order_acquire) &&
-            atomic_load_explicit(&treo_afk_mode, memory_order_acquire) == 8) {
-            // Never let a generic JAR keep using a suspect headless Canvas.
-            atomic_store_explicit(&treo_guarded_afk_auto_fallback, true, memory_order_release);
-            treo_render_set_afk_mode(1);
+        JarBoxTreoState *state = treo_runtime_state(runtime);
+        if (jarbox_treo_guard_note_late(state)) {
+            // A late callback may not downgrade another session's raster mode.
+            jarbox_treo_render_mode_set(state, 1, treo_afk_now_ns());
+            if (runtime->jvm->session->token == jvm_bridge_session_token())
+                treo_render_set_afk_mode(1);
         }
     }
     return RUNTIME_STATUS_NORMAL;
@@ -761,38 +771,29 @@ int j2me_render_is_afk_suspended(void) {
     return atomic_load_explicit(&treo_afk_mode, memory_order_relaxed) != 0;
 }
 
+typedef struct { int mode; uint64_t now_ns; } TreoModeChange;
+static void treo_render_mode_visitor(MiniJVM *vm, void *arg) {
+    const TreoModeChange *change = arg;
+    jarbox_treo_render_mode_set(&vm->session->treo_state, change->mode, change->now_ns);
+}
 void treo_render_set_afk_mode(int mode) {
-    if (mode == 6 || mode == 7) {
-        const uint64_t now = treo_afk_now_ns();
-        atomic_store_explicit(&treo_afk_next_paint, 0, memory_order_relaxed);
-        // Mode 7 is a bounded experiment; fail open if the UI timer stalls.
-        atomic_store_explicit(&treo_afk_bypass_deadline,
-                              now ? now + (mode == 7 ? 65000000000ULL : 60000000000ULL) : 0,
-                              memory_order_relaxed);
-    }
-    if ((mode >= 2 && mode <= 4) || mode == 6 || mode == 7 || mode == 8)
-        atomic_store(&g_afk_needs_redraw, 1);
-    int previous = atomic_exchange(&treo_afk_mode, mode);
-    // Keep Smart GC's AFK decision on the running MiniJVM, not the global
-    // render mode. No new timers, threads or user-facing Treo options.
+    const int previous = atomic_exchange(&treo_afk_mode, mode);
+    const TreoModeChange change = {mode, treo_afk_now_ns()};
+    jvm_bridge_visit_running_vm(treo_render_mode_visitor, (void *)&change);
+    // Preserve existing Smart GC dispatch until all callers are per-VM.
     treo_gc_set_afk_mode_for_current(mode);
-    if (mode) {
-        atomic_store(&g_afk_refresh, 0);
-        if (!previous) stop_afk_haptics();
-    } else if (previous) {
-        atomic_store(&g_afk_refresh, atomic_exchange(&g_afk_needs_redraw, 0) ? 2 : 1);
-    }
+    if (mode && !previous) stop_afk_haptics();
     j2me_display_wake();
 }
 void j2me_render_set_afk_suspended(int enabled) { treo_render_set_afk_mode(enabled ? 1 : 0); }
 
 static s32 n_afkSuspended(Runtime *runtime, JClass *clazz) {
-    push_int(runtime->stack, j2me_render_is_afk_suspended());
+    push_int(runtime->stack, treo_runtime_mode(runtime) != 0);
     return RUNTIME_STATUS_NORMAL;
 }
-
 static s32 n_takeAfkRefresh(Runtime *runtime, JClass *clazz) {
-    push_int(runtime->stack, atomic_load(&g_afk_refresh) ? atomic_exchange(&g_afk_refresh, 0) : 0);
+    push_int(runtime->stack,
+             jarbox_treo_render_take_refresh(treo_runtime_state(runtime)));
     return RUNTIME_STATUS_NORMAL;
 }
 

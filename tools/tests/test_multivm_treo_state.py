@@ -63,6 +63,21 @@ int main(void) {
     jarbox_treo_smart_record_gc(&a, 2500);
     if (a.smart_cycles != 1 || a.smart_cpu_ns != 2500 ||
         b.smart_cycles != 0) return 8;
+    jarbox_treo_guard_auto_set(&a, 1);
+    jarbox_treo_render_mode_set(&a, 8, UINT64_C(1000000000));
+    if (jarbox_treo_mode_get(&a) != 8 ||
+        !jarbox_treo_guard_note_late(&a) ||
+        !jarbox_treo_guard_fell_back(&a) ||
+        jarbox_treo_guard_fell_back(&b) ||
+        jarbox_treo_guard_note_late(&b)) return 12;
+    jarbox_treo_render_mode_set(&a, 0, UINT64_C(2000000000));
+    if (jarbox_treo_render_take_refresh(&a) != 2 ||
+        jarbox_treo_render_take_refresh(&a) != 0 ||
+        jarbox_treo_render_take_refresh(&b) != 0 ||
+        jarbox_treo_mode_get(&b) != 8) return 13;
+    jarbox_treo_render_mode_set(&a, 7, UINT64_C(10000000000));
+    if (a.render_bypass_deadline_ns != UINT64_C(75000000000) ||
+        a.render_next_paint_ns || b.render_bypass_deadline_ns) return 14;
     jarbox_treo_mode_set(&a, 0);
     puts("TreoState host model: OK (two independent states; pthread peak stress)");
     return 0;
@@ -114,6 +129,10 @@ class MultiVMTreoStateTest(unittest.TestCase):
         self.assertIn("jarbox_treo_mode_get(&runtime->jvm->session->treo_state)", renderer)
         self.assertIn("ninja_profile_for_runtime(runtime) && canvas", renderer)
         self.assertIn("ninja_deep_active(runtime)", renderer)
+        self.assertIn("jarbox_treo_render_mode_set(&vm->session->treo_state", renderer)
+        self.assertIn("jarbox_treo_render_take_refresh(treo_runtime_state(runtime))", renderer)
+        self.assertIn("jarbox_treo_guard_note_late(state)", renderer)
+        self.assertNotIn("static atomic_int g_afk_refresh", renderer)
         interpreter = (ROOT / "J2MEEmulator/minijvm/jvm/interpreter.c").read_text()
         self.assertIn("jarbox_treo_mode_get(&pruntime->jvm->session->treo_state)", interpreter)
         self.assertIn("treo_afk_elide_graphics(pruntime, method->_this_class, args->ins)", interpreter)
