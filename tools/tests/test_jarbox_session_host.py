@@ -30,6 +30,17 @@ static void *work(void *ptr) {
     jarbox_session_worker_done(w->session);
     return NULL;
 }
+typedef struct {
+    JarBoxSession *session;
+    atomic_int go;
+} Race;
+static void *race_reserve(void *ptr) {
+    Race *r = (Race *)ptr;
+    while (!atomic_load(&r->go)) sched_yield();
+    if (jarbox_session_reserve_worker(r->session))
+        jarbox_session_worker_done(r->session);
+    return NULL;
+}
 int main(void) {
     JarBoxSession *a = jarbox_session_create((void *)(uintptr_t)0x1234);
     JarBoxSession *b = jarbox_session_create((void *)(uintptr_t)0x1234);
@@ -62,6 +73,27 @@ int main(void) {
     if (!jarbox_session_mark_dead(b)) return 11;
     jarbox_session_release(a);
     jarbox_session_release(b);
+    /* Race a worker reservation against STOPPING across 1000 fresh owners.
+     * A successful pre-stop reservation must return its lease; no post-stop
+     * reservation may survive, and dead sessions cannot be restarted. */
+    for (int i = 0; i < 1000; ++i) {
+        JarBoxSession *c = jarbox_session_create((void *)(uintptr_t)0x1234);
+        if (!c || !jarbox_session_bind_token(c, (uint64_t)i + 1000))
+            return 13;
+        Race race = {.session = c};
+        pthread_t contender;
+        if (pthread_create(&contender, NULL, race_reserve, &race))
+            return 14;
+        atomic_store(&race.go, 1);
+        jarbox_session_begin_stop(c);
+        pthread_join(contender, NULL);
+        if (jarbox_session_worker_count(c) != 0 ||
+            jarbox_session_reserve_worker(c) ||
+            !jarbox_session_mark_dead(c) ||
+            jarbox_session_enter_foreground(c))
+            return 15;
+        jarbox_session_release(c);
+    }
     puts("JarBoxSession host model: OK (two sessions, park A, stop A and keep B)");
     return 0;
 }
