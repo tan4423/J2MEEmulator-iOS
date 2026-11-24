@@ -3965,6 +3965,19 @@ class GameViewController: UIViewController {
         (path == nil || path == jarPath)
     }
 
+    // Include STARTING and STOPPING until native retirement.
+    var nativeSessionToken: UInt64? {
+        holdsNativeGameSession() ? gameSessionToken : nil
+    }
+
+    func requestStopForTabMutation(expectedToken: UInt64) -> Bool {
+        guard libraryIsPresented, nativeSessionToken == expectedToken else { return false }
+        if gameStopRequested { return true }
+        guard parkedSessionToken == expectedToken else { return false }
+        stopParkedGame()
+        return true
+    }
+
     func holdsNativeInstance(for path: String, cloneID candidate: UUID?) -> Bool {
         holdsNativeGameSession(for: path) && candidate == cloneID
     }

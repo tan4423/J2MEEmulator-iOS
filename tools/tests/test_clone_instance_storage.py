@@ -20,6 +20,10 @@ import CryptoKit
 
 var nativeSessionCount: Int32 = 0
 func jvm_bridge_active_session_count() -> Int32 { nativeSessionCount }
+var knownNativeTokens: Set<UInt64> = []
+func jvm_bridge_session_is_active_for_token(_ token: UInt64) -> Int32 {
+    knownNativeTokens.contains(token) ? 1 : 0
+}
 
 '''
 
@@ -122,8 +126,17 @@ struct CloneHarness {
             fatalError("reset while JVM alive")
         } catch { }
         require(fm.fileExists(atPath: recordB), "live reset mutated save")
+        knownNativeTokens = [77]
+        do {
+            try JarBoxGameStorage.clearInstanceData(jarPath: jar, documents: docs, cloneID: b.id,
+                                                   unrelatedTokens: [78])
+            fatalError("unknown owner bypassed guard")
+        } catch { }
+        require(fm.fileExists(atPath: recordB), "unknown owner mutated save")
+        try JarBoxGameStorage.clearInstanceData(jarPath: jar, documents: docs, cloneID: b.id,
+                                               unrelatedTokens: [77])
         nativeSessionCount = 0
-        try JarBoxGameStorage.clearInstanceData(jarPath: jar, documents: docs, cloneID: b.id)
+        knownNativeTokens = []
         require((try fm.contentsOfDirectory(atPath: rootB)).isEmpty, "reset did not empty clone root")
         require(try JarBoxGameStorage.registeredClones(jarPath: jar, documents: docs).contains { $0.id == b.id },
                 "reset removed clone registry")

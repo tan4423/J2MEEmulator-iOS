@@ -14,6 +14,23 @@ import CryptoKit
 // runner, library settings and RMS diagnostics. A copied JAR with a distinct
 // filename gets distinct data; changing only its display alias does not.
 enum JarBoxGameStorage {
+    // Default callers require an idle registry. The main-actor coordinator
+    // can explicitly account for unrelated live owners before a mutation.
+    nonisolated static func requireMutationSafety(unrelatedTokens: [UInt64] = []) throws {
+        // Admissions occur on the main actor. Reject a changing registry:
+        // a retiring known token must not mask an unknown surviving owner.
+        let before = Int(jvm_bridge_active_session_count())
+        let active = Set(unrelatedTokens).filter {
+            $0 != 0 && jvm_bridge_session_is_active_for_token($0) != 0
+        }
+        let after = Int(jvm_bridge_active_session_count())
+        guard (unrelatedTokens.isEmpty || Thread.isMainThread),
+              before == after, after == active.count else {
+            throw NSError(domain: "JarBox.GameStorage", code: 13,
+                userInfo: [NSLocalizedDescriptionKey: "Chưa xác nhận các phiên cần xóa đã dừng hẳn."])
+        }
+    }
+
     // Includes the original; independent of the number of live JVM slots.
     // Preserve the previous limit of 16 clones + one original.
     nonisolated static let maxTotalTabs = 17
@@ -273,13 +290,10 @@ enum JarBoxGameStorage {
     // Validate the complete selection and stage all roots before publishing
     // a single registry update. Never remove the original (no UUID).
     nonisolated static func removeClones(jarPath: String, documents: String,
-                                         cloneIDs: [UUID]) throws {
+                                         cloneIDs: [UUID], unrelatedTokens: [UInt64] = []) throws {
         cloneRegistryLock.lock()
         defer { cloneRegistryLock.unlock() }
-        guard jvm_bridge_active_session_count() == 0 else {
-            throw NSError(domain: "JarBox.GameStorage", code: 13,
-                userInfo: [NSLocalizedDescriptionKey: "Dừng game trước khi xóa tab."])
-        }
+        try requireMutationSafety(unrelatedTokens: unrelatedTokens)
         var group = try readCloneGroup(jarPath: jarPath, documents: documents)
         guard validTabQuantity(cloneIDs.count, maximum: group.clones.count) else {
             throw tabQuantityError(maximum: group.clones.count)
@@ -395,11 +409,8 @@ enum JarBoxGameStorage {
     /// Reset only the selected instance's files, not its UUID, preferences
     /// or shared JAR. Keep an empty registered clone root for next startup.
     nonisolated static func clearInstanceData(jarPath: String, documents: String,
-                                                cloneID: UUID?) throws {
-        guard jvm_bridge_active_session_count() == 0 else {
-            throw NSError(domain: "JarBox.GameStorage", code: 13,
-                userInfo: [NSLocalizedDescriptionKey: "Dừng các phiên JVM trước khi xóa dữ liệu."])
-        }
+                                                cloneID: UUID?, unrelatedTokens: [UInt64] = []) throws {
+        try requireMutationSafety(unrelatedTokens: unrelatedTokens)
         let root = try prepareRoot(jarPath: jarPath, documents: documents, cloneID: cloneID)
         let fm = FileManager.default
         let tomb = root + ".reset-" + UUID().uuidString
@@ -479,6 +490,7 @@ class AppsListViewController: UIViewController,
     private weak var animatedBackground: AnimatedBackgroundView?
     private var springboardVisible = false
     private var gamePresentationInFlight = false
+    private var pendingTabMutation: UUID?
     private var importBarButton: UIBarButtonItem?
     private var jarBoxMenuButton: UIBarButtonItem?
     // CPU sampling is event-based, process-wide; never attribute it to one game.
@@ -568,7 +580,7 @@ class AppsListViewController: UIViewController,
 
     private var canPresentGame: Bool {
         jarBoxSleepCover == nil && !gamePresentationInFlight && presentedViewController == nil &&
-        viewIfLoaded?.window != nil && !isBeingDismissed
+        viewIfLoaded?.window != nil && !isBeingDismissed && pendingTabMutation == nil
     }
 
     private func presentGame(_ game: GameViewController, reason: String) {
@@ -626,15 +638,16 @@ class AppsListViewController: UIViewController,
     }
 
     private func stopMenu(for app: AppInfo, tabs: [(id: UUID?, title: String)]) -> UIMenuElement {
-        let snapshots = tabs.map { tab -> (title: String, game: GameViewController?, token: UInt64?) in
-            let game = gameForTab(app.path, cloneID: tab.id)
-            return (tab.title, game, game?.parkedSessionToken)
+        let snapshots = tabs.compactMap { tab -> (title: String, game: GameViewController?, token: UInt64?)? in
+            guard let game = gameForTab(app.path, cloneID: tab.id),
+                  let token = game.parkedSessionToken else { return nil }
+            return (tab.title, game, token)
         }
         func action(_ title: String, _ targets: [(title: String, game: GameViewController?, token: UInt64?)]) -> UIAction {
             let available = targets.contains { $0.token != nil }
             return UIAction(title: title, image: UIImage(systemName: "stop.fill"),
                             attributes: available ? .destructive : [.destructive, .disabled]) { [weak self] _ in
-                guard let self else { return }
+                guard let self, self.pendingTabMutation == nil else { return }
                 for target in targets {
                     guard let game = target.game, let token = target.token,
                           self.retainedGames.contains(where: { $0 === game }),
@@ -644,7 +657,7 @@ class AppsListViewController: UIViewController,
                 self.updateStuckSessionButton()
             }
         }
-        if snapshots.count == 1 { return action("Dừng", snapshots) }
+        if snapshots.count <= 1 { return action("Dừng", snapshots) }
         return UIMenu(title: "Dừng", image: UIImage(systemName: "stop.fill"),
                       children: [action("Tất cả", snapshots)] + snapshots.map { action($0.title, [$0]) })
     }
@@ -652,13 +665,23 @@ class AppsListViewController: UIViewController,
     private func clearDataMenu(for app: AppInfo, tabs: [(id: UUID?, title: String)]) -> UIMenuElement {
         func action(_ title: String, _ targets: [(id: UUID?, title: String)]) -> UIAction {
             UIAction(title: title, image: UIImage(systemName: "eraser"),
-                     attributes: jvm_bridge_active_session_count() == 0 ? .destructive : [.destructive, .disabled]) { [weak self] _ in
+                     attributes: .destructive) { [weak self] _ in
                 self?.confirmClearGameData(for: app, tabs: targets)
             }
         }
         if tabs.count == 1 { return action("Xóa dữ liệu", tabs) }
         return UIMenu(title: "Xóa dữ liệu", image: UIImage(systemName: "eraser"),
-                      children: [action("Tất cả", tabs)] + tabs.map { action($0.title, [$0]) })
+                      children: [action("Tất cả", tabs)] + tabs.map {
+                          action(tabStatusTitle($0.title, path: app.path, cloneID: $0.id), [$0])
+                      })
+    }
+
+    private func tabStatusTitle(_ title: String, path: String, cloneID: UUID?) -> String {
+        if gameForTab(path, cloneID: cloneID) != nil { return title + " · Đang chạy" }
+        if retainedGames.contains(where: { $0.holdsNativeInstance(for: path, cloneID: cloneID) }) {
+            return title + " · Đang dừng"
+        }
+        return title
     }
 
     // Keep lifecycle diagnostics but do not restart any decorative work.
@@ -930,7 +953,7 @@ class AppsListViewController: UIViewController,
     // The native JVM is already in mode 8 from Back -> library. Opening
     // this display must not reset it, change game clocks or create a JVM.
     private func showJarBoxSleepScreen() {
-        guard springboardVisible, jarBoxSleepCover == nil,
+        guard springboardVisible, jarBoxSleepCover == nil, pendingTabMutation == nil,
               presentedViewController == nil else { return }
         let container = navigationController?.view ?? view!
         let cover = UIView()
@@ -1483,7 +1506,8 @@ class AppsListViewController: UIViewController,
     func collectionView(_ collectionView: UICollectionView,
                         contextMenuConfigurationForItemsAt indexPaths: [IndexPath],
                         point: CGPoint) -> UIContextMenuConfiguration? {
-        guard let indexPath = indexPaths.first else { return nil }
+        guard pendingTabMutation == nil, let indexPath = indexPaths.first,
+              apps.indices.contains(indexPath.item) else { return nil }
         let app = apps[indexPath.item]
         return UIContextMenuConfiguration(actionProvider: { [weak self] _ in
             guard let self else { return nil }
@@ -1531,7 +1555,7 @@ class AppsListViewController: UIViewController,
                 image: UIImage(systemName: "moon.zzz"), children: treoActions)
             let cloneMenu = self.makeCloneMenu(for: app, cloneCount: clones.count)
             let delete = UIAction(title: "Xóa game", image: UIImage(systemName: "trash"),
-                                  attributes: isRunning ? [.destructive, .disabled] : .destructive) { [weak self] _ in
+                                  attributes: .destructive) { [weak self] _ in
                 self?.confirmDeleteApp(for: app)
             }
             let advanced = UIMenu(title: "Nâng cao",
@@ -1762,82 +1786,165 @@ class AppsListViewController: UIViewController,
         present(alert, animated: true)
     }
 
-    private func confirmClearGameData(for app: AppInfo, tabs: [(id: UUID?, title: String)]) {
-        guard !tabs.isEmpty else { return }
-        let names = tabs.map { $0.title }.joined(separator: ", ")
-        let alert = UIAlertController(title: "Xóa dữ liệu",
-                                      message: "Xóa dữ liệu của " + app.name + " · " + names +
-                                        "? Không thể hoàn tác. Giữ nguyên JAR, tab và cài đặt.",
-                                      preferredStyle: .alert)
+    // Main-actor admission and filesystem mutation are serialized. Include
+    // stopping slots: a zero visible token does not imply an empty registry.
+    private func mutationOwners(path: String, ids: [UUID?]) -> [(game: GameViewController, token: UInt64)] {
+        retainedGames.compactMap { game in
+            guard game.jarPath == path, ids.contains(game.cloneID),
+                  let token = game.nativeSessionToken else { return nil }
+            return (game, token)
+        }
+    }
+
+    private func mutationError(_ text: String) -> NSError {
+        NSError(domain: "JarBox.GameStorage", code: 19,
+                userInfo: [NSLocalizedDescriptionKey: text])
+    }
+
+    private func confirmTabMutation(app: AppInfo, tabs: [(id: UUID?, title: String)],
+                                    title: String, message: String, action: String,
+                                    operation: @escaping ([UInt64]) throws -> Void) {
+        guard pendingTabMutation == nil, !tabs.isEmpty else { return }
+        let ids = tabs.map { $0.id }
+        let owners = mutationOwners(path: app.path, ids: ids)
+        let warning = owners.isEmpty ? "" :
+            "\n\nCó tab đang chạy hoặc đang dừng. Bạn muốn dừng các tab được chọn rồi " +
+            action.lowercased() + " không? Các tab khác vẫn chạy."
+        let alert = UIAlertController(title: title, message: message + warning, preferredStyle: .alert)
         alert.addAction(UIAlertAction(title: "Hủy", style: .cancel))
-        alert.addAction(UIAlertAction(title: "Xóa dữ liệu", style: .destructive) { [weak self] _ in
-            guard let self else { return }
-            guard jvm_bridge_session_is_active() == 0 else {
-                self.presentSaveOperationError(NSError(domain: "JarBox.GameStorage", code: 3,
-                    userInfo: [NSLocalizedDescriptionKey: "Hãy dừng các phiên JVM trước khi xóa dữ liệu."]))
-                return
-            }
+        alert.addAction(UIAlertAction(title: owners.isEmpty ? action : "Dừng và " + action.lowercased(),
+                                     style: .destructive) { [weak self] _ in
+            guard let self, self.pendingTabMutation == nil else { return }
             do {
                 let current = try self.registeredTabs(for: app)
-                guard tabs.allSatisfy({ tab in current.contains { $0.id == tab.id } }) else {
-                    throw NSError(domain: "JarBox.GameStorage", code: 14,
-                        userInfo: [NSLocalizedDescriptionKey: "Danh sách tab đã thay đổi. Hãy chọn lại."])
+                guard ids.allSatisfy({ id in current.contains { $0.id == id } }) else {
+                    throw self.mutationError("Danh sách tab đã thay đổi. Hãy chọn lại.")
                 }
-                // Validate all targets before resetting any of their files.
-                for tab in tabs {
-                    _ = try JarBoxGameStorage.prepareRoot(jarPath: app.path,
-                        documents: Self.documentsDirectory, cloneID: tab.id)
+                let now = self.mutationOwners(path: app.path, ids: ids)
+                guard now.allSatisfy({ owner in owners.contains {
+                    $0.game === owner.game && $0.token == owner.token
+                } }) else { throw self.mutationError("Phiên game đã thay đổi. Hãy xác nhận lại.") }
+                try JarBoxGameStorage.requireMutationSafety(
+                    unrelatedTokens: self.retainedGames.compactMap { $0.nativeSessionToken })
+                let ticket = UUID()
+                self.pendingTabMutation = ticket
+                self.navigationItem.prompt = now.isEmpty ? "Đang xử lý…" : "Đang dừng tab…"
+                self.springboardCollectionView.isUserInteractionEnabled = false
+                self.importBarButton?.isEnabled = false
+                self.jarBoxMenuButton?.isEnabled = false
+                for owner in now {
+                    if jvm_bridge_session_is_active_for_token(owner.token) == 0 { continue }
+                    guard owner.game.requestStopForTabMutation(expectedToken: owner.token) ||
+                          jvm_bridge_session_is_active_for_token(owner.token) == 0 else {
+                        self.finishTabMutation(ticket)
+                        throw self.mutationError("Không thể dừng phiên đã chọn. Chưa xóa dữ liệu.")
+                    }
                 }
-                for tab in tabs {
-                    try JarBoxGameStorage.clearInstanceData(jarPath: app.path,
-                        documents: Self.documentsDirectory, cloneID: tab.id)
-                }
-            } catch {
-                self.presentSaveOperationError(error)
-            }
+                self.waitForTabMutation(ticket, app: app, ids: ids,
+                    tokens: now.map { $0.token }, operation: operation)
+            } catch { self.presentSaveOperationError(error) }
         })
         present(alert, animated: true)
     }
 
-    private func confirmDeleteApp(for app: AppInfo) {
-        let alert = UIAlertController(title: "Xóa game",
-                                      message: "Xóa \(app.name), RMS và cài đặt riêng của JAR này?",
-                                      preferredStyle: .alert)
-        alert.addAction(UIAlertAction(title: "Hủy", style: .cancel))
-        alert.addAction(UIAlertAction(title: "Xóa game", style: .destructive) { [weak self] _ in
+    private func finishTabMutation(_ ticket: UUID) {
+        guard pendingTabMutation == ticket else { return }
+        pendingTabMutation = nil
+        navigationItem.prompt = nil
+        springboardCollectionView.isUserInteractionEnabled = true
+        importBarButton?.isEnabled = true
+        jarBoxMenuButton?.isEnabled = true
+    }
+
+    private func waitForTabMutation(_ ticket: UUID, app: AppInfo, ids: [UUID?],
+                                    tokens: [UInt64], operation: @escaping ([UInt64]) throws -> Void) {
+        Task { @MainActor [weak self] in
             guard let self else { return }
-            guard jvm_bridge_session_is_active() == 0 else {
-                self.presentSaveOperationError(NSError(domain: "JarBox.GameStorage", code: 4,
-                    userInfo: [NSLocalizedDescriptionKey: "Hãy dừng các phiên JVM trước khi xóa JAR."]))
-                return
-            }
+            let deadline = ProcessInfo.processInfo.systemUptime + 20
+            defer { self.finishTabMutation(ticket) }
             do {
-                let clones = try JarBoxGameStorage.registeredClones(
+                while true {
+                    guard self.pendingTabMutation == ticket else { return }
+                    guard ProcessInfo.processInfo.systemUptime < deadline else {
+                        throw self.mutationError("Chưa dừng được phiên trong 20 giây. Không xóa dữ liệu.")
+                    }
+                    let retired = tokens.allSatisfy { jvm_bridge_session_is_active_for_token($0) == 0 }
+                    if retired && self.presentedViewController == nil { break }
+                    try await Task.sleep(nanoseconds: 150_000_000)
+                }
+                guard self.viewIfLoaded?.window?.windowScene?.activationState == .foregroundActive,
+                      self.pendingTabMutation == ticket, !self.gamePresentationInFlight,
+                      self.jarBoxSleepCover == nil else {
+                    throw self.mutationError("Thư viện không còn ở trạng thái an toàn. Chưa xóa dữ liệu.")
+                }
+                let current = try self.registeredTabs(for: app)
+                guard ids.allSatisfy({ id in current.contains { $0.id == id } }),
+                      self.mutationOwners(path: app.path, ids: ids).isEmpty else {
+                    throw self.mutationError("Tab hoặc phiên đã thay đổi. Chưa xóa dữ liệu.")
+                }
+                // No suspension between the ownership proof and disk mutation.
+                let unrelated = self.retainedGames.compactMap { $0.nativeSessionToken }
+                try JarBoxGameStorage.requireMutationSafety(unrelatedTokens: unrelated)
+                try operation(unrelated)
+                self.scanApps()
+            } catch {
+                self.scanApps()
+                if self.viewIfLoaded?.window?.windowScene?.activationState == .foregroundActive,
+                   self.presentedViewController == nil {
+                    self.presentSaveOperationError(error)
+                } else {
+                    NSLog("[JarBoxStorage] mutation cancelled: %@", error.localizedDescription)
+                }
+            }
+        }
+    }
+
+    private func confirmClearGameData(for app: AppInfo, tabs: [(id: UUID?, title: String)]) {
+        let names = tabs.map { $0.title }.joined(separator: ", ")
+        confirmTabMutation(app: app, tabs: tabs, title: "Xóa dữ liệu",
+            message: app.name + " · " + names + ". Không thể hoàn tác. Giữ nguyên JAR, tab và cài đặt.",
+            action: "Xóa dữ liệu") { unrelated in
+            for tab in tabs {
+                _ = try JarBoxGameStorage.prepareRoot(jarPath: app.path,
+                    documents: Self.documentsDirectory, cloneID: tab.id)
+            }
+            for tab in tabs {
+                try JarBoxGameStorage.clearInstanceData(jarPath: app.path,
+                    documents: Self.documentsDirectory, cloneID: tab.id,
+                    unrelatedTokens: unrelated)
+            }
+        }
+    }
+
+    private func confirmDeleteApp(for app: AppInfo) {
+        do {
+            let clones = try JarBoxGameStorage.registeredClones(
+                jarPath: app.path, documents: Self.documentsDirectory)
+            guard clones.isEmpty else {
+                throw mutationError("Hãy xóa các tab nhân bản trong mục Nhân bản trước khi xóa game gốc.")
+            }
+            confirmTabMutation(app: app, tabs: [(nil, "Tab gốc")], title: "Xóa game",
+                message: "Xóa " + app.name + ", RMS và cài đặt riêng của JAR này?",
+                action: "Xóa game") { unrelated in
+                try JarBoxGameStorage.requireMutationSafety(unrelatedTokens: unrelated)
+                let current = try JarBoxGameStorage.registeredClones(
                     jarPath: app.path, documents: Self.documentsDirectory)
-                guard clones.isEmpty else {
+                guard current.isEmpty else {
                     throw NSError(domain: "JarBox.GameStorage", code: 16,
-                        userInfo: [NSLocalizedDescriptionKey:
-                            "Hãy xóa các tab nhân bản trong mục Nhân bản trước khi xóa game gốc."])
+                        userInfo: [NSLocalizedDescriptionKey: "Danh sách tab đã thay đổi."])
                 }
                 let root = try JarBoxGameStorage.prepareRoot(
                     jarPath: app.path, documents: Self.documentsDirectory)
-                // Keep JAR intact if RMS cleanup fails; never silently orphan
-                // live data behind a success-looking delete animation.
                 try FileManager.default.removeItem(atPath: root)
                 try FileManager.default.removeItem(atPath: app.path)
-            } catch {
-                self.presentSaveOperationError(error)
-                return
+                let gid = Self.gameId(for: app)
+                UserDefaults.standard.removeObject(forKey: JarBoxGameStorage.treoPreferenceKey(for: app.path))
+                JarBoxGameStorage.rememberLastTab(jarPath: app.path, cloneID: nil)
+                for prefix in ["displayName_", "ss3d_", "resW_", "resH_", "fpsLimit_"] {
+                    UserDefaults.standard.removeObject(forKey: prefix + gid)
+                }
             }
-            let gid = Self.gameId(for: app)
-            UserDefaults.standard.removeObject(forKey: JarBoxGameStorage.treoPreferenceKey(for: app.path))
-            JarBoxGameStorage.rememberLastTab(jarPath: app.path, cloneID: nil)
-            for prefix in ["displayName_", "ss3d_", "resW_", "resH_", "fpsLimit_"] {
-                UserDefaults.standard.removeObject(forKey: prefix + gid)
-            }
-            self.scanApps()
-        })
-        present(alert, animated: true)
+        } catch { presentSaveOperationError(error) }
     }
 
     func collectionView(_ collectionView: UICollectionView,
@@ -1889,7 +1996,8 @@ class AppsListViewController: UIViewController,
         let tabs: [(id: UUID?, title: String)] =
             [(nil, "Tab gốc")] + clones.map { (Optional($0.id), $0.label) }
         for tab in tabs {
-            picker.addAction(UIAlertAction(title: tab.title, style: .default) { [weak self] _ in
+            picker.addAction(UIAlertAction(title: tabStatusTitle(tab.title, path: app.path, cloneID: tab.id),
+                                           style: .default) { [weak self] _ in
                 if is3D {
                     self?.showTab3DOptions(for: app, cloneID: tab.id, tabName: tab.title)
                 } else {
@@ -1956,10 +2064,12 @@ class AppsListViewController: UIViewController,
     private func showTabFPSOptions(for app: AppInfo, cloneID: UUID?,
                                    tabName: String) {
         let picker = UIAlertController(title: "FPS · " + tabName,
-                                       message: "Chỉ đổi cấu hình của tab đã chọn.",
+                                       message: "Áp dụng khi tab khởi động lần tiếp theo.",
                                        preferredStyle: .actionSheet)
+        let current = Self.fpsLimit(for: app, cloneID: cloneID)
         for option in Self.fpsLimitOptions {
-            picker.addAction(UIAlertAction(title: option.label, style: .default) { _ in
+            let title = option.label + (option.value == current ? " ✓" : "")
+            picker.addAction(UIAlertAction(title: title, style: .default) { _ in
                 Self.setFpsLimit(option.value, for: app, cloneID: cloneID)
             })
         }
@@ -1975,7 +2085,7 @@ class AppsListViewController: UIViewController,
 
     private func makeCloneMenu(for app: AppInfo, cloneCount: Int) -> UIMenu {
         let canAdd = JarBoxGameStorage.allowedAddCount(cloneCount: cloneCount) > 0
-        let canRemove = cloneCount > 0 && jvm_bridge_active_session_count() == 0
+        let canRemove = cloneCount > 0
         let add = UIAction(title: "Thêm 1", attributes: canAdd ? [] : .disabled) { [weak self] _ in
             self?.addDefaultTabs(for: app, count: 1)
         }
@@ -1994,6 +2104,7 @@ class AppsListViewController: UIViewController,
     }
 
     private func addDefaultTabs(for app: AppInfo, count: Int) {
+        guard pendingTabMutation == nil else { return }
         do {
             let clones = try JarBoxGameStorage.createDefaultClones(
                 jarPath: app.path, documents: Self.documentsDirectory, count: count)
@@ -2008,6 +2119,7 @@ class AppsListViewController: UIViewController,
     }
 
     private func promptTabQuantity(for app: AppInfo, removing: Bool) {
+        guard pendingTabMutation == nil else { return }
         do {
             let clones = try JarBoxGameStorage.registeredClones(
                 jarPath: app.path, documents: Self.documentsDirectory)
@@ -2061,7 +2173,7 @@ class AppsListViewController: UIViewController,
                 message: "Chọn bản nhân cần xóa cùng dữ liệu và cài đặt.",
                 preferredStyle: .actionSheet)
             for clone in clones {
-                picker.addAction(UIAlertAction(title: "Xóa " + clone.label,
+                picker.addAction(UIAlertAction(title: "Xóa " + tabStatusTitle(clone.label, path: app.path, cloneID: clone.id),
                     style: .destructive) { [weak self] _ in
                     self?.confirmDeleteTabs(app, clones: [clone])
                 })
@@ -2080,19 +2192,13 @@ class AppsListViewController: UIViewController,
     private func confirmDeleteTabs(_ app: AppInfo, clones: [JarBoxGameStorage.CloneRecord]) {
         guard !clones.isEmpty else { return }
         let names = clones.map { $0.label }.joined(separator: ", ")
-        let alert = UIAlertController(title: "Xóa " + String(clones.count) + " tab?",
+        let tabs: [(id: UUID?, title: String)] = clones.map { (Optional($0.id), $0.label) }
+        confirmTabMutation(app: app, tabs: tabs, title: "Xóa " + String(clones.count) + " tab?",
             message: names + "\n\nDữ liệu và cài đặt của các tab này sẽ bị xóa vĩnh viễn. Tab gốc được giữ nguyên.",
-            preferredStyle: .alert)
-        alert.addAction(UIAlertAction(title: "Hủy", style: .cancel))
-        alert.addAction(UIAlertAction(title: "Xóa tab", style: .destructive) { [weak self] _ in
-            guard let self else { return }
-            defer { self.scanApps() }
-            do {
-                try JarBoxGameStorage.removeClones(jarPath: app.path, documents: Self.documentsDirectory,
-                                                  cloneIDs: clones.map { $0.id })
-            } catch { self.presentSaveOperationError(error) }
-        })
-        present(alert, animated: true)
+            action: "Xóa tab") { unrelated in
+            try JarBoxGameStorage.removeClones(jarPath: app.path, documents: Self.documentsDirectory,
+                                              cloneIDs: clones.map { $0.id }, unrelatedTokens: unrelated)
+        }
     }
 
     private func launchGameTab(_ app: AppInfo, cloneID: UUID?, tabTitle: String) {

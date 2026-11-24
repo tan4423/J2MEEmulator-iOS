@@ -18,6 +18,7 @@ class Library {
     var isBeingDismissed = false
     private var gamePresentationInFlight = false
     var jarBoxSleepCover: Int?
+    var pendingTabMutation: UUID?
     var completions: [() -> Void] = []
     var presented: [GameViewController] = []
     func setSpringboardMotion(_ enabled: Bool, reason: String) {}
@@ -48,6 +49,10 @@ lib.jarBoxSleepCover = 1
 lib.launch(game)
 precondition(lib.presented.count == 1000)
 lib.jarBoxSleepCover = nil
+lib.pendingTabMutation = UUID()
+lib.launch(game)
+precondition(lib.presented.count == 1000)
+lib.pendingTabMutation = nil
 lib.isBeingDismissed = true
 lib.launch(game)
 precondition(lib.presented.count == 1000)
