@@ -58,6 +58,7 @@ uint64_t treo_jar_audit_ticks(int active);
 void treo_gc_smart_set(int enabled);
 int treo_gc_smart_set_for_token(uint64_t token, int enabled);
 void treo_gc_smart_force_safe(void);
+int treo_gc_smart_force_safe_for_token(uint64_t token);
 int treo_gc_smart_period_ms(void);
 int treo_gc_smart_fell_back(void);
 uint64_t treo_gc_smart_heap_peak(void);

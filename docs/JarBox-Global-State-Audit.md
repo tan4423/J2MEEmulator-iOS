@@ -533,3 +533,27 @@ A standalone Swift host model of the guard compiled and returned reset=true
 only for count 0, false for counts 1 through 4. This is not a UIKit build
 or a real JVM concurrency test. Python full-suite and device validation
 remain outstanding.
+
+## 2026-11-24: Route memory-pressure Smart GC fallback to retained owners
+
+The UIKit memory-warning callback previously depended on the manual
+`jarBoxSmartTreo` flag, so automatically parked Deep Treo could miss the
+warning. It also selected an implicit JVM. The callback now requests
+fallback via the retained controller's immutable token, using the existing
+pinned running-VM visitor. The library forwards its own warning to all
+retained game controllers (including the legacy overlay owner). The native
+operation is idempotent and only marks fallback when Smart GC is enabled.
+An inactive/foreign token cannot affect another JVM. This restores normal
+500 ms Smart GC cadence without changing the actual Treo render mode,
+Canvas eligibility, network, save state, or the concurrency cap. No new
+timer or worker.
+
+Validation: `test_multivm_memory_pressure.py` passed locally (1 test,
+mock bridge visitor). The production TreoState header was reproduced and
+verified against Git blob SHA `5c46be8e68243a18203c34773f3f39164aefbe70`;
+the harness compiled the actual fallback visitor and proposed wrapper
+from a source excerpt. It checks two independent states, repeat warnings,
+disabled Smart GC, unknown/zero tokens and no implicit visitor use.
+UIKit routing was checked against the SHA-pinned source replacement.
+Full native build, complete test suite and device memory-pressure behavior
+are not verified.

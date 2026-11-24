@@ -344,6 +344,9 @@ static void treo_force_safe_active(MiniJVM *vm, void *arg) {
 void treo_gc_smart_force_safe(void) {
     jvm_bridge_visit_running_vm(treo_force_safe_active, NULL);
 }
+int treo_gc_smart_force_safe_for_token(uint64_t token) {
+    return jvm_bridge_visit_running_vm_for_token(token, treo_force_safe_active, NULL);
+}
 static void treo_afk_mode_active(MiniJVM *vm, void *arg) {
     jarbox_treo_mode_set(&vm->session->treo_state, *(int *)arg);
 }

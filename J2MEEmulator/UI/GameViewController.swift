@@ -645,9 +645,15 @@ class GameViewController: UIViewController {
 
     override func didReceiveMemoryWarning() {
         super.didReceiveMemoryWarning()
-        // Don't wait for the next native heap snapshot if iOS itself
-        // reports memory pressure. The AFK overlay may remain visible.
-        if jarBoxSmartTreo { treo_gc_smart_force_safe() }
+        restoreSafeGCForMemoryPressure()
+    }
+
+    // Both automatic parked Treo and manual Smart GC use native session
+    // state. The visitor is a no-op for a retired or non-running token,
+    // and the native fallback is idempotent when Smart GC is disabled.
+    func restoreSafeGCForMemoryPressure() {
+        guard holdsNativeGameSession() else { return }
+        _ = treo_gc_smart_force_safe_for_token(gameSessionToken)
     }
 
     // ============================================================

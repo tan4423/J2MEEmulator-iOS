@@ -474,6 +474,15 @@ class AppsListViewController: UIViewController,
     override var preferredStatusBarStyle: UIStatusBarStyle { .lightContent }
     override var supportedInterfaceOrientations: UIInterfaceOrientationMask { .portrait }
 
+    override func didReceiveMemoryWarning() {
+        super.didReceiveMemoryWarning()
+        // Parked controllers are retained offscreen. Forward this event to
+        // each exact owner; do not depend on hidden views receiving it.
+        for game in retainedGames {
+            game.restoreSafeGCForMemoryPressure()
+        }
+    }
+
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = AnimatedBackgroundView.backgroundGray
