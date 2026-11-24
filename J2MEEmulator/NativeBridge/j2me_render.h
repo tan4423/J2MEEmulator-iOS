@@ -94,6 +94,9 @@ uint64_t treo_ninja_deep_skipped(int stage);
 // Repaint request cadence is only a game-loop heartbeat proxy, not a real tick.
 void treo_nso_probe_reset(void);
 int treo_nso_canvas_recognized(void);
+// 8 only when this JVM proved NSO Canvas and game policy permits it;
+// 1 for compatible parking; 0 for an unavailable/stale token.
+int treo_park_mode_for_token(uint64_t token, int compatible_only);
 uint64_t treo_nso_repaint_requests(void);
 double treo_nso_prior_repaint_hz(void);
 double treo_nso_last_repaint_gap_ms(void);

@@ -33,6 +33,14 @@ int main(void) {
         !jarbox_treo_nso_init_target_active(&a) ||
         jarbox_treo_nso_family_verified(&b) ||
         jarbox_treo_nso_init_target_active(&b)) return 9;
+    if (jarbox_treo_park_mode(&a, 0) != 1 ||
+        jarbox_treo_park_mode(&b, 0) != 1 ||
+        jarbox_treo_park_mode(NULL, 0) != 1) return 15;
+    jarbox_treo_nso_canvas_note(&a);
+    jarbox_treo_nso_canvas_note(&b);
+    if (jarbox_treo_park_mode(&a, 0) != 8 ||
+        jarbox_treo_park_mode(&a, 1) != 1 ||
+        jarbox_treo_park_mode(&b, 0) != 1) return 16;
     jarbox_treo_mode_set(&b, 8);
     if (jarbox_treo_mode_get(&a) || jarbox_treo_mode_get(&b) != 8)
         return 10;
@@ -40,6 +48,10 @@ int main(void) {
     if (!jarbox_treo_nso_family_verified(&b) ||
         jarbox_treo_nso_init_target_active(&b) ||
         !jarbox_treo_nso_init_target_active(&a)) return 11;
+    if (jarbox_treo_park_mode(&b, 0) != 1) return 17;
+    jarbox_treo_nso_canvas_note(&b);
+    if (jarbox_treo_park_mode(&b, 0) != 8 ||
+        jarbox_treo_park_mode(&a, 0) != 8) return 18;
     jarbox_treo_mode_set(&a, 8);
     jarbox_treo_smart_set(&a, 1);
     jarbox_treo_probe_set(&a, 2000);
@@ -128,6 +140,9 @@ class MultiVMTreoStateTest(unittest.TestCase):
         self.assertIn("jarbox_treo_nso_family_verified(&runtime->jvm->session->treo_state)", renderer)
         self.assertIn("jarbox_treo_mode_get(&runtime->jvm->session->treo_state)", renderer)
         self.assertIn("ninja_profile_for_runtime(runtime) && canvas", renderer)
+        self.assertIn("jarbox_treo_nso_canvas_note(treo_runtime_state(runtime))", renderer)
+        self.assertIn("treo_park_mode_for_token(uint64_t token, int compatible_only)", renderer)
+        self.assertIn("ninja_match = treo_is_nso_family(midlet_jar, &init_target)", bridge)
         self.assertIn("ninja_deep_active(runtime)", renderer)
         self.assertIn("jarbox_treo_render_mode_set(&vm->session->treo_state", renderer)
         self.assertIn("jarbox_treo_render_take_refresh(treo_runtime_state(runtime))", renderer)

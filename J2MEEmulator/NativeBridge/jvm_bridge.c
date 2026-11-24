@@ -35,7 +35,8 @@ int treo_ninja_deep_verified(void) {
  *
  * One archive read at MIDlet load; no ZIP or disk work in the Treo hot loop.
  */
-static int treo_is_nso_family(const char *jar_path) {
+static int treo_is_nso_family(const char *jar_path, int *init_target) {
+    *init_target = 0;
     static const char *const resources[] = {
         "font/number",
         "font/tahoma_7",
@@ -75,8 +76,7 @@ static int treo_is_nso_family(const char *jar_path) {
         for (unsigned i = 0; i < sizeof(target_classes) / sizeof(target_classes[0]); ++i)
             found += mz_zip_reader_locate_file(&archive, target_classes[i], NULL,
                                               MZ_ZIP_FLAG_CASE_SENSITIVE) >= 0;
-        atomic_store_explicit(&treo_nso_init_target_active, found == 3,
-                              memory_order_release);
+        *init_target = found == 3;
     }
     mz_zip_reader_end(&archive);
     return family;
@@ -630,12 +630,12 @@ static int bridge_init_slot(JarBoxVMContext *slot, const char *res_root, const c
         printf("[JVM Bridge] JVM already initialized\n");
         return -1;
     }
-    atomic_store_explicit(&treo_exact_ninja_verified, 0, memory_order_release);
-    atomic_store_explicit(&treo_nso_init_target_active, 0, memory_order_release);
-    treo_nso_probe_reset();
+    // These results belong to this archive, not the most recent launch.
+    int ninja_match = 0, init_target = 0;
+    if (jvm_bridge_supported_concurrent_sessions() == 1)
+        treo_nso_probe_reset();
 #if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__ && !defined(TREO_NINJA_DEEP_DISABLED)
-    int ninja_match = treo_is_nso_family(midlet_jar);
-    atomic_store_explicit(&treo_exact_ninja_verified, ninja_match, memory_order_release);
+    ninja_match = treo_is_nso_family(midlet_jar, &init_target);
     printf("[JarBoxVM][NinjaDeep] profile=%s (NSO resource family)\n",
            ninja_match ? "matched" : "generic");
     // Historical mod probes only recognize one set of class signatures.
@@ -643,11 +643,16 @@ static int bridge_init_slot(JarBoxVMContext *slot, const char *res_root, const c
     {
         char event[80];
         snprintf(event, sizeof(event), "vm_stage:legacy_mod_probe_match=%d",
-                 atomic_load_explicit(&treo_nso_init_target_active,
-                                      memory_order_acquire) ? 1 : 0);
+                 init_target ? 1 : 0);
         jvm_bridge_note_net_trace(event);
     }
 #endif
+    // Keep legacy telemetry for the one-VM build only. These mirrors may
+    // never be used as authorization for an independently running tab.
+    if (jvm_bridge_supported_concurrent_sessions() == 1) {
+        atomic_store_explicit(&treo_exact_ninja_verified, ninja_match, memory_order_release);
+        atomic_store_explicit(&treo_nso_init_target_active, init_target, memory_order_release);
+    }
     // Note: slot->stop_requested is NOT reset here — it is reset in
     // jvm_bridge_destroy() after the previous session.  Resetting it here
     // would race with backTapped() which may have already set the flag
@@ -678,8 +683,7 @@ static int bridge_init_slot(JarBoxVMContext *slot, const char *res_root, const c
     // Java classes execute. Later launches cannot change this owner's NSO
     // recognition or give a foreign Canvas permission to use the fast path.
     jarbox_treo_nso_profile_set(&slot->jvm->session->treo_state,
-        atomic_load_explicit(&treo_exact_ninja_verified, memory_order_acquire),
-        atomic_load_explicit(&treo_nso_init_target_active, memory_order_acquire));
+        ninja_match, init_target);
 
     slot->jvm->jdwp_enable = 0;
     slot->jvm->jdwp_suspend_on_start = 0;
@@ -692,7 +696,10 @@ static int bridge_init_slot(JarBoxVMContext *slot, const char *res_root, const c
         printf("[JVM Bridge] ERROR: jvm_init() failed with code %d\n", ret);
         jvm_destroy(slot->jvm);
         slot->jvm = NULL;
-        atomic_store_explicit(&treo_exact_ninja_verified, 0, memory_order_release);
+        if (jvm_bridge_supported_concurrent_sessions() == 1) {
+            atomic_store_explicit(&treo_exact_ninja_verified, 0, memory_order_release);
+            atomic_store_explicit(&treo_nso_init_target_active, 0, memory_order_release);
+        }
         return -3;
     }
     // The registry retains an independently owned JarBoxSession reference
@@ -712,7 +719,10 @@ static int bridge_init_slot(JarBoxVMContext *slot, const char *res_root, const c
         printf("[JarBoxVM][Lifecycle] no free native heap ledger slot\n");
         jvm_destroy(slot->jvm);
         slot->jvm = NULL;
-        atomic_store_explicit(&treo_exact_ninja_verified, 0, memory_order_release);
+        if (jvm_bridge_supported_concurrent_sessions() == 1) {
+            atomic_store_explicit(&treo_exact_ninja_verified, 0, memory_order_release);
+            atomic_store_explicit(&treo_nso_init_target_active, 0, memory_order_release);
+        }
         return -7;
     }
 
@@ -723,7 +733,10 @@ static int bridge_init_slot(JarBoxVMContext *slot, const char *res_root, const c
         jarbox_native_heap_unregister_vm(slot->jvm);
         jvm_destroy(slot->jvm);
         slot->jvm = NULL;
-        atomic_store_explicit(&treo_exact_ninja_verified, 0, memory_order_release);
+        if (jvm_bridge_supported_concurrent_sessions() == 1) {
+            atomic_store_explicit(&treo_exact_ninja_verified, 0, memory_order_release);
+            atomic_store_explicit(&treo_nso_init_target_active, 0, memory_order_release);
+        }
         return -4;
     }
     if (!j2me_ui_reg_natives(slot->jvm)) {
@@ -732,7 +745,10 @@ static int bridge_init_slot(JarBoxVMContext *slot, const char *res_root, const c
         jarbox_native_heap_unregister_vm(slot->jvm);
         jvm_destroy(slot->jvm);
         slot->jvm = NULL;
-        atomic_store_explicit(&treo_exact_ninja_verified, 0, memory_order_release);
+        if (jvm_bridge_supported_concurrent_sessions() == 1) {
+            atomic_store_explicit(&treo_exact_ninja_verified, 0, memory_order_release);
+            atomic_store_explicit(&treo_nso_init_target_active, 0, memory_order_release);
+        }
         return -6;
     }
     j2me_render_reg_natives(slot->jvm);
@@ -873,7 +889,10 @@ static void bridge_destroy_slot(JarBoxVMContext *slot) {
         jarbox_native_heap_unregister_vm(destroyed_owner);
         // Keep cancellation asserted until the owning Swift worker releases
         // the session. A late Back click must not bleed into the next launch.
-        atomic_store_explicit(&treo_exact_ninja_verified, 0, memory_order_release);
+        if (jvm_bridge_supported_concurrent_sessions() == 1) {
+            atomic_store_explicit(&treo_exact_ninja_verified, 0, memory_order_release);
+            atomic_store_explicit(&treo_nso_init_target_active, 0, memory_order_release);
+        }
 
         printf("[JVM Bridge] JVM destroyed, native state cleaned up\n");
     }

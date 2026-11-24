@@ -6,8 +6,8 @@
 // Owned by one MiniJVM allocation and never shared with a different JVM.
 // Atomic builtins allow the collector thread and the UIKit control thread
 // to change the same session without unsynchronised field access.
-// This first stage owns GC and an AFK-mode mirror; canvas, GPU, JAR worker,
-// guarded-AFK and NSO state remain separate, blocking concurrent JVMs.
+// Runtime Treo policy, Canvas proof and GC belong to the session. Shared
+// GPU/JAR profiling infrastructure remains outside this state.
 typedef struct JarBoxTreoState {
     int afk_mode;
     int render_refresh;
@@ -24,6 +24,7 @@ typedef struct JarBoxTreoState {
     // Per-JVM NSO signature; do not let launching B change A's fast path.
     int nso_family_verified;
     int nso_init_target_active;
+    int nso_canvas_seen;
     uint64_t smart_heap_peak;
     uint64_t smart_cycles;
     uint64_t smart_cpu_ns;
@@ -85,6 +86,21 @@ static inline int jarbox_treo_nso_family_verified(const JarBoxTreoState *state) 
 }
 static inline int jarbox_treo_nso_init_target_active(const JarBoxTreoState *state) {
     return state ? __atomic_load_n(&state->nso_init_target_active, __ATOMIC_ACQUIRE) : 0;
+}
+/* A different tab of the same JAR must independently prove its Canvas.
+ * Archive recognition is necessary but not sufficient for NSO deep idle. */
+static inline void jarbox_treo_nso_canvas_note(JarBoxTreoState *state) {
+    if (jarbox_treo_nso_family_verified(state))
+        __atomic_store_n(&state->nso_canvas_seen, 1, __ATOMIC_RELEASE);
+}
+static inline int jarbox_treo_nso_canvas_recognized(const JarBoxTreoState *state) {
+    return jarbox_treo_nso_family_verified(state) &&
+           __atomic_load_n(&state->nso_canvas_seen, __ATOMIC_ACQUIRE);
+}
+/* Configuration is shared by game identity on the UIKit side; the actual
+ * mode is selected using this JVM's own proof. Unknown games fail safe. */
+static inline int jarbox_treo_park_mode(const JarBoxTreoState *state, int compatible_only) {
+    return !compatible_only && jarbox_treo_nso_canvas_recognized(state) ? 8 : 1;
 }
 static inline void jarbox_treo_probe_set(JarBoxTreoState *state, int requested) {
     __atomic_store_n(&state->probe_requested_ms, requested == 2000 ? 2000 : 0, __ATOMIC_RELEASE);

@@ -554,6 +554,18 @@ int treo_nso_canvas_recognized(void) {
     return treo_ninja_deep_verified() &&
            atomic_load_explicit(&treo_nso_canvas_seen, memory_order_acquire);
 }
+typedef struct { int compatible_only, mode; } TreoParkChoice;
+static void treo_park_choice_visitor(MiniJVM *vm, void *arg) {
+    TreoParkChoice *choice = arg;
+    choice->mode = jarbox_treo_park_mode(&vm->session->treo_state,
+                                         choice->compatible_only);
+}
+int treo_park_mode_for_token(uint64_t token, int compatible_only) {
+    TreoParkChoice choice = {compatible_only, 0};
+    if (!jvm_bridge_visit_running_vm_for_token(token, treo_park_choice_visitor, &choice))
+        return 0;
+    return choice.mode;
+}
 uint64_t treo_nso_repaint_requests(void) {
     return atomic_load_explicit(&treo_nso_request_count, memory_order_relaxed);
 }
@@ -673,8 +685,13 @@ static s32 n_ninjaDeepSkip(Runtime *runtime, JClass *clazz) {
         (canvas->mb.type & MEM_TYPE_INS) &&
         treo_nso_simple_canvas_paint(canvas->mb.clazz);
     if (qualified) {
-        atomic_store_explicit(&treo_nso_canvas_seen, 1, memory_order_release);
-        if (stage == 0) treo_nso_note_request(runtime);
+        jarbox_treo_nso_canvas_note(treo_runtime_state(runtime));
+        // Legacy heartbeat/work probes are process-wide diagnostics. Do
+        // not mix samples from two tabs or run the extra benchmark in multi.
+        if (jvm_bridge_supported_concurrent_sessions() == 1) {
+            atomic_store_explicit(&treo_nso_canvas_seen, 1, memory_order_release);
+            if (stage == 0) treo_nso_note_request(runtime);
+        }
     }
     const int skip = qualified && ninja_deep_active(runtime);
     if (skip)
