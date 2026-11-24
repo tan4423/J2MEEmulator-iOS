@@ -14,6 +14,25 @@ import CryptoKit
 // runner, library settings and RMS diagnostics. A copied JAR with a distinct
 // filename gets distinct data; changing only its display alias does not.
 enum JarBoxGameStorage {
+    // Includes the original; independent of the number of live JVM slots.
+    // Preserve the previous limit of 16 clones + one original.
+    nonisolated static let maxTotalTabs = 17
+
+    nonisolated static func allowedAddCount(cloneCount: Int) -> Int {
+        max(0, maxTotalTabs - 1 - cloneCount)
+    }
+
+    nonisolated static func validTabQuantity(_ count: Int, maximum: Int) -> Bool {
+        count >= 1 && count <= maximum
+    }
+
+    nonisolated static func tabQuantityError(maximum: Int) -> NSError {
+        NSError(domain: "JarBox.GameStorage", code: 12,
+            userInfo: [NSLocalizedDescriptionKey: maximum > 0
+                ? "Số lượng phải từ 1 đến " + String(maximum) + "."
+                : "Không còn tab có thể thêm hoặc xóa."])
+    }
+
     nonisolated static func exactFileName(for path: String) -> String {
         URL(fileURLWithPath: path).lastPathComponent
     }
@@ -152,42 +171,69 @@ enum JarBoxGameStorage {
     /// Never copy from the running original. No JVM is started here.
     nonisolated static func createDefaultClone(jarPath: String, documents: String,
                                                 label: String) throws -> CloneRecord {
+        let records = try createClones(jarPath: jarPath, documents: documents,
+                                       count: 1, explicitLabel: label)
+        return records[0]
+    }
+
+    nonisolated static func createDefaultClones(jarPath: String, documents: String,
+                                                 count: Int) throws -> [CloneRecord] {
+        try createClones(jarPath: jarPath, documents: documents,
+                         count: count, explicitLabel: nil)
+    }
+
+    nonisolated private static func createClones(jarPath: String, documents: String,
+                                                   count: Int, explicitLabel: String?) throws -> [CloneRecord] {
         cloneRegistryLock.lock()
         defer { cloneRegistryLock.unlock() }
-        let title = label.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !title.isEmpty && title.count <= 80 else {
-            throw NSError(domain: "JarBox.GameStorage", code: 7,
-                userInfo: [NSLocalizedDescriptionKey: "Tên tab mới không hợp lệ."])
-        }
         guard FileManager.default.fileExists(atPath: jarPath) else {
             throw NSError(domain: "JarBox.GameStorage", code: 11,
                 userInfo: [NSLocalizedDescriptionKey: "Không tìm thấy file JAR nguồn."])
         }
         var group = try readCloneGroup(jarPath: jarPath, documents: documents)
-        guard group.clones.count < 16 else {
-            throw NSError(domain: "JarBox.GameStorage", code: 12,
-                userInfo: [NSLocalizedDescriptionKey: "Tối đa 16 bản nhân cho một JAR."])
+        let maximum = allowedAddCount(cloneCount: group.clones.count)
+        guard validTabQuantity(count, maximum: maximum) else {
+            throw tabQuantityError(maximum: maximum)
         }
-        let record = CloneRecord(id: UUID(), label: title, createdAt: Date())
-        let target = rootPath(jarPath: jarPath, documents: documents, cloneID: record.id)
+        var used = Set(group.clones.map { $0.label })
+        var records: [CloneRecord] = []
+        var next = 1
+        for _ in 0..<count {
+            let title: String
+            if let explicitLabel {
+                title = explicitLabel.trimmingCharacters(in: .whitespacesAndNewlines)
+            } else {
+                while used.contains("Tab " + String(next)) { next += 1 }
+                title = "Tab " + String(next)
+            }
+            guard !title.isEmpty && title.count <= 80 else {
+                throw NSError(domain: "JarBox.GameStorage", code: 7,
+                    userInfo: [NSLocalizedDescriptionKey: "Tên tab mới không hợp lệ."])
+            }
+            used.insert(title)
+            records.append(CloneRecord(id: UUID(), label: title, createdAt: Date()))
+        }
         let fm = FileManager.default
-        guard !fm.fileExists(atPath: target) else {
-            throw NSError(domain: "JarBox.GameStorage", code: 8,
-                userInfo: [NSLocalizedDescriptionKey: "Thư mục tab mới đã tồn tại."])
-        }
         let base = (documents as NSString).appendingPathComponent("Games Data")
         try fm.createDirectory(atPath: base, withIntermediateDirectories: true)
-        // Empty private root: the MIDlet will create its own RMS defaults.
-        // Do not copy the original's save, settings, account or log.
-        try fm.createDirectory(atPath: target, withIntermediateDirectories: false)
+        var created: [String] = []
         do {
-            group.clones.append(record)
+            for record in records {
+                let target = rootPath(jarPath: jarPath, documents: documents, cloneID: record.id)
+                guard !fm.fileExists(atPath: target) else {
+                    throw NSError(domain: "JarBox.GameStorage", code: 8,
+                        userInfo: [NSLocalizedDescriptionKey: "Thư mục tab mới đã tồn tại."])
+                }
+                try fm.createDirectory(atPath: target, withIntermediateDirectories: false)
+                created.append(target)
+            }
+            group.clones.append(contentsOf: records)
             try writeCloneGroup(group, jarPath: jarPath, documents: documents)
         } catch {
-            try? fm.removeItem(atPath: target)
+            for target in created { try? fm.removeItem(atPath: target) }
             throw error
         }
-        return record
+        return records
     }
 
     nonisolated private static func writeCloneGroup(_ group: CloneGroup,
@@ -206,6 +252,13 @@ enum JarBoxGameStorage {
     /// native coordinator supports per-instance teardown, require idle JVMs.
     nonisolated static func removeClone(jarPath: String, documents: String,
                                         cloneID: UUID) throws {
+        try removeClones(jarPath: jarPath, documents: documents, cloneIDs: [cloneID])
+    }
+
+    // Validate the complete selection and stage all roots before publishing
+    // a single registry update. Never remove the original (no UUID).
+    nonisolated static func removeClones(jarPath: String, documents: String,
+                                         cloneIDs: [UUID]) throws {
         cloneRegistryLock.lock()
         defer { cloneRegistryLock.unlock() }
         guard jvm_bridge_active_session_count() == 0 else {
@@ -213,43 +266,57 @@ enum JarBoxGameStorage {
                 userInfo: [NSLocalizedDescriptionKey: "Dừng game trước khi xóa tab."])
         }
         var group = try readCloneGroup(jarPath: jarPath, documents: documents)
-        guard group.clones.contains(where: { $0.id == cloneID }) else {
+        guard validTabQuantity(cloneIDs.count, maximum: group.clones.count) else {
+            throw tabQuantityError(maximum: group.clones.count)
+        }
+        let ids = Set(cloneIDs)
+        guard ids.count == cloneIDs.count,
+              ids.isSubset(of: Set(group.clones.map { $0.id })) else {
             throw NSError(domain: "JarBox.GameStorage", code: 14,
-                userInfo: [NSLocalizedDescriptionKey: "Tab nhân bản không tồn tại."])
+                userInfo: [NSLocalizedDescriptionKey: "Danh sách tab cần xóa đã thay đổi hoặc không hợp lệ."])
         }
-        let target = rootPath(jarPath: jarPath, documents: documents, cloneID: cloneID)
         let fm = FileManager.default
-        var isDirectory: ObjCBool = false
-        guard fm.fileExists(atPath: target, isDirectory: &isDirectory),
-              isDirectory.boolValue, !isSymbolicLink(target) else {
-            throw NSError(domain: "JarBox.GameStorage", code: 15,
-                userInfo: [NSLocalizedDescriptionKey: "Thư mục tab không an toàn hoặc đã mất."])
+        var targets: [(root: String, tomb: String)] = []
+        for id in cloneIDs {
+            let target = rootPath(jarPath: jarPath, documents: documents, cloneID: id)
+            var directory: ObjCBool = false
+            guard fm.fileExists(atPath: target, isDirectory: &directory),
+                  directory.boolValue, !isSymbolicLink(target) else {
+                throw NSError(domain: "JarBox.GameStorage", code: 15,
+                    userInfo: [NSLocalizedDescriptionKey: "Thư mục tab không an toàn hoặc đã mất."])
+            }
+            targets.append((target, target + ".deleting-" + UUID().uuidString))
         }
-        // Rename to a private tombstone before changing the registry.
-        // On a registry failure we can restore the save untouched.
-        let tomb = target + ".deleting-" + UUID().uuidString
-        try fm.moveItem(atPath: target, toPath: tomb)
-        let originalGroup = group
-        group.clones.removeAll(where: { $0.id == cloneID })
+        var staged: [(root: String, tomb: String)] = []
         do {
+            for target in targets {
+                try fm.moveItem(atPath: target.root, toPath: target.tomb)
+                staged.append(target)
+            }
+            group.clones.removeAll { ids.contains($0.id) }
             try writeCloneGroup(group, jarPath: jarPath, documents: documents)
         } catch {
-            try? fm.moveItem(atPath: tomb, toPath: target)
+            for item in staged.reversed() { try? fm.moveItem(atPath: item.tomb, toPath: item.root) }
             throw error
         }
-        do {
-            try fm.removeItem(atPath: tomb)
-        } catch {
-            // The user must not see a successful deletion when save bytes
-            // were not actually removed.
-            try? fm.moveItem(atPath: tomb, toPath: target)
-            try? writeCloneGroup(originalGroup, jarPath: jarPath, documents: documents)
-            throw error
+        // The registry is committed. Never restore a partially erased root.
+        // If disk cleanup fails, report it explicitly rather than resurrect
+        // a tab whose files might already have been deleted.
+        var cleanupFailed = false
+        for target in staged {
+            do { try fm.removeItem(atPath: target.tomb) }
+            catch { cleanupFailed = true; NSLog("[JarBoxStorage] clone cleanup failed: %@", error.localizedDescription) }
         }
         let defaults = UserDefaults.standard
-        let instance = settingsId(jarPath: jarPath, cloneID: cloneID)
-        for prefix in ["displayName_", "ss3d_", "resW_", "resH_", "fpsLimit_"] {
-            defaults.removeObject(forKey: prefix + instance)
+        for id in cloneIDs {
+            let instance = settingsId(jarPath: jarPath, cloneID: id)
+            for prefix in ["displayName_", "ss3d_", "resW_", "resH_", "fpsLimit_"] {
+                defaults.removeObject(forKey: prefix + instance)
+            }
+        }
+        if cleanupFailed {
+            throw NSError(domain: "JarBox.GameStorage", code: 18,
+                userInfo: [NSLocalizedDescriptionKey: "Đã bỏ các tab khỏi danh sách nhưng chưa dọn hết dữ liệu trên đĩa."])
         }
     }
 
@@ -1430,37 +1497,28 @@ class AppsListViewController: UIViewController,
             // Group-wide Treo preference remains locked during any live tab.
             let compatible = JarBoxGameStorage.treoCompatibleOnly(for: app.path)
             let treoActions = [false, true].map { value in
-                UIAction(title: value ? "Tương thích" : "Tự động · NSO nếu đã xác minh",
+                UIAction(title: value ? "Tương thích" : "Tự động",
                          attributes: isRunning ? .disabled : [],
                          state: value == compatible ? .on : .off) { [weak self] _ in
                     guard let self, !self.hasNativeGame(for: app.path) else { return }
                     JarBoxGameStorage.setTreoCompatibleOnly(value, for: app.path)
                 }
             }
-            let treoSettings = UIMenu(title: "Treo · dùng chung mọi tab",
+            let treoSettings = UIMenu(title: "Treo",
                 image: UIImage(systemName: "moon.zzz"), children: treoActions)
-            let addTab = UIAction(title: "+ Tab",
-                                  image: UIImage(systemName: "plus.square.on.square")) { [weak self] _ in
-                self?.addDefaultTab(for: app)
-            }
-            let removeTab = UIAction(title: "− Tab",
-                                     image: UIImage(systemName: "minus.square"),
-                                     attributes: jvm_bridge_active_session_count() != 0 || clones.isEmpty
-                                        ? [.destructive, .disabled] : .destructive) { [weak self] _ in
-                self?.presentTabDeletion(for: app)
-            }
+            let cloneMenu = self.makeCloneMenu(for: app, cloneCount: clones.count)
             let delete = UIAction(title: "Xóa game", image: UIImage(systemName: "trash"),
                                   attributes: isRunning ? [.destructive, .disabled] : .destructive) { [weak self] _ in
                 self?.confirmDeleteApp(for: app)
             }
             let advanced = UIMenu(title: "Nâng cao",
                                   image: UIImage(systemName: "slider.horizontal.3"),
-                                  children: [treoSettings, settings, addTab, removeTab, delete])
+                                  children: [treoSettings, settings, cloneMenu])
             let rename = UIAction(title: "Đổi tên", image: UIImage(systemName: "pencil")) { [weak self] _ in
                 self?.promptRenameApp(app)
             }
             return UIMenu(children: [stop, infoAction, advanced, rename,
-                                     self.clearDataMenu(for: app, tabs: tabs)])
+                                     self.clearDataMenu(for: app, tabs: tabs), delete])
         })
     }
 
@@ -1742,7 +1800,7 @@ class AppsListViewController: UIViewController,
                 guard clones.isEmpty else {
                     throw NSError(domain: "JarBox.GameStorage", code: 16,
                         userInfo: [NSLocalizedDescriptionKey:
-                            "Hãy xóa các Tab nhân bản bằng − Tab trước khi xóa JAR gốc."])
+                            "Hãy xóa các tab nhân bản trong mục Nhân bản trước khi xóa game gốc."])
                 }
                 let root = try JarBoxGameStorage.prepareRoot(
                     jarPath: app.path, documents: Self.documentsDirectory)
@@ -1898,21 +1956,33 @@ class AppsListViewController: UIViewController,
         present(picker, animated: true)
     }
 
-    private func addDefaultTab(for app: AppInfo) {
+    private func makeCloneMenu(for app: AppInfo, cloneCount: Int) -> UIMenu {
+        let canAdd = JarBoxGameStorage.allowedAddCount(cloneCount: cloneCount) > 0
+        let canRemove = cloneCount > 0 && jvm_bridge_active_session_count() == 0
+        let add = UIAction(title: "Thêm 1", attributes: canAdd ? [] : .disabled) { [weak self] _ in
+            self?.addDefaultTabs(for: app, count: 1)
+        }
+        let remove = UIAction(title: "Xóa 1", attributes: canRemove ? .destructive : [.destructive, .disabled]) { [weak self] _ in
+            self?.presentTabDeletion(for: app)
+        }
+        let addMany = UIAction(title: "Thêm theo số lượng", attributes: canAdd ? [] : .disabled) { [weak self] _ in
+            self?.promptTabQuantity(for: app, removing: false)
+        }
+        let removeMany = UIAction(title: "Xóa theo số lượng",
+            attributes: canRemove ? .destructive : [.destructive, .disabled]) { [weak self] _ in
+            self?.promptTabQuantity(for: app, removing: true)
+        }
+        return UIMenu(title: "Nhân bản", image: UIImage(systemName: "plus.square.on.square"),
+                      children: [add, remove, addMany, removeMany])
+    }
+
+    private func addDefaultTabs(for app: AppInfo, count: Int) {
         do {
-            let entries = try JarBoxGameStorage.registeredClones(
-                jarPath: app.path, documents: Self.documentsDirectory)
-            let used = Set(entries.map { $0.label })
-            var n = 1
-            while used.contains("Tab " + String(n)) { n += 1 }
-            let clone = try JarBoxGameStorage.createDefaultClone(
-                jarPath: app.path, documents: Self.documentsDirectory,
-                label: "Tab " + String(n))
+            let clones = try JarBoxGameStorage.createDefaultClones(
+                jarPath: app.path, documents: Self.documentsDirectory, count: count)
             scanApps()
-            let alert = UIAlertController(
-                title: "Đã tạo " + clone.label,
-                message: "Tab mới dùng chung file JAR nhưng bắt đầu với RMS và cài đặt mặc định, không sao chép save gốc.",
-                preferredStyle: .alert)
+            let alert = UIAlertController(title: "Đã thêm " + String(clones.count) + " tab",
+                message: nil, preferredStyle: .alert)
             alert.addAction(UIAlertAction(title: "OK", style: .default))
             present(alert, animated: true)
         } catch {
@@ -1920,25 +1990,63 @@ class AppsListViewController: UIViewController,
         }
     }
 
+    private func promptTabQuantity(for app: AppInfo, removing: Bool) {
+        do {
+            let clones = try JarBoxGameStorage.registeredClones(
+                jarPath: app.path, documents: Self.documentsDirectory)
+            let maximum = removing ? clones.count :
+                JarBoxGameStorage.allowedAddCount(cloneCount: clones.count)
+            guard maximum > 0 else { throw JarBoxGameStorage.tabQuantityError(maximum: maximum) }
+            let title = removing ? "Xóa theo số lượng" : "Thêm theo số lượng"
+            let message = "Nhập số nguyên từ 1 đến " + String(maximum) +
+                (removing ? ". Chọn các tab tạo gần nhất, không xóa tab gốc." : ".")
+            let alert = UIAlertController(title: title, message: message, preferredStyle: .alert)
+            alert.addTextField { field in
+                field.keyboardType = .numberPad
+                field.placeholder = "1–" + String(maximum)
+            }
+            alert.addAction(UIAlertAction(title: "Hủy", style: .cancel))
+            alert.addAction(UIAlertAction(title: "Tiếp tục", style: .default) { [weak self, weak alert] _ in
+                guard let self else { return }
+                let input = alert?.textFields?.first?.text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                guard let count = Int(input),
+                      JarBoxGameStorage.validTabQuantity(count, maximum: maximum) else {
+                    self.presentSaveOperationError(JarBoxGameStorage.tabQuantityError(maximum: maximum))
+                    return
+                }
+                if removing {
+                    do {
+                        let current = try JarBoxGameStorage.registeredClones(
+                            jarPath: app.path, documents: Self.documentsDirectory)
+                        guard JarBoxGameStorage.validTabQuantity(count, maximum: current.count) else {
+                            throw JarBoxGameStorage.tabQuantityError(maximum: current.count)
+                        }
+                        self.confirmDeleteTabs(app, clones: Array(current.suffix(count)))
+                    } catch { self.presentSaveOperationError(error) }
+                } else {
+                    self.addDefaultTabs(for: app, count: count)
+                }
+            })
+            present(alert, animated: true)
+        } catch { presentSaveOperationError(error) }
+    }
+
     private func presentTabDeletion(for app: AppInfo) {
         do {
             let clones = try JarBoxGameStorage.registeredClones(
                 jarPath: app.path, documents: Self.documentsDirectory)
-            guard !clones.isEmpty else {
-                let alert = UIAlertController(title: "Chưa có tab nhân bản",
-                    message: "Tab gốc không thể xóa bằng − Tab.",
-                    preferredStyle: .alert)
-                alert.addAction(UIAlertAction(title: "OK", style: .default))
-                present(alert, animated: true)
+            guard !clones.isEmpty else { throw JarBoxGameStorage.tabQuantityError(maximum: 0) }
+            if clones.count == 1 {
+                confirmDeleteTabs(app, clones: clones)
                 return
             }
-            let picker = UIAlertController(title: "− Tab · " + app.name,
-                message: "Chọn bản nhân cần xóa cùng RMS, cài đặt và log của bản đó.",
+            let picker = UIAlertController(title: "Xóa 1 · " + app.name,
+                message: "Chọn bản nhân cần xóa cùng dữ liệu và cài đặt.",
                 preferredStyle: .actionSheet)
             for clone in clones {
                 picker.addAction(UIAlertAction(title: "Xóa " + clone.label,
                     style: .destructive) { [weak self] _ in
-                    self?.confirmDeleteTab(app, clone: clone)
+                    self?.confirmDeleteTabs(app, clones: [clone])
                 })
             }
             picker.addAction(UIAlertAction(title: "Hủy", style: .cancel))
@@ -1949,32 +2057,23 @@ class AppsListViewController: UIViewController,
                                             width: 1, height: 1)
             }
             present(picker, animated: true)
-        } catch {
-            presentSaveOperationError(error)
-        }
+        } catch { presentSaveOperationError(error) }
     }
 
-    private func confirmDeleteTab(_ app: AppInfo, clone: JarBoxGameStorage.CloneRecord) {
-        let alert = UIAlertController(title: "Xóa " + clone.label + "?",
-            message: "Toàn bộ RMS, save, nhật ký và cài đặt riêng của tab sẽ bị xóa vĩnh viễn. Tab gốc và các bản nhân khác không bị ảnh hưởng.",
+    private func confirmDeleteTabs(_ app: AppInfo, clones: [JarBoxGameStorage.CloneRecord]) {
+        guard !clones.isEmpty else { return }
+        let names = clones.map { $0.label }.joined(separator: ", ")
+        let alert = UIAlertController(title: "Xóa " + String(clones.count) + " tab?",
+            message: names + "\n\nDữ liệu và cài đặt của các tab này sẽ bị xóa vĩnh viễn. Tab gốc được giữ nguyên.",
             preferredStyle: .alert)
         alert.addAction(UIAlertAction(title: "Hủy", style: .cancel))
-        alert.addAction(UIAlertAction(title: "− Xóa Tab", style: .destructive) { [weak self] _ in
+        alert.addAction(UIAlertAction(title: "Xóa tab", style: .destructive) { [weak self] _ in
             guard let self else { return }
-            // Check all native slots, including STOPPING, at confirmation.
-            guard jvm_bridge_session_is_active() == 0 else {
-                self.presentSaveOperationError(NSError(domain: "JarBox.GameStorage", code: 4,
-                    userInfo: [NSLocalizedDescriptionKey: "Hãy dừng các phiên JVM trước khi xóa dữ liệu tab."]))
-                return
-            }
+            defer { self.scanApps() }
             do {
-                try JarBoxGameStorage.removeClone(
-                    jarPath: app.path, documents: Self.documentsDirectory,
-                    cloneID: clone.id)
-                self.scanApps()
-            } catch {
-                self.presentSaveOperationError(error)
-            }
+                try JarBoxGameStorage.removeClones(jarPath: app.path, documents: Self.documentsDirectory,
+                                                  cloneIDs: clones.map { $0.id })
+            } catch { self.presentSaveOperationError(error) }
         })
         present(alert, animated: true)
     }

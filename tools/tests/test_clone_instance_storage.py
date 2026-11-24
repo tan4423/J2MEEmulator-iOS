@@ -164,6 +164,48 @@ struct CloneHarness {
         require(fm.fileExists(atPath: original), "base deleted with final tab")
         require(fm.fileExists(atPath: jar), "shared source JAR deleted")
 
+        // Batch boundaries include the original, which is never removed.
+        let maximum = JarBoxGameStorage.maxTotalTabs - 1
+        require(JarBoxGameStorage.allowedAddCount(cloneCount: 0) == maximum, "wrong add limit")
+        for bad in [-1, 0, maximum + 1, Int.max] {
+            do {
+                _ = try JarBoxGameStorage.createDefaultClones(jarPath: jar, documents: docs, count: bad)
+                fatalError("invalid add count accepted")
+            } catch { }
+        }
+        require(try JarBoxGameStorage.registeredClones(jarPath: jar, documents: docs).isEmpty,
+                "invalid add changed registry")
+        let batch = try JarBoxGameStorage.createDefaultClones(jarPath: jar, documents: docs, count: maximum)
+        require(batch.count == maximum && Set(batch.map { $0.label }).count == maximum,
+                "batch labels or count wrong")
+        do {
+            _ = try JarBoxGameStorage.createDefaultClones(jarPath: jar, documents: docs, count: 1)
+            fatalError("limit exceeded")
+        } catch { }
+        for bad in [[], [batch[0].id, batch[0].id], [UUID()], batch.map { $0.id } + [UUID()]] as [[UUID]] {
+            do {
+                try JarBoxGameStorage.removeClones(jarPath: jar, documents: docs, cloneIDs: bad)
+                fatalError("invalid delete selection accepted")
+            } catch { }
+        }
+        require(try JarBoxGameStorage.registeredClones(jarPath: jar, documents: docs) == batch,
+                "invalid delete changed registry")
+        nativeSessionCount = 1
+        do {
+            try JarBoxGameStorage.removeClones(jarPath: jar, documents: docs, cloneIDs: batch.map { $0.id })
+            fatalError("batch delete while JVM active")
+        } catch { }
+        nativeSessionCount = 0
+        try JarBoxGameStorage.removeClones(jarPath: jar, documents: docs, cloneIDs: Array(batch.suffix(2)).map { $0.id })
+        let survivors = try JarBoxGameStorage.registeredClones(jarPath: jar, documents: docs)
+        require(survivors == Array(batch.dropLast(2)), "wrong batch deletion targets")
+        let refilled = try JarBoxGameStorage.createDefaultClones(jarPath: jar, documents: docs, count: 2)
+        require(Set((survivors + refilled).map { $0.label }).count == maximum, "duplicate tab names")
+        try JarBoxGameStorage.removeClones(jarPath: jar, documents: docs, cloneIDs: (survivors + refilled).map { $0.id })
+        require(try JarBoxGameStorage.registeredClones(jarPath: jar, documents: docs).isEmpty,
+                "batch did not leave original only")
+        require(fm.fileExists(atPath: original) && fm.fileExists(atPath: jar), "batch touched original")
+
         // Two installed JARs can have the same sanitized legacy save name.
         // Never guess which one owns the old account data.
         let collidingA = (gameDir as NSString).appendingPathComponent("Shared name.jar")
@@ -275,10 +317,14 @@ class CloneInstanceStorageTest(unittest.TestCase):
         self.assertIn("documents: docs, cloneID: cloneID)", source)
         self.assertIn("ownsLiveInstance(for path: String", source)
 
-    def test_group_ui_uses_plus_and_minus_as_destructive(self):
+    def test_group_ui_uses_clone_menu_and_bounded_quantities(self):
         source = SWIFT.read_text(encoding="utf-8")
-        self.assertIn('title: "+ Tab"', source)
-        self.assertIn('title: "− Tab"', source)
+        self.assertIn('title: "Nhân bản"', source)
+        for title in ("Thêm 1", "Xóa 1", "Thêm theo số lượng", "Xóa theo số lượng"):
+            self.assertIn('title: "' + title + '"', source)
+        self.assertIn("maxTotalTabs = 17", source)
+        self.assertIn("validTabQuantity(count, maximum: maximum)", source)
+        self.assertIn("cloneIDs: clones.map { $0.id }", source)
         self.assertIn("createDefaultClone(", source)
         self.assertIn("removeClone(", source)
         self.assertIn("func gameTabItems(for game: GameViewController)", source)
@@ -296,7 +342,7 @@ class CloneInstanceStorageTest(unittest.TestCase):
         self.assertIn('try fm.replaceItemAt(destURL, withItemAt: pending)', source)
         self.assertIn("rms-events.log", source)
         self.assertIn("settings-events.log", source)
-        self.assertIn("Hãy xóa các Tab nhân bản bằng − Tab", source)
+        self.assertIn("Hãy xóa các tab nhân bản trong mục Nhân bản", source)
 
 
 if __name__ == "__main__":
