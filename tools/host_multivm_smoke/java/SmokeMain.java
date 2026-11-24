@@ -46,7 +46,11 @@ public class SmokeMain {
         if (mode.equals("long")) {
             long end = System.currentTimeMillis() + 60000;
             long x = 0;
-            while (System.currentTimeMillis() < end) { x += 1; byte[] g = new byte[512]; Thread.sleep(1); }
+            while (System.currentTimeMillis() < end) {
+                FileOutputStream beat = new FileOutputStream(saveRoot + "/heartbeat.txt");
+                beat.write((x++ + "\n").getBytes()); beat.close();
+                byte[] g = new byte[512]; Thread.sleep(50);
+            }
         }
     }
 }

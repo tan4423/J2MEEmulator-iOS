@@ -1329,3 +1329,24 @@ four pthreads, 20 concurrent first-use rounds and 8,000,000
 monotonic reads PASS with ASan+UBSan. Repository test extracts the
 production function. This is not a real Java timer or iPhone test;
 full suite, iOS build, timing and power measurements are outstanding.
+
+## Integration smoke test strengthened before any 2D cap change
+
+The old host smoke harness could call jvm_destroy from a controller
+while its worker still ran call_main; it also accepted a saved tag
+without checking continued execution. The revised harness reserves
+a native generation before initialization, has one owner of destruction,
+and serializes stop requests against unpublication. It requires exact
+workload results, both long-running sessions to become ready, and B's
+heartbeat to advance after A has stopped/restarted. The Java fixture
+heartbeat and controller polling are strictly test-only. Compile
+failures are no longer swallowed; fresh output directories avoid stale
+class files. No production workflow, JAR, runtime cap or 3D change.
+
+Validation: 60/60 harness orchestration scenarios with modeled VM APIs
+and real pthreads under ASan+UBSan; first draft exposed a partial
+heartbeat read, corrected before the final 60 runs. Java fixture ran
+on OpenJDK 21 in two separate Java processes with expected checksums
+and loopback sockets, including B continuing after A termination.
+Actual same-process MiniJVM, bundled runtime/JAR compatibility, JIT,
+UIKit, Metal and iPhone integration remain untested at this checkpoint.
