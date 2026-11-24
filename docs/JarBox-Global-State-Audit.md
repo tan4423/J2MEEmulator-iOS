@@ -444,3 +444,22 @@ that JVM's Display context even when hidden. UIKit MIDP focus replay uses
 the immutable frame generation plus the controller's visible token on the
 main queue, rather than deriving the event token from old foreground state.
 Single-JVM admission remains enforced. Device testing remains outstanding.
+
+## 2026-11-24: Per-game Treo policy, independently executed per tab
+
+JarBox's two core goals are multitasking and reliable low-overhead Treo.
+A game-group preference is stored by installed JAR identity (not clone UUID).
+All clones of a JAR use the same Automatic/Compatible preference; changing
+it is blocked while the group has live tabs. Different JARs have distinct
+preferences. RMS, heap, callback, input and runtime Treo state stay per tab.
+Automatic parking uses guarded mode 8 only after that particular JVM has
+verified both NSO archive family and Canvas shape; otherwise mode 1 with
+normal GC and Display is selected. Launch recognition is local before it is
+copied into the JVM, not read back from shared launch flags. Deep-mode guard,
+GC, Display wait and renderer transitions execute under a control mutex;
+late Canvas fallback turns off the owner's wait, restores safe GC, and
+updates owner raster before another resume can interleave. The compatibility
+mirror remains only for single-admission diagnostics. Per-tab information
+reads actual mode by token and no longer attributes global counters to a
+single JVM. Legacy manual diagnostic blackouts still need audit in multi.
+Admission remains 1; device and full CI validation are outstanding.

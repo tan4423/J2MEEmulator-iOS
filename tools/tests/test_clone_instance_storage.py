@@ -64,6 +64,21 @@ struct CloneHarness {
                 "Tab 1 copied original save or log")
         require((try fm.contentsOfDirectory(atPath: rootB)).isEmpty,
                 "Tab 2 copied original save or log")
+        let treoKey = JarBoxGameStorage.treoPreferenceKey(for: jar)
+        let otherJAR = (gameDir as NSString).appendingPathComponent("Other Game.jar")
+        defer {
+            defaults.removeObject(forKey: treoKey)
+            defaults.removeObject(forKey: JarBoxGameStorage.treoPreferenceKey(for: otherJAR))
+        }
+        defaults.removeObject(forKey: treoKey)
+        defaults.removeObject(forKey: JarBoxGameStorage.treoPreferenceKey(for: otherJAR))
+        require(!JarBoxGameStorage.treoCompatibleOnly(for: jar), "default Treo is not auto")
+        require(treoKey != JarBoxGameStorage.treoPreferenceKey(for: otherJAR),
+                "different games share Treo config")
+        JarBoxGameStorage.setTreoCompatibleOnly(true, for: jar)
+        require(JarBoxGameStorage.treoCompatibleOnly(for: jar) &&
+                !JarBoxGameStorage.treoCompatibleOnly(for: otherJAR),
+                "game Treo preference leaked")
         let keyA = JarBoxGameStorage.settingsId(jarPath: jar, cloneID: a.id)
         let keyB = JarBoxGameStorage.settingsId(jarPath: jar, cloneID: b.id)
         require(keyA != keyB && keyA != baseKey, "settings key collision")
@@ -89,6 +104,8 @@ struct CloneHarness {
         try JarBoxGameStorage.removeClone(jarPath: jar, documents: docs,
                                            cloneID: a.id)
         require(!fm.fileExists(atPath: rootA), "deleted tab still on disk")
+        require(JarBoxGameStorage.treoCompatibleOnly(for: jar),
+                "clone deletion removed shared game Treo policy")
         require(defaults.object(forKey: "fpsLimit_" + keyA) == nil,
                 "deleted tab's settings not cleared")
         require(defaults.object(forKey: "fpsLimit_" + keyB) as? Int == 15,

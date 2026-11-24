@@ -430,10 +430,7 @@ class GameViewController: UIViewController {
                 // deinit may not be actor-isolated under strict Swift checks.
                 // Keep this last-resort native reset direct, without
                 // invoking an actor-isolated instance method from deinit.
-                if parkedNSODeepIdle { _ = treo_display_wait_set_for_token(gameSessionToken, 0) }
-                treo_afk_guard_auto_set(0)
-                treo_gc_smart_set(0)
-                treo_render_set_afk_mode(0)
+                _ = treo_park_end_for_token(gameSessionToken)
             }
             treo_afk_buffer_audit_set(0, 0)
             if jarBoxSmartTreo { treo_gc_smart_set(0) }
@@ -539,9 +536,6 @@ class GameViewController: UIViewController {
     private var parkedStartedAt: TimeInterval?
     private var parkedCPUStart: Double?
     // Raw per-session baselines for on-demand game details. Never poll in the library.
-    private var parkedSkippedDrawsStart: UInt64 = 0
-    private var parkedGuardedPaintsStart: UInt64 = 0
-    private var parkedGCCyclesStart: UInt64 = 0
     // A game may request an MIDP Alert while the library covers the game.
     // Present it only after returning to the game, not atop the library.
     private var deferredGameAlert = false
@@ -3832,10 +3826,10 @@ class GameViewController: UIViewController {
         holdsNativeGameSession(for: path) && candidate == cloneID
     }
 
-    // The same proven mode-8 headless Canvas + smart GC path as Treo.
-    // On suspicious late-pixel access, the native guard automatically falls
-    // back to the compatible mode 1. No timer, fullscreen black cover or
-    // artificial Java-loop slowdown is added while browsing the library.
+    // Every tab reads the JAR group's preference, but owns its actual mode,
+    // Canvas proof, fallback and GC. Verified NSO uses guarded mode 8;
+    // unverified/compatible games use mode 1 with normal GC and Display.
+    // No per-tab timer or artificial game-loop slowdown.
     private func startParkedTreo() {
         guard ownsLiveGameSession(), !parkedTreoActive else { return }
         // A library is not a visible JVM: all running games must stay
@@ -3845,22 +3839,20 @@ class GameViewController: UIViewController {
                   gameSessionToken)
             return
         }
+        let compatibleOnly = JarBoxGameStorage.treoCompatibleOnly(for: jarPath)
+        let mode = treo_park_begin_for_token(gameSessionToken, compatibleOnly ? 1 : 0)
+        guard mode != 0 else {
+            // Native owner stopped during park. Do not dismiss a controller
+            // merely because the previous park operation revoked its focus.
+            _ = jvm_bridge_focus_session(gameSessionToken)
+            return
+        }
         parkedTreoActive = true
+        parkedNSODeepIdle = mode == 8
         parkedStartedAt = ProcessInfo.processInfo.systemUptime
         parkedCPUStart = treo_process_cpu_seconds()
-        parkedSkippedDrawsStart = treo_afk_skipped_draws()
-        parkedGuardedPaintsStart = treo_afk_guarded_paints()
-        parkedGCCyclesStart = treo_gc_smart_count()
-        _ = treo_afk_guard_auto_set_for_token(gameSessionToken, 1)
-        _ = treo_gc_smart_set_for_token(gameSessionToken, 1)
-        _ = treo_render_set_afk_mode_for_token(gameSessionToken, 8)
-        // Only park Display's polling thread for the structurally verified
-        // NSO Canvas; arbitrary games retain their normal event semantics.
-        parkedNSODeepIdle = treo_ninja_deep_verified() != 0 &&
-                            treo_nso_canvas_recognized() != 0
-        if parkedNSODeepIdle { _ = treo_display_wait_set_for_token(gameSessionToken, 1) }
-        NSLog("[JarBoxVM][ParkTreo] enabled token=%llu deep_idle=%d",
-              gameSessionToken, parkedNSODeepIdle ? 1 : 0)
+        NSLog("[JarBoxVM][ParkTreo] enabled token=%llu mode=%d",
+              gameSessionToken, mode)
     }
 
     /// Values attributable to this parked session's active Treo interval.
@@ -3872,22 +3864,18 @@ class GameViewController: UIViewController {
         }
         let seconds = max(0, ProcessInfo.processInfo.systemUptime - (parkedStartedAt ?? ProcessInfo.processInfo.systemUptime))
         let fallback = treo_afk_guard_auto_fell_back_for_token(gameSessionToken) != 0
-        let mode = fallback ? "Tương thích (tự chuyển khi Canvas không an toàn)"
-                            : "Treo sâu tự động"
-        let deepIdle = parkedNSODeepIdle ? "Đã bật cho Canvas NSO được xác minh" : "Không áp dụng"
-        let skipped = treo_afk_skipped_draws() &- parkedSkippedDrawsStart
-        let guarded = treo_afk_guarded_paints() &- parkedGuardedPaintsStart
-        let gcCycles = treo_gc_smart_count() &- parkedGCCyclesStart
+        let actualMode = treo_mode_for_token(gameSessionToken)
+        let mode = actualMode == 8 ? "Treo sâu tự động (NSO)"
+            : actualMode == 1 ? (fallback ? "Tương thích (Canvas tự fallback)" : "Tương thích")
+            : "Đang chuyển trạng thái"
+        let deepIdle = actualMode == 8 ? "Đã bật cho Canvas NSO được xác minh" : "Không áp dụng"
         return [
             "Trạng thái: Đang chạy ẩn trong JarBox",
             "Treo: " + mode,
             "Thời gian Treo: " + String(format: "%.0f giây", seconds),
-            "Lượt vẽ native bỏ qua: " + String(skipped),
-            "Lượt Canvas có bảo vệ: " + String(guarded),
-            "Chu kỳ GC trong phiên Treo: " + String(gcCycles),
             "Display chờ theo sự kiện: " + deepIdle,
             "Phiên JVM: " + String(gameSessionToken),
-            "Các bộ đếm đo lúc mở mục này, không làm chậm nhịp game."
+            "CPU toàn tiến trình nằm trong Thông tin chung; không gán cho riêng tab."
         ].joined(separator: "\n")
     }
 
@@ -3917,14 +3905,10 @@ class GameViewController: UIViewController {
         }
         parkedStartedAt = nil
         parkedCPUStart = nil
-        // Restore the Display waiter before waking/refreshing the Canvas.
-        if parkedNSODeepIdle {
-            _ = treo_display_wait_set_for_token(gameSessionToken, 0)
-            parkedNSODeepIdle = false
-        }
-        _ = treo_afk_guard_auto_set_for_token(gameSessionToken, 0)
-        _ = treo_gc_smart_set_for_token(gameSessionToken, 0)
-        _ = treo_render_set_afk_mode_for_token(gameSessionToken, 0)
+        // One owner transaction disables the guard, restores normal GC,
+        // wakes Display, and requests a redraw before the next frame.
+        _ = treo_park_end_for_token(gameSessionToken)
+        parkedNSODeepIdle = false
         NSLog("[JarBoxVM][ParkTreo] disabled elapsed=%.1fs process_CPU=%@%% canvas_fallback=%d",
               elapsed, percent, fallback ? 1 : 0)
     }

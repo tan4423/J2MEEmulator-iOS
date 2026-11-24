@@ -18,6 +18,21 @@ enum JarBoxGameStorage {
         URL(fileURLWithPath: path).lastPathComponent
     }
 
+    // Treo configuration belongs to the installed JAR group. A clone UUID
+    // is intentionally NOT part of this key. Clone save/FPS keys remain
+    // independent; deleting a clone must not delete the group's policy.
+    nonisolated static func treoPreferenceKey(for jarPath: String) -> String {
+        "treoCompatibleOnly_" + installId(for: jarPath)
+    }
+
+    nonisolated static func treoCompatibleOnly(for jarPath: String) -> Bool {
+        UserDefaults.standard.bool(forKey: treoPreferenceKey(for: jarPath))
+    }
+
+    nonisolated static func setTreoCompatibleOnly(_ enabled: Bool, for jarPath: String) {
+        UserDefaults.standard.set(enabled, forKey: treoPreferenceKey(for: jarPath))
+    }
+
     nonisolated static func installId(for path: String) -> String {
         let name = exactFileName(for: path)
         let digest = SHA256.hash(data: Data(name.utf8))
@@ -1256,7 +1271,21 @@ class AppsListViewController: UIViewController,
             let advanced = UIMenu(title: "Nâng cao",
                                   image: UIImage(systemName: "slider.horizontal.3"),
                                   children: [toggle3D, fpsMenu])
-            let settings = UIMenu(options: .displayInline, children: [resMenu, advanced])
+            // One configuration for every clone of this installed JAR.
+            // Freeze it while any tab in this group is alive (also STOPPING).
+            let compatible = JarBoxGameStorage.treoCompatibleOnly(for: app.path)
+            let treoActions = [false, true].map { value in
+                UIAction(title: value ? "Tương thích" : "Tự động · NSO nếu đã xác minh",
+                         attributes: isRunning ? .disabled : [],
+                         state: value == compatible ? .on : .off) { [weak self] _ in
+                    guard let self, !self.hasNativeGame(for: app.path) else { return }
+                    JarBoxGameStorage.setTreoCompatibleOnly(value, for: app.path)
+                }
+            }
+            let treoSettings = UIMenu(title: "Treo · dùng chung mọi tab",
+                subtitle: isRunning ? "Dừng các tab của game để đổi cấu hình" : "Chỉ áp dụng khi chạy ẩn",
+                image: UIImage(systemName: "moon.zzz"), children: treoActions)
+            let settings = UIMenu(options: .displayInline, children: [treoSettings, resMenu, advanced])
             let actions = UIMenu(options: .displayInline, children: [rename, clearData, delete])
             let tabActions = UIMenu(title: "Các tab · cùng JAR, save độc lập",
                                     image: UIImage(systemName: "square.on.square"),
@@ -1286,6 +1315,8 @@ class AppsListViewController: UIViewController,
             "Nhà phát triển: " + (app.vendor ?? "Không khai báo"),
             "Màn hình: " + String(resolution.w) + " × " + String(resolution.h),
             "Giới hạn FPS: " + (fps == 0 ? "Không giới hạn" : String(fps)),
+            "Cấu hình Treo (mọi tab): " +
+                (JarBoxGameStorage.treoCompatibleOnly(for: app.path) ? "Tương thích" : "Tự động"),
             "Trạng thái: " + (active ? "Đang chạy ẩn" : "Không chạy ẩn")
         ]
         // Filesystem metadata only: never inspect binary RMS contents.
@@ -1543,6 +1574,7 @@ class AppsListViewController: UIViewController,
                 return
             }
             let gid = Self.gameId(for: app)
+            UserDefaults.standard.removeObject(forKey: JarBoxGameStorage.treoPreferenceKey(for: app.path))
             for prefix in ["displayName_", "ss3d_", "resW_", "resH_", "fpsLimit_"] {
                 UserDefaults.standard.removeObject(forKey: prefix + gid)
             }
