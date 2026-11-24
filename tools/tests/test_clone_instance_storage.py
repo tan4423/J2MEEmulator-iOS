@@ -371,7 +371,7 @@ class CloneInstanceStorageTest(unittest.TestCase):
         self.assertIn('title: "Nhân bản"', source)
         for title in ("Thêm", "Xóa", "Thêm theo số lượng", "Xóa theo số lượng"):
             self.assertIn('title: "' + title + '"', source)
-        self.assertIn("maxTotalTabs = 17", source)
+        self.assertIn("maxTotalTabs = 30", source)
         self.assertIn("validTabQuantity(count, maximum: maximum)", source)
         self.assertIn("cloneIDs: clones.map { $0.id }", source)
         self.assertIn("createDefaultClone(", source)

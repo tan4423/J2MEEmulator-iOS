@@ -416,7 +416,7 @@ static uint64_t treo_gc_smart_thread_cpu(void) {
 
 // Generation-keyed per-JVM native memory accounting: old render handles must
 // never debit a later VM when allocator addresses are reused.
-#define JARBOX_NATIVE_HEAP_SLOTS 8
+#define JARBOX_NATIVE_HEAP_SLOTS 64
 typedef struct { MiniJVM *owner; uint64_t key; s64 bytes; } JarBoxNativeHeapSlot;
 static JarBoxNativeHeapSlot g_native_heaps[JARBOX_NATIVE_HEAP_SLOTS];
 static uint64_t g_native_heap_sequence;

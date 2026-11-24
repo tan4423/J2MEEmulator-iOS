@@ -92,6 +92,19 @@ int main(void) {
             jarbox_native_heap_for_vm(&a)) return 16;
         jarbox_native_heap_unregister_key(now);
     }
+    MiniJVM many[JARBOX_NATIVE_HEAP_SLOTS+1] = {{0}};
+    uint64_t keys[JARBOX_NATIVE_HEAP_SLOTS];
+    for (unsigned i=0;i<JARBOX_NATIVE_HEAP_SLOTS;i++) {
+        if (!jarbox_native_heap_register_vm(&many[i])) return 20;
+        keys[i]=jarbox_native_heap_key_for_vm(&many[i]);
+        if (!keys[i]) return 21;
+        jarbox_native_heap_account(keys[i], i+1);
+    }
+    if (jarbox_native_heap_register_vm(&many[JARBOX_NATIVE_HEAP_SLOTS])) return 22;
+    for (unsigned i=0;i<JARBOX_NATIVE_HEAP_SLOTS;i++) {
+        if (jarbox_native_heap_for_vm(&many[i]) != (s64)(i+1)) return 23;
+        jarbox_native_heap_unregister_key(keys[i]);
+    }
     return 0;
 }
 """

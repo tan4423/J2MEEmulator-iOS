@@ -1,6 +1,6 @@
 """Exercise the exact native executor slot helpers with independent pthreads.
 
-The C mock supplies two distinct MiniJVM identities, not real Java heaps.
+The C mock supplies distinct MiniJVM identities, not real Java heaps.
 This tests allocation/retirement and worker ownership; device concurrency
 remains a separate milestone.
 """
@@ -19,16 +19,16 @@ PREAMBLE = r"""
 #include <stdio.h>
 #include <pthread.h>
 #include <sched.h>
-#define JARBOX_REGISTRY_MAX_SLOTS 2
+#define JARBOX_REGISTRY_MAX_SLOTS 64
 typedef struct {int dummy;} MiniJVM;
 """
 HARNESS = r"""
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 static atomic_int failed;
-typedef struct {uint64_t token; MiniJVM *vm; int stop;} Worker;
+typedef struct {uint64_t token; MiniJVM *vm; int stop; int iterations;} Worker;
 static void *work(void *arg) {
     Worker *w = arg;
-    for (int i = 0; i < 10000; ++i) {
+    for (int i = 0; i < w->iterations; ++i) {
         pthread_mutex_lock(&lock);
         JarBoxVMContext *slot = bridge_claim_worker_locked(w->token);
         if (!slot || bridge_slot_can_retire_locked(slot) ||
@@ -61,7 +61,7 @@ int main(void) {
     atomic_store(&a->phase, BRIDGE_CLEANUP);
     atomic_store(&b->phase, BRIDGE_RUNNING);
     if (bridge_slot_can_retire_locked(a) || bridge_slot_can_retire_locked(b)) return 4;
-    Worker wa = {101, &avm, 1}, wb = {202, &bvm, 0};
+    Worker wa = {101, &avm, 1, 10000}, wb = {202, &bvm, 0, 10000};
     pthread_t ta, tb;
     if (pthread_create(&ta, NULL, work, &wa) || pthread_create(&tb, NULL, work, &wb)) return 5;
     pthread_join(ta, NULL); pthread_join(tb, NULL);
@@ -79,7 +79,29 @@ int main(void) {
     b->jvm = NULL;
     if (!bridge_slot_can_retire_locked(b)) return 11;
     bridge_reset_slot_locked(b);
-    puts("executor pool: PASS (2 slots, independent workers, stale token rejected)");
+    MiniJVM vms[JARBOX_REGISTRY_MAX_SLOTS] = {{0}};
+    Worker workers[JARBOX_REGISTRY_MAX_SLOTS];
+    pthread_t threads[JARBOX_REGISTRY_MAX_SLOTS];
+    for (unsigned i=0;i<JARBOX_REGISTRY_MAX_SLOTS;i++) {
+        JarBoxVMContext *slot=bridge_reserve_slot_locked(1000+i,JARBOX_REGISTRY_MAX_SLOTS);
+        if (!slot) return 12;
+        slot->jvm=&vms[i];
+        workers[i]=(Worker){1000+i,&vms[i],0,1000};
+    }
+    if (bridge_reserve_slot_locked(9999,JARBOX_REGISTRY_MAX_SLOTS)) return 13;
+    for (unsigned i=0;i<JARBOX_REGISTRY_MAX_SLOTS;i++)
+        if (pthread_create(&threads[i],NULL,work,&workers[i])) return 14;
+    for (unsigned i=0;i<JARBOX_REGISTRY_MAX_SLOTS;i++)
+        if (pthread_join(threads[i],NULL)) return 15;
+    if (atomic_load(&failed)) return 16;
+    for (unsigned i=0;i<JARBOX_REGISTRY_MAX_SLOTS;i++) {
+        JarBoxVMContext *slot=bridge_find_slot_locked(1000+i);
+        if (!slot || slot->jvm != &vms[i]) return 17;
+        slot->jvm=NULL;
+        if (!bridge_slot_can_retire_locked(slot)) return 18;
+        bridge_reset_slot_locked(slot);
+    }
+    puts("executor pool: PASS (full capacity, independent workers, stale token rejected)");
     return 0;
 }
 """

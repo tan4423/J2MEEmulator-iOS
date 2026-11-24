@@ -33,7 +33,7 @@ enum JarBoxGameStorage {
 
     // Includes the original; independent of the number of live JVM slots.
     // Preserve the previous limit of 16 clones + one original.
-    nonisolated static let maxTotalTabs = 17
+    nonisolated static let maxTotalTabs = 30
 
     nonisolated static func allowedAddCount(cloneCount: Int) -> Int {
         max(0, maxTotalTabs - 1 - cloneCount)

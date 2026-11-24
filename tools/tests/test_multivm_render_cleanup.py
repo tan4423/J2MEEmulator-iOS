@@ -176,7 +176,7 @@ class MultiVMRenderCleanupTest(unittest.TestCase):
         self.assertNotIn("g_render_stopped", render)
         self.assertIn("j2me_render_stop_for_owner(destroyed_render_key);", bridge)
         self.assertIn("render_owner_stopped_locked(owner_key)", render)
-        self.assertIn("int jvm_bridge_supported_concurrent_sessions(void) {\n    return 2;", bridge)
+        self.assertIn("int jvm_bridge_supported_concurrent_sessions(void) {\n    return JARBOX_REGISTRY_MAX_SLOTS;", bridge)
 
 if __name__ == "__main__":
     unittest.main()

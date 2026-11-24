@@ -12,16 +12,17 @@ GAME = UI / "GameViewController.swift"
 MAIN = r'''
 }
 var checks = 0
-let all: [UUID?] = [nil] + (0..<16).map { _ in Optional(UUID()) }
+let all: [UUID?] = [nil] + (0..<29).map { _ in Optional(UUID()) }
 let stale = UUID()
-for size in 1...17 {
+for size in 1...30 {
     let tabs = Array(all.prefix(size))
-    // All subsets of size <= 2, the actual native concurrency limit.
+    // All subsets of size <= 2, plus a fully running group.
     var sets: [Set<UUID?>] = [[]]
     for a in tabs.indices {
         sets.append([tabs[a]])
         for b in tabs.indices where b > a { sets.append([tabs[a],tabs[b]]) }
     }
+    if size > 2 { sets.append(Set(tabs)) }
     for live in sets {
         for i in tabs.indices {
             let expected = Array(tabs.indices.dropFirst(i+1)).first { live.contains(tabs[$0]) } ??
@@ -42,10 +43,15 @@ for size in 1...17 {
 precondition(JarBoxGameStorage.entryTabIndex(ordered: [], remembered: nil, running: []) == nil)
 print("\(checks) route assertions passed")
 var deletionChecks = 0
-for size in 1...17 {
+for size in 1...30 {
     let tabs = Array(all.prefix(size))
-    for mask in 0..<(1 << size) where mask.nonzeroBitCount <= 2 {
-        let running = Set(tabs.indices.filter { mask & (1 << $0) != 0 }.map { tabs[$0] })
+    var sets: [Set<UUID?>] = [[]]
+    for a in tabs.indices {
+        sets.append([tabs[a]])
+        for b in tabs.indices where b > a { sets.append([tabs[a], tabs[b]]) }
+    }
+    if size > 2 { sets.append(Set(tabs)) }
+    for running in sets {
         for origin in tabs.indices {
             let candidates = tabs.indices.filter { $0 != origin }
             let expected = candidates.filter { $0 < origin && running.contains(tabs[$0]) }.max() ??
@@ -81,10 +87,10 @@ class TabExitNavigationTest(unittest.TestCase):
             src = Path(td) / "route.swift"
             exe = Path(td) / "route"
             src.write_text(code, encoding="utf-8")
-            subprocess.run([swift, "-swift-version", "5", str(src), "-o", str(exe)], check=True, timeout=60)
+            subprocess.run([swift, "-swift-version", "5", "-O", str(src), "-o", str(exe)], check=True, timeout=60)
             result = subprocess.run([str(exe)], check=True, capture_output=True, text=True, timeout=20)
-            self.assertIn("27472 route assertions passed", result.stdout)
-            self.assertIn("Deletion-neighbor selection: 13737 cases passed", result.stdout)
+            self.assertIn("237570 route assertions passed", result.stdout)
+            self.assertIn("Deletion-neighbor selection: 118786 cases passed", result.stdout)
 
     def test_tab_actions_and_transition_cover(self):
         game = GAME.read_text(encoding="utf-8")

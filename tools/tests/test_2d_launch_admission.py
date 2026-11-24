@@ -14,15 +14,16 @@ PRE = r'''
 #include <assert.h>
 #include <stdio.h>
 typedef struct { uint64_t token; int exclusive_3d; } JarBoxVMContext;
-static JarBoxVMContext slots[2];
+static JarBoxVMContext slots[64];
+static unsigned configured_cap=2;
 static pthread_mutex_t g_bridge_focus_transition_lock=PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t g_bridge_lifecycle_lock=PTHREAD_MUTEX_INITIALIZER;
 static _Atomic uint64_t g_bridge_session_sequence;
 static uint64_t g_bridge_focus, g_bridge_registry;
 static int fail_claim, fail_select, fail_diag, memory_level;
 static int jvm_bridge_memory_state(uint64_t *bytes){(void)bytes;return memory_level;}
-static int jvm_bridge_supported_concurrent_sessions(void){return 2;}
-static int bridge_3d_conflict_locked(int exclusive){for(int i=0;i<2;i++)if(slots[i].token && (exclusive || slots[i].exclusive_3d))return 1;return 0;}
+static int jvm_bridge_supported_concurrent_sessions(void){return (int)configured_cap;}
+static int bridge_3d_conflict_locked(int exclusive){for(unsigned i=0;i<configured_cap;i++)if(slots[i].token && (exclusive || slots[i].exclusive_3d))return 1;return 0;}
 static uint64_t jarbox_focus_visible(uint64_t *f){return *f;}
 static JarBoxVMContext *bridge_reserve_slot_locked(uint64_t token,unsigned cap){for(unsigned i=0;i<cap;i++)if(!slots[i].token){slots[i].token=token;return &slots[i];}return NULL;}
 static void bridge_reset_slot_locked(JarBoxVMContext *s){s->token=0;s->exclusive_3d=0;}
@@ -73,7 +74,24 @@ int main(void){
         assert((a!=0)+(b!=0)==1&&g_bridge_focus==(a?a:b)&&!slots[1].token);
         g_bridge_focus=0;bridge_reset_slot_locked(&slots[0]);
     }
+    configured_cap=64;
+    for(unsigned i=0;i<configured_cap;i++){
+        uint64_t t=0;
+        assert(bridge_try_begin_session(0,&t)==1 && t && slots[i].token==t);
+        g_bridge_focus=0;
+        if(i==29){
+            uint64_t denied=999;
+            memory_level=1;
+            assert(bridge_try_begin_session(0,&denied)==-2 && !denied && !slots[i+1].token);
+            memory_level=0;
+            assert(bridge_try_begin_session(1,&denied)==-1 && !denied);
+        }
+    }
+    uint64_t denied=999;
+    assert(!bridge_try_begin_session(0,&denied) && !denied);
+    for(unsigned i=0;i<configured_cap;i++)bridge_reset_slot_locked(&slots[i]);
     puts("admission transaction: 10000 cycles + 100 concurrent launch pairs PASS");
+    puts("memory-gated full capacity: PASS");
 }
 '''
 class LaunchAdmissionTest(unittest.TestCase):
@@ -94,6 +112,7 @@ class LaunchAdmissionTest(unittest.TestCase):
             r = subprocess.run([str(exe)], capture_output=True, text=True, timeout=30)
             self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
             self.assertIn("10000 cycles + 100 concurrent launch pairs PASS", r.stdout)
+            self.assertIn("memory-gated full capacity: PASS", r.stdout)
 
     def test_source_cap_and_lock_order(self):
         src = BRIDGE.read_text()
@@ -104,7 +123,7 @@ class LaunchAdmissionTest(unittest.TestCase):
                         body.index("bridge_reserve_slot_locked("))
         self.assertLess(body.index("jvm_bridge_memory_state(NULL) != 0"),
                         body.index("bridge_reserve_slot_locked("))
-        self.assertIn("int jvm_bridge_supported_concurrent_sessions(void) {\n    return 2;", src)
+        self.assertIn("int jvm_bridge_supported_concurrent_sessions(void) {\n    return JARBOX_REGISTRY_MAX_SLOTS;", src)
 
 if __name__ == "__main__":
     unittest.main()

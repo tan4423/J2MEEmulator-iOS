@@ -6,8 +6,8 @@
 extern "C" {
 #endif
 
-/// Acquire the sole in-process JVM slot BEFORE dispatching the worker.
-/// Returns 1 if acquired, 0 if another game is launching/running/tearing down.
+/// Legacy exclusive session admission BEFORE dispatching the worker.
+/// Returns 1 if acquired, 0 if admission is denied.
 int jvm_bridge_try_begin_session(void);
 /// Atomic launch admission + immutable session token for the Swift worker.
 /// Never infer a worker's token from the global visible/foreground session.
@@ -25,7 +25,7 @@ void jvm_bridge_memory_note_warning(void);
 /// Advisory UI check only; admission rechecks under the lifecycle lock.
 int jvm_bridge_3d_conflict_for_jar(const char *path);
 /// Per-worker execution/cleanup entry points claim one native executor slot
-/// by immutable token. Admission remains limited to a single live JVM.
+/// by immutable token. Shared 2D admission is memory-gated.
 /// Init returns -12 if the memory budget became unsafe before allocation.
 int jvm_bridge_init_for_token(uint64_t token, const char *res_root,
                               const char *save_root, const char *midlet_jar,
@@ -55,10 +55,10 @@ int jvm_bridge_session_is_active_for_token(uint64_t token);
 int jvm_bridge_status_heap_bytes_for_token(uint64_t token, uint64_t *out_bytes);
 /// Check the actual ownership flag (phase may briefly be idle during start).
 int jvm_bridge_session_is_active(void);
-/// Truthful number of live native VM slots (currently 0 or 1).
+/// Truthful number of reserved live native VM slots.
 int jvm_bridge_active_session_count(void);
-/// Maximum independently safe concurrent sessions, still 1 until global
-/// native renderer/UI/Treo/GC/3D resources have per-JVM owners.
+/// Technical registry ceiling, not a guaranteed safe live count.
+/// Fresh RAM headroom and 3D exclusivity additionally gate admission.
 int jvm_bridge_supported_concurrent_sessions(void);
 /// Monotonically increasing ID of the active session, zero if none.
 /// Used to reject callbacks from a previously closed game instance.
@@ -70,7 +70,7 @@ uint64_t jvm_bridge_push_java_thread_token(uint64_t token);
 void jvm_bridge_pop_java_thread_token(uint64_t previous);
 /// Focus invariant: at most one JVM is visible, all others stay parked.
 /// A zero visible token means library: every live session is in Treo.
-/// Operations resolve a slot by token; admission currently allows one.
+/// Operations resolve a slot by token; only one session is visible.
 int jvm_bridge_park_session(uint64_t token);
 int jvm_bridge_focus_session(uint64_t token);
 /// -1 = stale/unknown token, 0 = focused, 1 = parked.

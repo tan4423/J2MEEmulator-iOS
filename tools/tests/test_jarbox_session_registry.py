@@ -86,7 +86,29 @@ int main(void) {
     if(!jarbox_session_mark_dead(b)||
        !jarbox_registry_finish(&r,&f,104)) return 9;
     jarbox_session_release(b);
-    puts("JarBox registry: OK (stop A keeps B and single focus)");
+    /* Fill the real registry and focus policy to their production ceiling. */
+    JarBoxSession *many[JARBOX_REGISTRY_MAX_SLOTS];
+    for (unsigned i=0; i<JARBOX_REGISTRY_MAX_SLOTS; ++i) {
+        uint64_t token=1000+i;
+        many[i]=make(token, (uintptr_t)(0x10000+16*i));
+        if (!many[i] || !jarbox_registry_claim(&r,&f,token,JARBOX_REGISTRY_MAX_SLOTS) ||
+            !jarbox_registry_bind(&r,token,many[i])) return 20;
+    }
+    if (jarbox_registry_active_count(&r)!=JARBOX_REGISTRY_MAX_SLOTS ||
+        jarbox_registry_claim(&r,&f,9999,JARBOX_REGISTRY_MAX_SLOTS)) return 21;
+    for (unsigned i=0; i<JARBOX_REGISTRY_MAX_SLOTS; ++i) {
+        if (!jarbox_focus_select(&f,1000+i)) return 22;
+        for (unsigned j=0; j<JARBOX_REGISTRY_MAX_SLOTS; ++j)
+            if (jarbox_focus_is_parked(&f,1000+j)!=(i!=j)) return 23;
+    }
+    for (unsigned i=0; i<JARBOX_REGISTRY_MAX_SLOTS; ++i) {
+        jarbox_registry_begin_stop(&r,1000+i);
+        if (!jarbox_session_mark_dead(many[i]) || !jarbox_registry_finish(&r,&f,1000+i)) return 24;
+        jarbox_session_release(many[i]);
+        if (jarbox_registry_active_count(&r)!=(int)(JARBOX_REGISTRY_MAX_SLOTS-i-1)) return 25;
+    }
+    if (jarbox_focus_visible(&f) || jarbox_focus_live_count(&f)) return 26;
+    puts("JarBox registry: OK (stop A keeps B and single focus; full capacity)");
     return 0;
 }
 """

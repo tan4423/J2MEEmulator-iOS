@@ -20,12 +20,12 @@ class MultiVMReadinessTest(unittest.TestCase):
         self.assertTrue(report["owned_native_components"]["treo_gc_afk_state"])
         self.assertTrue(report["owned_native_components"]["3d_supersampling_config"])
         self.assertFalse(report["enforced_single_active_jvm"])
-        self.assertEqual(report["configured_session_cap"], 2)
+        self.assertEqual(report["configured_session_cap"], 64)
         self.assertTrue(report["experimental_multi_session_enabled"])
         self.assertFalse(report["concurrent_jvms_safe_to_enable"])
         bridge = (ROOT / "J2MEEmulator/NativeBridge/jvm_bridge.c").read_text()
         ui = (ROOT / "J2MEEmulator/UI/AppsListViewController.swift").read_text()
-        self.assertIn('int jvm_bridge_supported_concurrent_sessions(void) {\n    return 2;', bridge)
+        self.assertIn('int jvm_bridge_supported_concurrent_sessions(void) {\n    return JARBOX_REGISTRY_MAX_SLOTS;', bridge)
         self.assertIn('jvm_bridge_active_session_count()', ui)
         self.assertIn('jvm_bridge_supported_concurrent_sessions()', ui)
         blockers = report["unisolated_native_blockers"]
@@ -129,7 +129,7 @@ class MultiVMReadinessTest(unittest.TestCase):
         self.assertTrue(report["verified_source_structure_only"])
         self.assertFalse(report["runtime_device_concurrency_validated"])
         self.assertFalse(report["concurrent_jvms_safe_to_enable"])
-        self.assertIn("Input contexts (capacity four) are not four working JVM sessions.",
+        self.assertIn("Native context capacity is not proof of working JVM sessions.",
                       report["notes"])
         # The audit wording evolves as raster/Metal ownership is improved.
         # Check the actual safety disclosures, not a frozen sentence fragment.

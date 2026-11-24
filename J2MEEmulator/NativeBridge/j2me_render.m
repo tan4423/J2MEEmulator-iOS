@@ -1730,7 +1730,7 @@ static CGColorSpaceRef g_colorSpace = NULL;
 // A VM can stop while other tabs keep running. New handle acquisitions
 // check the exact owning JVM generation under g_track_lock; never use a
 // process-wide renderer stop bit to stop an unrelated session.
-#define RENDER_STOP_OWNER_SLOTS 16
+#define RENDER_STOP_OWNER_SLOTS 64
 static uint64_t g_stopped_render_owners[RENDER_STOP_OWNER_SLOTS];
 static int g_stopped_render_owner_count;
 static int g_render_stop_registry_overflow; // fail closed if impossible cap exceeded
@@ -4817,7 +4817,7 @@ void j2me_render_stop_for_owner(uint64_t owner_key) {
         else
             g_render_stop_registry_overflow = 1;
     }
-    // The native heap ledger holds at most eight owners. Overflow should
+    // The stop registry covers the full native heap owner capacity. Overflow should
     // be unreachable; should it occur, block every new render acquire.
     spin_unlock(&g_track_lock);
 }

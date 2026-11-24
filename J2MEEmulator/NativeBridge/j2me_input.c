@@ -27,7 +27,7 @@
 // are dispatched through runtime->jvm, never through another game's UI slot.
 // This does NOT yet enable multi-game execution: rendering, MIDP UI, audio,
 // and several VM diagnostics still use process globals.
-#define JARBOX_INPUT_CONTEXT_CAPACITY 4
+#define JARBOX_INPUT_CONTEXT_CAPACITY 64
 typedef struct {
     _Atomic(MiniJVM *) vm;
     uint64_t generation; // guarded by g_input_context_lock

@@ -16,7 +16,7 @@
 #include <stdint.h>
 #include <stddef.h>
 
-#define JARBOX_FOCUS_MAX_SESSIONS 16
+#define JARBOX_FOCUS_MAX_SESSIONS 64
 
 typedef struct {
     uint64_t token;

@@ -5,9 +5,9 @@
 #include "jarbox_session.h"
 #include "jarbox_focus_policy.h"
 
-/* Two structural slots for a future experiment. The bridge must use
- * max_live=1 until renderer, Treo/Canvas and native resources are isolated. */
-#define JARBOX_REGISTRY_MAX_SLOTS 2
+/* Technical ceiling, not a memory admission guarantee. Keep all native
+ * owner registries at least this large. Runtime admission checks RAM. */
+#define JARBOX_REGISTRY_MAX_SLOTS 64
 typedef struct {
     uint64_t token;
     JarBoxSession *session; /* owned reference through final retirement */

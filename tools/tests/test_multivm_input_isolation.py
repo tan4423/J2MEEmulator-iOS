@@ -123,7 +123,7 @@ class MultiVMInputIsolationTest(unittest.TestCase):
         bridge = JVM.read_text(encoding="utf-8")
         self.assertIn('#include "jarbox_input_ring.h"', native)
         self.assertIn('JarBoxInputRing ring;', native)
-        self.assertIn('JARBOX_INPUT_CONTEXT_CAPACITY 4', native)
+        self.assertIn('JARBOX_INPUT_CONTEXT_CAPACITY 64', native)
         self.assertIn('context_for_runtime(runtime)', native)
         self.assertIn('#include "garbage.h"', native)
         self.assertIn('jarbox_input_ring_push(&ctx->ring', native)

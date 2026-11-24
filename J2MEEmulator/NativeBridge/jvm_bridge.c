@@ -137,7 +137,7 @@ static int treo_is_nso_family(const char *jar_path, int *init_target) {
 // Native executor storage is now a real slot pool, distinct from the
 // session registry (which owns lifetime pins). Allocation/retirement and
 // worker admission are serialized by g_bridge_lifecycle_lock. Capacity of
-// storage is NOT the admitted runtime capacity; the public gate stays 1.
+// storage is a technical ceiling; fresh memory headroom gates admission.
 enum { BRIDGE_IDLE = 0, BRIDGE_STARTING = 1, BRIDGE_RUNNING = 2,
        BRIDGE_CLEANUP = 3 };
 typedef struct {
@@ -229,8 +229,8 @@ void jvm_bridge_pop_java_thread_token(uint64_t previous) {
 }
 // One visible window; every other live tab remains parked (never stopped).
 static JarBoxFocusPolicy g_bridge_focus = JARBOX_FOCUS_POLICY_INITIALIZER;
-// Registry owns a session pin per token; runtime cap stays one until the
-// native render, Treo, UI, audio and 3D state becomes fully isolated.
+// Registry owns a session pin per token; admission is memory-gated.
+// 3D remains exclusive and shared 2D device safety still needs validation.
 static JarBoxSessionRegistry g_bridge_registry = JARBOX_SESSION_REGISTRY_INITIALIZER;
 // Protect the JVM pointer/phase while the cancellation watchdog interrupts
 // Java threads; normal VM execution never takes this mutex.
@@ -723,11 +723,11 @@ int jvm_bridge_session_is_active(void) {
 int jvm_bridge_session_is_active_for_token(uint64_t token) {
     return jarbox_registry_contains_token(&g_bridge_registry, token);
 }
-// Experimental two-session device test on loader-ios-jit-probe.
+// Experimental memory-gated multi-session device build on loader-ios-jit-probe.
 // Shared launches are 2D only; 3D/unknown archives remain exclusive.
-// Runtime/device safety is NOT certified. Revert this cap to 1 for rollback.
+// Runtime/device safety is NOT certified. The ceiling is not a promise of RAM.
 int jvm_bridge_supported_concurrent_sessions(void) {
-    return 2;
+    return JARBOX_REGISTRY_MAX_SLOTS;
 }
 int jvm_bridge_active_session_count(void) {
     return jarbox_registry_active_count(&g_bridge_registry);

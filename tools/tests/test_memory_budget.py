@@ -114,7 +114,7 @@ class MemoryBudgetTest(unittest.TestCase):
         self.assertIn("defer { _ = jvm_bridge_finish_session_for_token(token) }", worker)
         self.assertIn("if initResult == -12", worker)
         self.assertIn("if admission == -2", game)
-        self.assertIn("int jvm_bridge_supported_concurrent_sessions(void) {\n    return 2;", src)
+        self.assertIn("int jvm_bridge_supported_concurrent_sessions(void) {\n    return JARBOX_REGISTRY_MAX_SLOTS;", src)
 
     def test_resume_and_offline_tab_storage_do_not_require_new_heap(self):
         lib = LIB.read_text().split("class AppsListViewController: UIViewController,", 1)[1]

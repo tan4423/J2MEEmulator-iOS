@@ -48,7 +48,7 @@ typedef struct {
 // owner via runtime->jvm. UIKit getters read the *focused* screen only.
 // The callback itself remains foreground-only until the native session
 // coordinator and UIKit controller dispatch are fully per-JVM.
-#define JARBOX_UI_CONTEXT_CAPACITY 4
+#define JARBOX_UI_CONTEXT_CAPACITY 64
 
 @interface JarBoxUIScreenObjects : NSObject {
 @public

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -126,14 +127,24 @@ def audit(root=ROOT):
     # Report the configured test capacity separately from actual safety.
     admission_wired = ("bridge_reserve_slot_locked(" in src["lifecycle"]
                        and "(unsigned)jvm_bridge_supported_concurrent_sessions()" in src["lifecycle"])
-    configured_cap = next((n for n in (1, 2)
-                           if admission_wired and
-                           f"int jvm_bridge_supported_concurrent_sessions(void) {{\n    return {n};" in src["lifecycle"]), None)
+    configured_cap = None
+    if admission_wired:
+        match = re.search(r"int jvm_bridge_supported_concurrent_sessions\(void\)\s*\{\s*return\s+(\d+|JARBOX_REGISTRY_MAX_SLOTS);", src["lifecycle"])
+        if match:
+            value = match.group(1)
+            if value.isdigit():
+                configured_cap = int(value)
+            else:
+                registry = root / "J2MEEmulator/NativeBridge/jarbox_session_registry.h"
+                if registry.is_file():
+                    ceiling = re.search(r"^#define JARBOX_REGISTRY_MAX_SLOTS (\d+)", registry.read_text(encoding="utf-8"), re.M)
+                    if ceiling:
+                        configured_cap = int(ceiling.group(1))
     one_vm_gate = configured_cap == 1
     # A source-shape gate may only block unsafe concurrency; it cannot certify
     # thread safety or device behavior. All known owned components must pass,
     # shared-state blockers and runtime validation remain relevant even
-    # when an experimental device build explicitly permits two sessions.
+    # when an experimental device build explicitly permits multiple sessions.
     owned = {
         "vm_lifecycle": bool(lifecycle),
         "input_queue_display_wait": bool(input_owned),
@@ -158,7 +169,7 @@ def audit(root=ROOT):
     blockers_2d = {name: found for name, found in sorted(blockers.items())
                    if found and (not name.startswith("3d_") or not exclusion_guard_present)}
     source_prerequisites_met = all(owned.values()) and not any(blockers.values())
-    ready = source_prerequisites_met and configured_cap == 2
+    ready = source_prerequisites_met and configured_cap is not None and configured_cap > 1
     # No automated source scan proves safe concurrent execution on iOS.
     # Require a separately reviewed runtime/device validation before enabling.
     runtime_device_validated = False
@@ -168,7 +179,7 @@ def audit(root=ROOT):
         "concurrent_jvms_safe_to_enable": bool(ready),
         "enforced_single_active_jvm": bool(one_vm_gate),
         "configured_session_cap": configured_cap,
-        "experimental_multi_session_enabled": configured_cap == 2,
+        "experimental_multi_session_enabled": configured_cap is not None and configured_cap > 1,
         "verified_source_structure_only": True,
         "runtime_device_concurrency_validated": runtime_device_validated,
         "owned_native_components": owned,
@@ -180,7 +191,7 @@ def audit(root=ROOT):
             name: found for name, found in sorted(blockers.items()) if found
         },
         "notes": [
-            "Input contexts (capacity four) are not four working JVM sessions.",
+            "Native context capacity is not proof of working JVM sessions.",
             "2D handles and AFK raster modes are keyed by generation; Metal targets/caches are per owner but GPU queue, UIKit destination and haptic engine remain shared.",
             "LCDUI slot bindings, Form/List buffers and queued URL actions now check VM generation; UIKit controller registration remains process-wide.",
             "MIDP List icons and ordinary 2D Canvas/Image acquire paths now validate JVM generation; live handle address reuse after a zombie thread and VM pointer reuse still require lifetime binding.",
@@ -189,7 +200,7 @@ def audit(root=ROOT):
             "3D supersampling configuration is session-owned; M3G pixel buffers, EGL contexts and global cleanup remain separate blockers.",
             "Network, classloader, JIT, sockets, native image handles, and teardown still need device validation.",
             "3D or unknown archives reserve exclusive access until retirement. Shared 2D launches cannot register the legacy 3D backends when cap > 1.",
-            "This branch configures two sessions for experimental device validation, not certified production concurrency.",
+            "This branch uses a technical ceiling and fresh RAM admission for experimental device validation, not certified production concurrency.",
             "2d_only_candidate_blockers excludes 3D source markers only if the exclusion guard is present. It is not a certification of 3D reachability or runtime safety.",
             "Do not treat an experimental admission cap as proof of runtime safety; do not ship multi-session while blockers remain.",
         ],

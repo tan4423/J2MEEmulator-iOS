@@ -7,7 +7,7 @@
 #include <pthread.h>
 #include <stdint.h>
 
-#define JARBOX_FLUSH_MAX_ROUTES 8
+#define JARBOX_FLUSH_MAX_ROUTES 64
 typedef void (*JarBoxFlushLegacy)(void *image, int width, int height);
 typedef void (*JarBoxFlushOwned)(void *image, int width, int height, uint64_t owner, uint64_t token);
 typedef struct {

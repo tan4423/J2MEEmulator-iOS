@@ -49,7 +49,13 @@ int main(void) {
     if (counts[2]!=1 || !jarbox_flush_route_unbind(&r,102) ||
         !jarbox_flush_route_unbind(&r,103) ||
         jarbox_flush_route_lookup(&r,103,&l,&o)) return 8;
-    puts("generation flush routes: OK (A/B, stop A leaves B, reject stale)");
+    for (unsigned i=0;i<JARBOX_FLUSH_MAX_ROUTES;i++)
+        if (!jarbox_flush_route_bind(&r,1000+i)) return 9;
+    if (jarbox_flush_route_bind(&r,9999)) return 10;
+    for (unsigned i=0;i<JARBOX_FLUSH_MAX_ROUTES;i++)
+        if (!jarbox_flush_route_lookup(&r,1000+i,&l,&o) || l!=legacy || o ||
+            !jarbox_flush_route_unbind(&r,1000+i)) return 11;
+    puts("generation flush routes: OK (A/B, stop A leaves B, reject stale; full capacity)");
     return 0;
 }
 """

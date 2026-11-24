@@ -80,7 +80,7 @@ for _ in 0..<1000 {
     live = [1,2]; retireOnRead = 1; check(!allowed([1])); check(live == [2])
     live = [1,2]; retireOnRead = 1; check(!allowed([1,2]))
     let lib = Library(); let app = AppInfo(path: "A.jar")
-    let ids = (0..<16).map { _ in UUID() }
+    let ids = (0..<29).map { _ in UUID() }
     let tabs: [(UUID?, String)] = [(nil,"Tab gốc")] + ids.enumerated().map {
         (Optional($0.element), "Tab " + String($0.offset + 1))
     }
