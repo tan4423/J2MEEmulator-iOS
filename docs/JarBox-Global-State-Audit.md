@@ -602,3 +602,26 @@ during cleanup, lease release and unchanged session B. The model simulates
 cleanup after unlock; it does not run real Java monitors or two miniJVMs.
 Full checkout, full unit suite, TSan, Xcode/Codemagic and device tests
 remain outstanding.
+
+## 2026-11-24: Serialize native focus/park against destructive cleanup
+
+An owner callback lease protects the Java heap but does not by itself order
+renderer/input/LCDUI publication against teardown. An admitted focus could
+otherwise reattach a destination after cleanup had revoked it. Serialize the
+explicit bridge focus/park calls and cleanup admission closure with a separate
+transition mutex. Acquire it before the lifecycle mutex; release both before
+destructive cleanup or waiting on Java threads. The installed UIKit callback
+dispatches asynchronously, not synchronously back into bridge focus. No
+poller, new admission capacity or change to Treo policy is introduced.
+Startup registration, runner-exit publication, other callback classes and
+device lock-order verification remain separate audit items.
+
+Validation: locally compiled the matching production focus/park and cleanup
+admission excerpts with SHA-verified JarBoxSession/TreoState headers and
+mock native destinations/registry. The legacy excerpt (adapted to the test
+helper boundary) failed the transition-lock assertion. Both new unit tests
+passed on the local source fixture. The threaded harness passed 50
+ASan+UBSan runs of 100 modeled cases each, including partial-focus rollback,
+hidden A park preserving B, and focus racing actual cleanup admission.
+Only the excerpt and header model were compiled, not the complete bridge,
+UIKit or two running JVMs. Full checkout and iPhone build/test remain pending.

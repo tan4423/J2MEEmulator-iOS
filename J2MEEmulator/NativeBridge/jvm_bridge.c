@@ -177,6 +177,10 @@ static JarBoxSessionRegistry g_bridge_registry = JARBOX_SESSION_REGISTRY_INITIAL
 // Protect the JVM pointer/phase while the cancellation watchdog interrupts
 // Java threads; normal VM execution never takes this mutex.
 static pthread_mutex_t g_bridge_lifecycle_lock = PTHREAD_MUTEX_INITIALIZER;
+// Serialize native focus/park publication against cleanup admission closure.
+// Lock order: focus transition -> lifecycle -> registry. Never hold this
+// mutex while joining Java threads or waiting for the heap lease gate.
+static pthread_mutex_t g_bridge_focus_transition_lock = PTHREAD_MUTEX_INITIALIZER;
 static JarBoxVMContext *bridge_claim_worker(uint64_t token) {
     pthread_mutex_lock(&g_bridge_lifecycle_lock);
     JarBoxVMContext *slot = bridge_claim_worker_locked(token);
@@ -462,7 +466,11 @@ static MiniJVM *bridge_pin_running_owner(uint64_t token, JarBoxSession **held) {
     return vm;
 }
 int jvm_bridge_park_session(uint64_t token) {
-    if (!jarbox_registry_contains_token(&g_bridge_registry, token)) return 0;
+    pthread_mutex_lock(&g_bridge_focus_transition_lock);
+    if (!jarbox_registry_contains_token(&g_bridge_registry, token)) {
+        pthread_mutex_unlock(&g_bridge_focus_transition_lock);
+        return 0;
+    }
     JarBoxSession *held = NULL;
     MiniJVM *owner = bridge_pin_running_owner(token, &held);
     // The visible framebuffer is revoked before any deferred UIKit flush.
@@ -477,16 +485,24 @@ int jvm_bridge_park_session(uint64_t token) {
         if (parked) (void)jarbox_session_park(held);
         jarbox_session_callback_done(held);
     }
+    pthread_mutex_unlock(&g_bridge_focus_transition_lock);
     return parked;
 }
 
 int jvm_bridge_focus_session(uint64_t token) {
     // A tab coordinator must park the previous owner before selecting B.
+    pthread_mutex_lock(&g_bridge_focus_transition_lock);
     const uint64_t visible = jarbox_focus_visible(&g_bridge_focus);
-    if (visible && visible != token) return 0;
+    if (visible && visible != token) {
+        pthread_mutex_unlock(&g_bridge_focus_transition_lock);
+        return 0;
+    }
     JarBoxSession *held = NULL;
     MiniJVM *owner = bridge_pin_running_owner(token, &held);
-    if (!owner) return 0;
+    if (!owner) {
+        pthread_mutex_unlock(&g_bridge_focus_transition_lock);
+        return 0;
+    }
     // Renderer, input and LCDUI must agree on the same owner generation.
     // No callback may retain this raw pointer beyond the lease below.
     const int ready = j2me_render_focus_vm(owner) &&
@@ -504,6 +520,7 @@ int jvm_bridge_focus_session(uint64_t token) {
         (void)jarbox_focus_park_one(&g_bridge_focus, token);
     }
     jarbox_session_callback_done(held);
+    pthread_mutex_unlock(&g_bridge_focus_transition_lock);
     return selected;
 }
 
@@ -841,12 +858,20 @@ static int bridge_run_slot(JarBoxVMContext *slot, const char *midlet_jar_path) {
     return ret;
 }
 
-static void bridge_destroy_slot(JarBoxVMContext *slot) {
+static void bridge_begin_slot_cleanup(JarBoxVMContext *slot) {
+    // Wait for an already admitted focus/park to finish before closing
+    // admission. Subsequent focus calls cannot pin a CLEANUP slot.
+    pthread_mutex_lock(&g_bridge_focus_transition_lock);
     pthread_mutex_lock(&g_bridge_lifecycle_lock);
     atomic_store_explicit(&slot->phase, BRIDGE_CLEANUP, memory_order_release);
     jarbox_registry_begin_stop(&g_bridge_registry,
         atomic_load_explicit(&slot->token, memory_order_acquire));
     pthread_mutex_unlock(&g_bridge_lifecycle_lock);
+    pthread_mutex_unlock(&g_bridge_focus_transition_lock);
+}
+
+static void bridge_destroy_slot(JarBoxVMContext *slot) {
+    bridge_begin_slot_cleanup(slot);
     if (slot->jvm) {
         MiniJVM *const destroyed_owner = slot->jvm;
         // The heap ledger generation outlives the MiniJVM allocation and
