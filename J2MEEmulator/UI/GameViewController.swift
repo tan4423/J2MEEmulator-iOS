@@ -3584,7 +3584,7 @@ class GameViewController: UIViewController {
                     // Managed foreground A exited while another native
                     // owner exists. Never reset process-wide diagnostics.
                     self.finishStartupWatchdog()
-                    self.dismiss(animated: true)
+                    self.dismiss(animated: false)
                     return
                 }
                 self.stopEscalationWork?.cancel()
@@ -3603,20 +3603,20 @@ class GameViewController: UIViewController {
                     self.libraryIsPresented = false
                     if let overlay = self.presentedViewController {
                         overlay.dismiss(animated: false) { [weak self] in
-                            self?.dismiss(animated: true)
+                            self?.dismiss(animated: false)
                         }
                     } else {
-                        self.dismiss(animated: true)
+                        self.dismiss(animated: false)
                     }
                     if let failure {
                         NSLog("[JarBoxVM][Lifecycle] parked session exited: %@", failure)
                     }
                 } else if self.gameStopRequested {
-                    self.dismiss(animated: true)
+                    self.dismiss(animated: false)
                 } else if let failure {
                     self.showLaunchFailure(failure)
                 } else {
-                    self.dismiss(animated: true)
+                    self.dismiss(animated: false)
                 }
             }
         }
@@ -3640,6 +3640,8 @@ class GameViewController: UIViewController {
             self.present(alert, animated: true)
         }
         startupWatchdog = watchdog
+        backButton.setTitle("Hủy mở game", for: .normal)
+        backButton.accessibilityLabel = "Hủy khởi động game"
         DispatchQueue.main.asyncAfter(deadline: .now() + 20, execute: watchdog)
         DispatchQueue.global(qos: .userInitiated).async(execute: worker)
     }
@@ -3647,6 +3649,10 @@ class GameViewController: UIViewController {
     private func finishStartupWatchdog() {
         startupWatchdog?.cancel()
         startupWatchdog = nil
+        if !gameStopRequested {
+            backButton.setTitle("‹ Thư viện", for: .normal)
+            backButton.accessibilityLabel = "Về thư viện, giữ game chạy"
+        }
     }
 
     private func showBlockedSessionAlert() {
@@ -3668,10 +3674,10 @@ class GameViewController: UIViewController {
                     ? jvm_bridge_interrupt_active_threads_for_token(blockedToken) : 0
                 NSLog("[JarBoxVM][Lifecycle] blocked_slot_interrupt=%d", result)
             }
-            self?.dismiss(animated: true)
+            self?.dismiss(animated: false)
         })
         alert.addAction(UIAlertAction(title: "Đóng", style: .cancel) { [weak self] _ in
-            self?.dismiss(animated: true)
+            self?.dismiss(animated: false)
         })
         alert.addAction(UIAlertAction(title: "Buộc đóng JarBox", style: .destructive) { [weak self] _ in
             self?.confirmEmergencyExit()
@@ -3690,7 +3696,7 @@ class GameViewController: UIViewController {
         alert.addAction(UIAlertAction(title: "Về thư viện", style: .cancel) { [weak self] _ in
             guard let self else { return }
             self.sessionLibrary?.managedGameDidEnd(self)
-            self.dismiss(animated: true)
+            self.dismiss(animated: false)
         })
         // A startup-timeout alert may still be open when the Java worker
         // fails; dismiss it first so the real Java error is not hidden.
@@ -3712,6 +3718,7 @@ class GameViewController: UIViewController {
         // Every bridge operation is guarded by THIS worker's admission
         // token, not the most recently launched/visible tab.
         defer { _ = jvm_bridge_finish_session_for_token(token) }
+        guard jvm_bridge_is_stop_requested_for_token(token) == 0 else { return "Game startup cancelled." }
         let docs = NSSearchPathForDirectoriesInDomains(
             .documentDirectory, .userDomainMask, true).first ?? NSTemporaryDirectory()
         let saveRoot: String
@@ -3726,6 +3733,7 @@ class GameViewController: UIViewController {
         JarBoxGameStorage.appendSettingEvent(jarPath: jarPath, documents: docs,
                                             event: "SESSION_START", cloneID: cloneID)
 
+        guard jvm_bridge_is_stop_requested_for_token(token) == 0 else { return "Game startup cancelled." }
         NSLog("[J2ME Treo] Entering JVM initialization")
         let initResult = jvm_bridge_init_for_token(token, resRoot, saveRoot,
                                                     jarPath, width, height, scale, fps)
@@ -3756,7 +3764,7 @@ class GameViewController: UIViewController {
 
     private func requestGameStop(reason: String) {
         guard ownsJVMSession else {
-            dismiss(animated: true)
+            dismiss(animated: false)
             return
         }
         if gameStopRequested {
@@ -3764,6 +3772,8 @@ class GameViewController: UIViewController {
             return
         }
         gameStopRequested = true
+        backButton.setTitle("Đang dừng…", for: .normal)
+        backButton.accessibilityLabel = "Đang dừng game, bấm để xem trạng thái"
         NSLog("[JarBoxVM][Lifecycle] cancel_requested reason=%@ phase=%d",
               reason, jvm_bridge_session_phase())
         finishStartupWatchdog()
@@ -3925,9 +3935,23 @@ class GameViewController: UIViewController {
     /// drawing and GC overhead. This does not grant iOS background execution
     /// or start another miniJVM.
     @objc private func openLibraryKeepingGame() {
+        guard ownsJVMSession else {
+            sessionLibrary?.managedGameDidEnd(self)
+            dismiss(animated: false)
+            return
+        }
+        if gameStopRequested {
+            showStuckSessionRecovery()
+            return
+        }
         guard ownsLiveGameSession(), !libraryIsPresented, presentedViewController == nil else { return }
+        // Before the first usable game screen, Back cancels startup rather
+        // than trying to park a half-initialized or no-frame JVM.
+        if startupWatchdog != nil {
+            requestGameStop(reason: "startup_back")
+            return
+        }
         // Token-scoped visitor returns -1 unless this owner is RUNNING.
-        // Do not revoke STARTING focus or cancel its startup watchdog.
         guard treo_mode_for_token(gameSessionToken) >= 0 else { return }
         stopJarAudit()
         discardCPUProfile()
@@ -4032,13 +4056,6 @@ class GameViewController: UIViewController {
 
     @objc private func backTapped() {
         openLibraryKeepingGame()
-        // Back must remain an escape hatch if launch failed before we
-        // acquired a JVM token, or if an earlier Stop is still pending.
-        if !ownsJVMSession {
-            dismiss(animated: true)
-        } else if gameStopRequested {
-            showStuckSessionRecovery()
-        }
     }
 
     // ============================================================
@@ -4085,10 +4102,10 @@ class GameViewController: UIViewController {
     }
 
     func showAlert() {
-        finishStartupWatchdog()
         // Capture *both* the worker's immutable session token and the
         // MIDP render owner for every deferred Alert action and timeout.
         guard ownsLiveGameSession() else { return }
+        finishStartupWatchdog()
         let originToken = gameSessionToken
         if libraryIsPresented {
             // Keep the pending game Alert when Deep Treo revoked native

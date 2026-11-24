@@ -21,9 +21,15 @@ class ParkedTransitionGuardTest(unittest.TestCase):
         confirmed = body.index("guard parkedTreoActive else { return }")
         self.assertLess(park, confirmed)
         self.assertEqual(body.count("startParkedTreo()"), 1)
+        # The no-owner escape hatch may dismiss without Treo; a live
+        # owner's managed dismissal must still follow confirmed park.
+        no_owner = body.index("guard ownsJVMSession else {")
+        self.assertLess(no_owner, body.index("dismiss(animated: false)"))
+        self.assertLess(body.index("dismiss(animated: false)"), ready)
+        self.assertLess(confirmed, body.index("dismiss(animated: false)", confirmed))
         for effect in ("finishStartupWatchdog()", "if let library = sessionLibrary",
                        "libraryIsPresented = true", "setGlobalEmulatorView(nil)",
-                       "emulatorView.clearPendingGameFrame()", "dismiss(animated: false)",
+                       "emulatorView.clearPendingGameFrame()",
                        "present(navigation, animated: false)"):
             self.assertLess(confirmed, body.index(effect), effect)
 

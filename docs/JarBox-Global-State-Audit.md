@@ -689,3 +689,24 @@ collector B state. Tested helper/control excerpts and the regression file
 were matched against the committed replacements. The complete GC,
 miniJVM, TSan, Codemagic and iPhone tests were not run here. Admission
 remains one.
+
+## 2026-11-24: Cancel incomplete startup and remove game-exit animation
+
+User reports occasional stuck startup, inability to close, and an unwanted
+vertical dismissal transition. During startup the Back control now reads
+"Hủy mở game" and requests cooperative cancellation, not Treo. Once the
+first usable game screen completes the startup watchdog, normal Back
+continues to park a running owner. A stale Alert cannot clear that
+watchdog. Stop displays "Đang dừng…" without claiming native retirement.
+The worker checks its exact stop token before preparing storage and again
+before native init. Game controller dismissals are nonanimated; the slot
+and controller remain protected until native retirement. No forced heap
+free, RMS edits or admission increase.
+
+Validation: five new Python source-contract regressions failed on the
+original relevant source fragments (4 failures, 1 error) and passed on
+the replacement fixture; swiftc -frontend -parse accepted the rewritten
+method excerpts in a dummy class. The modified existing park source
+guard accounts for the no-owner escape hatch. Full source checkout,
+UIKit type checking, startup cancellation timing, Codemagic and device
+tests have not been run. Native deadlocks require separate fixes.
