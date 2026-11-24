@@ -4073,6 +4073,16 @@ class GameViewController: UIViewController {
     /// sockets and threads, while the *full Treo* pipeline reduces offscreen
     /// drawing and GC overhead. This does not grant iOS background execution
     /// or start another miniJVM.
+    // Do not bypass startup readiness or dismiss a MIDP alert.
+    func parkAfterSettingsRestart() {
+        guard ownsLiveGameSession(), startupWatchdog == nil,
+              viewIfLoaded?.window != nil, !libraryIsPresented,
+              !isBeingDismissed, !isBeingPresented,
+              viewIfLoaded?.window?.windowScene?.activationState == .foregroundActive,
+              presentedViewController == nil else { return }
+        openLibraryKeepingGame()
+    }
+
     @objc private func openLibraryKeepingGame() {
         guard ownsJVMSession else {
             sessionLibrary?.managedGameDidEnd(self)

@@ -103,7 +103,7 @@ struct CloneHarness {
         let keyB = JarBoxGameStorage.settingsId(jarPath: jar, cloneID: b.id)
         require(keyA != keyB && keyA != baseKey, "settings key collision")
         require(defaults.object(forKey: "fpsLimit_" + keyA) == nil,
-                "Tab 1 inherited FPS setting")
+                "Tab 1 copied obsolete per-tab FPS key")
         require(defaults.object(forKey: "resW_" + keyB) == nil,
                 "Tab 2 copied obsolete per-tab resolution key")
         // Old per-tab keys are ignored; the original group setting wins.
@@ -115,6 +115,14 @@ struct CloneHarness {
                 "shared resolution leaked across games")
         defaults.set(20, forKey: "fpsLimit_" + keyA)
         defaults.set(15, forKey: "fpsLimit_" + keyB)
+        defaults.set(false, forKey: "ss3d_" + keyB)
+        JarBoxGameStorage.setSharedFPS(30, jarPath: jar)
+        JarBoxGameStorage.setShared3D(true, jarPath: jar)
+        require(JarBoxGameStorage.sharedFPS(jarPath: jar) == 30, "old clone FPS override leaked")
+        require(JarBoxGameStorage.shared3D(jarPath: jar), "old clone 3D override leaked")
+        require(JarBoxGameStorage.sharedFPS(jarPath: lastTabOther) == 0,
+                "shared FPS leaked across games")
+        require(!JarBoxGameStorage.shared3D(jarPath: lastTabOther), "shared 3D leaked across games")
         let recordA = (rootA as NSString).appendingPathComponent("account.rsr")
         let recordB = (rootB as NSString).appendingPathComponent("account.rsr")
         try Data("ACCOUNT_A".utf8).write(to: URL(fileURLWithPath: recordA))
@@ -166,8 +174,10 @@ struct CloneHarness {
         require(String(data: try Data(contentsOf: URL(fileURLWithPath: original)),
                        encoding: .utf8) == "ORIGINAL_ACCOUNT_SAVE",
                 "original account save changed")
-        require(defaults.object(forKey: "fpsLimit_" + baseKey) as? Int == 60,
-                "original settings changed")
+        require(JarBoxGameStorage.sharedFPS(jarPath: jar) == 30,
+                "clone deletion erased shared FPS")
+        require(JarBoxGameStorage.shared3D(jarPath: jar),
+                "clone deletion erased shared 3D")
         require(JarBoxGameStorage.sharedResolution(jarPath: jar).w == 320,
                 "clone deletion erased shared resolution")
         let remaining = try JarBoxGameStorage.registeredClones(
@@ -342,7 +352,7 @@ class CloneInstanceStorageTest(unittest.TestCase):
     def test_group_ui_uses_clone_menu_and_bounded_quantities(self):
         source = SWIFT.read_text(encoding="utf-8")
         self.assertIn('title: "Nhân bản"', source)
-        for title in ("Thêm 1", "Xóa 1", "Thêm theo số lượng", "Xóa theo số lượng"):
+        for title in ("Thêm", "Xóa", "Thêm theo số lượng", "Xóa theo số lượng"):
             self.assertIn('title: "' + title + '"', source)
         self.assertIn("maxTotalTabs = 17", source)
         self.assertIn("validTabQuantity(count, maximum: maximum)", source)
@@ -354,13 +364,15 @@ class CloneInstanceStorageTest(unittest.TestCase):
         self.assertIn("cloneCount:", source)
         self.assertIn("cloneID: cloneID)", source)
         self.assertIn('showTabInformationPicker(for: app, clones: clones)', source)
-        self.assertIn('showTabSettingsPicker(for: app, clones: clones, is3D: false)', source)
-        self.assertIn('showTabSettingsPicker(for: app, clones: clones, is3D: true)', source)
+        self.assertIn('showSharedFPSOptions(for: app)', source)
+        self.assertIn('showShared3DOptions(for: app)', source)
         self.assertIn('Self.setResolution(w: option.w, h: option.h, for: app)', source)
         self.assertNotIn('Self.resolution(for: app, cloneID:', source)
         self.assertIn('JarBoxGameStorage.sharedResolution(jarPath: app.path)', source)
-        self.assertIn('Self.setFpsLimit(option.value, for: app, cloneID: cloneID)', source)
-        self.assertIn('Self.set3DSupersampling(enabled, for: app, cloneID: cloneID)', source)
+        self.assertIn('Self.setFpsLimit(option.value, for: app)', source)
+        self.assertIn('Self.set3DSupersampling(true, for: app)', source)
+        self.assertIn('JarBoxGameStorage.sharedFPS(jarPath: app.path)', source)
+        self.assertIn('JarBoxGameStorage.shared3D(jarPath: app.path)', source)
         self.assertIn('gameForTab(app.path, cloneID: tab.id) != nil', source)
         self.assertIn('return UIMenu(children: [stop, infoAction, advanced, rename,', source)
         self.assertIn('blockedClonedJAR = true', source)

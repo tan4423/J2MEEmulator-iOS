@@ -14,6 +14,20 @@ private class OrientationNavigationController: UINavigationController {
     }
 }
 
+// Observe actual touch activity without adding a competing recognizer or
+// swallowing any UIKit/game input. The library ignores events offscreen.
+private final class JarBoxActivityWindow: UIWindow {
+    weak var library: AppsListViewController?
+    override func sendEvent(_ event: UIEvent) {
+        super.sendEvent(event)
+        guard event.type == .touches, let touches = event.allTouches, !touches.isEmpty else { return }
+        let active = touches.contains {
+            $0.phase != .ended && $0.phase != .cancelled
+        }
+        library?.libraryInputChanged(activeTouch: active)
+    }
+}
+
 class SceneDelegate: UIResponder, UIWindowSceneDelegate {
 
     var window: UIWindow?
@@ -37,7 +51,9 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         nav.navigationBar.scrollEdgeAppearance = appearance
         nav.navigationBar.tintColor = .white
 
-        window = UIWindow(windowScene: windowScene)
+        let activityWindow = JarBoxActivityWindow(windowScene: windowScene)
+        activityWindow.library = vc
+        window = activityWindow
         window?.rootViewController = nav
         window?.makeKeyAndVisible()
     }

@@ -130,6 +130,22 @@ enum JarBoxGameStorage {
         UserDefaults.standard.set(h, forKey: "resH_" + gid)
     }
 
+    nonisolated static func sharedFPS(jarPath: String) -> Int {
+        UserDefaults.standard.integer(forKey: "fpsLimit_" + installId(for: jarPath))
+    }
+
+    nonisolated static func setSharedFPS(_ fps: Int, jarPath: String) {
+        UserDefaults.standard.set(fps, forKey: "fpsLimit_" + installId(for: jarPath))
+    }
+
+    nonisolated static func shared3D(jarPath: String) -> Bool {
+        UserDefaults.standard.bool(forKey: "ss3d_" + installId(for: jarPath))
+    }
+
+    nonisolated static func setShared3D(_ enabled: Bool, jarPath: String) {
+        UserDefaults.standard.set(enabled, forKey: "ss3d_" + installId(for: jarPath))
+    }
+
     nonisolated static func settingsId(jarPath: String, cloneID: UUID? = nil) -> String {
         let group = installId(for: jarPath)
         return cloneID.map { group + "_clone_" + $0.uuidString.lowercased() } ?? group
@@ -479,6 +495,81 @@ final class JarBoxLibraryNavigationController: UINavigationController {
     override var preferredInterfaceOrientationForPresentation: UIInterfaceOrientation { .portrait }
 }
 
+// Stored independently from game/Treo settings. Manual is the safe default.
+enum JarBoxProtectionPreferences {
+    static var automatic: Bool { UserDefaults.standard.bool(forKey: "jarbox.protection.automatic") }
+    static var seconds: Int {
+        let value = UserDefaults.standard.integer(forKey: "jarbox.protection.seconds")
+        return (5...3600).contains(value) ? value : 60
+    }
+}
+
+final class JarBoxProtectionSettingsController: UIViewController {
+    var onSaved: (() -> Void)?
+    private let mode = UISegmentedControl(items: ["Tự động", "Ấn tay"])
+    private let timeLabel = UILabel()
+    private let seconds = UITextField()
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        title = "Bảo vệ màn hình"
+        view.backgroundColor = .systemGroupedBackground
+        navigationItem.leftBarButtonItem = UIBarButtonItem(barButtonSystemItem: .cancel,
+            target: self, action: #selector(cancel))
+        navigationItem.rightBarButtonItem = UIBarButtonItem(barButtonSystemItem: .save,
+            target: self, action: #selector(save))
+        mode.selectedSegmentIndex = JarBoxProtectionPreferences.automatic ? 0 : 1
+        mode.addTarget(self, action: #selector(updateMode), for: .valueChanged)
+        timeLabel.text = "Thời gian vào trạng thái (giây)"
+        timeLabel.font = .preferredFont(forTextStyle: .body)
+        timeLabel.numberOfLines = 0
+        seconds.borderStyle = .roundedRect
+        seconds.keyboardType = .numberPad
+        seconds.text = String(JarBoxProtectionPreferences.seconds)
+        seconds.accessibilityLabel = "Thời gian chờ, từ 5 đến 3600 giây"
+        let stack = UIStackView(arrangedSubviews: [mode, timeLabel, seconds])
+        stack.axis = .vertical
+        stack.spacing = 16
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 24),
+            stack.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 20),
+            stack.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -20),
+            seconds.heightAnchor.constraint(greaterThanOrEqualToConstant: 44)
+        ])
+        updateMode()
+    }
+
+    @objc private func updateMode() {
+        let enabled = mode.selectedSegmentIndex == 0
+        seconds.isEnabled = enabled
+        seconds.alpha = enabled ? 1 : 0.4
+        timeLabel.alpha = enabled ? 1 : 0.4
+        if !enabled { seconds.resignFirstResponder() }
+    }
+
+    @objc private func cancel() { dismiss(animated: true) }
+
+    @objc private func save() {
+        let automatic = mode.selectedSegmentIndex == 0
+        if automatic {
+            guard let value = Int(seconds.text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""),
+                  (5...3600).contains(value) else {
+                let alert = UIAlertController(title: "Thời gian không hợp lệ",
+                    message: "Nhập số nguyên từ 5 đến 3600 giây.", preferredStyle: .alert)
+                alert.addAction(UIAlertAction(title: "OK", style: .default))
+                present(alert, animated: true)
+                return
+            }
+            UserDefaults.standard.set(value, forKey: "jarbox.protection.seconds")
+        }
+        UserDefaults.standard.set(automatic, forKey: "jarbox.protection.automatic")
+        let callback = onSaved
+        dismiss(animated: true) { callback?() }
+    }
+}
+
 class AppsListViewController: UIViewController,
                       UICollectionViewDataSource,
                       UICollectionViewDelegate,
@@ -491,6 +582,11 @@ class AppsListViewController: UIViewController,
     private var springboardVisible = false
     private var gamePresentationInFlight = false
     private var pendingTabMutation: UUID?
+    private var pendingMutationNotice: String?
+    private var autoProtectionTimer: Timer?
+    private var autoProtectionGeneration: UInt64 = 0
+    private var contextMenuVisible = false
+    private var libraryTouchActive = false
     private var importBarButton: UIBarButtonItem?
     private var jarBoxMenuButton: UIBarButtonItem?
     // CPU sampling is event-based, process-wide; never attribute it to one game.
@@ -518,8 +614,7 @@ class AppsListViewController: UIViewController,
     // presentation is only the visible surface, never the lifetime owner.
     // Keep STARTING/STOPPING controllers until their native tokens retire.
     private var managedGames: [GameViewController] = []
-    private weak var lastManagedParkedGame: GameViewController?
-    private var lastManagedParkedToken: UInt64?
+
 
     private var retainedGames: [GameViewController] {
         if let parked = parkedGameController,
@@ -541,23 +636,8 @@ class AppsListViewController: UIViewController,
         retainedGames.filter { $0.ownsLiveGameSession() }
     }
 
-    // Remember the exact tab last left for the library, not the first tab
-    // in the controller array or another clone sharing the same JAR.
-    private func rememberLastParkedGame(_ game: GameViewController) {
-        lastManagedParkedGame = game
-        lastManagedParkedToken = game.parkedSessionToken
-    }
-
-    private var lastParkedGame: GameViewController? {
-        guard let game = lastManagedParkedGame, let token = lastManagedParkedToken,
-              retainedGames.contains(where: { $0 === game }),
-              game.parkedSessionToken == token else { return nil }
-        return game
-    }
-
     func managedGameDidPark(_ game: GameViewController) {
         guard managedGames.contains(where: { $0 === game }) else { return }
-        rememberLastParkedGame(game)
         updateStuckSessionButton()
         springboardCollectionView.reloadData()
     }
@@ -568,10 +648,6 @@ class AppsListViewController: UIViewController,
         guard !game.holdsNativeGameSession() else {
             updateStuckSessionButton()
             return
-        }
-        if lastManagedParkedGame === game {
-            lastManagedParkedGame = nil
-            lastManagedParkedToken = nil
         }
         managedGames.removeAll { $0 === game }
         updateStuckSessionButton()
@@ -689,6 +765,8 @@ class AppsListViewController: UIViewController,
         guard springboardVisible else { return }
         setSpringboardMotion(active, reason: active ? "scene active" : "scene inactive")
         setJarBoxSleepSampling(active)
+        libraryTouchActive = false
+        if active { armAutoProtection() } else { cancelAutoProtection() }
     }
 
     private func setSpringboardMotion(_ enabled: Bool, reason: String) {
@@ -741,8 +819,6 @@ class AppsListViewController: UIViewController,
             menu: nil)
         globalMenu.accessibilityLabel = "Menu tổng JarBox"
         jarBoxMenuButton = globalMenu
-        // A legacy overlay belongs to one already parked controller.
-        if let parked = parkedGameController { rememberLastParkedGame(parked) }
         updateStuckSessionButton()
 
         let layout = UICollectionViewFlowLayout()
@@ -812,11 +888,19 @@ class AppsListViewController: UIViewController,
                                                name: ProcessInfo.thermalStateDidChangeNotification, object: nil)
         logSpringboardEnergyState("library appeared")
         updateStuckSessionButton()
+        if let notice = pendingMutationNotice {
+            pendingMutationNotice = nil
+            presentSaveOperationError(mutationError(notice))
+        }
+        armAutoProtection()
     }
 
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
         springboardVisible = false
+        libraryTouchActive = false
+        contextMenuVisible = false
+        cancelAutoProtection()
         // Release display ownership before another controller becomes visible.
         // Keep protection armed across temporary disappearance, but not when
         // the owning library/navigation controller is actually removed.
@@ -843,6 +927,12 @@ class AppsListViewController: UIViewController,
         scanApps()
         updateStuckSessionButton()
         logSpringboardEnergyState("app became active")
+        if let notice = pendingMutationNotice, presentedViewController == nil, springboardVisible {
+            pendingMutationNotice = nil
+            presentSaveOperationError(mutationError(notice))
+        }
+        libraryTouchActive = false
+        armAutoProtection()
     }
 
     // Event-driven refresh only. Ordinary stop/resume actions do not occupy
@@ -856,11 +946,6 @@ class AppsListViewController: UIViewController,
 
     private func makeLibraryMenu() -> UIMenu {
         var actions: [UIMenuElement] = [
-            UIAction(title: "Vào Tab cuối",
-                     image: UIImage(systemName: "play.fill"),
-                     attributes: lastParkedGame == nil ? .disabled : []) { [weak self] _ in
-                self?.resumeLastParkedGame()
-            },
             UIAction(title: "Bảo vệ màn hình",
                      image: UIImage(systemName: "moon.zzz")) { [weak self] _ in
                 self?.showJarBoxSleepScreen()
@@ -868,6 +953,9 @@ class AppsListViewController: UIViewController,
             UIAction(title: "Thông tin chung",
                      image: UIImage(systemName: "info.circle")) { [weak self] _ in
                 self?.showJarBoxOverview()
+            },
+            UIAction(title: "Cài đặt", image: UIImage(systemName: "gearshape")) { [weak self] _ in
+                self?.showJarBoxSettings()
             }
         ]
         if liveGames.isEmpty, jvm_bridge_session_is_active() != 0 {
@@ -879,12 +967,25 @@ class AppsListViewController: UIViewController,
         return UIMenu(title: "JarBox", children: actions)
     }
 
-    private func resumeLastParkedGame() {
-        guard canPresentGame, let game = lastParkedGame else {
-            updateStuckSessionButton()
-            return
+    private func showJarBoxSettings() {
+        guard pendingTabMutation == nil, jarBoxSleepCover == nil else { return }
+        let picker = UIAlertController(title: "Cài đặt", message: nil, preferredStyle: .actionSheet)
+        let proxy = UIAlertAction(title: "Proxy", style: .default)
+        proxy.isEnabled = false
+        picker.addAction(proxy)
+        picker.addAction(UIAlertAction(title: "Tự động bảo vệ màn hình", style: .default) { [weak self] _ in
+            guard let self else { return }
+            let settings = JarBoxProtectionSettingsController()
+            settings.onSaved = { [weak self] in self?.armAutoProtection() }
+            let nav = JarBoxLibraryNavigationController(rootViewController: settings)
+            nav.modalPresentationStyle = .fullScreen
+            self.present(nav, animated: true)
+        })
+        picker.addAction(UIAlertAction(title: "Đóng", style: .cancel))
+        if let popover = picker.popoverPresentationController {
+            popover.barButtonItem = jarBoxMenuButton
         }
-        game.resumeParkedGame()
+        present(picker, animated: true)
     }
 
     private func showAnotherGameBlocked(_ app: AppInfo) {
@@ -952,9 +1053,77 @@ class AppsListViewController: UIViewController,
     // Global screen cover, independent from a parked game's native Treo.
     // The native JVM is already in mode 8 from Back -> library. Opening
     // this display must not reset it, change game clocks or create a JVM.
+    // A one-shot idle deadline, not an always-on polling loop. Any library
+    // input, presentation or inactive scene invalidates the old generation.
+    private func cancelAutoProtection() {
+        autoProtectionGeneration &+= 1
+        autoProtectionTimer?.invalidate()
+        autoProtectionTimer = nil
+        if jarBoxSleepCover == nil { setJarBoxSleepIdleTimer(false) }
+    }
+
+    func libraryInputChanged(activeTouch: Bool) {
+        guard springboardVisible, jarBoxSleepCover == nil else { return }
+        libraryTouchActive = activeTouch
+        if activeTouch { cancelAutoProtection() } else { armAutoProtection() }
+    }
+
+    private func armAutoProtection() {
+        cancelAutoProtection()
+        guard JarBoxProtectionPreferences.automatic, springboardVisible,
+              jarBoxSleepCover == nil, pendingTabMutation == nil,
+              !gamePresentationInFlight, !contextMenuVisible, !libraryTouchActive,
+              viewIfLoaded?.window?.windowScene?.activationState == .foregroundActive else { return }
+        // Keep iOS auto-lock from winning the configured countdown, but
+        // never hold this lease while another controller is presented.
+        if presentedViewController == nil { setJarBoxSleepIdleTimer(true) }
+        let generation = autoProtectionGeneration
+        let timer = Timer(timeInterval: TimeInterval(JarBoxProtectionPreferences.seconds),
+                          repeats: false) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self, self.autoProtectionGeneration == generation else { return }
+                self.cancelAutoProtection()
+                guard JarBoxProtectionPreferences.automatic, self.springboardVisible,
+                      !self.contextMenuVisible, !self.libraryTouchActive,
+                      !self.gamePresentationInFlight, self.pendingTabMutation == nil,
+                      self.presentedViewController == nil,
+                      self.viewIfLoaded?.window?.windowScene?.activationState == .foregroundActive,
+                      !self.springboardCollectionView.isDragging,
+                      !self.springboardCollectionView.isDecelerating else { return }
+                self.showJarBoxSleepScreen()
+            }
+        }
+        autoProtectionTimer = timer
+        RunLoop.main.add(timer, forMode: .default)
+    }
+
+    func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) { armAutoProtection() }
+    func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate: Bool) {
+        if !willDecelerate { armAutoProtection() }
+    }
+
+    func collectionView(_ collectionView: UICollectionView,
+                        willDisplayContextMenu configuration: UIContextMenuConfiguration,
+                        animator: UIContextMenuInteractionAnimating?) {
+        contextMenuVisible = true
+        cancelAutoProtection()
+    }
+
+    func collectionView(_ collectionView: UICollectionView,
+                        willEndContextMenu configuration: UIContextMenuConfiguration,
+                        animator: UIContextMenuInteractionAnimating?) {
+        let finished = { [weak self] in
+            self?.contextMenuVisible = false
+            self?.armAutoProtection()
+        }
+        if let animator { animator.addCompletion(finished) } else { finished() }
+    }
+
     private func showJarBoxSleepScreen() {
         guard springboardVisible, jarBoxSleepCover == nil, pendingTabMutation == nil,
-              presentedViewController == nil else { return }
+              presentedViewController == nil,
+              viewIfLoaded?.window?.windowScene?.activationState == .foregroundActive else { return }
+        cancelAutoProtection()
         let container = navigationController?.view ?? view!
         let cover = UIView()
         cover.backgroundColor = .black
@@ -1041,9 +1210,12 @@ class AppsListViewController: UIViewController,
         NSLog("[JarBoxSleep] closed")
         let active = view.window?.windowScene?.activationState == .foregroundActive
         setSpringboardMotion(springboardVisible && active, reason: "JarBox sleep screen closed")
+        armAutoProtection()
     }
 
     @objc private func jarBoxWillResignActive() {
+        libraryTouchActive = false
+        cancelAutoProtection()
         setJarBoxSleepSampling(false)
     }
 
@@ -1529,17 +1701,14 @@ class AppsListViewController: UIViewController,
                 else { self?.showTabInformationPicker(for: app, clones: clones) }
             }
             let resolution = UIAction(title: "Độ phân giải",
-                image: UIImage(systemName: "rectangle.expand.vertical"),
-                attributes: isRunning ? .disabled : []) { [weak self] _ in
+                image: UIImage(systemName: "rectangle.expand.vertical")) { [weak self] _ in
                 self?.showSharedResolutionOptions(for: app)
             }
             let fps = UIAction(title: "FPS", image: UIImage(systemName: "speedometer")) { [weak self] _ in
-                if clones.isEmpty { self?.showTabFPSOptions(for: app, cloneID: nil, tabName: "Tab gốc") }
-                else { self?.showTabSettingsPicker(for: app, clones: clones, is3D: false) }
+                self?.showSharedFPSOptions(for: app)
             }
             let quality3D = UIAction(title: "3D", image: UIImage(systemName: "cube")) { [weak self] _ in
-                if clones.isEmpty { self?.showTab3DOptions(for: app, cloneID: nil, tabName: "Tab gốc") }
-                else { self?.showTabSettingsPicker(for: app, clones: clones, is3D: true) }
+                self?.showShared3DOptions(for: app)
             }
             // Group-wide Treo preference remains locked during any live tab.
             let compatible = JarBoxGameStorage.treoCompatibleOnly(for: app.path)
@@ -1574,7 +1743,7 @@ class AppsListViewController: UIViewController,
     private func showGameInformation(_ app: AppInfo, cloneID: UUID? = nil,
                                      tabName: String = "Tab gốc") {
         let resolution = Self.resolution(for: app)
-        let fps = Self.fpsLimit(for: app, cloneID: cloneID)
+        let fps = Self.fpsLimit(for: app)
         let fileBytes = (try? FileManager.default.attributesOfItem(atPath: app.path)[.size] as? NSNumber)?.int64Value
         let sizeText = fileBytes.map {
             String(format: "%.2f MB", Double($0) / 1_048_576)
@@ -1707,18 +1876,14 @@ class AppsListViewController: UIViewController,
         present(alert, animated: true)
     }
 
-    static func is3DSupersampling(for app: AppInfo, cloneID: UUID? = nil) -> Bool {
-        UserDefaults.standard.object(forKey: "ss3d_" + JarBoxGameStorage.settingsId(
-            jarPath: app.path, cloneID: cloneID)) as? Bool ?? false
+    static func is3DSupersampling(for app: AppInfo) -> Bool {
+        JarBoxGameStorage.shared3D(jarPath: app.path)
     }
 
-    static func set3DSupersampling(_ enabled: Bool, for app: AppInfo,
-                                   cloneID: UUID? = nil) {
-        UserDefaults.standard.set(enabled, forKey: "ss3d_" +
-            JarBoxGameStorage.settingsId(jarPath: app.path, cloneID: cloneID))
+    static func set3DSupersampling(_ enabled: Bool, for app: AppInfo) {
+        JarBoxGameStorage.setShared3D(enabled, jarPath: app.path)
         JarBoxGameStorage.appendSettingEvent(jarPath: app.path,
-            documents: documentsDirectory, event: "SUPERSAMPLING",
-            value: enabled ? "1" : "0", cloneID: cloneID)
+            documents: documentsDirectory, event: "SUPERSAMPLING", value: enabled ? "1" : "0")
     }
 
     private static let resolutionOptions: [(label: String, w: Int, h: Int)] = [
@@ -1760,18 +1925,14 @@ class AppsListViewController: UIViewController,
         ("60 FPS",   60),
     ]
 
-    static func fpsLimit(for app: AppInfo, cloneID: UUID? = nil) -> Int {
-        UserDefaults.standard.object(forKey: "fpsLimit_" +
-            JarBoxGameStorage.settingsId(jarPath: app.path, cloneID: cloneID)) as? Int ?? 0
+    static func fpsLimit(for app: AppInfo) -> Int {
+        JarBoxGameStorage.sharedFPS(jarPath: app.path)
     }
 
-    private static func setFpsLimit(_ fps: Int, for app: AppInfo,
-                                    cloneID: UUID? = nil) {
-        UserDefaults.standard.set(fps, forKey: "fpsLimit_" +
-            JarBoxGameStorage.settingsId(jarPath: app.path, cloneID: cloneID))
+    private static func setFpsLimit(_ fps: Int, for app: AppInfo) {
+        JarBoxGameStorage.setSharedFPS(fps, jarPath: app.path)
         JarBoxGameStorage.appendSettingEvent(jarPath: app.path,
-            documents: documentsDirectory, event: "FPS", value: String(fps),
-            cloneID: cloneID)
+            documents: documentsDirectory, event: "FPS", value: String(fps))
     }
 
     private static var documentsDirectory: String {
@@ -1803,16 +1964,18 @@ class AppsListViewController: UIViewController,
 
     private func confirmTabMutation(app: AppInfo, tabs: [(id: UUID?, title: String)],
                                     title: String, message: String, action: String,
+                                    restartAfter: Bool = false,
                                     operation: @escaping ([UInt64]) throws -> Void) {
         guard pendingTabMutation == nil, !tabs.isEmpty else { return }
         let ids = tabs.map { $0.id }
         let owners = mutationOwners(path: app.path, ids: ids)
-        let warning = owners.isEmpty ? "" :
-            "\n\nCó tab đang chạy hoặc đang dừng. Bạn muốn dừng các tab được chọn rồi " +
-            action.lowercased() + " không? Các tab khác vẫn chạy."
+        let warning = owners.isEmpty ? "" : (restartAfter
+            ? "\n\nBạn muốn dừng, áp dụng cấu hình rồi mở lại các tab đang chạy của game này không? Game khác vẫn chạy."
+            : "\n\nCó tab đang chạy hoặc đang dừng. Bạn muốn dừng các tab được chọn rồi " +
+                action.lowercased() + " không? Các tab khác vẫn chạy.")
         let alert = UIAlertController(title: title, message: message + warning, preferredStyle: .alert)
         alert.addAction(UIAlertAction(title: "Hủy", style: .cancel))
-        alert.addAction(UIAlertAction(title: owners.isEmpty ? action : "Dừng và " + action.lowercased(),
+        alert.addAction(UIAlertAction(title: owners.isEmpty || restartAfter ? action : "Dừng và " + action.lowercased(),
                                      style: .destructive) { [weak self] _ in
             guard let self, self.pendingTabMutation == nil else { return }
             do {
@@ -1826,8 +1989,10 @@ class AppsListViewController: UIViewController,
                 } }) else { throw self.mutationError("Phiên game đã thay đổi. Hãy xác nhận lại.") }
                 try JarBoxGameStorage.requireMutationSafety(
                     unrelatedTokens: self.retainedGames.compactMap { $0.nativeSessionToken })
+                let restartIDs = restartAfter ? now.filter { $0.game.parkedSessionToken == $0.token }.map { $0.game.cloneID } : []
                 let ticket = UUID()
                 self.pendingTabMutation = ticket
+                self.cancelAutoProtection()
                 self.navigationItem.prompt = now.isEmpty ? "Đang xử lý…" : "Đang dừng tab…"
                 self.springboardCollectionView.isUserInteractionEnabled = false
                 self.importBarButton?.isEnabled = false
@@ -1837,11 +2002,11 @@ class AppsListViewController: UIViewController,
                     guard owner.game.requestStopForTabMutation(expectedToken: owner.token) ||
                           jvm_bridge_session_is_active_for_token(owner.token) == 0 else {
                         self.finishTabMutation(ticket)
-                        throw self.mutationError("Không thể dừng phiên đã chọn. Chưa xóa dữ liệu.")
+                        throw self.mutationError("Không thể dừng phiên đã chọn. Chưa áp dụng thay đổi.")
                     }
                 }
                 self.waitForTabMutation(ticket, app: app, ids: ids,
-                    tokens: now.map { $0.token }, operation: operation)
+                    tokens: now.map { $0.token }, restartIDs: restartIDs, operation: operation)
             } catch { self.presentSaveOperationError(error) }
         })
         present(alert, animated: true)
@@ -1854,10 +2019,11 @@ class AppsListViewController: UIViewController,
         springboardCollectionView.isUserInteractionEnabled = true
         importBarButton?.isEnabled = true
         jarBoxMenuButton?.isEnabled = true
+        armAutoProtection()
     }
 
     private func waitForTabMutation(_ ticket: UUID, app: AppInfo, ids: [UUID?],
-                                    tokens: [UInt64], operation: @escaping ([UInt64]) throws -> Void) {
+                                    tokens: [UInt64], restartIDs: [UUID?] = [], operation: @escaping ([UInt64]) throws -> Void) {
         Task { @MainActor [weak self] in
             guard let self else { return }
             let deadline = ProcessInfo.processInfo.systemUptime + 20
@@ -1866,7 +2032,7 @@ class AppsListViewController: UIViewController,
                 while true {
                     guard self.pendingTabMutation == ticket else { return }
                     guard ProcessInfo.processInfo.systemUptime < deadline else {
-                        throw self.mutationError("Chưa dừng được phiên trong 20 giây. Không xóa dữ liệu.")
+                        throw self.mutationError("Chưa dừng được phiên trong 20 giây. Chưa áp dụng thay đổi.")
                     }
                     let retired = tokens.allSatisfy { jvm_bridge_session_is_active_for_token($0) == 0 }
                     if retired && self.presentedViewController == nil { break }
@@ -1875,24 +2041,29 @@ class AppsListViewController: UIViewController,
                 guard self.viewIfLoaded?.window?.windowScene?.activationState == .foregroundActive,
                       self.pendingTabMutation == ticket, !self.gamePresentationInFlight,
                       self.jarBoxSleepCover == nil else {
-                    throw self.mutationError("Thư viện không còn ở trạng thái an toàn. Chưa xóa dữ liệu.")
+                    throw self.mutationError("Thư viện không còn ở trạng thái an toàn. Chưa áp dụng thay đổi.")
                 }
                 let current = try self.registeredTabs(for: app)
                 guard ids.allSatisfy({ id in current.contains { $0.id == id } }),
                       self.mutationOwners(path: app.path, ids: ids).isEmpty else {
-                    throw self.mutationError("Tab hoặc phiên đã thay đổi. Chưa xóa dữ liệu.")
+                    throw self.mutationError("Tab hoặc phiên đã thay đổi. Chưa áp dụng thay đổi.")
                 }
                 // No suspension between the ownership proof and disk mutation.
                 let unrelated = self.retainedGames.compactMap { $0.nativeSessionToken }
                 try JarBoxGameStorage.requireMutationSafety(unrelatedTokens: unrelated)
                 try operation(unrelated)
                 self.scanApps()
+                if !restartIDs.isEmpty {
+                    self.navigationItem.prompt = "Đang khởi động lại…"
+                    try await self.restartConfiguredTabs(ticket, app: app, ids: restartIDs)
+                }
             } catch {
                 self.scanApps()
                 if self.viewIfLoaded?.window?.windowScene?.activationState == .foregroundActive,
                    self.presentedViewController == nil {
                     self.presentSaveOperationError(error)
                 } else {
+                    self.pendingMutationNotice = error.localizedDescription
                     NSLog("[JarBoxStorage] mutation cancelled: %@", error.localizedDescription)
                 }
             }
@@ -1988,108 +2159,123 @@ class AppsListViewController: UIViewController,
         present(picker, animated: true)
     }
 
-    private func showTabSettingsPicker(for app: AppInfo,
-                                       clones: [JarBoxGameStorage.CloneRecord], is3D: Bool) {
-        let picker = UIAlertController(title: (is3D ? "3D" : "FPS") + " · " + app.name,
-                                       message: "Chọn tab cần cài đặt.",
-                                       preferredStyle: .actionSheet)
-        let tabs: [(id: UUID?, title: String)] =
-            [(nil, "Tab gốc")] + clones.map { (Optional($0.id), $0.label) }
-        for tab in tabs {
-            picker.addAction(UIAlertAction(title: tabStatusTitle(tab.title, path: app.path, cloneID: tab.id),
-                                           style: .default) { [weak self] _ in
-                if is3D {
-                    self?.showTab3DOptions(for: app, cloneID: tab.id, tabName: tab.title)
-                } else {
-                    self?.showTabFPSOptions(for: app, cloneID: tab.id, tabName: tab.title)
-                }
-            })
-        }
-        picker.addAction(UIAlertAction(title: "Hủy", style: .cancel))
-        if let popover = picker.popoverPresentationController {
-            popover.sourceView = springboardCollectionView
-            popover.sourceRect = CGRect(x: springboardCollectionView.bounds.midX,
-                                        y: springboardCollectionView.bounds.midY,
-                                        width: 1, height: 1)
-        }
-        present(picker, animated: true)
-    }
-
-    private func showTab3DOptions(for app: AppInfo, cloneID: UUID?, tabName: String) {
-        let enhanced3D = Self.is3DSupersampling(for: app, cloneID: cloneID)
-        let picker = UIAlertController(title: "3D · " + tabName,
-                                       message: "Cài đặt áp dụng khi tab khởi động lần tiếp theo.",
-                                       preferredStyle: .actionSheet)
-        for enabled in [false, true] {
-            let title = (enabled ? "Nâng chất lượng 3D" : "Bình thường") +
-                (enabled == enhanced3D ? " ✓" : "")
-            picker.addAction(UIAlertAction(title: title, style: .default) { _ in
-                Self.set3DSupersampling(enabled, for: app, cloneID: cloneID)
-            })
-        }
-        picker.addAction(UIAlertAction(title: "Hủy", style: .cancel))
-        if let popover = picker.popoverPresentationController {
-            popover.sourceView = springboardCollectionView
-            popover.sourceRect = CGRect(x: springboardCollectionView.bounds.midX,
-                                        y: springboardCollectionView.bounds.midY,
-                                        width: 1, height: 1)
-        }
-        present(picker, animated: true)
+    private func showShared3DOptions(for app: AppInfo) {
+        let current = Self.is3DSupersampling(for: app)
+        showSharedOptions(app: app, title: "3D", options: [
+            ("Bình thường", !current, { Self.set3DSupersampling(false, for: app) }),
+            ("Nâng chất lượng 3D", current, { Self.set3DSupersampling(true, for: app) })
+        ])
     }
 
     private func showSharedResolutionOptions(for app: AppInfo) {
-        guard !hasNativeGame(for: app.path) else { return }
         let current = Self.resolution(for: app)
-        let picker = UIAlertController(title: "Độ phân giải · " + app.name,
-                                       message: "Áp dụng cho tất cả tab khi mở game.",
+        showSharedOptions(app: app, title: "Độ phân giải", options: Self.resolutionOptions.map { option in
+            (option.label, option.w == current.w && option.h == current.h,
+             { Self.setResolution(w: option.w, h: option.h, for: app) })
+        })
+    }
+
+    private func showSharedFPSOptions(for app: AppInfo) {
+        let current = Self.fpsLimit(for: app)
+        showSharedOptions(app: app, title: "FPS", options: Self.fpsLimitOptions.map { option in
+            (option.label, option.value == current, { Self.setFpsLimit(option.value, for: app) })
+        })
+    }
+
+    private func showSharedOptions(app: AppInfo, title: String,
+                                   options: [(label: String, selected: Bool, apply: () -> Void)]) {
+        guard pendingTabMutation == nil else { return }
+        let picker = UIAlertController(title: title + " · " + app.name,
+                                       message: "Áp dụng chung cho tất cả tab.",
                                        preferredStyle: .actionSheet)
-        for option in Self.resolutionOptions {
-            let label = option.label + (option.w == current.w && option.h == current.h ? " ✓" : "")
-            picker.addAction(UIAlertAction(title: label, style: .default) { [weak self] _ in
-                // Never change live Canvas dimensions or restart a tab implicitly.
-                guard let self, !self.hasNativeGame(for: app.path) else { return }
-                Self.setResolution(w: option.w, h: option.h, for: app)
+        for option in options {
+            picker.addAction(UIAlertAction(title: option.label + (option.selected ? " ✓" : ""),
+                                           style: .default) { [weak self] _ in
+                guard !option.selected else { return }
+                self?.changeSharedGameSetting(app, title: title, apply: option.apply)
             })
         }
         picker.addAction(UIAlertAction(title: "Hủy", style: .cancel))
         if let popover = picker.popoverPresentationController {
             popover.sourceView = springboardCollectionView
             popover.sourceRect = CGRect(x: springboardCollectionView.bounds.midX,
-                                        y: springboardCollectionView.bounds.midY,
-                                        width: 1, height: 1)
+                                        y: springboardCollectionView.bounds.midY, width: 1, height: 1)
         }
         present(picker, animated: true)
     }
 
-    private func showTabFPSOptions(for app: AppInfo, cloneID: UUID?,
-                                   tabName: String) {
-        let picker = UIAlertController(title: "FPS · " + tabName,
-                                       message: "Áp dụng khi tab khởi động lần tiếp theo.",
-                                       preferredStyle: .actionSheet)
-        let current = Self.fpsLimit(for: app, cloneID: cloneID)
-        for option in Self.fpsLimitOptions {
-            let title = option.label + (option.value == current ? " ✓" : "")
-            picker.addAction(UIAlertAction(title: title, style: .default) { _ in
-                Self.setFpsLimit(option.value, for: app, cloneID: cloneID)
-            })
-        }
-        picker.addAction(UIAlertAction(title: "Hủy", style: .cancel))
-        if let popover = picker.popoverPresentationController {
-            popover.sourceView = springboardCollectionView
-            popover.sourceRect = CGRect(x: springboardCollectionView.bounds.midX,
-                                        y: springboardCollectionView.bounds.midY,
-                                        width: 1, height: 1)
-        }
-        present(picker, animated: true)
+    private func changeSharedGameSetting(_ app: AppInfo, title: String, apply: @escaping () -> Void) {
+        guard pendingTabMutation == nil, !gamePresentationInFlight else { return }
+        do {
+            let tabs = try registeredTabs(for: app)
+            let owners = mutationOwners(path: app.path, ids: tabs.map { $0.id })
+            try JarBoxGameStorage.requireMutationSafety(unrelatedTokens: retainedGames.compactMap { $0.nativeSessionToken })
+            if owners.isEmpty {
+                apply()
+                scanApps()
+                return
+            }
+            confirmTabMutation(app: app, tabs: tabs, title: title,
+                message: "Cần khởi động lại các tab đang chạy để áp dụng thay đổi. Game sẽ mở lại từ đầu, không tự đăng nhập.",
+                action: "Khởi động lại", restartAfter: true) { _ in apply() }
+        } catch { presentSaveOperationError(error) }
     }
+
+    // Reuse native admission and the ordinary Back/Treo transition.
+    private func restartConfiguredTabs(_ ticket: UUID, app: AppInfo, ids: [UUID?]) async throws {
+        let before = try registeredTabs(for: app)
+        let selected = JarBoxGameStorage.lastTab(jarPath: app.path, registered: before.compactMap { $0.id })
+        // Automatic parking is not a user navigation choice.
+        defer { JarBoxGameStorage.rememberLastTab(jarPath: app.path, cloneID: selected) }
+        for id in ids {
+            guard pendingTabMutation == ticket, springboardVisible,
+                  let scene = view.window?.windowScene, scene.activationState == .foregroundActive,
+                  presentedViewController == nil else {
+                throw mutationError("Đã lưu cấu hình; việc mở lại tab bị gián đoạn.")
+            }
+            let tabs = try registeredTabs(for: app)
+            guard let target = tabs.first(where: { $0.id == id }) else {
+                throw mutationError("Tab cần mở lại không còn tồn tại.")
+            }
+            let previous = Set(managedGames.map { ObjectIdentifier($0) })
+            // Only this synchronous launch is allowed through the mutation gate.
+            pendingTabMutation = nil
+            launchGameTab(app, cloneID: id,
+                          tabTitle: id == nil ? app.name : app.name + " · " + target.title)
+            pendingTabMutation = ticket
+            guard let game = managedGames.first(where: {
+                !previous.contains(ObjectIdentifier($0)) && $0.jarPath == app.path && $0.cloneID == id
+            }) else {
+                throw mutationError("Đã lưu cấu hình nhưng không thể mở lại " + target.title + ".")
+            }
+            let deadline = ProcessInfo.processInfo.systemUptime + 35
+            while true {
+                // The root and modal view may briefly have no window during
+                // presentation. Track the same scene instead of treating that
+                // transition as a trip into the background.
+                guard pendingTabMutation == ticket, scene.activationState == .foregroundActive else {
+                    throw mutationError("Đã lưu cấu hình; việc mở lại tab bị gián đoạn.")
+                }
+                if game.parkedSessionToken != nil, springboardVisible,
+                   presentedViewController == nil, !gamePresentationInFlight { break }
+                guard managedGames.contains(where: { $0 === game }),
+                      ProcessInfo.processInfo.systemUptime < deadline else {
+                    throw mutationError("Đã lưu cấu hình nhưng chưa mở lại hết tab. Kiểm tra game và mở các tab còn lại.")
+                }
+                if !gamePresentationInFlight { game.parkAfterSettingsRestart() }
+                try await Task.sleep(nanoseconds: 150_000_000)
+            }
+        }
+    }
+
 
     private func makeCloneMenu(for app: AppInfo, cloneCount: Int) -> UIMenu {
         let canAdd = JarBoxGameStorage.allowedAddCount(cloneCount: cloneCount) > 0
         let canRemove = cloneCount > 0
-        let add = UIAction(title: "Thêm 1", attributes: canAdd ? [] : .disabled) { [weak self] _ in
+        let add = UIAction(title: "Thêm", attributes: canAdd ? [] : .disabled) { [weak self] _ in
             self?.addDefaultTabs(for: app, count: 1)
         }
-        let remove = UIAction(title: "Xóa 1", attributes: canRemove ? .destructive : [.destructive, .disabled]) { [weak self] _ in
+        let remove = UIAction(title: "Xóa", attributes: canRemove ? .destructive : [.destructive, .disabled]) { [weak self] _ in
             self?.presentTabDeletion(for: app)
         }
         let addMany = UIAction(title: "Thêm theo số lượng", attributes: canAdd ? [] : .disabled) { [weak self] _ in
@@ -2169,7 +2355,7 @@ class AppsListViewController: UIViewController,
                 confirmDeleteTabs(app, clones: clones)
                 return
             }
-            let picker = UIAlertController(title: "Xóa 1 · " + app.name,
+            let picker = UIAlertController(title: "Xóa · " + app.name,
                 message: "Chọn bản nhân cần xóa cùng dữ liệu và cài đặt.",
                 preferredStyle: .actionSheet)
             for clone in clones {
@@ -2244,9 +2430,9 @@ class AppsListViewController: UIViewController,
         // The startup worker validates the exact save root before native init.
         // Do not repeat that filesystem work on the UI thread.
 
-        let render3dScale = Self.is3DSupersampling(for: app, cloneID: cloneID) ? 3 : 1
+        let render3dScale = Self.is3DSupersampling(for: app) ? 3 : 1
         let res = Self.resolution(for: app)
-        let fps = Self.fpsLimit(for: app, cloneID: cloneID)
+        let fps = Self.fpsLimit(for: app)
         let gameVC = GameViewController(jarPath: app.path, appName: tabTitle,
             appIcon: app.icon, canvasWidth: res.w, canvasHeight: res.h,
             render3dScale: render3dScale, fpsLimit: fps, cloneID: cloneID)

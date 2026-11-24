@@ -1,4 +1,4 @@
-"""Run production library navigation and last-tab methods with Swift host doubles."""
+"""Run production library ownership and main-menu methods with Swift host doubles."""
 from pathlib import Path
 import shutil
 import subprocess
@@ -60,38 +60,33 @@ class Library {
     var activeCount = 0
     var canPresentGame = true
     var managedGames: [GameViewController] = []
-    weak var lastManagedParkedGame: GameViewController?
-    var lastManagedParkedToken: UInt64?
     weak var parkedGameController: GameViewController?
     var importBarButton: UIBarButtonItem? = UIBarButtonItem("+")
     var jarBoxMenuButton: UIBarButtonItem? = UIBarButtonItem("Menu")
     func jvm_bridge_session_is_active() -> Int32 { activeCount == 0 ? 0 : 1 }
     func showJarBoxSleepScreen() {}
     func showJarBoxOverview() {}
+    func showJarBoxSettings() {}
     func openStuckSessionRecovery() {}
 '''
 MAIN = r'''
     func refresh() { updateStuckSessionButton() }
-    func setLegacy(_ game: GameViewController) {
+    func setLegacy(_ game: GameViewController?) {
         parkedGameController = game
-        rememberLastParkedGame(game)
         refresh()
     }
     func menuAction(_ title: String) -> UIAction? {
         jarBoxMenuButton?.menu?.children.compactMap { $0 as? UIAction }
             .first { $0.title == title }
     }
-    func expect(_ resumable: Bool, _ recovery: Bool) {
+    func expect(_ recovery: Bool) {
         precondition(navigationItem.title == "Thư viện")
         precondition(navigationItem.leftBarButtonItem == nil)
         precondition(navigationItem.rightBarButtonItems?.map { $0.title } == ["+", "Menu"])
-        precondition(menuAction("Vào Tab cuối")?.attributes.contains(.disabled) == !resumable)
+        precondition(menuAction("Vào Tab cuối") == nil)
+        precondition(menuAction("Cài đặt") != nil)
         precondition((menuAction("Xử lý phiên kẹt") != nil) == recovery)
         precondition(menuAction("Bảo vệ màn hình") != nil)
-    }
-    func resume() {
-        let action = menuAction("Vào Tab cuối")!
-        action.handler(action)
     }
 }
 let lib = Library()
@@ -101,82 +96,49 @@ for _ in 0..<1000 {
     lib.managedGames = [a, b]
     lib.activeCount = 2
     lib.managedGameDidPark(a)
-    lib.expect(true, false)
-    lib.resume()
-    precondition(a.resumes == 1 && b.resumes == 0)
+    lib.expect(false)
     lib.managedGameDidPark(b)
-    lib.expect(true, false)
-    lib.resume()
-    precondition(a.resumes == 1 && b.resumes == 1)
-    // A stale menu cannot target the same controller with a new token, or
-    // a controller that is live but no longer parked.
-    let oldAction = lib.menuAction("Vào Tab cuối")!
-    b.token = 3
-    lib.refresh()
-    lib.expect(false, false)
-    oldAction.handler(oldAction)
-    precondition(b.resumes == 1)
-    lib.managedGameDidPark(b)
-    lib.expect(true, false)
-    b.parked = false
-    lib.refresh()
-    lib.expect(false, false)
-    lib.resume()
-    precondition(b.resumes == 1)
-    b.parked = true
-    lib.refresh()
-    lib.expect(true, false)
-    lib.canPresentGame = false
-    lib.resume()
-    precondition(b.resumes == 1)
-    lib.canPresentGame = true
-    let stale = lib.menuAction("Vào Tab cuối")!
+    lib.expect(false)
     b.live = false
-    stale.handler(stale)
-    precondition(a.resumes == 1 && b.resumes == 1)
     lib.managedGameDidEnd(b)
-    lib.expect(false, false)
+    precondition(lib.managedGames.contains { $0 === b })
+    lib.expect(false)
     b.native = false
     lib.activeCount = 1
     lib.managedGameDidEnd(b)
-    lib.expect(false, false)
+    precondition(!lib.managedGames.contains { $0 === b })
+    lib.expect(false)
     a.live = false
     lib.managedGameDidEnd(a)
-    lib.expect(false, true)
+    precondition(lib.managedGames.contains { $0 === a })
+    lib.expect(true)
     a.native = false
     lib.activeCount = 0
     lib.managedGameDidEnd(a)
-    lib.expect(false, false)
+    precondition(lib.managedGames.isEmpty)
+    lib.expect(false)
     let legacy = GameViewController()
     lib.activeCount = 1
     lib.setLegacy(legacy)
-    lib.expect(true, false)
-    lib.resume()
-    precondition(legacy.resumes == 1)
-    legacy.token = 4
+    lib.expect(false)
+    legacy.live = false
     lib.refresh()
-    lib.expect(false, false)
-    lib.resume()
-    precondition(legacy.resumes == 1)
-    lib.parkedGameController = nil
+    lib.expect(true)
     lib.activeCount = 0
-    lib.refresh()
-    lib.expect(false, false)
+    lib.setLegacy(nil)
+    lib.expect(false)
 }
-print("Library last-tab navigation: 1000 cycles OK")
+print("Library ownership and menu: 1000 cycles OK")
 '''
 
 def harness(source):
     starts = (
         "    private var retainedGames:",
         "    private var liveGames:",
-        "    private func rememberLastParkedGame(",
-        "    private var lastParkedGame:",
         "    func managedGameDidPark(",
         "    func managedGameDidEnd(",
         "    private func updateStuckSessionButton()",
         "    private func makeLibraryMenu()",
-        "    private func resumeLastParkedGame()",
     )
     methods = []
     for signature in starts:
@@ -192,10 +154,11 @@ class LibrarySessionNavigationTest(unittest.TestCase):
         self.assertIn("guard libraryIsPresented, parkedTreoActive, ownsLiveGameSession()", game)
         library = LIBRARY.read_text(encoding="utf-8")
         self.assertIn("game.parkedSessionToken == token", library)
-        self.assertIn("if let parked = parkedGameController { rememberLastParkedGame(parked) }", library)
+        self.assertIn("JarBoxGameStorage.lastTab(jarPath: app.path,", library)
+        self.assertNotIn('UIAction(title: "Vào Tab cuối"', library)
         self.assertIn("guard liveGames.isEmpty, jvm_bridge_session_is_active() != 0", library)
 
-    def test_last_parked_owner_and_menu_lifecycle(self):
+    def test_retained_owner_and_menu_lifecycle(self):
         swift = shutil.which("swiftc")
         if not swift:
             self.skipTest("host Swift compiler unavailable")
@@ -206,7 +169,7 @@ class LibrarySessionNavigationTest(unittest.TestCase):
             subprocess.run([swift, str(source), "-o", str(exe)], check=True, timeout=60)
             result = subprocess.run([str(exe)], capture_output=True, text=True, timeout=10)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            self.assertIn("Library last-tab navigation: 1000 cycles OK", result.stdout)
+            self.assertIn("Library ownership and menu: 1000 cycles OK", result.stdout)
 
 
 if __name__ == "__main__":
