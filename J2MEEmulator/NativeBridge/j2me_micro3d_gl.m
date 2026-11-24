@@ -15,6 +15,8 @@
 #include "j2me_render.h"
 #include "jvm.h"
 #include "jvm_util.h"
+#include "garbage.h"
+#include <pthread.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -22,13 +24,56 @@
 // Offscreen GL context (replaces EGL PBuffer)
 // ============================================================
 
-static EAGLContext *g_mc3d_context = nil;
-static EAGLContext *g_mc3d_prev_context = nil; // saved context during bind
-static GLuint g_mc3d_fbo = 0;
-static GLuint g_mc3d_colorRB = 0;
-static GLuint g_mc3d_depthRB = 0;
-static int g_mc3d_width = 0;
-static int g_mc3d_height = 0;
+// Java Render is synchronized within its own VM. The old C globals
+// bypassed that isolation. Each native heap generation gets its own
+// independent EAGL context, FBO and bind/restore state.
+@interface JarBoxMC3DWorkspace : NSObject {
+@public
+    EAGLContext *context;
+    EAGLContext *previousContext;
+    GLuint fbo, colorRB, depthRB;
+    int width, height;
+}
+@end
+@implementation JarBoxMC3DWorkspace
+@end
+
+static pthread_mutex_t g_mc3d_registry_lock = PTHREAD_MUTEX_INITIALIZER;
+static NSMutableDictionary<NSNumber *, JarBoxMC3DWorkspace *> *g_mc3d_workspaces;
+
+// Only a live Java worker can acquire/create a workspace. Native bridge
+// cleanup runs after that generation's workers have drained.
+static JarBoxMC3DWorkspace *mc3d_workspace(Runtime *runtime, int create) {
+    const uint64_t key = jarbox_native_heap_key_for_runtime(runtime);
+    if (!key) return nil;
+    @autoreleasepool {
+        pthread_mutex_lock(&g_mc3d_registry_lock);
+        if (create && !g_mc3d_workspaces)
+            g_mc3d_workspaces = [NSMutableDictionary new];
+        JarBoxMC3DWorkspace *owner = g_mc3d_workspaces[@(key)];
+        if (!owner && create) {
+            owner = [JarBoxMC3DWorkspace new];
+            g_mc3d_workspaces[@(key)] = owner;
+        }
+        pthread_mutex_unlock(&g_mc3d_registry_lock);
+        return owner;
+    }
+}
+
+static void mc3d_destroy_workspace(JarBoxMC3DWorkspace *owner) {
+    if (!owner || !owner->context) return;
+    EAGLContext *prior = [EAGLContext currentContext];
+    if ([EAGLContext setCurrentContext:owner->context]) {
+        if (owner->fbo) glDeleteFramebuffers(1, &owner->fbo);
+        if (owner->colorRB) glDeleteRenderbuffers(1, &owner->colorRB);
+        if (owner->depthRB) glDeleteRenderbuffers(1, &owner->depthRB);
+        [EAGLContext setCurrentContext:prior == owner->context ? nil : prior];
+    }
+    owner->fbo = owner->colorRB = owner->depthRB = 0;
+    owner->width = owner->height = 0;
+    owner->previousContext = nil;
+    owner->context = nil;
+}
 
 // ============================================================
 // Helper macros
@@ -62,12 +107,14 @@ static inline const char *jstr_to_cstr(JniEnv *env, Instance *jstr, Runtime *rt,
 // ============================================================
 
 static s32 n_mc3dInit(Runtime *runtime, JClass *clazz) {
+    JarBoxMC3DWorkspace *owner = mc3d_workspace(runtime, 1);
+    if (!owner) return RUNTIME_STATUS_NORMAL;
     s32 w = ENV->localvar_getInt(runtime->localvar, 0);
     s32 h = ENV->localvar_getInt(runtime->localvar, 1);
 
-    if (g_mc3d_context == nil) {
-        g_mc3d_context = [[EAGLContext alloc] initWithAPI:kEAGLRenderingAPIOpenGLES2];
-        if (!g_mc3d_context) {
+    if (owner->context == nil) {
+        owner->context = [[EAGLContext alloc] initWithAPI:kEAGLRenderingAPIOpenGLES2];
+        if (!owner->context) {
             printf("[micro3d] ERROR: Failed to create OpenGL ES 2.0 context\n");
             return RUNTIME_STATUS_NORMAL;
         }
@@ -75,36 +122,37 @@ static s32 n_mc3dInit(Runtime *runtime, JClass *clazz) {
     }
 
     EAGLContext *prev = [EAGLContext currentContext];
-    [EAGLContext setCurrentContext:g_mc3d_context];
+    if (![EAGLContext setCurrentContext:owner->context])
+        return RUNTIME_STATUS_NORMAL;
 
     // Destroy old FBO if resizing
-    if (g_mc3d_fbo) {
-        glDeleteFramebuffers(1, &g_mc3d_fbo);
-        glDeleteRenderbuffers(1, &g_mc3d_colorRB);
-        glDeleteRenderbuffers(1, &g_mc3d_depthRB);
+    if (owner->fbo) {
+        glDeleteFramebuffers(1, &owner->fbo);
+        glDeleteRenderbuffers(1, &owner->colorRB);
+        glDeleteRenderbuffers(1, &owner->depthRB);
     }
 
     // Create offscreen FBO
-    glGenFramebuffers(1, &g_mc3d_fbo);
-    glBindFramebuffer(GL_FRAMEBUFFER, g_mc3d_fbo);
+    glGenFramebuffers(1, &owner->fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, owner->fbo);
 
-    glGenRenderbuffers(1, &g_mc3d_colorRB);
-    glBindRenderbuffer(GL_RENDERBUFFER, g_mc3d_colorRB);
+    glGenRenderbuffers(1, &owner->colorRB);
+    glBindRenderbuffer(GL_RENDERBUFFER, owner->colorRB);
     glRenderbufferStorage(GL_RENDERBUFFER, GL_RGBA8_OES, w, h);
-    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, g_mc3d_colorRB);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, owner->colorRB);
 
-    glGenRenderbuffers(1, &g_mc3d_depthRB);
-    glBindRenderbuffer(GL_RENDERBUFFER, g_mc3d_depthRB);
+    glGenRenderbuffers(1, &owner->depthRB);
+    glBindRenderbuffer(GL_RENDERBUFFER, owner->depthRB);
     glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24_OES, w, h);
-    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, g_mc3d_depthRB);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, owner->depthRB);
 
     GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
     if (status != GL_FRAMEBUFFER_COMPLETE) {
         printf("[micro3d] ERROR: FBO incomplete, status=0x%X\n", status);
     }
 
-    g_mc3d_width = w;
-    g_mc3d_height = h;
+    owner->width = w;
+    owner->height = h;
     printf("[micro3d] Initialized FBO %dx%d\n", w, h);
 
     [EAGLContext setCurrentContext:prev];
@@ -112,32 +160,28 @@ static s32 n_mc3dInit(Runtime *runtime, JClass *clazz) {
 }
 
 static s32 n_mc3dBind(Runtime *runtime, JClass *clazz) {
-    g_mc3d_prev_context = [EAGLContext currentContext];
-    [EAGLContext setCurrentContext:g_mc3d_context];
-    glBindFramebuffer(GL_FRAMEBUFFER, g_mc3d_fbo);
+    JarBoxMC3DWorkspace *owner = mc3d_workspace(runtime, 0);
+    if (!owner || !owner->context) return RUNTIME_STATUS_NORMAL;
+    EAGLContext *prior = [EAGLContext currentContext];
+    if (![EAGLContext setCurrentContext:owner->context])
+        return RUNTIME_STATUS_NORMAL;
+    owner->previousContext = prior;
+    glBindFramebuffer(GL_FRAMEBUFFER, owner->fbo);
     return RUNTIME_STATUS_NORMAL;
 }
 
 static s32 n_mc3dRelease(Runtime *runtime, JClass *clazz) {
+    JarBoxMC3DWorkspace *owner = mc3d_workspace(runtime, 0);
+    if (!owner || !owner->context ||
+        [EAGLContext currentContext] != owner->context) return RUNTIME_STATUS_NORMAL;
     glFlush();
-    [EAGLContext setCurrentContext:g_mc3d_prev_context];
-    g_mc3d_prev_context = nil;
+    [EAGLContext setCurrentContext:owner->previousContext];
+    owner->previousContext = nil;
     return RUNTIME_STATUS_NORMAL;
 }
 
 static s32 n_mc3dDestroy(Runtime *runtime, JClass *clazz) {
-    if (g_mc3d_context) {
-        [EAGLContext setCurrentContext:g_mc3d_context];
-        if (g_mc3d_fbo) {
-            glDeleteFramebuffers(1, &g_mc3d_fbo);
-            glDeleteRenderbuffers(1, &g_mc3d_colorRB);
-            glDeleteRenderbuffers(1, &g_mc3d_depthRB);
-            g_mc3d_fbo = 0;
-        }
-        [EAGLContext setCurrentContext:nil];
-        g_mc3d_context = nil;
-        printf("[micro3d] GL context destroyed\n");
-    }
+    mc3d_destroy_workspace(mc3d_workspace(runtime, 0));
     return RUNTIME_STATUS_NORMAL;
 }
 
@@ -1029,20 +1073,13 @@ void j2me_micro3d_gl_reg_natives(MiniJVM *jvm) {
     printf("[micro3d] Registered %d native methods (GLES20 + Utils)\n", count);
 }
 
-void j2me_micro3d_gl_cleanup(void) {
-    if (g_mc3d_context) {
-        [EAGLContext setCurrentContext:g_mc3d_context];
-        if (g_mc3d_fbo) {
-            glDeleteFramebuffers(1, &g_mc3d_fbo);
-            g_mc3d_fbo = 0;
-        }
-        if (g_mc3d_colorRB) { glDeleteRenderbuffers(1, &g_mc3d_colorRB); g_mc3d_colorRB = 0; }
-        if (g_mc3d_depthRB) { glDeleteRenderbuffers(1, &g_mc3d_depthRB); g_mc3d_depthRB = 0; }
-        [EAGLContext setCurrentContext:nil];
-        g_mc3d_context = nil;
-        g_mc3d_prev_context = nil;
-        g_mc3d_width = 0;
-        g_mc3d_height = 0;
-        printf("[micro3d] GL context cleaned up\n");
+void j2me_micro3d_gl_cleanup_for_owner(uint64_t owner_key) {
+    if (!owner_key) return;
+    @autoreleasepool {
+        pthread_mutex_lock(&g_mc3d_registry_lock);
+        JarBoxMC3DWorkspace *owner = g_mc3d_workspaces[@(owner_key)];
+        [g_mc3d_workspaces removeObjectForKey:@(owner_key)];
+        pthread_mutex_unlock(&g_mc3d_registry_lock);
+        mc3d_destroy_workspace(owner);
     }
 }

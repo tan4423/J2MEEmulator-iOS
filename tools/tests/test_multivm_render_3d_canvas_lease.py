@@ -33,5 +33,21 @@ class MultiVMRender3DCanvasLeaseTest(unittest.TestCase):
                     self.assertIn("j2me_render_acquire_canvas(runtime,", body)
                     self.assertIn("j2me_render_release_canvas(lease);", body)
 
+    def test_mascot_workspace_is_generation_owned(self):
+        mc = (ROOT / "j2me_micro3d_gl.m").read_text()
+        bridge = (ROOT / "jvm_bridge.c").read_text()
+        self.assertIn("jarbox_native_heap_key_for_runtime(runtime)", mc)
+        self.assertIn("g_mc3d_workspaces[@(key)]", mc)
+        self.assertIn("mc3d_workspace(runtime, 1)", mc)
+        self.assertIn("mc3d_workspace(runtime, 0)", mc)
+        self.assertNotIn("static EAGLContext *g_mc3d_context =", mc)
+        self.assertIn("[g_mc3d_workspaces removeObjectForKey:@(owner_key)]", mc)
+        destroy = bridge.split("static void bridge_destroy_slot(", 1)[1].split(
+            "int jvm_bridge_request_stop_for_token(", 1)[0]
+        self.assertLess(destroy.index("jvm_destroy(slot->jvm)"),
+                        destroy.index("j2me_micro3d_gl_cleanup_for_owner(destroyed_render_key)"))
+        self.assertLess(destroy.index("j2me_micro3d_gl_cleanup_for_owner(destroyed_render_key)"),
+                        destroy.index("jarbox_native_heap_unregister_vm(destroyed_owner)"))
+
 if __name__ == "__main__":
     unittest.main()

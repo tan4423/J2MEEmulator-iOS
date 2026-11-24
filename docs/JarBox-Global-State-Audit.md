@@ -463,3 +463,17 @@ mirror remains only for single-admission diagnostics. Per-tab information
 reads actual mode by token and no longer attributes global counters to a
 single JVM. Legacy manual diagnostic blackouts still need audit in multi.
 Admission remains 1; device and full CI validation are outstanding.
+
+## 2026-11-24: Interpreter profile and 3D Canvas/MC3D workspace isolation
+
+Interpreter NSO-init trace checks now read the invoking runtime's session;
+mode-9 direct-graphics dispatch also selects that runtime's mode. Legacy
+A/B graphics flags are only used by this interpreter dispatch when admission
+is one. M3G and MascotCapsule pixel transfers borrow an existing generation-
+checked RenderContext reference, drain queued 2D work before pixel access,
+and release the reference on return. Foreign/expired handles are rejected.
+MascotCapsule EAGL context, framebuffer/renderbuffers and saved context are
+now per heap generation; cleanup after worker drain removes only that key.
+The M3G engine's EGL context, interface list and pixel workspace are still
+shared. OpenGL native handles/GL thread semantics and all device rendering
+paths remain unverified. These source changes do not enable concurrency.

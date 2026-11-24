@@ -881,7 +881,7 @@ static void bridge_destroy_slot(JarBoxVMContext *slot) {
         // - the generation-scoped stop denies new render acquires for this VM
         // - jvm_destroy gave threads 3s to exit
         // Input reset is no longer global; that JVM was released above.
-        j2me_micro3d_gl_cleanup();
+        j2me_micro3d_gl_cleanup_for_owner(destroyed_render_key);
         j2me_m3g_cleanup();
         j2me_render_cleanup_for_owner(destroyed_render_key); // only this VM's 2D handles
         // The C native ledger is independent of the freed Java heap pointer.

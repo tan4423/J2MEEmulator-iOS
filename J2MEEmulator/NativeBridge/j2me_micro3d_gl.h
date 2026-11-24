@@ -10,8 +10,8 @@ extern "C" {
 /// Register all MascotCapsule micro3D OpenGL ES 2.0 native methods with the JVM.
 void j2me_micro3d_gl_reg_natives(MiniJVM *jvm);
 
-/// Release MascotCapsule GL context and resources. Call between game sessions.
-void j2me_micro3d_gl_cleanup(void);
+/// Release only the specified heap generation after its Java workers exit.
+void j2me_micro3d_gl_cleanup_for_owner(uint64_t owner_key);
 
 #ifdef __cplusplus
 }
