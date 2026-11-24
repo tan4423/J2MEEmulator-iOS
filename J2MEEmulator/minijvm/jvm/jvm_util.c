@@ -887,7 +887,10 @@ thrd_t jthread_start(Instance *ins, Runtime *parent) {//
         jarbox_session_worker_done(session);
         return failed;
     }
-    if (thrd_create(&runtime->thrd_info->pthread, jthread_run, runtime)
+    // Keep the returned handle in the spawning thread. The child owns its
+    // Runtime after successful creation and may already have been finalized.
+    thrd_t started = {0};
+    if (thrd_create(&started, jthread_run, runtime)
         != thrd_success) {
         // An unstarted Runtime must not remain visible as an active worker.
         threadlist_remove(runtime);
@@ -895,7 +898,7 @@ thrd_t jthread_start(Instance *ins, Runtime *parent) {//
         jarbox_session_worker_done(session);
         return failed;
     }
-    return runtime->thrd_info->pthread;
+    return started;
 }
 
 __refer jthread_get_name_value(MiniJVM *jvm, Instance *ins) {

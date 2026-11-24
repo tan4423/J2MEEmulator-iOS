@@ -15,7 +15,7 @@ class JarBoxThreadTeardownTest(unittest.TestCase):
         src = (JVM / "jvm_util.c").read_text()
         self.assertIn("if (!jarbox_session_reserve_worker(session)) return failed;", src)
         self.assertLess(src.index("jarbox_session_reserve_worker(session)"),
-                        src.index("thrd_create(&runtime->thrd_info->pthread"))
+                        src.index("thrd_create(&started, jthread_run, runtime)"))
         self.assertIn("jarbox_session_worker_done(session);", src)
         # jthread_run caches the session before its last Java heap access.
         # Both early-stop and normal-exit paths must return this held lease.

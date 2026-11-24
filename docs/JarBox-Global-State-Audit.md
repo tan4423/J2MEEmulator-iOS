@@ -647,3 +647,23 @@ passed 50 ASan+UBSan runs, each checking 100 repetitions of owner/mode
 cases including focus changes during the visitor. The Objective-C
 CoreHaptics implementation and complete app were not built or executed
 on this host. Admission remains 1; no changes to Codemagic, JAR or RMS.
+
+## 2026-11-24: Keep the pthread start result outside the child's Runtime
+
+The child can finish and become eligible for Runtime finalization before
+thrd_create returns to its caller. The parent previously returned the
+pthread field through the potentially finalized Runtime, and supplied
+that field as thrd_create's output location. Return a creator-local
+handle instead. The worker already records thrd_current() on entry.
+Failure and STOPPING lease-release paths are unchanged. This does not
+establish lifetime safety of all Java thread/finalizer paths.
+
+Validation: SHA-verified production JarBoxSession and TreoState headers
+and matching function excerpt used in the local C model. Original
+excerpt failed ASan with heap-use-after-free when the mocked child and
+collector completed before thrd_create returned. The replacement passed
+two Python regressions and 50 executions under Clang ASan+UBSan (100
+modeled starts per execution, including creation failure and STOPPING).
+Updated the existing teardown source assertion for the local handle;
+the full existing suite was not executed. Full JVM, Xcode/Codemagic,
+TSan and iPhone validation remain outstanding. Admission remains one.
