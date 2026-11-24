@@ -632,6 +632,9 @@ int jvm_bridge_interrupt_active_threads_for_token(uint64_t token) {
     if (!owner) return 0;
     // Java monitor acquisition can block. Do not hold the process-wide
     // lifecycle lock; jvm_destroy must wait for this heap-access lease.
+    // GC may be holding the Java thread-list lock while waiting for a
+    // stalled worker to suspend. Request STOP without taking that lock.
+    gc_request_thread_status(owner->collector, GARBAGE_THREAD_STOP);
     thread_stop_all(owner);
     jarbox_session_callback_done(held);
     printf("[JarBoxVM][Lifecycle] stop=escalated_java_threads token=%llu\n",
@@ -891,6 +894,7 @@ static void bridge_destroy_slot(JarBoxVMContext *slot) {
         // exit_flag makes jvm_destroy's non-daemon wait loop exit immediately;
         // thread_stop_all sets is_stop/is_interrupt on each thread.
         slot->jvm->collector->exit_flag = 1;
+        gc_request_thread_status(slot->jvm->collector, GARBAGE_THREAD_STOP);
         thread_stop_all(slot->jvm);
 
         // Step 3: Close only the audio players owned by this JVM. An

@@ -412,6 +412,8 @@ void jvm_destroy(MiniJVM *jvm) {
     }
     set_jvm_state(jvm, JVM_STATUS_STOPED);
     jarbox_session_begin_stop(jvm->session);
+    // Break a collector's suspension wait before taking the thread-list lock.
+    gc_request_thread_status(jvm->collector, GARBAGE_THREAD_STOP);
     //waiting for daemon thread terminate
     thread_stop_all(jvm);
 

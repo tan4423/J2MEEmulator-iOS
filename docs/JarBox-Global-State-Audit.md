@@ -710,3 +710,27 @@ method excerpts in a dummy class. The modified existing park source
 guard accounts for the no-owner escape hatch. Full source checkout,
 UIKit type checking, startup cancellation timing, Codemagic and device
 tests have not been run. Native deadlocks require separate fixes.
+
+## 2026-11-24: Release thread-list lock on GC abort and stop collector before Java drain
+
+The pause-world failure path returned without releasing the Java
+thread-list spinlock. This could block forced stop and future worker
+operations. Release that lock before the caller resumes Java, and clear
+the in-progress GC flag on the aborted collection path. Explicit bridge
+escalation, bridge destruction and JVM destruction now request terminal
+GC STOP before taking the thread-list lock in thread_stop_all, so a
+collector waiting for a stalled Java worker can leave its suspension
+wait. STOP is requested through the existing atomic GC control helper
+rather than acquiring the VM-share lock. The existing worker/callback
+lease drain and heap cleanup barriers are retained. No RMS changes.
+
+Validation: the original production pause-world excerpt failed the
+modeled cross-thread mutex probe; source-order regressions also failed.
+After replacement the new three regressions plus the updated stop
+escalation regression passed (4 tests). The production excerpt was
+matched by checksum and the two regression files by Git blob SHA.
+The modeled pthread harness passed 20 ASan+UBSan runs (100 abort and
+100 successful pause paths per run). These are host excerpt/model
+tests, not the full GC or a measured iPhone shutdown. Remaining work
+includes GC pthread join/creation failure, native monitor wake paths,
+full suite and device validation. No concurrency increase.

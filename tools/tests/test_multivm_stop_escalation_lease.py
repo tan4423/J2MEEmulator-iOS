@@ -16,7 +16,14 @@ PRELUDE = r"""
 #include "jarbox_session.h"
 
 enum { BRIDGE_STARTING = 1, BRIDGE_RUNNING = 2, BRIDGE_CLEANUP = 3 };
-typedef struct { JarBoxSession *session; } MiniJVM;
+enum { GARBAGE_THREAD_STOP = 2 };
+typedef struct { int status; } GcCollector;
+typedef struct { JarBoxSession *session; GcCollector *collector; } MiniJVM;
+static GcCollector ca, cb;
+static void gc_request_thread_status(GcCollector *collector, int status) {
+    assert(collector == &ca);
+    collector->status = status;
+}
 typedef struct {
     _Atomic(MiniJVM *) jvm;
     atomic_int stop_requested, phase;
@@ -30,6 +37,7 @@ static JarBoxVMContext *bridge_find_slot_locked(uint64_t token) {
 }
 static void thread_stop_all(MiniJVM *vm) {
     assert(vm == &va);
+    assert(ca.status == GARBAGE_THREAD_STOP && cb.status == 0);
     /* A Java monitor owner can need the lifecycle lock. Never wait for
      * that monitor while holding the process-wide lifecycle lock. */
     assert(pthread_mutex_trylock(&g_bridge_lifecycle_lock) == 0);
@@ -50,6 +58,9 @@ static void thread_stop_all(MiniJVM *vm) {
 MAIN = r"""
 int main(void) {
     for (int i = 0; i < 100; ++i) {
+        ca.status = cb.status = 0;
+        va.collector = &ca;
+        vb.collector = &cb;
         va.session = jarbox_session_create(&va);
         vb.session = jarbox_session_create(&vb);
         assert(va.session && vb.session);
