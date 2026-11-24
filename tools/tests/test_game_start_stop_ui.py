@@ -11,24 +11,28 @@ class GameStartStopUITest(unittest.TestCase):
     def setUp(self):
         self.src = GAME.read_text(encoding="utf-8")
 
-    def test_startup_back_cancels_before_any_park(self):
+    def test_minimize_never_cancels_startup_and_close_can_cancel(self):
         body = self.src.split("@objc private func openLibraryKeepingGame() {", 1)[1].split("\n    }", 1)[0]
-        self.assertIn("if startupWatchdog != nil {", body)
-        cancel = body.index('requestGameStop(reason: "startup_back")')
-        self.assertLess(cancel, body.index("treo_mode_for_token(gameSessionToken)"))
+        self.assertLess(body.index("if startupWatchdog != nil { return }"),
+                        body.index("treo_mode_for_token(gameSessionToken)"))
+        self.assertNotIn("requestGameStop(", body)
         self.assertIn('if gameStopRequested {\n            showStuckSessionRecovery()', body)
         self.assertIn('guard ownsJVMSession else {', body)
-        self.assertIn('sessionLibrary?.managedGameDidEnd(self)', body)
+        self.assertIn('dismissEndedGame()', body)
+        close = self.src.split("@objc private func closeTabTapped() {", 1)[1].split("\n    }", 1)[0]
+        self.assertIn('requestGameStop(reason: "close_tab")', close)
 
     def test_close_has_no_game_dismissal_animation(self):
         self.assertNotRegex(self.src, r'(?m)^\s*(?:self\??\.)?dismiss\(animated: true\)')
 
     def test_startup_cancel_and_stop_labels(self):
-        self.assertIn('backButton.setTitle("Hủy mở game", for: .normal)', self.src)
-        self.assertIn('backButton.setTitle("Đang dừng…", for: .normal)', self.src)
+        self.assertIn('closeTabButton.accessibilityLabel = "Hủy khởi động game"', self.src)
+        self.assertIn('closeTabButton.accessibilityLabel = "Đang dừng game"', self.src)
+        self.assertIn('backButton.isEnabled = false', self.src)
         finish = self.src.split("private func finishStartupWatchdog() {", 1)[1].split("\n    }", 1)[0]
         self.assertIn('if !gameStopRequested {', finish)
-        self.assertIn('backButton.setTitle("‹ Thư viện", for: .normal)', finish)
+        self.assertIn('backButton.isEnabled = true', finish)
+        self.assertIn('closeTabButton.accessibilityLabel = "Đóng tab"', finish)
 
     def test_worker_checks_cancel_before_storage_and_init(self):
         start = self.src.index('defer { _ = jvm_bridge_finish_session_for_token(token) }')

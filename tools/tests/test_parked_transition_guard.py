@@ -24,8 +24,8 @@ class ParkedTransitionGuardTest(unittest.TestCase):
         # The no-owner escape hatch may dismiss without Treo; a live
         # owner's managed dismissal must still follow confirmed park.
         no_owner = body.index("guard ownsJVMSession else {")
-        self.assertLess(no_owner, body.index("dismiss(animated: false)"))
-        self.assertLess(body.index("dismiss(animated: false)"), ready)
+        self.assertLess(no_owner, body.index("dismissEndedGame()"))
+        self.assertLess(body.index("dismissEndedGame()"), ready)
         self.assertLess(confirmed, body.index("dismiss(animated: false)", confirmed))
         for effect in ("finishStartupWatchdog()", "if let library = sessionLibrary",
                        "libraryIsPresented = true", "unbindGameFrameView(token: gameSessionToken)",

@@ -328,6 +328,8 @@ class GameViewController: UIViewController {
     private lazy var formView = FormView()
     private lazy var listView = J2MEListView()
     private let backButton = UIButton(type: .system)
+    private let closeTabButton = UIButton(type: .system)
+    private var endedTabDismissalInFlight = false
     private let lskButton = UIButton(type: .system)
     private let rskButton = UIButton(type: .system)
     private let softKeyHaptic = UIImpactFeedbackGenerator(style: .light)
@@ -569,34 +571,6 @@ class GameViewController: UIViewController {
         case .portrait: setupNGageLayout(portrait: true)
         case .ngage: setupNGageLayout()
         }
-        if layoutMode == .ngage {
-            // Landscape previously lacked the floating game menu entirely.
-            screenMenu.translatesAutoresizingMaskIntoConstraints = false
-            screenMenu.setImage(UIImage(systemName: "ellipsis.circle"), for: .normal)
-            screenMenu.tintColor = .white
-            screenMenu.accessibilityLabel = "Tùy chọn game"
-            screenMenu.showsMenuAsPrimaryAction = true
-            screenMenu.menu = UIMenu(children: [
-                UIAction(title: "Về thư viện · tự động Treo",
-                         image: UIImage(systemName: "square.grid.2x2")) { [weak self] _ in
-                    self?.openLibraryKeepingGame()
-                },
-                UIAction(title: "Thoát game",
-                         image: UIImage(systemName: "stop.fill"),
-                         attributes: .destructive) { [weak self] _ in
-                    self?.stopGameFromMenu()
-                }
-            ])
-            view.addSubview(screenMenu)
-            NSLayoutConstraint.activate([
-                screenMenu.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 4),
-                screenMenu.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -8),
-                screenMenu.widthAnchor.constraint(equalToConstant: 44),
-                screenMenu.heightAnchor.constraint(equalToConstant: 36),
-            ])
-            view.bringSubviewToFront(screenMenu)
-        }
-
         // Placeholder icon — visible until first game frame
         let iconIV = UIImageView(image: appIcon)
         iconIV.contentMode = .center
@@ -608,6 +582,7 @@ class GameViewController: UIViewController {
         ])
         placeholderIconView = iconIV
         view.bringSubviewToFront(backButton)
+        view.bringSubviewToFront(closeTabButton)
 
         // Remove the startup placeholder immediately; no fade animation
         // and no second per-frame game-image copy behind the canvas.
@@ -763,7 +738,7 @@ class GameViewController: UIViewController {
 
         // The game Canvas is the only rendered game image.
         // Do not instantiate the GPU-heavy glow mirror/backdrop blur.
-        for v: UIView in [joystick, emulatorView, numpad, lskButton, rskButton, formView, listView, backButton] {
+        for v: UIView in [joystick, emulatorView, numpad, lskButton, rskButton, formView, listView, backButton, closeTabButton] {
             v.translatesAutoresizingMaskIntoConstraints = false
             view.addSubview(v)
         }
@@ -787,17 +762,28 @@ class GameViewController: UIViewController {
         lskButton.tag = -6
         rskButton.tag = -7
 
-        // Back button
-        backButton.setTitle("‹ Thư viện", for: .normal)
-        backButton.titleLabel?.font = .systemFont(ofSize: 15, weight: .semibold)
-        backButton.accessibilityLabel = "Về thư viện, giữ game chạy"
-        backButton.contentEdgeInsets = UIEdgeInsets(top: 0, left: 10, bottom: 0, right: 10)
-        backButton.backgroundColor = UIColor(white: 0.15, alpha: 0.85)
-        backButton.setTitleColor(.white, for: .normal)
-        backButton.layer.cornerRadius = 10
-        backButton.layer.borderColor = UIColor(white: 1, alpha: 0.12).cgColor
-        backButton.layer.borderWidth = 1
+        // Browser-style controls: minimize preserves the session; close stops it.
+        for (button, symbol, label) in [
+            (backButton, "minus", "Về thư viện, giữ game chạy"),
+            (closeTabButton, "xmark", "Đóng tab")
+        ] {
+            button.setImage(UIImage(systemName: symbol), for: .normal)
+            button.tintColor = .white
+            button.accessibilityLabel = label
+            button.backgroundColor = UIColor(white: 0.15, alpha: 0.85)
+            button.layer.cornerRadius = 10
+            button.layer.borderColor = UIColor(white: 1, alpha: 0.12).cgColor
+            button.layer.borderWidth = 1
+        }
         backButton.addTarget(self, action: #selector(backTapped), for: .touchUpInside)
+        closeTabButton.addTarget(self, action: #selector(closeTabTapped), for: .touchUpInside)
+        NSLayoutConstraint.activate([
+            backButton.widthAnchor.constraint(equalToConstant: 44),
+            closeTabButton.leadingAnchor.constraint(equalTo: backButton.trailingAnchor, constant: 6),
+            closeTabButton.topAnchor.constraint(equalTo: backButton.topAnchor),
+            closeTabButton.widthAnchor.constraint(equalToConstant: 44),
+            closeTabButton.heightAnchor.constraint(equalToConstant: 36)
+        ])
 
         let canvasRatio: CGFloat = CGFloat(emulatorView.canvasWidth) / CGFloat(emulatorView.canvasHeight)
         let pad: CGFloat = 8
@@ -937,6 +923,7 @@ class GameViewController: UIViewController {
             // Back button: top-left
             backButton.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 4),
             backButton.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 4),
+            backButton.heightAnchor.constraint(equalToConstant: 36),
         ])
 
         // Game screen rounded corners + border
@@ -948,6 +935,7 @@ class GameViewController: UIViewController {
         view.bringSubviewToFront(formView)
         view.bringSubviewToFront(listView)
         view.bringSubviewToFront(backButton)
+        view.bringSubviewToFront(closeTabButton)
     }
 
     private func makeDirectionalPad() -> UIStackView {
@@ -1053,20 +1041,14 @@ class GameViewController: UIViewController {
         for pin in portraitPadBottomPins { pin.isActive = padIsVisible }
         if jarAuditID != nil {
             screenMenu.menu = UIMenu(children: [
-                UIAction(title: "Về thư viện · tự động Treo") { [weak self] _ in self?.openLibraryKeepingGame() },
                 UIAction(title: "Chẩn đoán kết nối") { [weak self] _ in self?.showNetworkDiagnostics() },
-                UIAction(title: "Hủy chẩn đoán CPU JAR", attributes: .destructive) { [weak self] _ in self?.stopJarAudit() },
-                UIAction(title: "Thoát game", attributes: .destructive) { [weak self] _ in self?.stopGameFromMenu() }
+                UIAction(title: "Hủy chẩn đoán CPU JAR", attributes: .destructive) { [weak self] _ in self?.stopJarAudit() }
             ])
             return
         }
         // User-facing menu: stable functions + exactly ONE active experiment.
         // Historical probes remain in source for rollback, not in the UI.
         screenMenu.menu = UIMenu(children: [
-            UIAction(title: "Về thư viện · tự động Treo",
-                     image: UIImage(systemName: "square.grid.2x2")) { [weak self] _ in
-                self?.openLibraryKeepingGame()
-            },
             UIAction(title: "Phím điều hướng", state: padMode == .directions ? .on : .off) { [weak self] _ in self?.setPadMode(.directions) },
             UIAction(title: "Phím số", state: padMode == .numbers ? .on : .off) { [weak self] _ in self?.setPadMode(.numbers) },
             UIAction(title: "Ẩn phím · màn hình lớn", state: padMode == .hidden ? .on : .off) { [weak self] _ in self?.setPadMode(.hidden) },
@@ -1076,15 +1058,32 @@ class GameViewController: UIViewController {
             },
             UIAction(title: "Chẩn đoán kết nối") { [weak self] _ in
                 self?.showNetworkDiagnostics()
-            },
-            UIAction(title: "Thoát game", attributes: .destructive) { [weak self] _ in
-                self?.stopGameFromMenu()
             }
         ])
     }
 
-    private func stopGameFromMenu() {
-        requestGameStop(reason: "menu_stop")
+    @objc private func closeTabTapped() {
+        requestGameStop(reason: "close_tab")
+    }
+
+    // Called only when a visible controller has no live native owner. The
+    // completion runs after UIKit has relinquished the old presentation.
+    private func dismissEndedGame() {
+        guard !holdsNativeGameSession(), !endedTabDismissalInFlight else { return }
+        endedTabDismissalInFlight = true
+        let library = sessionLibrary
+        let path = jarPath
+        let closing = cloneID
+        library?.managedGameDidEnd(self)
+        let finish = { [weak self, weak library] in
+            guard let self else { return }
+            self.dismiss(animated: false) { [weak library] in
+                library?.openNextRunningTabAfterExit(path: path, closing: closing)
+            }
+        }
+        if let modal = presentedViewController {
+            modal.dismiss(animated: false, completion: finish)
+        } else { finish() }
     }
 
     // A hung JVM cannot safely have its singleton flag cleared while Java
@@ -3703,8 +3702,15 @@ class GameViewController: UIViewController {
                 if !mayResetNative {
                     // Managed foreground A exited while another native
                     // owner exists. Never reset process-wide diagnostics.
+                    self.stopEscalationWork?.cancel()
+                    self.stopRescueWork?.cancel()
+                    self.alertTimeoutWork?.cancel()
                     self.finishStartupWatchdog()
-                    self.dismiss(animated: false)
+                    if !self.gameStopRequested, let failure {
+                        self.showLaunchFailure(failure)
+                    } else {
+                        self.dismissEndedGame()
+                    }
                     return
                 }
                 self.stopEscalationWork?.cancel()
@@ -3731,11 +3737,11 @@ class GameViewController: UIViewController {
                         NSLog("[JarBoxVM][Lifecycle] parked session exited: %@", failure)
                     }
                 } else if self.gameStopRequested {
-                    self.dismiss(animated: false)
+                    self.dismissEndedGame()
                 } else if let failure {
                     self.showLaunchFailure(failure)
                 } else {
-                    self.dismiss(animated: false)
+                    self.dismissEndedGame()
                 }
             }
         }
@@ -3759,8 +3765,8 @@ class GameViewController: UIViewController {
             self.present(alert, animated: true)
         }
         startupWatchdog = watchdog
-        backButton.setTitle("Hủy mở game", for: .normal)
-        backButton.accessibilityLabel = "Hủy khởi động game"
+        backButton.isEnabled = false
+        closeTabButton.accessibilityLabel = "Hủy khởi động game"
         DispatchQueue.main.asyncAfter(deadline: .now() + 20, execute: watchdog)
         DispatchQueue.global(qos: .userInitiated).async(execute: worker)
     }
@@ -3769,8 +3775,8 @@ class GameViewController: UIViewController {
         startupWatchdog?.cancel()
         startupWatchdog = nil
         if !gameStopRequested {
-            backButton.setTitle("‹ Thư viện", for: .normal)
-            backButton.accessibilityLabel = "Về thư viện, giữ game chạy"
+            backButton.isEnabled = true
+            closeTabButton.accessibilityLabel = "Đóng tab"
         }
     }
 
@@ -3812,10 +3818,8 @@ class GameViewController: UIViewController {
         alert.addAction(UIAlertAction(title: "Sao chép lỗi", style: .default) { _ in
             UIPasteboard.general.string = message
         })
-        alert.addAction(UIAlertAction(title: "Về thư viện", style: .cancel) { [weak self] _ in
-            guard let self else { return }
-            self.sessionLibrary?.managedGameDidEnd(self)
-            self.dismiss(animated: false)
+        alert.addAction(UIAlertAction(title: "Đóng", style: .cancel) { [weak self] _ in
+            self?.dismissEndedGame()
         })
         // A startup-timeout alert may still be open when the Java worker
         // fails; dismiss it first so the real Java error is not hidden.
@@ -3883,7 +3887,7 @@ class GameViewController: UIViewController {
 
     private func requestGameStop(reason: String) {
         guard ownsJVMSession else {
-            dismiss(animated: false)
+            if !libraryIsPresented { dismissEndedGame() }
             return
         }
         if gameStopRequested {
@@ -3891,8 +3895,8 @@ class GameViewController: UIViewController {
             return
         }
         gameStopRequested = true
-        backButton.setTitle("Đang dừng…", for: .normal)
-        backButton.accessibilityLabel = "Đang dừng game"
+        backButton.isEnabled = false
+        closeTabButton.accessibilityLabel = "Đang dừng game"
         NSLog("[JarBoxVM][Lifecycle] cancel_requested reason=%@ phase=%d",
               reason, jvm_bridge_session_phase())
         finishStartupWatchdog()
@@ -3900,7 +3904,7 @@ class GameViewController: UIViewController {
         discardCPUProfile()
         cancelGameInput()
         if blackout != nil { hideBlackout() }
-        // Leave Back usable: another tap opens stuck-session recovery.
+        // Leave Close usable: another tap opens stuck-session recovery.
         // Scope stop to THIS game so a late callback cannot stop a clone.
         let token = gameSessionToken
         _ = jvm_bridge_request_stop_for_token(token)
@@ -4085,8 +4089,7 @@ class GameViewController: UIViewController {
 
     @objc private func openLibraryKeepingGame() {
         guard ownsJVMSession else {
-            sessionLibrary?.managedGameDidEnd(self)
-            dismiss(animated: false)
+            dismissEndedGame()
             return
         }
         if gameStopRequested {
@@ -4094,12 +4097,8 @@ class GameViewController: UIViewController {
             return
         }
         guard ownsLiveGameSession(), !libraryIsPresented, presentedViewController == nil else { return }
-        // Before the first usable game screen, Back cancels startup rather
-        // than trying to park a half-initialized or no-frame JVM.
-        if startupWatchdog != nil {
-            requestGameStop(reason: "startup_back")
-            return
-        }
+        // Only Close cancels startup. Minimize cannot hide a half-initialized JVM.
+        if startupWatchdog != nil { return }
         // Token-scoped visitor returns -1 unless this owner is RUNNING.
         guard treo_mode_for_token(gameSessionToken) >= 0 else { return }
         stopJarAudit()
@@ -4186,7 +4185,12 @@ class GameViewController: UIViewController {
         guard ownsLiveGameSession(),
               jvm_bridge_focus_session(self.gameSessionToken) != 0 else {
             NSLog("[JarBoxVM][Focus] failed managed token=%llu", gameSessionToken)
-            dismiss(animated: false)
+            if !holdsNativeGameSession() {
+                dismissEndedGame()
+            } else {
+                // A live but unfocusable parked session stays retained.
+                dismiss(animated: false)
+            }
             return
         }
         activeGameViewController = self

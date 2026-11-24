@@ -99,6 +99,8 @@ class GameTabStripTest(unittest.TestCase):
         tap = part(LIB, "didSelectItemAt indexPath:", "private func showTabInformationPicker(")
         self.assertIn("JarBoxGameStorage.lastTab(jarPath: app.path,", tap)
         self.assertIn("registered: tabs.compactMap", tap)
+        self.assertIn("JarBoxGameStorage.entryTabIndex(", tap)
+        self.assertIn("gameForTab(app.path, cloneID: $0.id)?.parkedSessionToken != nil", tap)
         self.assertIn("launchGameTab(app, cloneID: id,", tap)
         self.assertNotIn("showTabChooser", tap)
         park = part(GAME, "@objc private func openLibraryKeepingGame() {", "func resumeParkedGame()")

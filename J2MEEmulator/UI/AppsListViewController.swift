@@ -169,6 +169,27 @@ enum JarBoxGameStorage {
         return id
     }
 
+    // The original tab is nil; use an optional INDEX to distinguish it
+    // from the absence of a candidate. Never wrap more than once.
+    nonisolated static func nextRunningTabIndex(ordered: [UUID?], closing: UUID?,
+                                                running: Set<UUID?>) -> Int? {
+        guard let origin = ordered.firstIndex(of: closing), ordered.count > 1 else { return nil }
+        for offset in 1..<ordered.count {
+            let index = (origin + offset) % ordered.count
+            if running.contains(ordered[index]) { return index }
+        }
+        return nil
+    }
+
+    nonisolated static func entryTabIndex(ordered: [UUID?], remembered: UUID?,
+                                          running: Set<UUID?>) -> Int? {
+        guard !ordered.isEmpty else { return nil }
+        if running.contains(remembered), let index = ordered.firstIndex(of: remembered) {
+            return index
+        }
+        return ordered.firstIndex { running.contains($0) } ?? 0
+    }
+
     struct CloneRecord: Codable, Equatable {
         let id: UUID
         let label: String
@@ -697,6 +718,28 @@ class AppsListViewController: UIViewController,
         guard managedGames.contains(where: { $0 === game }),
               game.parkedSessionToken != nil else { return }
         JarBoxGameStorage.rememberLastTab(jarPath: game.jarPath, cloneID: game.cloneID)
+    }
+
+    // Only a foreground dismissal completion calls this. Hidden worker
+    // exits must never steal focus from the tab the user is playing.
+    func openNextRunningTabAfterExit(path: String, closing: UUID?) {
+        guard canPresentGame, jvm_bridge_visible_session_token() == 0,
+              let app = apps.first(where: { $0.path == path }) else { return }
+        do {
+            let tabs = try registeredTabs(for: app)
+            let running = Set(tabs.filter {
+                gameForTab(path, cloneID: $0.id)?.parkedSessionToken != nil
+            }.map { $0.id })
+            guard let index = JarBoxGameStorage.nextRunningTabIndex(
+                ordered: tabs.map { $0.id }, closing: closing, running: running),
+                  let game = gameForTab(path, cloneID: tabs[index].id),
+                  game.parkedSessionToken != nil else {
+                // No surviving tab: future icon taps start the original.
+                if running.isEmpty { JarBoxGameStorage.rememberLastTab(jarPath: path, cloneID: nil) }
+                return
+            }
+            game.resumeParkedGame()
+        } catch { presentSaveOperationError(error) }
     }
 
     func openGameTabAfterPark(_ source: GameViewController, cloneID: UUID?) {
@@ -2122,15 +2165,21 @@ class AppsListViewController: UIViewController,
                         didSelectItemAt indexPath: IndexPath) {
         guard canPresentGame, apps.indices.contains(indexPath.item) else { return }
         let app = apps[indexPath.item]
-        // Direct entry, not an action sheet. Resolve the exact remembered
-        // instance against the current registry before resuming or launching.
+        // Resume the minimized tab only if it is still live. Otherwise
+        // prefer the first running tab in display order; if none, original.
         do {
             let tabs = try registeredTabs(for: app)
-            let id = JarBoxGameStorage.lastTab(jarPath: app.path,
-                                               registered: tabs.compactMap { $0.id })
-            let target = tabs.first { $0.id == id }
+            let remembered = JarBoxGameStorage.lastTab(jarPath: app.path,
+                                                       registered: tabs.compactMap { $0.id })
+            let running = Set(tabs.filter {
+                gameForTab(app.path, cloneID: $0.id)?.parkedSessionToken != nil
+            }.map { $0.id })
+            guard let index = JarBoxGameStorage.entryTabIndex(
+                ordered: tabs.map { $0.id }, remembered: remembered, running: running) else { return }
+            let target = tabs[index]
+            let id = target.id
             launchGameTab(app, cloneID: id,
-                          tabTitle: id == nil ? app.name : app.name + " · " + (target?.title ?? "Tab"))
+                          tabTitle: id == nil ? app.name : app.name + " · " + target.title)
         } catch {
             presentSaveOperationError(error)
         }
