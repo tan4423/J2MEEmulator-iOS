@@ -17,6 +17,7 @@ class Library {
     var viewIfLoaded: View? = View()
     var isBeingDismissed = false
     private var gamePresentationInFlight = false
+    var jarBoxSleepCover: Int?
     var completions: [() -> Void] = []
     var presented: [GameViewController] = []
     func setSpringboardMotion(_ enabled: Bool, reason: String) {}
@@ -43,6 +44,10 @@ for _ in 0..<1000 {
     precondition(lib.presented.count == before + 1)
     lib.presentedViewController = nil
 }
+lib.jarBoxSleepCover = 1
+lib.launch(game)
+precondition(lib.presented.count == 1000)
+lib.jarBoxSleepCover = nil
 lib.isBeingDismissed = true
 lib.launch(game)
 precondition(lib.presented.count == 1000)

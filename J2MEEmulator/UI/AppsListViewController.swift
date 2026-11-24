@@ -413,6 +413,7 @@ class AppsListViewController: UIViewController,
     private var jarBoxSleepHUDDeadline: TimeInterval?
     private var jarBoxSleepSamplingGeneration: UInt64 = 0
     private var jarBoxSleepBrightness: (screen: UIScreen, previous: CGFloat)?
+    private var jarBoxSleepIdleTimerWasDisabled: Bool?
 
     // Set only for a library presented over its *own* live GameViewController.
     // A weak reference plus the native session token prevents stale UI controls
@@ -484,7 +485,7 @@ class AppsListViewController: UIViewController,
     }
 
     private var canPresentGame: Bool {
-        !gamePresentationInFlight && presentedViewController == nil &&
+        jarBoxSleepCover == nil && !gamePresentationInFlight && presentedViewController == nil &&
         viewIfLoaded?.window != nil && !isBeingDismissed
     }
 
@@ -689,6 +690,12 @@ class AppsListViewController: UIViewController,
         springboardVisible = true
         libraryCPUEntry = (ProcessInfo.processInfo.systemUptime, treo_process_cpu_seconds())
         let sceneActive = view.window?.windowScene?.activationState == .foregroundActive
+        // A temporary UIKit presentation must not forget protection mode.
+        if let cover = jarBoxSleepCover {
+            cover.isHidden = false
+            cover.superview?.bringSubviewToFront(cover)
+        }
+        setJarBoxSleepSampling(sceneActive)
         setSpringboardMotion(sceneActive, reason: sceneActive
                              ? "springboard visible and scene active"
                              : "springboard visible, waiting for active scene")
@@ -705,7 +712,16 @@ class AppsListViewController: UIViewController,
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
         springboardVisible = false
-        hideJarBoxSleepScreen()
+        // Release display ownership before another controller becomes visible.
+        // Keep protection armed across temporary disappearance, but not when
+        // the owning library/navigation controller is actually removed.
+        if isBeingDismissed || isMovingFromParent ||
+            navigationController?.isBeingDismissed == true {
+            hideJarBoxSleepScreen()
+        } else {
+            setJarBoxSleepSampling(false)
+            jarBoxSleepCover?.isHidden = true
+        }
         libraryCPUEntry = nil
         setSpringboardMotion(false, reason: "springboard disappearing")
     }
@@ -840,6 +856,7 @@ class AppsListViewController: UIViewController,
         cover.isOpaque = true
         cover.translatesAutoresizingMaskIntoConstraints = false
         cover.accessibilityIdentifier = "jarbox-global-sleep-screen"
+        cover.accessibilityViewIsModal = true
         container.addSubview(cover)
         NSLayoutConstraint.activate([
             cover.topAnchor.constraint(equalTo: container.topAnchor),
@@ -904,6 +921,7 @@ class AppsListViewController: UIViewController,
         jarBoxSleepHUD = info
         jarBoxSleepStartedAt = ProcessInfo.processInfo.systemUptime
         jarBoxSleepCPUText = "CPU tổng: đang đo"
+        NSLog("[JarBoxSleep] opened")
         setSpringboardMotion(false, reason: "JarBox sleep screen")
         setJarBoxSleepSampling(view.window?.windowScene?.activationState == .foregroundActive)
     }
@@ -915,6 +933,7 @@ class AppsListViewController: UIViewController,
         jarBoxSleepHUD = nil
         jarBoxSleepCover = nil
         cover.removeFromSuperview()
+        NSLog("[JarBoxSleep] closed")
         let active = view.window?.windowScene?.activationState == .foregroundActive
         setSpringboardMotion(springboardVisible && active, reason: "JarBox sleep screen closed")
     }
@@ -940,10 +959,33 @@ class AppsListViewController: UIViewController,
         }
     }
 
+    // Auto-lock would suspend the process and defeat foreground Treo.
+    // Lease the idle timer only while this cover owns the active display.
+    private func setJarBoxSleepIdleTimer(_ active: Bool) {
+        let app = UIApplication.shared
+        if active {
+            guard jarBoxSleepIdleTimerWasDisabled == nil else { return }
+            jarBoxSleepIdleTimerWasDisabled = app.isIdleTimerDisabled
+            app.isIdleTimerDisabled = true
+        } else if let previous = jarBoxSleepIdleTimerWasDisabled {
+            jarBoxSleepIdleTimerWasDisabled = nil
+            if app.isIdleTimerDisabled { app.isIdleTimerDisabled = previous }
+        }
+    }
+
     private func setJarBoxSleepSampling(_ active: Bool) {
-        guard jarBoxSleepCover != nil else { return }
-        setJarBoxSleepBrightness(active && springboardVisible)
-        if !active || !springboardVisible { hideJarBoxSleepInformation() }
+        guard let cover = jarBoxSleepCover else { return }
+        // UIApplication and UIScene can deliver overlapping notifications.
+        // A positive event alone is not proof this cover is foreground.
+        let ownsDisplay = active && springboardVisible && !cover.isHidden &&
+            view.window?.windowScene?.activationState == .foregroundActive
+        let wasOwning = jarBoxSleepIdleTimerWasDisabled != nil
+        setJarBoxSleepBrightness(ownsDisplay)
+        setJarBoxSleepIdleTimer(ownsDisplay)
+        if !ownsDisplay { hideJarBoxSleepInformation() }
+        if wasOwning != ownsDisplay {
+            NSLog("[JarBoxSleep] display ownership %@", ownsDisplay ? "acquired" : "released")
+        }
     }
 
     @objc private func showJarBoxSleepInformation() {
