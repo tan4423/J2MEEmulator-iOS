@@ -16,7 +16,7 @@ class GameTabStripTest(unittest.TestCase):
         menu = part(LIB, "contextMenuConfigurationForItemsAt", "private func showGameInformation(")
         self.assertIn("return UIMenu(children: [stop, infoAction, advanced, rename,", menu)
         self.assertIn("self.clearDataMenu(for: app, tabs: tabs)", menu)
-        self.assertIn("children: [treoSettings, resolution, settings, cloneMenu]", menu)
+        self.assertIn("children: [cloneMenu, treoSettings, resolution, fps, quality3D]", menu)
         self.assertIn("self.clearDataMenu(for: app, tabs: tabs), delete]", menu)
         self.assertIn('UIMenu(title: "Treo",', menu)
         self.assertNotIn("dùng chung mọi tab", menu)
@@ -27,6 +27,22 @@ class GameTabStripTest(unittest.TestCase):
         clear = part(LIB, "private func clearDataMenu(", "// Keep lifecycle diagnostics")
         self.assertIn('if tabs.count == 1 { return action("Xóa dữ liệu", tabs) }', clear)
         self.assertIn('children: [action("Tất cả", tabs)] + tabs.map', clear)
+
+    def test_fps_and_3d_are_independent_menu_items(self):
+        menu = part(LIB, "contextMenuConfigurationForItemsAt", "private func showGameInformation(")
+        self.assertIn('UIAction(title: "FPS",', menu)
+        self.assertIn('UIAction(title: "3D",', menu)
+        self.assertNotIn('UIAction(title: "FPS và 3D"', menu)
+        self.assertIn("showTabFPSOptions(for: app, cloneID: nil, tabName:", menu)
+        self.assertIn("showTab3DOptions(for: app, cloneID: nil, tabName:", menu)
+        self.assertIn("showTabSettingsPicker(for: app, clones: clones, is3D: false)", menu)
+        self.assertIn("showTabSettingsPicker(for: app, clones: clones, is3D: true)", menu)
+        picker = part(LIB, "private func showTabSettingsPicker(", "private func showTab3DOptions(")
+        self.assertIn("showTab3DOptions(for: app, cloneID: tab.id, tabName: tab.title)", picker)
+        self.assertIn("showTabFPSOptions(for: app, cloneID: tab.id, tabName: tab.title)", picker)
+        quality = part(LIB, "private func showTab3DOptions(", "private func showSharedResolutionOptions(")
+        self.assertIn("Self.set3DSupersampling(enabled, for: app, cloneID: cloneID)", quality)
+        self.assertNotIn("setFpsLimit(", quality)
 
     def test_resolution_is_shared_and_cannot_change_while_group_runs(self):
         menu = part(LIB, "contextMenuConfigurationForItemsAt", "private func showGameInformation(")

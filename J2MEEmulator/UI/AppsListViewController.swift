@@ -1504,16 +1504,18 @@ class AppsListViewController: UIViewController,
                 if clones.isEmpty { self?.showGameInformation(app) }
                 else { self?.showTabInformationPicker(for: app, clones: clones) }
             }
-            let res = Self.resolution(for: app)
-            let resolution = UIAction(title: "Độ phân giải: " + String(res.w) + "×" + String(res.h),
+            let resolution = UIAction(title: "Độ phân giải",
                 image: UIImage(systemName: "rectangle.expand.vertical"),
                 attributes: isRunning ? .disabled : []) { [weak self] _ in
                 self?.showSharedResolutionOptions(for: app)
             }
-            let settings = UIAction(title: "FPS và 3D",
-                                    image: UIImage(systemName: "slider.horizontal.3")) { [weak self] _ in
-                if clones.isEmpty { self?.showTabSettings(for: app, cloneID: nil, tabName: "Tab gốc") }
-                else { self?.showTabSettingsPicker(for: app, clones: clones) }
+            let fps = UIAction(title: "FPS", image: UIImage(systemName: "speedometer")) { [weak self] _ in
+                if clones.isEmpty { self?.showTabFPSOptions(for: app, cloneID: nil, tabName: "Tab gốc") }
+                else { self?.showTabSettingsPicker(for: app, clones: clones, is3D: false) }
+            }
+            let quality3D = UIAction(title: "3D", image: UIImage(systemName: "cube")) { [weak self] _ in
+                if clones.isEmpty { self?.showTab3DOptions(for: app, cloneID: nil, tabName: "Tab gốc") }
+                else { self?.showTabSettingsPicker(for: app, clones: clones, is3D: true) }
             }
             // Group-wide Treo preference remains locked during any live tab.
             let compatible = JarBoxGameStorage.treoCompatibleOnly(for: app.path)
@@ -1534,7 +1536,7 @@ class AppsListViewController: UIViewController,
             }
             let advanced = UIMenu(title: "Nâng cao",
                                   image: UIImage(systemName: "slider.horizontal.3"),
-                                  children: [treoSettings, resolution, settings, cloneMenu])
+                                  children: [cloneMenu, treoSettings, resolution, fps, quality3D])
             let rename = UIAction(title: "Đổi tên", image: UIImage(systemName: "pencil")) { [weak self] _ in
                 self?.promptRenameApp(app)
             }
@@ -1880,16 +1882,19 @@ class AppsListViewController: UIViewController,
     }
 
     private func showTabSettingsPicker(for app: AppInfo,
-                                       clones: [JarBoxGameStorage.CloneRecord]) {
-        let picker = UIAlertController(title: "Cài đặt riêng · " + app.name,
-                                       message: "FPS và 3D áp dụng riêng cho từng tab khi khởi động.",
+                                       clones: [JarBoxGameStorage.CloneRecord], is3D: Bool) {
+        let picker = UIAlertController(title: (is3D ? "3D" : "FPS") + " · " + app.name,
+                                       message: "Chọn tab cần cài đặt.",
                                        preferredStyle: .actionSheet)
-        picker.addAction(UIAlertAction(title: "Tab gốc", style: .default) { [weak self] _ in
-            self?.showTabSettings(for: app, cloneID: nil, tabName: "Tab gốc")
-        })
-        for clone in clones {
-            picker.addAction(UIAlertAction(title: clone.label, style: .default) { [weak self] _ in
-                self?.showTabSettings(for: app, cloneID: clone.id, tabName: clone.label)
+        let tabs: [(id: UUID?, title: String)] =
+            [(nil, "Tab gốc")] + clones.map { (Optional($0.id), $0.label) }
+        for tab in tabs {
+            picker.addAction(UIAlertAction(title: tab.title, style: .default) { [weak self] _ in
+                if is3D {
+                    self?.showTab3DOptions(for: app, cloneID: tab.id, tabName: tab.title)
+                } else {
+                    self?.showTabFPSOptions(for: app, cloneID: tab.id, tabName: tab.title)
+                }
             })
         }
         picker.addAction(UIAlertAction(title: "Hủy", style: .cancel))
@@ -1902,20 +1907,18 @@ class AppsListViewController: UIViewController,
         present(picker, animated: true)
     }
 
-    private func showTabSettings(for app: AppInfo, cloneID: UUID?, tabName: String) {
-        let fps = Self.fpsLimit(for: app, cloneID: cloneID)
+    private func showTab3DOptions(for app: AppInfo, cloneID: UUID?, tabName: String) {
         let enhanced3D = Self.is3DSupersampling(for: app, cloneID: cloneID)
-        let picker = UIAlertController(title: app.name + " · " + tabName,
+        let picker = UIAlertController(title: "3D · " + tabName,
                                        message: "Cài đặt áp dụng khi tab khởi động lần tiếp theo.",
                                        preferredStyle: .actionSheet)
-        picker.addAction(UIAlertAction(title: "FPS: " + (fps == 0 ? "Không giới hạn" : String(fps)),
-                                       style: .default) { [weak self] _ in
-            self?.showTabFPSOptions(for: app, cloneID: cloneID, tabName: tabName)
-        })
-        picker.addAction(UIAlertAction(title: enhanced3D ? "Tắt nâng chất lượng 3D" :
-                                        "Bật nâng chất lượng 3D", style: .default) { _ in
-            Self.set3DSupersampling(!enhanced3D, for: app, cloneID: cloneID)
-        })
+        for enabled in [false, true] {
+            let title = (enabled ? "Nâng chất lượng 3D" : "Bình thường") +
+                (enabled == enhanced3D ? " ✓" : "")
+            picker.addAction(UIAlertAction(title: title, style: .default) { _ in
+                Self.set3DSupersampling(enabled, for: app, cloneID: cloneID)
+            })
+        }
         picker.addAction(UIAlertAction(title: "Hủy", style: .cancel))
         if let popover = picker.popoverPresentationController {
             popover.sourceView = springboardCollectionView
