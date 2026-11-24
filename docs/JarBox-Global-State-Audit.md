@@ -1048,3 +1048,29 @@ negative defaults and owner-local reconfiguration. Repository tests
 extract the accessors and guard launch and renderer wiring. Full
 repository suite, Objective-C/iOS build, actual 3D output and device
 validation remain outstanding.
+
+## 2D-first: deny new Metal work for hidden Canvas generations
+
+2D TeaMobi games (NSO, Avatar) are the primary target. Leave the existing
+single-session 3D engine intact; full multi-3D work is not a requirement
+for a future explicitly guarded 2D-only multi-session mode. Admission
+remains one JVM until the 2D path and exclusion of unsafe 3D usage are
+proven.
+
+A visible-key transition can precede Treo mode application. Previously
+the Metal recorder/drain checked mode but did not check current visible
+generation. Require the owner-local non-AFK predicate and visible key
+for recording, GPU workspace admission, and again before command
+submission; check the same predicate before Canvas snapshot/delivery.
+If denied, retain existing ordered CoreGraphics fallback, including
+commands already recorded. No global GPU purge, new timer, delay, or
+extra per-session GPU buffer is introduced. In-flight commands may
+finish; these checks are not a lock-linearized revocation or GPU
+lifetime proof. Shared serialized workspace remains a readiness item.
+
+Validation: standalone Linux clang harness using the exact new predicate
+and modeled RenderContexts passed 10,000 sequential transition cycles
+and 100,000 concurrent stale/missing-owner checks. 20/20 ASan+UBSan
+repetitions passed. Repository regression extracts the helper and
+checks recording/submit/flush wiring. No full repository test suite,
+Apple Metal build, on-device power measurement, or iPhone test run.

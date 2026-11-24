@@ -227,6 +227,12 @@ static inline int treo_rc_mode(const RenderContext *rc) {
     return rc ? atomic_load_explicit(&rc->afk_mode, memory_order_acquire) : 0;
 }
 static inline int treo_rc_afk(const RenderContext *rc) { return treo_rc_mode(rc) != 0; }
+// A hidden Canvas must not record or submit new Metal work merely because
+// its asynchronous Treo mode transition has not yet completed.
+static inline int treo_rc_may_submit(const RenderContext *rc) {
+    return rc && rc->heap_key && !treo_rc_afk(rc) &&
+        rc->heap_key == atomic_load_explicit(&g_visible_render_owner_key, memory_order_acquire);
+}
 static void process_dead_shells(void);
 static uint64_t treo_afk_now_ns(void) {
     struct timespec ts;
@@ -2332,7 +2338,7 @@ static s32 n_flushToScreen(Runtime *runtime, JClass *clazz) {
     const uint64_t visibleKey = atomic_load_explicit(
         &g_visible_render_owner_key, memory_order_acquire);
     if (!rc || !callerKey || callerKey != rc->heap_key ||
-        callerKey != visibleKey || afk ||
+        callerKey != visibleKey || afk || !treo_rc_may_submit(rc) ||
         (g_afk_canvas && g_afk_canvas_owner_key == callerKey &&
          g_afk_canvas == handle)) {
         rc_release(rc);
@@ -2354,7 +2360,7 @@ static s32 n_flushToScreen(Runtime *runtime, JClass *clazz) {
         if (image) {
             // Focus may have changed while creating this CGImage snapshot.
             // UIKit also validates the generation when draining queued frames.
-            if (callerKey != atomic_load_explicit(
+            if (!treo_rc_may_submit(rc) || callerKey != atomic_load_explicit(
                     &g_visible_render_owner_key, memory_order_acquire)) {
                 CGImageRelease(image);
             } else if (!jarbox_flush_route_lookup(&g_flush_routes, callerKey,
@@ -3542,6 +3548,8 @@ static id<MTLTexture> treo_live_solid(uint32_t color, NSMutableDictionary *solid
 }
 
 static int treo_live_render(RenderContext *rc, TreoLiveRun *run) {
+    // Recheck after acquiring the shared GPU workspace lock.
+    if (!treo_rc_may_submit(rc)) return 0;
     if (!treo_live_pipeline) {
         treo_live_device = MTLCreateSystemDefaultDevice();
         treo_live_queue = [treo_live_device newCommandQueue];
@@ -3610,6 +3618,9 @@ static int treo_live_render(RenderContext *rc, TreoLiveRun *run) {
         [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:start * 6 vertexCount:(i - start) * 6];
     }
     [enc endEncoding];
+    // Focus may move while preparing textures/vertices. The command has
+    // not been submitted yet; preserve the recorded run via CG fallback.
+    if (!treo_rc_may_submit(rc)) return 0;
     [command commit];
     [command waitUntilCompleted];
     if (command.status != MTLCommandBufferStatusCompleted) return 0;
@@ -3640,7 +3651,7 @@ static void treo_live_drain(RenderContext *rc, int allowMetal) {
     if (!run || !run->count) return;
     int usedMetal = 0;
     if (allowMetal && !rc->liveBlocked && treo_metal_live_enabled() &&
-        os_unfair_lock_trylock(&treo_live_gpu_lock)) {
+        treo_rc_may_submit(rc) && os_unfair_lock_trylock(&treo_live_gpu_lock)) {
         @autoreleasepool { usedMetal = treo_live_render(rc, run); }
         os_unfair_lock_unlock(&treo_live_gpu_lock);
     }
@@ -3703,7 +3714,7 @@ static void treo_live_barrier(RenderContext *rc) {
 
 static int treo_live_recording(RenderContext *rc) {
     return rc->ownsPixels && !rc->liveBlocked && treo_metal_live_enabled() &&
-        !treo_rc_afk(rc) &&
+        treo_rc_may_submit(rc) &&
         !atomic_load_explicit(&treo_replay_state, memory_order_relaxed) &&
         rc->width > 0 && rc->height > 0 && rc->width <= 1024 && rc->height <= 1024;
 }
