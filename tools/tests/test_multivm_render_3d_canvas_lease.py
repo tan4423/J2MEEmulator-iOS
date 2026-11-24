@@ -47,7 +47,9 @@ class MultiVMRender3DCanvasLeaseTest(unittest.TestCase):
         self.assertLess(destroy.index("jvm_destroy(slot->jvm)"),
                         destroy.index("j2me_micro3d_gl_cleanup_for_owner(destroyed_render_key)"))
         self.assertLess(destroy.index("j2me_micro3d_gl_cleanup_for_owner(destroyed_render_key)"),
-                        destroy.index("jarbox_native_heap_unregister_vm(destroyed_owner)"))
+                        destroy.index("jarbox_native_heap_unregister_key(destroyed_render_key)"))
+        self.assertIn("const uint64_t destroyed_render_key = slot->native_heap_key;", destroy)
+        self.assertNotIn("jarbox_native_heap_unregister_vm(", destroy)
 
 if __name__ == "__main__":
     unittest.main()

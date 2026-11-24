@@ -33,7 +33,7 @@ class MultiVMFrameOwnershipTest(unittest.TestCase):
             "jarbox_native_heap_key_for_runtime(runtime)",
             "callerKey != rc->heap_key",
             "callerKey != visibleKey",
-            "owned_flush(image, rc->width, rc->height, rc->heap_key)",
+            "owned_flush(image, rc->width, rc->height, rc->heap_key, token)",
         ):
             self.assertIn(needle, self.render)
         # Every Java draw/flush must authorize its immutable thread key,
@@ -45,13 +45,18 @@ class MultiVMFrameOwnershipTest(unittest.TestCase):
         self.assertIn("j2me_render_release_vm(slot->jvm)", self.bridge)
 
     def test_pending_frame_keeps_its_own_vm_key(self):
-        self.assertIn("private var pending: (image: CGImage, ownerKey: UInt64)?",
+        self.assertIn("private var pending: (image: CGImage, ownerKey: UInt64, token: UInt64)?",
                       self.view)
-        self.assertIn("func submit(_ frame: CGImage, ownerKey: UInt64)", self.view)
-        self.assertIn("func take() -> (image: CGImage, ownerKey: UInt64)?",
+        self.assertIn("func submit(_ frame: CGImage, ownerKey: UInt64, token: UInt64)", self.view)
+        self.assertIn("func take() -> (image: CGImage, ownerKey: UInt64, token: UInt64)?",
                       self.view)
         self.assertIn("j2me_render_visible_owner_key() == frame.ownerKey", self.view)
         self.assertIn("j2me_render_visible_owner_key() == ownerKey", self.view)
+        self.assertIn("pending = (frame, ownerKey, token)", self.view)
+        self.assertIn("self.inputSessionToken == frame.token", self.view)
+        self.assertIn("jvm_bridge_visible_session_token() == frame.token", self.view)
+        self.assertIn("gameFrameDestination.lookup(token: frame.token) === self", self.view)
+        self.assertIn("treo_mode_for_token(frame.token) == 0", self.view)
         self.assertIn("self.layer.contents = frame.image", self.view)
         self.assertIn("j2me_render_set_owned_flush_callback(ownedFlushCallback)",
                       self.game)

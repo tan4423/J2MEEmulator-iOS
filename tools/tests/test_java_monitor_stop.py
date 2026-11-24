@@ -1,7 +1,8 @@
 """Real host threads exercise the production monitor wait/stop functions.
 
 Runtime, Java heap, GC and spinlock plumbing are modeled; the iOS app,
-TinyCThread, interpreter and Java exception machinery are not exercised.
+interpreter and Java exception machinery are not exercised. The harness
+uses the bundled TinyCThread implementation on both Linux and macOS.
 Set JARBOX_MONITOR_SANITIZE=1 for ASan+UBSan with a suitable compiler.
 """
 from pathlib import Path
@@ -13,12 +14,13 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 JVM = ROOT / "J2MEEmulator/minijvm/jvm"
+UTILS = JVM.parent / "utils"
 PRELUDE = r'''
+#include "tinycthread.h"
 #include <assert.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <threads.h>
 #include <stdatomic.h>
 #include <time.h>
 typedef int s32; typedef int64_t s64; typedef unsigned char u8; typedef void *__refer;
@@ -150,7 +152,17 @@ class JavaMonitorStopTest(unittest.TestCase):
             c = Path(td) / "monitor.c"
             exe = Path(td) / "monitor"
             c.write_text(harness((JVM / "jvm_util.c").read_text()))
-            subprocess.run([compiler, *flags, str(c), "-o", str(exe)], check=True, timeout=60)
+            # macOS has pthreads but does not provide the C11 threads.h.
+            # Link the same portable implementation as MiniJVM. Keep the
+            # harness strict; vendor code uses its own compiler dialect.
+            obj = Path(td) / "tinycthread.o"
+            vendor_flags = [f for f in flags if f not in ("-std=c11", "-Werror")]
+            subprocess.run([compiler, "-std=gnu11", *vendor_flags,
+                            "-include", "stdint.h", "-c",
+                            str(UTILS / "tinycthread.c"), "-o", str(obj)],
+                           check=True, timeout=60)
+            subprocess.run([compiler, *flags, "-I", str(UTILS), str(c),
+                            str(obj), "-o", str(exe)], check=True, timeout=60)
             result = subprocess.run([str(exe)], capture_output=True, text=True, timeout=30)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertIn("monitor wait host: 100 cycles PASS", result.stdout)
