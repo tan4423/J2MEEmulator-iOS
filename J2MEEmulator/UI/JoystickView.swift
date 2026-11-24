@@ -15,6 +15,8 @@ class JoystickView: UIView {
 
     private var activeCode: Int32 = 0
     private var repeatTimer: Timer?
+    var inputSessionToken: UInt64 = 0
+    private var trackingTouch = false
 
     /// Dead zone as fraction of base radius (no key press within this range)
     private let deadZoneRatio: CGFloat = 0.25
@@ -96,13 +98,15 @@ class JoystickView: UIView {
     // MARK: - Touch handling
 
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
-        guard let pt = touches.first?.location(in: self) else { return }
+        guard inputSessionToken != 0, jvm_bridge_visible_session_token() == inputSessionToken,
+              let pt = touches.first?.location(in: self) else { return }
+        trackingTouch = true
         thumbView.alpha = 1
         update(at: pt)
     }
 
     override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
-        guard let pt = touches.first?.location(in: self) else { return }
+        guard trackingTouch, let pt = touches.first?.location(in: self) else { return }
         update(at: pt)
     }
 
@@ -150,6 +154,7 @@ class JoystickView: UIView {
     }
 
     private func reset() {
+        trackingTouch = false
         if activeCode != 0 { releaseKey(activeCode) }
         UIView.animate(withDuration: 0.15) { [weak self] in
             guard let self else { return }
@@ -159,22 +164,39 @@ class JoystickView: UIView {
     }
 
     private func pressKey(_ code: Int32) {
+        let token = inputSessionToken
+        guard token != 0, jvm_bridge_visible_session_token() == token else { return }
         activeCode = code
-        j2me_input_post_key(Int32(J2ME_INPUT_KEY_PRESSED), code)
+        j2me_input_post_key_for_token(token, Int32(J2ME_INPUT_KEY_PRESSED), code)
 
         repeatTimer?.invalidate()
-        repeatTimer = Timer.scheduledTimer(withTimeInterval: 0.4, repeats: false) { [weak self] _ in
-            self?.repeatTimer = Timer.scheduledTimer(withTimeInterval: 0.08, repeats: true) { [weak self] _ in
-                guard let self, self.activeCode == code else { return }
-                j2me_input_post_key(Int32(J2ME_INPUT_KEY_REPEATED), code)
+        repeatTimer = Timer.scheduledTimer(withTimeInterval: 0.4, repeats: false) { [weak self] timer in
+            guard let self, self.repeatTimer === timer, self.inputSessionToken == token,
+                  self.activeCode == code, jvm_bridge_visible_session_token() == token else { return }
+            self.repeatTimer = Timer.scheduledTimer(withTimeInterval: 0.08, repeats: true) { [weak self] timer in
+                guard let self, self.repeatTimer === timer, self.inputSessionToken == token,
+                      self.activeCode == code, jvm_bridge_visible_session_token() == token else {
+                    timer.invalidate()
+                    return
+                }
+                j2me_input_post_key_for_token(token, Int32(J2ME_INPUT_KEY_REPEATED), code)
             }
         }
     }
 
     private func releaseKey(_ code: Int32) {
-        j2me_input_post_key(Int32(J2ME_INPUT_KEY_RELEASED), code)
+        j2me_input_post_key_for_token(inputSessionToken, Int32(J2ME_INPUT_KEY_RELEASED), code)
         activeCode = 0
         repeatTimer?.invalidate()
         repeatTimer = nil
+    }
+
+    func cancelGameInput() {
+        trackingTouch = false
+        if activeCode != 0 { releaseKey(activeCode) }
+        repeatTimer?.invalidate()
+        repeatTimer = nil
+        thumbView.center = baseView.center
+        thumbView.alpha = 0
     }
 }

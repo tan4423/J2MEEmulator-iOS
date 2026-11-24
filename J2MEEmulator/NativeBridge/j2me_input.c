@@ -32,6 +32,7 @@ typedef struct {
     _Atomic(MiniJVM *) vm;
     uint64_t generation; // guarded by g_input_context_lock
     uint64_t heap_key;   // native generation, guarded by g_input_context_lock
+    uint64_t session_token; // launch identity, guarded by g_input_context_lock
     JarBoxInputRing ring;
     atomic_int display_wait_enabled;
     pthread_mutex_t display_wait_lock;
@@ -82,7 +83,9 @@ static J2MEInputContext *visible_input_context(void) {
 static int bind_input_context(MiniJVM *vm) {
     if (!vm) return 0;
     const uint64_t heap_key = jarbox_native_heap_key_for_vm(vm);
-    if (!heap_key) return 0;
+    const uint64_t token = vm->session ?
+        __atomic_load_n(&vm->session->token, __ATOMIC_ACQUIRE) : 0;
+    if (!heap_key || !token) return 0;
     pthread_once(&g_input_context_once, init_input_contexts);
     pthread_mutex_lock(&g_input_context_lock);
     J2MEInputContext *ctx = context_for_vm(vm);
@@ -98,6 +101,7 @@ static int bind_input_context(MiniJVM *vm) {
                 ctx->generation = ++g_input_next_generation;
                 if (ctx->generation == 0) ctx->generation = ++g_input_next_generation;
                 ctx->heap_key = heap_key;
+                ctx->session_token = token;
                 atomic_store_explicit(&ctx->vm, vm, memory_order_release);
                 break;
             }
@@ -261,6 +265,22 @@ void j2me_input_post_touch_for_owner(uint64_t owner_key, int type, int x, int y)
 
 void j2me_input_post_key(int type, int keyCode) {
     enqueue_event(type, 0, 0, keyCode);
+}
+
+// Physical Canvas controls identify the owning launch, not current focus.
+static void enqueue_event_for_token(uint64_t token, int type, int x, int y, int keyCode) {
+    if (!token) return;
+    pthread_mutex_lock(&g_input_context_lock);
+    J2MEInputContext *ctx = visible_input_context();
+    if (ctx && ctx->session_token == token)
+        enqueue_to_context(ctx, type, x, y, keyCode);
+    pthread_mutex_unlock(&g_input_context_lock);
+}
+void j2me_input_post_key_for_token(uint64_t token, int type, int keyCode) {
+    enqueue_event_for_token(token, type, 0, 0, keyCode);
+}
+void j2me_input_post_touch_for_token(uint64_t token, int type, int x, int y) {
+    enqueue_event_for_token(token, type, x, y, 0);
 }
 
 // Audio completion events must target the JVM that created the sound, even
@@ -447,6 +467,7 @@ void j2me_input_release_vm(MiniJVM *vm) {
             atomic_store_explicit(&g_visible_input_context, NULL, memory_order_release);
         atomic_store_explicit(&ctx->vm, NULL, memory_order_release);
         ctx->heap_key = 0;
+        ctx->session_token = 0;
         jarbox_input_ring_reset(&ctx->ring);
         printf("[J2ME Input] Released owned JVM input context\n");
     }

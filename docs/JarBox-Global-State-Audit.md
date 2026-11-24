@@ -1099,3 +1099,24 @@ and 300,000 concurrent submissions PASS. 20/20 ASan+UBSan repetitions
 PASS. Source regression verifies the input binding and all three UIKit
 paths. Full repository suite, UIKit/Objective-C compilation, real
 form submission and iPhone validation remain outstanding.
+
+## 2D Canvas controls: session-bound input and event-driven repeat cancellation
+
+Physical pointer, joystick, number pad, soft key and directional pad
+events previously used the currently focused input destination. Bind
+the immutable launch token to the native input slot and to the controls.
+Validate it under the input-context mutex at enqueue; a parked, retired
+or reused slot cannot redirect an old event to a different launch.
+Cancel active pointers and held keys, and invalidate the existing
+joystick/numpad/direction repeat timers before Back revokes focus,
+before stop/blackout and when switching to Form/List. On worker
+completion cancel local controls even when a different tab is alive.
+Timer callbacks validate their identity and launch token. No new
+timer/polling mechanism, engine 3D, RMS, network or admission change.
+
+Validation: standalone Linux clang C11 harness of the exact three new
+native token-routing functions with modeled input queues ran 10,000
+sequential cycles and 300,000 concurrent submissions PASS; ASan+UBSan
+20/20 PASS. Repository test extracts those functions and adds source
+guards for the Swift wiring. Swift UIKit compilation, real Java input
+delivery, full repository tests and on-device CPU savings not measured.

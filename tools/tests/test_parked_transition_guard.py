@@ -14,7 +14,7 @@ class ParkedTransitionGuardTest(unittest.TestCase):
         # diagnostics or focus just because Back was tapped.
         ready = body.index("guard treo_mode_for_token(gameSessionToken) >= 0 else { return }")
         self.assertNotIn("jvm_bridge_session_phase()", body)
-        for effect in ("stopJarAudit()", "discardCPUProfile()", "releaseDirection(code)",
+        for effect in ("stopJarAudit()", "discardCPUProfile()", "cancelGameInput()",
                        "hideBlackout()", "startParkedTreo()"):
             self.assertLess(ready, body.index(effect), effect)
         park = body.index("startParkedTreo()")

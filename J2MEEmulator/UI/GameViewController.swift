@@ -376,6 +376,7 @@ class GameViewController: UIViewController {
     private var mainStackAuditID: UUID?
     private var mainStackAuditWork: DispatchWorkItem?
     private var heldDirections: Set<Int32> = []
+    private var heldSoftKeys: Set<Int32> = []
     private var directionTimers: [Int32: Timer] = [:]
 
     init(jarPath: String, appName: String, appIcon: UIImage,
@@ -906,8 +907,8 @@ class GameViewController: UIViewController {
 
     @objc private func directionDown(_ sender: UIButton) {
         let code = Int32(sender.tag)
-        guard heldDirections.insert(code).inserted else { return }
-        j2me_input_post_key(Int32(J2ME_INPUT_KEY_PRESSED), code)
+        guard ownsVisibleGameSession(), heldDirections.insert(code).inserted else { return }
+        j2me_input_post_key_for_token(gameSessionToken, Int32(J2ME_INPUT_KEY_PRESSED), code)
         if code != -5 {
             let timer = Timer(fireAt: Date(timeIntervalSinceNow: 0.36), interval: 0.085,
                               target: self, selector: #selector(repeatDirection(_:)),
@@ -918,8 +919,12 @@ class GameViewController: UIViewController {
     }
 
     @objc private func repeatDirection(_ timer: Timer) {
-        guard let code = timer.userInfo as? Int32, heldDirections.contains(code) else { return }
-        j2me_input_post_key(Int32(J2ME_INPUT_KEY_REPEATED), code)
+        guard let code = timer.userInfo as? Int32, heldDirections.contains(code),
+              directionTimers[code] === timer, ownsVisibleGameSession() else {
+            timer.invalidate()
+            return
+        }
+        j2me_input_post_key_for_token(gameSessionToken, Int32(J2ME_INPUT_KEY_REPEATED), code)
     }
 
     @objc private func directionUp(_ sender: UIButton) {
@@ -929,12 +934,25 @@ class GameViewController: UIViewController {
     private func releaseDirection(_ code: Int32) {
         directionTimers.removeValue(forKey: code)?.invalidate()
         if heldDirections.remove(code) != nil {
-            j2me_input_post_key(Int32(J2ME_INPUT_KEY_RELEASED), code)
+            j2me_input_post_key_for_token(gameSessionToken, Int32(J2ME_INPUT_KEY_RELEASED), code)
         }
     }
 
-    private func setPadMode(_ mode: PadMode) {
+    private func cancelGameInput() {
         for code in Array(heldDirections) { releaseDirection(code) }
+        for code in heldSoftKeys {
+            j2me_input_post_key_for_token(gameSessionToken, Int32(J2ME_INPUT_KEY_RELEASED), code)
+        }
+        heldSoftKeys.removeAll()
+        lskButton.backgroundColor = UIColor(white: 0.12, alpha: 1)
+        rskButton.backgroundColor = UIColor(white: 0.12, alpha: 1)
+        joystickView?.cancelGameInput()
+        numpadView?.cancelGameInput()
+        emulatorView.cancelGameInput()
+    }
+
+    private func setPadMode(_ mode: PadMode) {
+        cancelGameInput()
         padMode = mode
         applyPadMode()
     }
@@ -1744,7 +1762,7 @@ class GameViewController: UIViewController {
         discardCPUProfile()
         blackoutRequestedMode = mode
         blackoutNSOLiveHz = treo_nso_prior_repaint_hz()
-        for code in Array(heldDirections) { releaseDirection(code) }
+        cancelGameInput()
         let cover = UIButton(type: .custom)
         cover.backgroundColor = .black
         cover.setTitle(blackoutModeTitle(), for: .normal)
@@ -3472,13 +3490,15 @@ class GameViewController: UIViewController {
     // MARK: - Soft keys
 
     @objc private func softKeyDown(_ sender: UIButton) {
+        guard ownsVisibleGameSession(), heldSoftKeys.insert(Int32(sender.tag)).inserted else { return }
         softKeyHaptic.impactOccurred(intensity: 0.6)
-        j2me_input_post_key(Int32(J2ME_INPUT_KEY_PRESSED), Int32(sender.tag))
+        j2me_input_post_key_for_token(gameSessionToken, Int32(J2ME_INPUT_KEY_PRESSED), Int32(sender.tag))
         sender.backgroundColor = UIColor(white: 0.30, alpha: 1)
     }
 
     @objc private func softKeyUp(_ sender: UIButton) {
-        j2me_input_post_key(Int32(J2ME_INPUT_KEY_RELEASED), Int32(sender.tag))
+        guard heldSoftKeys.remove(Int32(sender.tag)) != nil else { return }
+        j2me_input_post_key_for_token(gameSessionToken, Int32(J2ME_INPUT_KEY_RELEASED), Int32(sender.tag))
         sender.backgroundColor = UIColor(white: 0.12, alpha: 1)
     }
 
@@ -3510,6 +3530,9 @@ class GameViewController: UIViewController {
         }
         ownsJVMSession = true
         gameSessionToken = acquiredToken
+        emulatorView.inputSessionToken = acquiredToken
+        joystickView?.inputSessionToken = acquiredToken
+        numpadView?.inputSessionToken = acquiredToken
         setGlobalEmulatorView(emulatorView)
         j2me_render_set_afk_suspended(0)
         j2me_render_set_flush_callback(flushCallback)
@@ -3555,6 +3578,7 @@ class GameViewController: UIViewController {
                 // This worker's token is retired; only an empty registry
                 // authorizes legacy process-wide Treo/renderer resets.
                 let mayResetNative = jvm_bridge_active_session_count() == 0
+                self.cancelGameInput()
                 // Hidden managed tabs have no UIKit destination. Their
                 // completion must not dismiss or reset a different tab.
                 if self.sessionLibrary != nil && self.libraryIsPresented {
@@ -3602,7 +3626,6 @@ class GameViewController: UIViewController {
                 self.finishStartupWatchdog()
                 self.discardCPUProfile()
                 self.hideBlackout()
-                for code in Array(self.heldDirections) { self.releaseDirection(code) }
                 if self.libraryIsPresented {
                     // Close the parked library *before* dismissing its presenting
                     // game controller. A live VM must never be abandoned behind UI.
@@ -3785,7 +3808,7 @@ class GameViewController: UIViewController {
         finishStartupWatchdog()
         stopJarAudit()
         discardCPUProfile()
-        for code in Array(heldDirections) { releaseDirection(code) }
+        cancelGameInput()
         if blackout != nil { hideBlackout() }
         // Leave Back usable: another tap opens stuck-session recovery.
         // Scope stop to THIS game so a late callback cannot stop a clone.
@@ -3968,7 +3991,7 @@ class GameViewController: UIViewController {
         guard treo_mode_for_token(gameSessionToken) >= 0 else { return }
         stopJarAudit()
         discardCPUProfile()
-        for code in Array(heldDirections) { releaseDirection(code) }
+        cancelGameInput()
         if blackout != nil { hideBlackout() }  // restore screen brightness and probes
 
         // Both managed and legacy libraries require a successful native
@@ -4096,7 +4119,7 @@ class GameViewController: UIViewController {
         joystickView?.isHidden = true
         numpadView?.isHidden = true
         listView.isHidden = true
-        for code in Array(heldDirections) { releaseDirection(code) }
+        cancelGameInput()
         applyPadMode()
     }
 
@@ -4110,7 +4133,7 @@ class GameViewController: UIViewController {
         joystickView?.isHidden = true
         numpadView?.isHidden = true
         formView.isHidden = true
-        for code in Array(heldDirections) { releaseDirection(code) }
+        cancelGameInput()
         applyPadMode()
     }
 

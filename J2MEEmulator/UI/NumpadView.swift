@@ -14,6 +14,8 @@ class NumpadView: UIView {
 
     private var repeatTimer: Timer?
     private var repeatKeyCode: Int32 = 0
+    var inputSessionToken: UInt64 = 0
+    private var heldKeys: Set<Int32> = []
     private var commandButtons: [UIButton] = []
     private let haptic = UIImpactFeedbackGenerator(style: .light)
 
@@ -93,24 +95,51 @@ class NumpadView: UIView {
 
     @objc private func down(_ sender: UIButton) {
         let code = Int32(sender.tag)
+        let token = inputSessionToken
+        guard token != 0, jvm_bridge_visible_session_token() == token,
+              heldKeys.insert(code).inserted else { return }
         haptic.impactOccurred(intensity: 0.6)
-        j2me_input_post_key(Int32(J2ME_INPUT_KEY_PRESSED), code)
+        j2me_input_post_key_for_token(token, Int32(J2ME_INPUT_KEY_PRESSED), code)
         sender.backgroundColor = UIColor(white: 0.30, alpha: 1)
         repeatKeyCode = code
         repeatTimer?.invalidate()
-        repeatTimer = Timer.scheduledTimer(withTimeInterval: 0.4, repeats: false) { [weak self] _ in
-            self?.repeatTimer = Timer.scheduledTimer(withTimeInterval: 0.08, repeats: true) { [weak self] _ in
-                guard let self, self.repeatKeyCode == code else { return }
-                j2me_input_post_key(Int32(J2ME_INPUT_KEY_REPEATED), code)
+        repeatTimer = Timer.scheduledTimer(withTimeInterval: 0.4, repeats: false) { [weak self] timer in
+            guard let self, self.repeatTimer === timer, self.inputSessionToken == token,
+                  self.heldKeys.contains(code), jvm_bridge_visible_session_token() == token else { return }
+            self.repeatTimer = Timer.scheduledTimer(withTimeInterval: 0.08, repeats: true) { [weak self] timer in
+                guard let self, self.repeatTimer === timer, self.inputSessionToken == token,
+                      self.heldKeys.contains(code), jvm_bridge_visible_session_token() == token else {
+                    timer.invalidate()
+                    return
+                }
+                j2me_input_post_key_for_token(token, Int32(J2ME_INPUT_KEY_REPEATED), code)
             }
         }
     }
 
     @objc private func up(_ sender: UIButton) {
-        j2me_input_post_key(Int32(J2ME_INPUT_KEY_RELEASED), Int32(sender.tag))
+        let code = Int32(sender.tag)
+        guard heldKeys.remove(code) != nil else { return }
+        j2me_input_post_key_for_token(inputSessionToken, Int32(J2ME_INPUT_KEY_RELEASED), code)
         sender.backgroundColor = UIColor(white: 0.12, alpha: 1)
+        if repeatKeyCode == code {
+            repeatTimer?.invalidate()
+            repeatTimer = nil
+            repeatKeyCode = 0
+        }
+    }
+
+    func cancelGameInput() {
         repeatTimer?.invalidate()
         repeatTimer = nil
+        repeatKeyCode = 0
+        for code in heldKeys {
+            j2me_input_post_key_for_token(inputSessionToken, Int32(J2ME_INPUT_KEY_RELEASED), code)
+            if let button = viewWithTag(Int(code)) as? UIButton {
+                button.backgroundColor = UIColor(white: 0.12, alpha: 1)
+            }
+        }
+        heldKeys.removeAll()
     }
 
     // MARK: - Canvas command buttons
@@ -159,6 +188,8 @@ class NumpadView: UIView {
     }
 
     @objc private func commandTapped(_ sender: UIButton) {
-        j2me_input_post_touch(Int32(J2ME_UI_COMMAND_ACTION), commandRevision, Int32(sender.tag - 1000))
+        guard commandButtons.contains(where: { $0 === sender }),
+              commandRevision == j2me_ui_revision() else { return }
+        j2me_input_post_touch_for_token(inputSessionToken, Int32(J2ME_UI_COMMAND_ACTION), commandRevision, Int32(sender.tag - 1000))
     }
 }

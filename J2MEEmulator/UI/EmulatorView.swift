@@ -48,6 +48,8 @@ class EmulatorView: UIView {
     // J2ME virtual canvas size
     var canvasWidth: Int = 240
     var canvasHeight: Int = 320
+    var inputSessionToken: UInt64 = 0
+    private var activePointers: [ObjectIdentifier: (Int, Int)] = [:]
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -103,34 +105,44 @@ class EmulatorView: UIView {
     // ============================================================
 
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
+        guard inputSessionToken != 0,
+              jvm_bridge_visible_session_token() == inputSessionToken else { return }
         for touch in touches {
-            let pt = touch.location(in: self)
-            if let (vx, vy) = convertToVirtual(pt) {
-                j2me_input_post_touch(Int32(J2ME_INPUT_POINTER_PRESSED), Int32(vx), Int32(vy))
+            if let (vx, vy) = convertToVirtual(touch.location(in: self)) {
+                activePointers[ObjectIdentifier(touch)] = (vx, vy)
+                j2me_input_post_touch_for_token(inputSessionToken, Int32(J2ME_INPUT_POINTER_PRESSED), Int32(vx), Int32(vy))
             }
         }
     }
 
     override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
         for touch in touches {
-            let pt = touch.location(in: self)
-            if let (vx, vy) = convertToVirtual(pt) {
-                j2me_input_post_touch(Int32(J2ME_INPUT_POINTER_DRAGGED), Int32(vx), Int32(vy))
+            let id = ObjectIdentifier(touch)
+            guard activePointers[id] != nil else { continue }
+            if let (vx, vy) = convertToVirtual(touch.location(in: self)) {
+                activePointers[id] = (vx, vy)
+                j2me_input_post_touch_for_token(inputSessionToken, Int32(J2ME_INPUT_POINTER_DRAGGED), Int32(vx), Int32(vy))
             }
         }
     }
 
     override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
         for touch in touches {
-            let pt = touch.location(in: self)
-            if let (vx, vy) = convertToVirtual(pt) {
-                j2me_input_post_touch(Int32(J2ME_INPUT_POINTER_RELEASED), Int32(vx), Int32(vy))
-            }
+            guard let last = activePointers.removeValue(forKey: ObjectIdentifier(touch)) else { continue }
+            let (vx, vy) = convertToVirtual(touch.location(in: self)) ?? last
+            j2me_input_post_touch_for_token(inputSessionToken, Int32(J2ME_INPUT_POINTER_RELEASED), Int32(vx), Int32(vy))
         }
     }
 
     override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
         touchesEnded(touches, with: event)
+    }
+
+    func cancelGameInput() {
+        for (vx, vy) in activePointers.values {
+            j2me_input_post_touch_for_token(inputSessionToken, Int32(J2ME_INPUT_POINTER_RELEASED), Int32(vx), Int32(vy))
+        }
+        activePointers.removeAll()
     }
 
     /// Convert screen point to J2ME virtual canvas coordinates.
