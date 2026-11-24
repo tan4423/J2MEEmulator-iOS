@@ -106,6 +106,38 @@ class MIDPOwnedInputTest(unittest.TestCase):
         self.assertIn("vc.showListView(ownerKey: ownerKey)", game)
         self.assertEqual(game.count("j2me_input_post_touch_for_owner(originKey,"), 3)
 
+    def test_single_text_input_focus_is_scoped_and_cancellable(self):
+        form = (ROOT / "UI/FormView.swift").read_text()
+        game = (ROOT / "UI/GameViewController.swift").read_text()
+        focus = form.split("func scheduleAutomaticTextFocus(", 1)[1].split("func cancelAutomaticTextFocus()", 1)[0]
+        for guard in ("itemCount == 1", "editableFields.count == 1",
+                      "field.isEnabled", "(fieldLimits[field.tag] ?? 0) > 0",
+                      "generation == self.automaticTextFocusGeneration",
+                      "ownerKey == self.screenOwnerKey",
+                      "revision == self.screenRevision", "revision == j2me_ui_revision()",
+                      "ownerKey == j2me_ui_focused_owner_key()",
+                      "ownerKey == j2me_render_visible_owner_key()",
+                      "window.isKeyWindow", "activationState == .foregroundActive",
+                      "field.window === window", "canFocus()", "!self.isHidden"):
+            self.assertIn(guard, focus)
+        self.assertLess(focus.index("DispatchQueue.main.async"), focus.index("field.becomeFirstResponder()"))
+        self.assertNotIn("j2me_input_post", focus)
+        self.assertNotIn("j2me_ui_stage_text", focus)
+        cancel = form.split("func cancelAutomaticTextFocus()", 1)[1].split("private func addChoice(", 1)[0]
+        self.assertIn("automaticTextFocusGeneration &+= 1", cancel)
+        self.assertIn("endEditing(true)", cancel)
+        show = game.split("func showFormView(ownerKey:", 1)[1].split("func showListView(", 1)[0]
+        self.assertLess(show.index("formView.isHidden = false"), show.index("formView.scheduleAutomaticTextFocus"))
+        self.assertLess(show.index("cancelGameInput()"), show.index("formView.scheduleAutomaticTextFocus"))
+        for guard in ("self.gameSessionToken == token", "self.ownsVisibleGameSession()",
+                      "!self.gameStopRequested", "self.blackout == nil", "self.presentedViewController == nil"):
+            self.assertIn(guard, show)
+        for signature in ("private func cancelGameInput()", "func showCanvasView()",
+                          "override func viewDidDisappear("):
+            method = game.split(signature, 1)[1].split("\n    }", 1)[0]
+            self.assertIn("formView.cancelAutomaticTextFocus()", method)
+        self.assertIn("Int32(J2ME_UI_ACTION_SHOW_TEXTBOX): vc.showFormView(ownerKey: ownerKey)", game)
+
 
 if __name__ == "__main__":
     unittest.main()

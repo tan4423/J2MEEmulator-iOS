@@ -768,6 +768,7 @@ class GameViewController: UIViewController {
 
     override func viewDidDisappear(_ animated: Bool) {
         super.viewDidDisappear(animated)
+        formView.cancelAutomaticTextFocus()
         if let previous = gameIdleTimerPreviouslyDisabled {
             UIApplication.shared.isIdleTimerDisabled = previous
             gameIdleTimerPreviouslyDisabled = nil
@@ -1264,6 +1265,7 @@ class GameViewController: UIViewController {
     }
 
     private func cancelGameInput() {
+        formView.cancelAutomaticTextFocus()
         directionalPad?.cancelGameInput()
         for code in Array(heldDirections) { releaseDirection(code) }
         for code in heldSoftKeys {
@@ -4516,6 +4518,7 @@ class GameViewController: UIViewController {
     // ============================================================
 
     func showCanvasView() {
+        formView.cancelAutomaticTextFocus()
         deferredGameAlert = false
         emulatorView.isHidden = false
         joystickView?.isHidden = layoutMode == .portrait
@@ -4538,6 +4541,13 @@ class GameViewController: UIViewController {
         listView.isHidden = true
         cancelGameInput()
         applyPadMode()
+        let token = gameSessionToken
+        formView.scheduleAutomaticTextFocus { [weak self] in
+            guard let self else { return false }
+            return self.gameSessionToken == token && self.ownsVisibleGameSession() &&
+                !self.gameStopRequested && self.blackout == nil &&
+                self.presentedViewController == nil
+        }
     }
 
     func showListView(ownerKey: UInt64) {
@@ -4567,6 +4577,7 @@ class GameViewController: UIViewController {
             return
         }
         guard ownsVisibleGameSession() else { return }
+        formView.cancelAutomaticTextFocus()
         let originKey = j2me_ui_focused_owner_key()
         guard originKey != 0,
               j2me_render_visible_owner_key() == originKey else { return }

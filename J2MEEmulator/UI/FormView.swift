@@ -82,11 +82,14 @@ class FormView: UIView {
     private var editableFields: [UITextField] = []
     private var choiceSelections: [Int: Int] = [:]
     private var fieldLimits: [Int: Int] = [:]
+    private var itemCount = 0
+    private var automaticTextFocusGeneration: UInt64 = 0
 
     private var screenRevision: Int32 = 0
     private var screenOwnerKey: UInt64 = 0
 
     func buildFromNativeData(ownerKey: UInt64) {
+        cancelAutomaticTextFocus()
         screenOwnerKey = ownerKey
         screenRevision = j2me_ui_revision()
         // Clear previous content
@@ -102,6 +105,7 @@ class FormView: UIView {
 
         // Items
         let count = j2me_ui_get_form_item_count()
+        itemCount = Int(count)
         for i in 0..<count {
             let itemType = j2me_ui_get_form_item_type(Int32(i))
             let label = String(cString: j2me_ui_get_form_item_label(Int32(i)))
@@ -155,6 +159,40 @@ class FormView: UIView {
             extraCommands.showsMenuAsPrimaryAction = true
             commandBar.addArrangedSubview(extraCommands)
         }
+    }
+
+    // A MIDP TextBox is represented by one TextField. A plain Form with
+    // exactly one editable item can use the same shortcut. Do not focus a
+    // login/settings form containing other items, or a read-only field.
+    func scheduleAutomaticTextFocus(canFocus: @escaping () -> Bool) {
+        guard itemCount == 1, editableFields.count == 1,
+              let field = editableFields.first, field.isEnabled,
+              (fieldLimits[field.tag] ?? 0) > 0 else { return }
+        automaticTextFocusGeneration &+= 1
+        let generation = automaticTextFocusGeneration
+        let ownerKey = screenOwnerKey
+        let revision = screenRevision
+        // The screen callback holds the native UI lock while building.
+        // Wait until it returns and the form has become visible.
+        DispatchQueue.main.async { [weak self, weak field] in
+            guard let self, let field,
+                  generation == self.automaticTextFocusGeneration,
+                  ownerKey != 0, ownerKey == self.screenOwnerKey,
+                  revision == self.screenRevision, revision == j2me_ui_revision(),
+                  ownerKey == j2me_ui_focused_owner_key(),
+                  ownerKey == j2me_render_visible_owner_key(),
+                  canFocus(), !self.isHidden,
+                  let window = self.window, window.isKeyWindow,
+                  window.windowScene?.activationState == .foregroundActive,
+                  field.window === window, field.isEnabled,
+                  self.editableFields.contains(where: { $0 === field }) else { return }
+            if !field.isFirstResponder { _ = field.becomeFirstResponder() }
+        }
+    }
+
+    func cancelAutomaticTextFocus() {
+        automaticTextFocusGeneration &+= 1
+        endEditing(true)
     }
 
     private func addChoice(label: String, index: Int) {
@@ -261,7 +299,7 @@ class FormView: UIView {
         guard ownerKey != 0, ownerKey == screenOwnerKey,
               ownerKey == j2me_ui_focused_owner_key(), ownerKey == j2me_render_visible_owner_key(),
               revision == screenRevision, revision == j2me_ui_revision() else { return }
-        endEditing(true)
+        cancelAutomaticTextFocus()
         for field in editableFields where field.isEnabled {
             let limit = fieldLimits[field.tag] ?? 0
             let units = Array((field.text ?? "").utf16.prefix(limit))
