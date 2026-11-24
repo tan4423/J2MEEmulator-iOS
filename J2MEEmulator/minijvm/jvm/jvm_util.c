@@ -336,23 +336,41 @@ s64 threadlist_sum_heap(MiniJVM *jvm) {
     return hsize;
 }
 
+// A wait node is stack-owned by the waiting pthread. Both publications
+// (thread info and monitor wait set) must be removed before destruction.
+struct JarBoxMonitorWaiter {
+    mtx_t mutex;
+    cnd_t cond;
+    int done;
+    JarBoxMonitorWaiter *next;
+};
+
+// Sticky, targeted wake. Never acquire a Java monitor here. The caller
+// holds one publication lock, and the waiter takes no publication lock
+// while holding this private mutex.
+static int jarbox_waiter_signal(JarBoxMonitorWaiter *w) {
+    if (!w) return 0;
+    mtx_lock(&w->mutex);
+    int changed = !w->done;
+    if (changed) {
+        w->done = 1;
+        cnd_signal(&w->cond);
+    }
+    mtx_unlock(&w->mutex);
+    return changed;
+}
+
 void thread_stop_all(MiniJVM *jvm) {
     spin_lock(&jvm->thread_list->spinlock);
-    s32 i;
-    for (i = 0; i < jvm->thread_list->length; i++) {
+    for (s32 i = 0; i < jvm->thread_list->length; i++) {
         Runtime *r = arraylist_get_value_unsafe(jvm->thread_list, i);
-
-        //jthread_suspend(r);
-        r->thrd_info->no_pause = 1;
-        r->thrd_info->is_stop = 1;//stop thread that's sleeping state
-        r->thrd_info->is_interrupt = 1;//also interrupt to break out of wait/sleep
-        MemoryBlock *tl = r->thrd_info->curThreadLock;
-        if (tl) {
-            jthread_lock(tl, r);
-            jthread_notify(tl, r); //wake up thread that's waiting state
-            jthread_unlock(tl, r);
-        }
-
+        JavaThreadInfo *info = r->thrd_info;
+        spin_lock(&info->lock);
+        info->no_pause = 1;
+        info->is_stop = 1;
+        info->is_interrupt = 1;
+        jarbox_waiter_signal(info->monitor_waiter);
+        spin_unlock(&info->lock);
     }
     spin_unlock(&jvm->thread_list->spinlock);
 }
@@ -393,6 +411,8 @@ void thread_lock_init(ThreadLock *lock) {
         mtx_init(&lock->mutex_lock, mtx_recursive | mtx_timed);
         lock->owner_thread = NULL;
         lock->count = 0;
+        spin_init(&lock->waiters_lock, 0);
+        lock->waiters = NULL;
     }
 }
 
@@ -400,6 +420,7 @@ void thread_lock_dispose(ThreadLock *lock) {
     if (lock) {
         cnd_destroy(&lock->thread_cond);
         mtx_destroy(&lock->mutex_lock);
+        spin_destroy(&lock->waiters_lock);
     }
 }
 
@@ -1055,34 +1076,36 @@ s32 jthread_unlock(MemoryBlock *mb, Runtime *runtime) {
     return 0;
 }
 
+static void jarbox_monitor_notify(ThreadLock *lock, int all) {
+    spin_lock(&lock->waiters_lock);
+    for (JarBoxMonitorWaiter *w = lock->waiters; w; w = w->next) {
+        if (jarbox_waiter_signal(w) && !all) break;
+    }
+    spin_unlock(&lock->waiters_lock);
+}
+
 s32 jthread_notify(MemoryBlock *mb, Runtime *runtime) {
     if (mb == NULL)return -1;
-    if (mb->thread_lock == NULL) {
-        jthreadlock_create(runtime, mb);
-    }
-    cnd_signal(&mb->thread_lock->thread_cond);
+    if (mb->thread_lock == NULL) jthreadlock_create(runtime, mb);
+    jarbox_monitor_notify(mb->thread_lock, 0);
     return 0;
 }
 
 s32 jthread_notifyAll(MemoryBlock *mb, Runtime *runtime) {
     if (mb == NULL)return -1;
-    if (mb->thread_lock == NULL) {
-        jthreadlock_create(runtime, mb);
-    }
-    cnd_broadcast(&mb->thread_lock->thread_cond);
+    if (mb->thread_lock == NULL) jthreadlock_create(runtime, mb);
+    jarbox_monitor_notify(mb->thread_lock, 1);
     return 0;
 }
 
 s32 jthread_interrupt(Runtime *rt_thread) {
-    if (rt_thread) {
-        rt_thread->thrd_info->is_interrupt = 1;
-
-        if (rt_thread->thrd_info->thread_status == THREAD_STATUS_WAIT) {
-            jthread_wakeup(rt_thread);
-        }
-        return 0;
-    }
-    return -1;
+    if (!rt_thread) return -1;
+    JavaThreadInfo *info = rt_thread->thrd_info;
+    spin_lock(&info->lock);
+    info->is_interrupt = 1;
+    jarbox_waiter_signal(info->monitor_waiter);
+    spin_unlock(&info->lock);
+    return 0;
 }
 
 s32 jthread_yield(Runtime *runtime) {
@@ -1115,46 +1138,92 @@ s32 jthread_resume(Runtime *runtime) {
 
 s32 jthread_waitTime(MemoryBlock *mb, Runtime *runtime, s64 waitms) {
     if (mb == NULL)return -1;
-    if (!mb->thread_lock) {
-        jthreadlock_create(runtime, mb);
+    if (!mb->thread_lock) jthreadlock_create(runtime, mb);
+    ThreadLock *lock = mb->thread_lock;
+    JavaThreadInfo *info = runtime->thrd_info;
+    // Object.wait must release and later restore the whole recursive monitor.
+    void *owner = lock->owner_thread;
+    s32 depth = lock->count;
+    if (owner != (void *)info || depth <= 0) {
+        push_ref(runtime->stack, (__refer)exception_create(JVM_EXCEPTION_ILLEGALMONITORSTATE, runtime));
+        return RUNTIME_STATUS_EXCEPTION;
+    }
+    JarBoxMonitorWaiter waiter = {0};
+    if (mtx_init(&waiter.mutex, mtx_plain) != thrd_success) return RUNTIME_STATUS_ERROR;
+    if (cnd_init(&waiter.cond) != thrd_success) {
+        mtx_destroy(&waiter.mutex);
+        return RUNTIME_STATUS_ERROR;
     }
     jthread_block_enter(runtime);
-    runtime->thrd_info->curThreadLock = mb;
-    u8 thread_status = runtime->thrd_info->thread_status;
-    runtime->thrd_info->thread_status = THREAD_STATUS_WAIT;
-
-    // wait会释放锁，因此保存锁的拥有者和计数
-    void *saveThread = mb->thread_lock->owner_thread;
-    s32 saveCount = mb->thread_lock->count;
-    mb->thread_lock->owner_thread = NULL;
-    mb->thread_lock->count = 0;
-    if (waitms) {
-        waitms += currentTimeMillis();
-        struct timespec t;
-        //clock_gettime(CLOCK_REALTIME, &t);
-        t.tv_sec = waitms / 1000;
-        t.tv_nsec = (waitms % 1000) * 1000000;
-        cnd_timedwait(&mb->thread_lock->thread_cond, &mb->thread_lock->mutex_lock, &t);
-    } else {
-        cnd_wait(&mb->thread_lock->thread_cond, &mb->thread_lock->mutex_lock);
+    spin_lock(&info->lock);
+    if (info->is_interrupt || info->is_stop) {
+        info->is_interrupt = 1;
+        spin_unlock(&info->lock);
+        cnd_destroy(&waiter.cond);
+        mtx_destroy(&waiter.mutex);
+        jthread_block_exit(runtime);
+        return check_throw_interruptexception(runtime);
     }
-    //jvm_printf("!!!!!wake: %llx   \n", (s64) (intptr_t) (&mb->thread_lock->thread_cond));
-    runtime->thrd_info->thread_status = thread_status;
-    runtime->thrd_info->curThreadLock = NULL;
+    u8 previous = info->thread_status;
+    info->curThreadLock = mb;
+    info->monitor_waiter = &waiter;
+    info->thread_status = THREAD_STATUS_WAIT;
+    spin_unlock(&info->lock);
 
-    //wait结束时，获得锁后恢复锁的拥有者和计数
-    mb->thread_lock->owner_thread = saveThread;
-    mb->thread_lock->count = saveCount;
+    // Publish while owning the Java monitor, before releasing it. A stop
+    // arriving before cnd_wait latches done instead of losing the wakeup.
+    spin_lock(&lock->waiters_lock);
+    waiter.next = lock->waiters;
+    lock->waiters = &waiter;
+    spin_unlock(&lock->waiters_lock);
+    lock->owner_thread = NULL;
+    lock->count = 0;
+    for (s32 n = 0; n < depth; ++n) mtx_unlock(&lock->mutex_lock);
+
+    mtx_lock(&waiter.mutex);
+    if (waitms) {
+        s64 deadline = waitms + currentTimeMillis();
+        struct timespec t = { .tv_sec = deadline / 1000,
+                              .tv_nsec = (deadline % 1000) * 1000000 };
+        while (!waiter.done && cnd_timedwait(&waiter.cond, &waiter.mutex, &t) == thrd_success) {}
+    } else {
+        while (!waiter.done && cnd_wait(&waiter.cond, &waiter.mutex) == thrd_success) {}
+    }
+    waiter.done = 1;
+    mtx_unlock(&waiter.mutex);
+
+    // Detach both published references before destroying the stack waiter.
+    // Never take a publication lock or a Java monitor with waiter.mutex held.
+    spin_lock(&lock->waiters_lock);
+    JarBoxMonitorWaiter **link = &lock->waiters;
+    while (*link && *link != &waiter) link = &(*link)->next;
+    if (*link) *link = waiter.next;
+    spin_unlock(&lock->waiters_lock);
+    spin_lock(&info->lock);
+    info->monitor_waiter = NULL;
+    spin_unlock(&info->lock);
+    cnd_destroy(&waiter.cond);
+    mtx_destroy(&waiter.mutex);
+
+    // Remain blocking for GC while reacquiring the actual Java monitor.
+    for (s32 n = 0; n < depth; ++n) mtx_lock(&lock->mutex_lock);
+    lock->owner_thread = owner;
+    lock->count = depth;
+    spin_lock(&info->lock);
+    info->curThreadLock = NULL;
+    info->thread_status = previous;
+    spin_unlock(&info->lock);
     jthread_block_exit(runtime);
     return check_throw_interruptexception(runtime);
 }
 
 //if the thread is waiting , wake it up
 s32 jthread_wakeup(Runtime *runtime) {
-    MemoryBlock *tl = runtime->thrd_info->curThreadLock;
-    jthread_lock(tl, runtime);
-    jthread_notify(tl, runtime);
-    jthread_unlock(tl, runtime);
+    if (!runtime) return -1;
+    JavaThreadInfo *info = runtime->thrd_info;
+    spin_lock(&info->lock);
+    jarbox_waiter_signal(info->monitor_waiter);
+    spin_unlock(&info->lock);
     return 0;
 }
 
@@ -1182,10 +1251,12 @@ s32 jthread_sleep(Runtime *runtime, s64 ms) {
 }
 
 s32 check_throw_interruptexception(Runtime *runtime) {
-    if (!runtime->thrd_info->is_interrupt) {
-        return RUNTIME_STATUS_NORMAL;
-    }
-    runtime->thrd_info->is_interrupt = 0;
+    JavaThreadInfo *info = runtime->thrd_info;
+    spin_lock(&info->lock);
+    int interrupted = info->is_interrupt;
+    info->is_interrupt = 0;
+    spin_unlock(&info->lock);
+    if (!interrupted) return RUNTIME_STATUS_NORMAL;
     Instance *exception = exception_create(JVM_EXCEPTION_INTERRUPTED, runtime);
     push_ref(runtime->stack, (__refer) exception);
     return RUNTIME_STATUS_EXCEPTION;

@@ -424,6 +424,7 @@ typedef struct _FieldInfo FieldInfo;
 typedef struct _MethodInfo MethodInfo;
 typedef struct _Instruction Instruction;
 typedef struct _ThreadLock ThreadLock;
+typedef struct JarBoxMonitorWaiter JarBoxMonitorWaiter;
 typedef struct _JavaThreadInfo JavaThreadInfo;
 typedef struct _Runtime Runtime;
 typedef struct _CodeAttribute CodeAttribute;
@@ -1338,6 +1339,7 @@ struct _JavaThreadInfo {
     MemoryBlock *objs_header;//link to new instance, until garbage accept
     MemoryBlock *objs_tailer;//link to last instance, until garbage accept
     MemoryBlock *curThreadLock;//if thread is locked ,the filed save the lock
+    JarBoxMonitorWaiter *monitor_waiter; // protected by JavaThreadInfo.lock
 
     ArrayList *stacktrack;  //save methodrawindex, the pos 0 is the throw point
     ArrayList *lineNo;  //save methodrawindex, the pos 0 is the throw point
@@ -1935,6 +1937,8 @@ struct _ThreadLock {
     mtx_t mutex_lock; //互斥锁
     void *owner_thread; // 锁的所有者线程
     int count; // 重入计数
+    spinlock_t waiters_lock;
+    JarBoxMonitorWaiter *waiters; // protected by waiters_lock
 };
 //======================= Jvm =============================
 struct _MiniJVM {

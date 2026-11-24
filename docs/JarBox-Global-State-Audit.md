@@ -929,3 +929,31 @@ passed 1,000 cycles, including token replacement, live-but-not-parked,
 stale activation, presentation gate, retirement, and legacy overlay.
 Repository regression expanded to extract the production methods and
 check the token/recovery guards. Full test suite and iOS build not run.
+
+## Java monitor shutdown: targeted, sticky wait wake without monitor acquisition
+
+Previously thread_stop_all held the VM thread-list lock and called
+jthread_lock on a waiting thread's Java monitor; that monitor could be
+owned by a worker needing the list lock to finish. A bare condition signal
+would also race wait registration. Replace Java Object.wait/park's
+monitor condition wait with a stack-owned wait node and private condition.
+Publish under the thread-info lock and the monitor wait-set lock, latch
+signals before sleeping, and remove both publications before destroying
+the node. No path holding the private waiter mutex acquires a publication
+lock or Java monitor. Stop/interrupt wake the target without claiming its
+monitor; notify selects one unsignalled node and notifyAll signals all.
+Restore the full recursive monitor depth after wait, keep the Runtime
+blocking until the monitor is reacquired, and preserve interrupt handling.
+The VM-share condition remains unchanged. No timer or polling is added.
+
+Validation in a standalone Linux C11 host harness using the replacement
+function bodies and modeled Runtime/GC/spinlock plumbing: 100 cycles
+passed with -Wall -Wextra -Werror; 20 ASan+UBSan runs (2,000 cycles)
+passed. Tests cover held monitor at stop, targeted stop and interrupt,
+pre-interrupt, timed wait, notifyAll, recursive monitor reacquisition,
+and waiter detachment. Repository regression extracts the production
+functions. Full native runtime, TinyCThread, existing full suite, TSan,
+Xcode and iPhone remain unvalidated. Java monitor entry contention,
+legacy volatile stop flags, native target Runtime lifetime, Unsafe
+unpark and shutdown hooks/finalizers still need audit. No changes to
+RMS, networking, Treo policy, worker lease barriers or concurrency cap.
