@@ -662,10 +662,11 @@ int jvm_bridge_session_is_active(void) {
 int jvm_bridge_session_is_active_for_token(uint64_t token) {
     return jarbox_registry_contains_token(&g_bridge_registry, token);
 }
-// Real runtime capacity, not the number of preallocated input contexts.
-// Raise this only after rendering/UI/Treo/GC/3D isolation is proven.
+// Experimental two-session device test on loader-ios-jit-probe.
+// Shared launches are 2D only; 3D/unknown archives remain exclusive.
+// Runtime/device safety is NOT certified. Revert this cap to 1 for rollback.
 int jvm_bridge_supported_concurrent_sessions(void) {
-    return 1;
+    return 2;
 }
 int jvm_bridge_active_session_count(void) {
     return jarbox_registry_active_count(&g_bridge_registry);

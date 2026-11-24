@@ -82,7 +82,9 @@ class Runtime2DPolicyTest(unittest.TestCase):
         self.assertTrue(report["2d_only_legacy_3d_exclusion_guard_present"])
         self.assertFalse(report["2d_only_runtime_validated"])
         self.assertFalse(report["concurrent_jvms_safe_to_enable"])
-        self.assertTrue(report["enforced_single_active_jvm"])
+        self.assertFalse(report["enforced_single_active_jvm"])
+        self.assertEqual(report["configured_session_cap"], 2)
+        self.assertTrue(report["experimental_multi_session_enabled"])
         self.assertNotIn("3d_global_m3g_cleanup", report["2d_only_candidate_blockers"])
         self.assertIn("3d_global_m3g_cleanup", report["unisolated_native_blockers"])
 

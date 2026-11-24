@@ -1369,3 +1369,24 @@ checkout and boot runtime binary still unavailable in the compiler environment.
 This fixes an identified callback routing race; shared-engine readiness
 marker and cap one remain unchanged. Device reset and focus transitions
 still require validation.
+
+## Experimental two-session iPhone checkpoint (explicit user request)
+
+This test branch now admits up to two live 2D sessions, after the previous
+foreground owner has parked. Existing archive classification and exclusive
+3D/unknown reservation still apply; shared 2D launches register neither
+legacy 3D backend. This is a device experiment, not production readiness.
+No Codemagic workflow, Treo algorithm, network, JAR or RMS changes.
+Rollback: revert this commit (or restore the previous single-session build).
+The readiness report exposes configured capacity separately from runtime
+validation and continues to fail --require-ready. Existing ownership and
+blocker assertions are preserved; fixed single-cap assertions are updated
+for the new experimental configuration.
+
+Validation: source anchors checked; full Python suite, actual same-process
+MiniJVM and iOS build not run in this environment. Known source markers
+and device/runtime safety gaps remain. On a test phone use two expendable
+2D test sessions, verify Back/park, resume without re-launch, stopping A
+while B remains connected, restart A, third-session refusal, and exclusive
+3D conflicts in both directions. Stop the experiment on crashes, unexpected
+state loss or hang; do not deploy as a stable release.

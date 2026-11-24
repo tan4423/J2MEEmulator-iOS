@@ -177,7 +177,7 @@ class MultiVMTreoStateTest(unittest.TestCase):
 
     def test_still_rejects_parallel_jvm(self):
         bridge = (ROOT / "J2MEEmulator/NativeBridge/jvm_bridge.c").read_text()
-        self.assertIn("int jvm_bridge_supported_concurrent_sessions(void) {\n    return 1;", bridge)
+        self.assertIn("int jvm_bridge_supported_concurrent_sessions(void) {\n    return 2;", bridge)
 
 if __name__ == "__main__":
     unittest.main()

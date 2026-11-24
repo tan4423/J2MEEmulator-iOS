@@ -150,7 +150,7 @@ class MultiVMFocusPolicyTest(unittest.TestCase):
         self.assertIn("treo_park_end_for_token(gameSessionToken)", game)
         # Never unlock a second VM while global rendering/Treo persists.
         self.assertIn("bridge_reserve_slot_locked(", source)
-        self.assertIn("int jvm_bridge_supported_concurrent_sessions(void) {\n    return 1;", source)
+        self.assertIn("int jvm_bridge_supported_concurrent_sessions(void) {\n    return 2;", source)
 
 
 if __name__ == "__main__":

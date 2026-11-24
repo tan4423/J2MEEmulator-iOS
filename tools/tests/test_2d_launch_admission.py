@@ -95,7 +95,7 @@ class LaunchAdmissionTest(unittest.TestCase):
                         body.index("pthread_mutex_lock(&g_bridge_lifecycle_lock)"))
         self.assertLess(body.index("jarbox_focus_visible(&g_bridge_focus) != 0"),
                         body.index("bridge_reserve_slot_locked("))
-        self.assertIn("int jvm_bridge_supported_concurrent_sessions(void) {\n    return 1;", src)
+        self.assertIn("int jvm_bridge_supported_concurrent_sessions(void) {\n    return 2;", src)
 
 if __name__ == "__main__":
     unittest.main()

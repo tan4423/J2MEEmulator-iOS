@@ -123,15 +123,17 @@ def audit(root=ROOT):
         "3d_shared_egl_context":
             "static EAGLContext *g_m3g_eagl_context" in src["egl"],
     }
-    # This gate must stay on while the above shared mutable state exists.
-    one_vm_gate = ("int jvm_bridge_supported_concurrent_sessions(void) {\n    return 1;"
-                   in src["lifecycle"]
-                   and "bridge_reserve_slot_locked(" in src["lifecycle"]
-                   and "(unsigned)jvm_bridge_supported_concurrent_sessions()" in src["lifecycle"])
+    # Report the configured test capacity separately from actual safety.
+    admission_wired = ("bridge_reserve_slot_locked(" in src["lifecycle"]
+                       and "(unsigned)jvm_bridge_supported_concurrent_sessions()" in src["lifecycle"])
+    configured_cap = next((n for n in (1, 2)
+                           if admission_wired and
+                           f"int jvm_bridge_supported_concurrent_sessions(void) {{\n    return {n};" in src["lifecycle"]), None)
+    one_vm_gate = configured_cap == 1
     # A source-shape gate may only block unsafe concurrency; it cannot certify
     # thread safety or device behavior. All known owned components must pass,
-    # all shared-state blockers must disappear, and the single-VM guard must
-    # remain until an independent runtime/device validation changes this gate.
+    # shared-state blockers and runtime validation remain relevant even
+    # when an experimental device build explicitly permits two sessions.
     owned = {
         "vm_lifecycle": bool(lifecycle),
         "input_queue_display_wait": bool(input_owned),
@@ -156,7 +158,7 @@ def audit(root=ROOT):
     blockers_2d = {name: found for name, found in sorted(blockers.items())
                    if found and (not name.startswith("3d_") or not exclusion_guard_present)}
     source_prerequisites_met = all(owned.values()) and not any(blockers.values())
-    ready = source_prerequisites_met and not one_vm_gate
+    ready = source_prerequisites_met and configured_cap == 2
     # No automated source scan proves safe concurrent execution on iOS.
     # Require a separately reviewed runtime/device validation before enabling.
     runtime_device_validated = False
@@ -165,6 +167,8 @@ def audit(root=ROOT):
         "schema": "jarbox-multivm-readiness-v1",
         "concurrent_jvms_safe_to_enable": bool(ready),
         "enforced_single_active_jvm": bool(one_vm_gate),
+        "configured_session_cap": configured_cap,
+        "experimental_multi_session_enabled": configured_cap == 2,
         "verified_source_structure_only": True,
         "runtime_device_concurrency_validated": runtime_device_validated,
         "owned_native_components": owned,
@@ -184,9 +188,10 @@ def audit(root=ROOT):
             "Java thread roots snapshot native generation; nested Runtime frames share it. Render, LCDUI and Display Input reject stale runtime generations after pointer reuse.",
             "3D supersampling configuration is session-owned; M3G pixel buffers, EGL contexts and global cleanup remain separate blockers.",
             "Network, classloader, JIT, sockets, native image handles, and teardown still need device validation.",
-            "3D or unknown archives reserve exclusive access until retirement. Shared 2D launches cannot register the legacy 3D backends when cap > 1. The default single-VM build retains legacy compatibility; cap is unchanged.",
+            "3D or unknown archives reserve exclusive access until retirement. Shared 2D launches cannot register the legacy 3D backends when cap > 1.",
+            "This branch configures two sessions for experimental device validation, not certified production concurrency.",
             "2d_only_candidate_blockers excludes 3D source markers only if the exclusion guard is present. It is not a certification of 3D reachability or runtime safety.",
-            "Do not enable another JVM while there are unisolated native blockers.",
+            "Do not treat an experimental admission cap as proof of runtime safety; do not ship multi-session while blockers remain.",
         ],
     }
 
