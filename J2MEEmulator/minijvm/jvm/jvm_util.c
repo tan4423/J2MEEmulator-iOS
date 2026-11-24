@@ -891,7 +891,7 @@ s32 jthread_run_finalize(Runtime *runtime) {
 
 thrd_t jthread_start(Instance *ins, Runtime *parent) {//
     thrd_t failed = {0};
-    if (!parent || !parent->jvm || !parent->jvm->session) return failed;
+    if (!ins || !parent || !parent->jvm || !parent->jvm->session) return failed;
     JarBoxSession *session = parent->jvm->session;
     // Reserve before creating pthread; teardown may begin between these calls.
     if (!jarbox_session_reserve_worker(session)) return failed;
@@ -900,30 +900,42 @@ thrd_t jthread_start(Instance *ins, Runtime *parent) {//
         jarbox_session_worker_done(session);
         return failed;
     }
+    spin_lock(&runtime->thrd_info->lock);
+    if (runtime->thrd_info->thread_status != THREAD_STATUS_NEW) {
+        spin_unlock(&runtime->thrd_info->lock);
+        jarbox_session_worker_done(session);
+        return failed;
+    }
+    runtime->thrd_info->thread_status = THREAD_STATUS_RUNNING;
     runtime->thrd_info->jthread = ins;
     runtime->thrd_info->context_classloader = parent->thrd_info->context_classloader;//copy context classloader
+    spin_unlock(&runtime->thrd_info->lock);
 
     jthread_init(runtime->jvm, ins);
     // Re-check after registering the Runtime. If stop won this race,
     // do not spawn a new pthread after thread_stop_all has completed.
     if (jarbox_session_phase(session) >= JARBOX_SESSION_STOPPING) {
-        threadlist_remove(runtime);
-        jthread_set_stackframe_value(parent->jvm, ins, NULL);
-        jarbox_session_worker_done(session);
-        return failed;
+        goto unstarted;
     }
     // Keep the returned handle in the spawning thread. The child owns its
     // Runtime after successful creation and may already have been finalized.
     thrd_t started = {0};
     if (thrd_create(&started, jthread_run, runtime)
         != thrd_success) {
-        // An unstarted Runtime must not remain visible as an active worker.
-        threadlist_remove(runtime);
-        jthread_set_stackframe_value(parent->jvm, ins, NULL);
-        jarbox_session_worker_done(session);
-        return failed;
+        goto unstarted;
     }
     return started;
+
+unstarted:
+    // No pthread was created. Remove the active-list entry, but retain the
+    // Java object's stackFrame link so GC can reclaim the unused Runtime.
+    // Clearing stackFrame here would orphan the allocation. Mark terminal
+    // before dropping the worker lease; do not pretend this thread ran.
+    threadlist_remove(runtime);
+    runtime->thrd_info->jthread = NULL;
+    runtime->thrd_info->thread_status = THREAD_STATUS_ZOMBIE;
+    jarbox_session_worker_done(session);
+    return failed;
 }
 
 __refer jthread_get_name_value(MiniJVM *jvm, Instance *ins) {

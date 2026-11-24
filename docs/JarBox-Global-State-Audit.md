@@ -957,3 +957,29 @@ Xcode and iPhone remain unvalidated. Java monitor entry contention,
 legacy volatile stop flags, native target Runtime lifetime, Unsafe
 unpark and shutdown hooks/finalizers still need audit. No changes to
 RMS, networking, Treo policy, worker lease barriers or concurrency cap.
+
+## Java worker launch rollback and native handle ownership
+
+Move the NEW -> RUNNING claim into jthread_start, serialized by the
+thread-info lock; JNI and shutdown hooks both use that same claim.
+Reserve the session before registration and creation. A denied admission
+leaves the unstarted Runtime linked to its Java Thread; a cancelled or
+failed pthread creation removes the list entry and marks it terminal,
+but retains stackFrame for GC finalization rather than leaking the
+allocation. The JNI caller reports unsuccessful launch instead of false
+success and detaches successfully created ordinary Java workers; a
+shutdown hook joins only a valid handle, stops starting hooks once
+exit_flag is set, and still relies on the worker-lease teardown barrier.
+No change to the worker's success-path ownership or JVM admission.
+
+Validation: local standalone C11 harness using the replacement
+jthread_start body with modeled session, GC, locks and synchronous
+fast-child completion: 10,000 scenarios PASS (-Wall -Wextra -Werror);
+20 ASan+UBSan runs PASS (200,000 modeled scenarios). Cases include failed
+creation, stop during registration, admission rejection, duplicate
+start and child completion before create returns. Updated the repository
+host regression to use production session policy and extracted start
+body; the full repository test suite, actual detach/join behavior, GC
+reclamation, iOS build and device validation have not been executed here.
+Shutdown-hook GC roots, monitor entry, forced-stop monitor ownership,
+finalizers and remaining volatile-field races are separate blockers.

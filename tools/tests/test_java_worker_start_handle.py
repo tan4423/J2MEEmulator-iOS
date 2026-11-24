@@ -18,12 +18,15 @@ PRELUDE = r"""
 #include "jarbox_session.h"
 typedef uintptr_t thrd_t;
 enum { thrd_success, thrd_error };
+enum { THREAD_STATUS_NEW, THREAD_STATUS_RUNNING, THREAD_STATUS_ZOMBIE };
 typedef struct { JarBoxSession *session; } MiniJVM;
 typedef struct Runtime Runtime;
 typedef struct { Runtime *runtime; } Instance;
-typedef struct { Instance *jthread; void *context_classloader; thrd_t pthread; } Info;
+typedef struct { Instance *jthread; void *context_classloader; thrd_t pthread; int lock, thread_status; } Info;
 struct Runtime { MiniJVM *jvm; Info *thrd_info; };
-static int fail_create, stop_during_init, removed;
+static int fail_create, stop_during_init, removed, created;
+static void spin_lock(int *l) { assert(!*l); *l = 1; }
+static void spin_unlock(int *l) { assert(*l); *l = 0; }
 static Runtime *jthread_get_stackframe_value(MiniJVM *vm, Instance *ins) {
     (void)vm; return ins->runtime;
 }
@@ -31,9 +34,6 @@ static void jthread_init(MiniJVM *vm, Instance *ins) {
     (void)ins; if (stop_during_init) jarbox_session_begin_stop(vm->session);
 }
 static void threadlist_remove(Runtime *r) { (void)r; ++removed; }
-static void jthread_set_stackframe_value(MiniJVM *vm, Instance *ins, Runtime *r) {
-    (void)vm; ins->runtime = r;
-}
 static int jthread_run(void *arg) {
     Runtime *r = arg;
     JarBoxSession *held = r->jvm->session;
@@ -44,6 +44,7 @@ static int jthread_run(void *arg) {
     return 0;
 }
 static int thrd_create(thrd_t *out, int (*run)(void *), void *arg) {
+    ++created;
     if (fail_create) return thrd_error;
     *out = 123;
     /* A fast child and collector may finish before the parent returns. */
@@ -53,24 +54,32 @@ static int thrd_create(thrd_t *out, int (*run)(void *), void *arg) {
 """
 MAIN = r"""
 int main(void) {
-    for (int i = 0; i < 100; ++i) {
+    for (int i = 0; i < 10000; ++i) {
         MiniJVM vm = {0};
         vm.session = jarbox_session_create(&vm);
         Info pi = {0}; Runtime parent = {&vm, &pi}; Instance ins = {0};
         Runtime *child = calloc(1, sizeof(*child));
         child->jvm = &vm; child->thrd_info = calloc(1, sizeof(Info));
         ins.runtime = child;
-        fail_create = i % 3 == 1;
-        stop_during_init = i % 3 == 2;
-        removed = 0;
+        int mode = i % 5;
+        fail_create = mode == 1;
+        stop_during_init = mode == 2;
+        removed = created = 0;
+        if (mode == 3) jarbox_session_begin_stop(vm.session);
+        if (mode == 4) child->thrd_info->thread_status = THREAD_STATUS_RUNNING;
         thrd_t result = jthread_start(&ins, &parent);
-        assert(!ins.runtime);
         assert(jarbox_session_active_lease_count(vm.session) == 0);
-        if (fail_create || stop_during_init) {
-            assert(!result && removed == 1);
-            free(child->thrd_info); free(child);
+        if (mode == 0) {
+            assert(result == 123 && !ins.runtime && removed == 0 && created == 1);
         } else {
-            assert(result == 123 && removed == 0);
+            assert(!result && ins.runtime == child);
+            assert(removed == (mode == 1 || mode == 2));
+            assert(created == (mode == 1));
+            assert(child->thrd_info->thread_status ==
+                   (mode == 3 ? THREAD_STATUS_NEW :
+                    mode == 4 ? THREAD_STATUS_RUNNING : THREAD_STATUS_ZOMBIE));
+            // Model GC reclamation through the retained Java stackFrame link.
+            free(child->thrd_info); free(child);
         }
         jarbox_session_begin_stop(vm.session);
         assert(jarbox_session_mark_dead(vm.session));
@@ -100,6 +109,18 @@ class JavaWorkerStartHandleTest(unittest.TestCase):
                             "-I", str(JVM), str(src), "-o", str(exe)],
                            check=True, timeout=30)
             subprocess.run([str(exe)], check=True, timeout=10)
+
+    def test_native_callers_handle_failed_start_and_handle_ownership(self):
+        jni = (JVM / "jni_std.c").read_text()
+        start = jni.split("s32 java_lang_Thread_start(", 1)[1].split(
+            "s32 java_lang_Thread_isAlive(", 1)[0]
+        self.assertIn("thrd_t started = jthread_start(ins, runtime)", start)
+        self.assertIn("if (!started)", start)
+        self.assertIn("thrd_detach(started)", start)
+        self.assertNotIn("thrd_rt->", start)
+        jvm = (JVM / "jvm.c").read_text()
+        self.assertIn("if (t) {\n                if (thrd_join(t, NULL)", jvm)
+        self.assertIn("while (parent && !jvm->collector->exit_flag &&", jvm)
 
     def test_success_path_does_not_read_child_runtime(self):
         src = (JVM / "jvm_util.c").read_text()

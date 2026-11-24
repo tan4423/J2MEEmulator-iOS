@@ -405,11 +405,17 @@ void jvm_destroy(MiniJVM *jvm) {
      */
     if (!jvm->collector->exit_flag) {
         Runtime *parent = runtime_create(jvm);
-        while (parent && jvm->shutdown_hook->length) {
+        while (parent && !jvm->collector->exit_flag &&
+               jvm->shutdown_hook->length) {
             Instance *inst = arraylist_get_value(jvm->shutdown_hook, 0);
             arraylist_remove_at(jvm->shutdown_hook, 0);
             thrd_t t = jthread_start(inst, parent);
-            thrd_join(t, NULL);
+            if (t) {
+                if (thrd_join(t, NULL) != thrd_success)
+                    jvm_printf("[WARN] shutdown hook join failed; worker lease retained\n");
+            } else {
+                jvm_printf("[WARN] shutdown hook did not start\n");
+            }
         }
         if (parent) runtime_destroy(parent);
     } else if (jvm->shutdown_hook->length) {

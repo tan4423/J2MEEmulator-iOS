@@ -1244,15 +1244,18 @@ s32 java_lang_Thread_sleep(Runtime *runtime, JClass *clazz) {
 s32 java_lang_Thread_start(Runtime *runtime, JClass *clazz) {
 
     Instance *ins = (Instance *) localvar_getRefer(runtime->localvar, 0);
-    Runtime *thrd_rt = jthread_get_stackframe_value(runtime->jvm, ins);
     s32 ret = 0;
-    if (thrd_rt->thrd_info->thread_status != THREAD_STATUS_NEW) {
+    // jthread_start owns the NEW -> RUNNING claim and the rollback. Never
+    // dereference the child Runtime after the native creation succeeds.
+    thrd_t started = jthread_start(ins, runtime);
+    if (!started) {
         Instance *exception = exception_create(JVM_EXCEPTION_ILLEGALTHREADSTATE, runtime);
         push_ref(runtime->stack, exception);
         ret = RUNTIME_STATUS_EXCEPTION;
-    } else {
-        thrd_rt->thrd_info->thread_status = THREAD_STATUS_RUNNING;
-        jthread_start(ins, runtime);
+    } else if (thrd_detach(started) != thrd_success) {
+        // A detached native worker still holds its session lease until exit.
+        // Java Thread.join uses Java state, not this native handle.
+        jvm_printf("[WARN] Java worker native detach failed\n");
     }
 
 #if _JVM_DEBUG_LOG_LEVEL > 5
