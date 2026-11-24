@@ -11,6 +11,7 @@
 #include "jvm_util.h"
 #include <stdint.h>
 #include <stdatomic.h>
+#include <time.h>
 #include "garbage.h"
 #include "jdwp.h"
 #if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__
@@ -29,7 +30,7 @@
 
 static FILE *logfile = NULL;
 static s64 last_flush = 0;
-static s64 nano_sec_start_at = 0;
+static _Atomic s64 nano_sec_start_at = 0;
 
 /**
  * =============================== JClass ==============================
@@ -2013,15 +2014,22 @@ s64 currentTimeMillis() {
 }
 
 s64 nanoTime() {
-
     struct timespec tv;
-    timespec_get(&tv, TIME_UTC);
-
-    if (!nano_sec_start_at) {
-        nano_sec_start_at = ((s64) tv.tv_sec) * NANO_2_SEC_SCALE + tv.tv_nsec;
+#if __JVM_OS_IOS__
+    if (clock_gettime(CLOCK_MONOTONIC, &tv) != 0) return 0;
+#else
+    if (timespec_get(&tv, TIME_UTC) != TIME_UTC) return 0;
+#endif
+    const s64 v = ((s64)tv.tv_sec) * NANO_2_SEC_SCALE + tv.tv_nsec;
+    // One immutable process origin; concurrent first callers must not
+    // reset each other's elapsed-time clock. iOS uses monotonic time.
+    s64 origin = atomic_load_explicit(&nano_sec_start_at, memory_order_acquire);
+    if (!origin) {
+        if (atomic_compare_exchange_strong_explicit(&nano_sec_start_at, &origin, v,
+                                                     memory_order_acq_rel, memory_order_acquire))
+            origin = v;
     }
-    s64 v = ((s64) tv.tv_sec) * NANO_2_SEC_SCALE + tv.tv_nsec;
-    return v - nano_sec_start_at;
+    return v - origin;
 }
 
 s64 threadSleep(s64 ms) {

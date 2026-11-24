@@ -1310,3 +1310,22 @@ retire/account attempts under ASan+UBSan. Updated repository ledger
 and startup/renderer/LCDUI source regressions. Not a real JVM or UIKit
 test. Full repository suite, iOS compilation and device test not run.
 Cap remains one; 3D exclusive policy unchanged.
+
+## Game elapsed-time clock: concurrent first use and iOS monotonic time
+
+The Java nanoTime implementation had an unsynchronized mutable global
+origin and used UTC. Concurrent first callers could reset the time
+origin; wall-clock adjustments could change elapsed-time calculations.
+Publish a single process origin with atomic compare/exchange and use
+CLOCK_MONOTONIC on iOS. Java nanoTime permits a signed arbitrary
+origin; a racing first sample may be slightly negative. The origin is
+never reset during a session stop. Preserve currentTimeMillis as UTC,
+and keep other platforms' existing clock source. No new scheduler,
+sleep, polling, JAR or Treo policy change.
+
+Validation: Linux clang C11 harness with identical function logic
+and the iOS preprocessor branch selected, real CLOCK_MONOTONIC and
+four pthreads, 20 concurrent first-use rounds and 8,000,000
+monotonic reads PASS with ASan+UBSan. Repository test extracts the
+production function. This is not a real Java timer or iPhone test;
+full suite, iOS build, timing and power measurements are outstanding.
