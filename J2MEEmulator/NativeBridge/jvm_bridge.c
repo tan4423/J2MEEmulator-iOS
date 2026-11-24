@@ -188,133 +188,216 @@ static void bridge_release_worker(JarBoxVMContext *slot) {
     bridge_release_worker_locked(slot);
     pthread_mutex_unlock(&g_bridge_lifecycle_lock);
 }
-// Java launcher reports a specific error BEFORE the native runner unwinds.
-// One session owns this buffer, and only the owning Swift worker reads it.
-static char g_bridge_last_error[1536];
-// Bounded launch-only JVM field trace. Never used for normal Treo telemetry.
-static pthread_mutex_t g_bridge_nso_trace_lock = PTHREAD_MUTEX_INITIALIZER;
-static char g_bridge_nso_init_trace[4096];
-static unsigned g_bridge_nso_init_trace_count;
+// Bridge diagnostics are separate from the JVM heap and from the lifecycle
+// mutex. A Java callback may report a diagnostic while a stop watchdog holds
+// the lifecycle lock, so diagnostic lookup must never acquire that lock.
+typedef struct {
+    uint64_t token;
+    char last_error[1536];
+    char nso_init_trace[4096];
+    char net_trace[8192];
+    unsigned nso_init_trace_count, net_trace_count;
+    uint64_t popup_ticks, stage_counts[5];
+    int last_stage;
+    unsigned early_exception_notes, loop_exception_notes, dispatch_notes;
+    unsigned method_missing_notes, protocol_notes;
+} JarBoxBridgeDiagnostics;
+static JarBoxBridgeDiagnostics g_bridge_diagnostics[JARBOX_REGISTRY_MAX_SLOTS];
+static pthread_mutex_t g_bridge_diag_lock = PTHREAD_MUTEX_INITIALIZER;
 
-// Fixed-size, bounded event log for network failures. No per-packet tracing,
-// DNS name, credentials, payloads, file IO, timers, or background pollers.
-static pthread_mutex_t g_bridge_net_trace_lock = PTHREAD_MUTEX_INITIALIZER;
-static char g_bridge_net_trace[8192];
-static unsigned g_bridge_net_trace_count;
-static _Atomic uint64_t g_mod_popup_update_ticks;
-static _Atomic uint64_t g_mod_loop_stage_counts[5];
-static atomic_int g_mod_loop_last_stage;
-static atomic_int g_mod_loop_exception_notes;
-static atomic_int g_mod_dispatch_probe_notes;
-static atomic_int g_mod_method_missing_notes;
-static atomic_int g_mod_protocol_notes;
-/* A few caught Java exceptions before network I/O help diagnose an empty
- * game selector. No Java strings, network payloads or game-specific hacks. */
-static atomic_int g_bridge_early_exception_notes;
-int jvm_bridge_early_exception_note_slot(void) {
-    int prior = atomic_load_explicit(&g_bridge_early_exception_notes,
-                                     memory_order_relaxed);
-    while (prior < 12) {
-        if (atomic_compare_exchange_weak_explicit(
-                &g_bridge_early_exception_notes, &prior, prior + 1,
-                memory_order_relaxed, memory_order_relaxed)) return 1;
+/* Call with g_bridge_diag_lock held. A missing explicit token never resolves
+ * to another owner. Legacy owner-less reads resolve only a sole live record. */
+static JarBoxBridgeDiagnostics *bridge_diag_find_locked(uint64_t token) {
+    JarBoxBridgeDiagnostics *sole = NULL;
+    for (unsigned i = 0; i < JARBOX_REGISTRY_MAX_SLOTS; ++i) {
+        JarBoxBridgeDiagnostics *entry = &g_bridge_diagnostics[i];
+        if (!entry->token) continue;
+        if (token && entry->token == token) return entry;
+        if (!token) {
+            if (sole) return NULL;
+            sole = entry;
+        }
+    }
+    return token ? NULL : sole;
+}
+static int bridge_diag_begin_locked(uint64_t token) {
+    if (!token || bridge_diag_find_locked(token)) return 0;
+    for (unsigned i = 0; i < JARBOX_REGISTRY_MAX_SLOTS; ++i) {
+        JarBoxBridgeDiagnostics *entry = &g_bridge_diagnostics[i];
+        if (!entry->token) {
+            memset(entry, 0, sizeof(*entry));
+            entry->token = token;
+            return 1;
+        }
     }
     return 0;
 }
-
+static void bridge_diag_end_locked(uint64_t token) {
+    JarBoxBridgeDiagnostics *entry = token ? bridge_diag_find_locked(token) : NULL;
+    if (entry) memset(entry, 0, sizeof(*entry));
+}
+static int bridge_diag_begin(uint64_t token) {
+    pthread_mutex_lock(&g_bridge_diag_lock);
+    const int ok = bridge_diag_begin_locked(token);
+    pthread_mutex_unlock(&g_bridge_diag_lock);
+    return ok;
+}
+static void bridge_diag_end(uint64_t token) {
+    pthread_mutex_lock(&g_bridge_diag_lock);
+    bridge_diag_end_locked(token);
+    pthread_mutex_unlock(&g_bridge_diag_lock);
+}
+static uint64_t bridge_diag_token_hint(void) {
+    const uint64_t token = jvm_bridge_thread_token();
+    return token ? token : jvm_bridge_visible_session_token();
+}
+// The focus lock is acquired before, not while holding the diagnostic lock.
+// No pointer is returned to a caller outside the diagnostic critical section.
+static JarBoxBridgeDiagnostics *bridge_diag_lock_current(void) {
+    const uint64_t token = bridge_diag_token_hint();
+    pthread_mutex_lock(&g_bridge_diag_lock);
+    return bridge_diag_find_locked(token);
+}
+static void bridge_diag_unlock(void) {
+    pthread_mutex_unlock(&g_bridge_diag_lock);
+}
+static int bridge_diag_take_budget(unsigned *counter, unsigned limit) {
+    if (!counter || *counter >= limit) return 0;
+    ++*counter;
+    return 1;
+}
+int jvm_bridge_early_exception_note_slot(void) {
+    JarBoxBridgeDiagnostics *entry = bridge_diag_lock_current();
+    int ok = entry && bridge_diag_take_budget(&entry->early_exception_notes, 12);
+    bridge_diag_unlock();
+    return ok;
+}
 int jvm_bridge_mod_protocol_note_slot(void) {
-    return atomic_fetch_add_explicit(&g_mod_protocol_notes, 1,
-                                     memory_order_relaxed) < 20;
+    JarBoxBridgeDiagnostics *entry = bridge_diag_lock_current();
+    int ok = entry && bridge_diag_take_budget(&entry->protocol_notes, 20);
+    bridge_diag_unlock();
+    return ok;
 }
 int jvm_bridge_mod_dispatch_probe_slot(void) {
-    return atomic_fetch_add_explicit(&g_mod_dispatch_probe_notes, 1,
-                                     memory_order_relaxed) < 2;
+    JarBoxBridgeDiagnostics *entry = bridge_diag_lock_current();
+    int ok = entry && bridge_diag_take_budget(&entry->dispatch_notes, 2);
+    bridge_diag_unlock();
+    return ok;
 }
 int jvm_bridge_mod_method_missing_slot(void) {
-    return atomic_fetch_add_explicit(&g_mod_method_missing_notes, 1,
-                                     memory_order_relaxed) < 10;
+    JarBoxBridgeDiagnostics *entry = bridge_diag_lock_current();
+    int ok = entry && bridge_diag_take_budget(&entry->method_missing_notes, 10);
+    bridge_diag_unlock();
+    return ok;
 }
 void jvm_bridge_mod_loop_note_stage(int stage) {
     if (stage < 1 || stage > 4) return;
-    atomic_store_explicit(&g_mod_loop_last_stage, stage, memory_order_relaxed);
-    atomic_fetch_add_explicit(&g_mod_loop_stage_counts[stage], 1, memory_order_relaxed);
+    JarBoxBridgeDiagnostics *entry = bridge_diag_lock_current();
+    if (entry) {
+        entry->last_stage = stage;
+        ++entry->stage_counts[stage];
+    }
+    bridge_diag_unlock();
 }
 uint64_t jvm_bridge_mod_loop_stage_count(int stage) {
     if (stage < 1 || stage > 4) return 0;
-    return atomic_load_explicit(&g_mod_loop_stage_counts[stage], memory_order_relaxed);
+    JarBoxBridgeDiagnostics *entry = bridge_diag_lock_current();
+    uint64_t count = entry ? entry->stage_counts[stage] : 0;
+    bridge_diag_unlock();
+    return count;
 }
 int jvm_bridge_mod_loop_last_stage(void) {
-    return atomic_load_explicit(&g_mod_loop_last_stage, memory_order_relaxed);
+    JarBoxBridgeDiagnostics *entry = bridge_diag_lock_current();
+    int stage = entry ? entry->last_stage : 0;
+    bridge_diag_unlock();
+    return stage;
 }
 int jvm_bridge_mod_loop_exception_log_slot(void) {
-    return atomic_fetch_add_explicit(&g_mod_loop_exception_notes, 1,
-                                     memory_order_relaxed) < 12;
+    JarBoxBridgeDiagnostics *entry = bridge_diag_lock_current();
+    int ok = entry && bridge_diag_take_budget(&entry->loop_exception_notes, 12);
+    bridge_diag_unlock();
+    return ok;
 }
 void jvm_bridge_mod_popup_tick(void) {
-    atomic_fetch_add_explicit(&g_mod_popup_update_ticks, 1, memory_order_relaxed);
+    JarBoxBridgeDiagnostics *entry = bridge_diag_lock_current();
+    if (entry) ++entry->popup_ticks;
+    bridge_diag_unlock();
 }
 uint64_t jvm_bridge_mod_popup_tick_count(void) {
-    return atomic_load_explicit(&g_mod_popup_update_ticks, memory_order_relaxed);
+    JarBoxBridgeDiagnostics *entry = bridge_diag_lock_current();
+    uint64_t count = entry ? entry->popup_ticks : 0;
+    bridge_diag_unlock();
+    return count;
+}
+static void bridge_diag_append(char *buffer, size_t size, unsigned *count,
+                               unsigned limit, const char *separator,
+                               const char *detail) {
+    if (*count >= limit) return;
+    size_t len = strlen(buffer);
+    size_t avail = size - len;
+    if (avail <= strlen(separator) + 1) return;
+    int added = snprintf(buffer + len, avail, "%s%s", len ? separator : "", detail);
+    if (added > 0) ++*count;
 }
 void jvm_bridge_note_net_trace(const char *detail) {
     if (!detail || !detail[0]) return;
-    pthread_mutex_lock(&g_bridge_net_trace_lock);
-    if (g_bridge_net_trace_count < 64) {
-        size_t len = strlen(g_bridge_net_trace);
-        size_t avail = sizeof(g_bridge_net_trace) - len - 1;
-        if (avail >= 64) {
-            int added = snprintf(g_bridge_net_trace + len, avail + 1,
-                                 "%s%s", len ? "\n" : "", detail);
-            if (added > 0 && (size_t)added < avail)
-                ++g_bridge_net_trace_count;
-        }
-    }
-    pthread_mutex_unlock(&g_bridge_net_trace_lock);
+    JarBoxBridgeDiagnostics *entry = bridge_diag_lock_current();
+    if (entry)
+        bridge_diag_append(entry->net_trace, sizeof(entry->net_trace),
+                           &entry->net_trace_count, 64, "\n", detail);
+    bridge_diag_unlock();
     printf("[JarBoxNET] %s\n", detail);
-}
-const char *jvm_bridge_net_trace(void) {
-    // Return a stable per-calling-thread snapshot to Swift. Reading does not
-    // hold the writer lock while UIAlert or clipboard methods are invoked.
-    static _Thread_local char snapshot[sizeof(g_bridge_net_trace)];
-    pthread_mutex_lock(&g_bridge_net_trace_lock);
-    memcpy(snapshot, g_bridge_net_trace, sizeof(snapshot));
-    pthread_mutex_unlock(&g_bridge_net_trace_lock);
-    return snapshot;
 }
 void jvm_bridge_note_nso_init_trace(const char *detail) {
     if (!detail || !detail[0]) return;
-    pthread_mutex_lock(&g_bridge_nso_trace_lock);
-    if (g_bridge_nso_init_trace_count < 20) {
-        size_t len = strlen(g_bridge_nso_init_trace);
-        size_t avail = sizeof(g_bridge_nso_init_trace) - len - 1;
-        if (avail >= 4) {
-            const int added = snprintf(g_bridge_nso_init_trace + len, avail + 1,
-                                      "%s%s", len ? " | " : "", detail);
-            if (added > 0) ++g_bridge_nso_init_trace_count;
-        }
-    }
-    pthread_mutex_unlock(&g_bridge_nso_trace_lock);
+    JarBoxBridgeDiagnostics *entry = bridge_diag_lock_current();
+    if (entry)
+        bridge_diag_append(entry->nso_init_trace, sizeof(entry->nso_init_trace),
+                           &entry->nso_init_trace_count, 20, " | ", detail);
+    bridge_diag_unlock();
     printf("[JarBoxVM][NSOInit] %s\n", detail);
 }
-const char *jvm_bridge_nso_init_trace(void) {
-    return g_bridge_nso_init_trace;
-}
-
-static atomic_int g_bridge_last_error_ready;
 void jvm_bridge_set_launch_error(const char *message) {
     if (!message) return;
-    size_t n = strlen(message);
-    if (n >= sizeof(g_bridge_last_error)) n = sizeof(g_bridge_last_error) - 1;
-    memcpy(g_bridge_last_error, message, n);
-    g_bridge_last_error[n] = '\0';
-    atomic_store_explicit(&g_bridge_last_error_ready, 1, memory_order_release);
-    printf("[JarBoxVM][LaunchError] %s\n", g_bridge_last_error);
+    JarBoxBridgeDiagnostics *entry = bridge_diag_lock_current();
+    if (entry) snprintf(entry->last_error, sizeof(entry->last_error), "%s", message);
+    bridge_diag_unlock();
+    printf("[JarBoxVM][LaunchError] %s\n", message);
+}
+// Explicit per-worker snapshots outlive the critical section, not the caller.
+// TLS arrays avoid returning a pointer into a reusable executor record.
+static const char *bridge_diag_snapshot(uint64_t token, int kind, int explicit_token) {
+    static _Thread_local char snapshot[8192];
+    snapshot[0] = '\0';
+    if (explicit_token && !token) return snapshot;
+    pthread_mutex_lock(&g_bridge_diag_lock);
+    JarBoxBridgeDiagnostics *entry = bridge_diag_find_locked(token);
+    if (entry) {
+        const char *value = kind == 0 ? entry->last_error :
+                            kind == 1 ? entry->nso_init_trace : entry->net_trace;
+        snprintf(snapshot, sizeof(snapshot), "%s", value);
+    }
+    pthread_mutex_unlock(&g_bridge_diag_lock);
+    return snapshot;
+}
+const char *jvm_bridge_last_error_for_token(uint64_t token) {
+    return bridge_diag_snapshot(token, 0, 1);
+}
+const char *jvm_bridge_nso_init_trace_for_token(uint64_t token) {
+    return bridge_diag_snapshot(token, 1, 1);
+}
+const char *jvm_bridge_net_trace_for_token(uint64_t token) {
+    return bridge_diag_snapshot(token, 2, 1);
 }
 const char *jvm_bridge_last_error(void) {
-    return atomic_load_explicit(&g_bridge_last_error_ready, memory_order_acquire)
-        ? g_bridge_last_error : "";
+    return bridge_diag_snapshot(bridge_diag_token_hint(), 0, 0);
 }
-
+const char *jvm_bridge_nso_init_trace(void) {
+    return bridge_diag_snapshot(bridge_diag_token_hint(), 1, 0);
+}
+const char *jvm_bridge_net_trace(void) {
+    return bridge_diag_snapshot(bridge_diag_token_hint(), 2, 0);
+}
 
 /* Every launch receives its immutable token in the SAME admission call.
  * Never ask the asynchronous Swift worker to discover its owner by reading
@@ -338,32 +421,21 @@ int jvm_bridge_try_begin_session_with_token(uint64_t *out_token) {
         pthread_mutex_unlock(&g_bridge_lifecycle_lock);
         return 0;
     }
+    if (!bridge_diag_begin(token)) {
+        (void)jarbox_registry_finish(&g_bridge_registry, &g_bridge_focus, token);
+        bridge_reset_slot_locked(slot);
+        pthread_mutex_unlock(&g_bridge_lifecycle_lock);
+        return 0;
+    }
     (void)jarbox_focus_select(&g_bridge_focus, token);
-    atomic_store_explicit(&g_bridge_last_error_ready, 0, memory_order_release);
-    g_bridge_last_error[0] = '\0';
-    pthread_mutex_lock(&g_bridge_nso_trace_lock);
-    g_bridge_nso_init_trace[0] = '\0';
-    g_bridge_nso_init_trace_count = 0;
-    pthread_mutex_unlock(&g_bridge_nso_trace_lock);
-    pthread_mutex_lock(&g_bridge_net_trace_lock);
-    g_bridge_net_trace[0] = '\0';
-    g_bridge_net_trace_count = 0;
-    pthread_mutex_unlock(&g_bridge_net_trace_lock);
-    atomic_store_explicit(&g_mod_popup_update_ticks, 0, memory_order_release);
-    for (int j = 1; j <= 4; ++j)
-        atomic_store_explicit(&g_mod_loop_stage_counts[j], 0, memory_order_relaxed);
-    atomic_store_explicit(&g_mod_loop_last_stage, 0, memory_order_release);
-    atomic_store_explicit(&g_mod_loop_exception_notes, 0, memory_order_release);
-    atomic_store_explicit(&g_mod_dispatch_probe_notes, 0, memory_order_release);
-    atomic_store_explicit(&g_mod_method_missing_notes, 0, memory_order_release);
-    atomic_store_explicit(&g_mod_protocol_notes, 0, memory_order_release);
-    atomic_store_explicit(&g_bridge_early_exception_notes, 0, memory_order_release);
     pthread_mutex_unlock(&g_bridge_lifecycle_lock);
     // Visible from the first frame in Chẩn đoán kết nối, regardless of
     // which Java network API the game calls. Detects an older installed IPA.
+    const uint64_t prior_token = jvm_bridge_push_java_thread_token(token);
     jvm_bridge_note_net_trace("probe:java8_utf8_boot_patch=v1");
     jvm_bridge_note_net_trace("probe:java8_localtime_boot_patch=v1");
     jvm_bridge_note_net_trace("probe:vm_opcode_guard=v1");
+    jvm_bridge_pop_java_thread_token(prior_token);
     printf("[JarBoxVM][Lifecycle] session=acquired phase=starting\n");
     *out_token = token;
     return 1;
@@ -496,6 +568,7 @@ int jvm_bridge_finish_session_for_token(uint64_t token) {
         printf("[JarBoxVM][Lifecycle] ERROR: live registry owner cannot retire\n");
         return 0;
     }
+    bridge_diag_end(token);
     bridge_reset_slot_locked(slot);
     pthread_mutex_unlock(&g_bridge_lifecycle_lock);
     printf("[JarBoxVM][Lifecycle] session=released token=%llu\n",

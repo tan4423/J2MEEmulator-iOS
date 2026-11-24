@@ -424,3 +424,12 @@ Capacity is queried from the native bridge (currently 1). The legacy overlay
 path remains a fallback for externally-created controllers. Import/clone
 removal conservatively protects live save data. This source change has not
 been compiled or validated on iPhone, and it does not unlock two JVMs.
+
+## 2026-11-24: Token-owned bridge diagnostics
+
+Launch errors, bounded NSO/network traces and legacy mod counters now use
+independent records keyed by the immutable executor token. The diagnostic
+mutex is independent of lifecycle, and snapshots copy into thread-local
+storage before unlocking. The Swift runner requests the exact token's
+error/trace before retirement; no B launch resets A's record. This is
+observability isolation, not evidence of safe concurrent 3D or native JIT.

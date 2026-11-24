@@ -1036,7 +1036,7 @@ class GameViewController: UIViewController {
 
     private func showNetworkDiagnostics() {
         guard viewIfLoaded?.window != nil, presentedViewController == nil else { return }
-        let trace = String(cString: jvm_bridge_net_trace())
+        let trace = String(cString: jvm_bridge_net_trace_for_token(gameSessionToken))
         // This identity is embedded by Codemagic into the *packaged IPA*,
         // independent of JVM startup, diagnostics or Java class loading.
         // Old installations lacking it are immediately distinguishable.
@@ -3739,8 +3739,8 @@ class GameViewController: UIViewController {
         NSLog("[J2ME Treo] Entering MIDlet runner")
         let runResult = jvm_bridge_run_midlet_for_token(token, jarPath)
         NSLog("[J2ME Treo] MIDlet runner returned %d; cleaning up", runResult)
-        let javaError = String(cString: jvm_bridge_last_error())
-        let nsoInitTrace = String(cString: jvm_bridge_nso_init_trace())
+        let javaError = String(cString: jvm_bridge_last_error_for_token(token))
+        let nsoInitTrace = String(cString: jvm_bridge_nso_init_trace_for_token(token))
         _ = jvm_bridge_destroy_for_token(token)
         JarBoxGameStorage.appendSettingEvent(jarPath: jarPath, documents: docs,
                                             event: "SESSION_END", value: String(runResult),

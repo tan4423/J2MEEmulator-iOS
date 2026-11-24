@@ -76,16 +76,20 @@ void jvm_bridge_finish_session(void);
 int jvm_bridge_interrupt_active_threads(void);
 
 /// Record a Java launcher failure and return its UTF-8 diagnostic to Swift.
-/// The message persists across JVM teardown until the next session begins.
+/// The message belongs to this token and survives cleanup until retirement.
 void jvm_bridge_set_launch_error(const char *message);
 // Launch-only diagnostic: trace Class_ek delegate assignment vs first paint.
 // Keeps bounded events across JVM teardown until the next launch.
 void jvm_bridge_note_nso_init_trace(const char *detail);
 const char *jvm_bridge_nso_init_trace(void);
 const char *jvm_bridge_last_error(void);
+/// Snapshot the exact worker's diagnostics before its session retires.
+const char *jvm_bridge_last_error_for_token(uint64_t token);
+const char *jvm_bridge_nso_init_trace_for_token(uint64_t token);
+const char *jvm_bridge_net_trace_for_token(uint64_t token);
 
-// Network event diagnostics live outside the Java stack and are reset for
-// each JVM session. Only connection attempts and failures are stored.
+// Network event diagnostics live outside the Java stack, one bounded
+// record per token. Only connection attempts and failures are stored.
 void jvm_bridge_note_net_trace(const char *detail);
 const char *jvm_bridge_net_trace(void);
 
