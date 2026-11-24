@@ -734,3 +734,23 @@ The modeled pthread harness passed 20 ASan+UBSan runs (100 abort and
 tests, not the full GC or a measured iPhone shutdown. Remaining work
 includes GC pthread join/creation failure, native monitor wake paths,
 full suite and device validation. No concurrency increase.
+
+## 2026-11-24: Cancel before expensive native startup and RUNNING publication
+
+Honor the exact slot's stop flag before archive recognition and again
+before heap allocation. If cancellation has already won, return -9;
+the owning Swift worker still retires the empty slot. Once initialization
+has acquired resources, keep the existing cleanup path. In bridge_run_slot
+check cancellation under the lifecycle lock before publishing RUNNING;
+a previously cancelled launch must not briefly look runnable to another
+visitor. This is cooperative cancellation at safe checkpoints, not
+preemption of an arbitrary native call. No fixed minimum startup delay,
+RMS change or concurrency increase.
+
+Validation: compiled the matching production runner excerpt in a host C
+harness with mocked MIDlet/session boundaries. Baseline aborted
+(SIGABRT); replacement passed one Python regression and 20 ASan+UBSan
+executions of 100 modeled cancel/normal/duplicate-run sequences. The
+native init checkpoint order was checked on the exact connector source
+and replacement using equivalent source predicates; the complete
+Python suite, native build and device execution are still unverified.

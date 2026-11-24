@@ -660,6 +660,9 @@ static int bridge_init_slot(JarBoxVMContext *slot, const char *res_root, const c
         printf("[JVM Bridge] JVM already initialized\n");
         return -1;
     }
+    // Cancellation before native allocation is cheap: the worker's
+    // deferred finish will retire the still-empty slot.
+    if (atomic_load_explicit(&slot->stop_requested, memory_order_acquire)) return -9;
     // These results belong to this archive, not the most recent launch.
     int ninja_match = 0, init_target = 0;
     if (jvm_bridge_supported_concurrent_sessions() == 1)
@@ -677,6 +680,8 @@ static int bridge_init_slot(JarBoxVMContext *slot, const char *res_root, const c
         jvm_bridge_note_net_trace(event);
     }
 #endif
+    // Archive recognition can be slow; recheck before creating the heap.
+    if (atomic_load_explicit(&slot->stop_requested, memory_order_acquire)) return -9;
     // Keep legacy telemetry for the one-VM build only. These mirrors may
     // never be used as authorization for an independently running tab.
     if (jvm_bridge_supported_concurrent_sessions() == 1) {
@@ -830,8 +835,9 @@ static int bridge_run_slot(JarBoxVMContext *slot, const char *midlet_jar_path) {
     }
 
     pthread_mutex_lock(&g_bridge_lifecycle_lock);
-    atomic_store_explicit(&slot->phase, BRIDGE_RUNNING, memory_order_release);
     const int cancelled = atomic_load_explicit(&slot->stop_requested, memory_order_acquire);
+    if (!cancelled)
+        atomic_store_explicit(&slot->phase, BRIDGE_RUNNING, memory_order_release);
     pthread_mutex_unlock(&g_bridge_lifecycle_lock);
     if (cancelled) {
         printf("[JarBoxVM][Lifecycle] MIDlet start cancelled before call_main\n");
