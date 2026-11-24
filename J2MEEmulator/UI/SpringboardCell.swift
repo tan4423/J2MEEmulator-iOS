@@ -13,8 +13,9 @@ class SpringboardCell: UICollectionViewCell {
 
     let iconView = UIImageView()
     let nameLabel = UILabel()
-    // Static green activity dot; no animation or polling.
-    private let liveDot = UIView()
+    // Static tab-count badge; no animation, blur, or polling.
+    private let tabBadge = UIView()
+    private let tabBadgeLabel = UILabel()
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -26,13 +27,20 @@ class SpringboardCell: UICollectionViewCell {
         iconView.translatesAutoresizingMaskIntoConstraints = false
         contentView.addSubview(iconView)
 
-        liveDot.backgroundColor = UIColor.systemGreen
-        liveDot.layer.cornerRadius = 7
-        liveDot.layer.borderWidth = 2
-        liveDot.layer.borderColor = UIColor(white: 0.12, alpha: 1).cgColor
-        liveDot.isHidden = true
-        liveDot.translatesAutoresizingMaskIntoConstraints = false
-        contentView.addSubview(liveDot)
+        tabBadge.backgroundColor = UIColor(white: 0.16, alpha: 1)
+        tabBadge.layer.cornerRadius = 6
+        tabBadge.layer.borderWidth = 0.5
+        tabBadge.layer.borderColor = UIColor(white: 1, alpha: 0.19).cgColor
+        tabBadge.isHidden = true
+        tabBadge.isUserInteractionEnabled = false
+        tabBadge.translatesAutoresizingMaskIntoConstraints = false
+        contentView.addSubview(tabBadge)
+
+        tabBadgeLabel.font = .monospacedDigitSystemFont(ofSize: 10.5, weight: .semibold)
+        tabBadgeLabel.textColor = .white
+        tabBadgeLabel.textAlignment = .center
+        tabBadgeLabel.translatesAutoresizingMaskIntoConstraints = false
+        tabBadge.addSubview(tabBadgeLabel)
 
         // Static text: no shadow blur or offscreen text effect.
         nameLabel.font = .systemFont(ofSize: 11.5, weight: .medium)
@@ -48,10 +56,13 @@ class SpringboardCell: UICollectionViewCell {
             iconView.centerXAnchor.constraint(equalTo: contentView.centerXAnchor),
             iconView.widthAnchor.constraint(equalToConstant: Self.iconSize),
             iconView.heightAnchor.constraint(equalToConstant: Self.iconSize),
-            liveDot.widthAnchor.constraint(equalToConstant: 14),
-            liveDot.heightAnchor.constraint(equalToConstant: 14),
-            liveDot.topAnchor.constraint(equalTo: iconView.topAnchor, constant: -3),
-            liveDot.trailingAnchor.constraint(equalTo: iconView.trailingAnchor, constant: 4),
+            tabBadge.heightAnchor.constraint(equalToConstant: 18),
+            tabBadge.widthAnchor.constraint(greaterThanOrEqualToConstant: 23),
+            tabBadge.topAnchor.constraint(equalTo: iconView.topAnchor, constant: -2),
+            tabBadge.leadingAnchor.constraint(equalTo: iconView.leadingAnchor, constant: -3),
+            tabBadgeLabel.centerYAnchor.constraint(equalTo: tabBadge.centerYAnchor),
+            tabBadgeLabel.leadingAnchor.constraint(equalTo: tabBadge.leadingAnchor, constant: 5),
+            tabBadgeLabel.trailingAnchor.constraint(equalTo: tabBadge.trailingAnchor, constant: -5),
 
             nameLabel.topAnchor.constraint(equalTo: iconView.bottomAnchor, constant: 5),
             nameLabel.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: -2),
@@ -67,7 +78,9 @@ class SpringboardCell: UICollectionViewCell {
         super.prepareForReuse()
         iconView.image = nil
         nameLabel.text = nil
-        liveDot.isHidden = true
+        tabBadge.isHidden = true
+        tabBadgeLabel.text = nil
+        accessibilityLabel = nil
         accessibilityValue = nil
     }
 
@@ -76,11 +89,16 @@ class SpringboardCell: UICollectionViewCell {
         didSet { iconView.alpha = isHighlighted ? 0.7 : 1.0 }
     }
 
-    func configure(name: String, icon: UIImage, running: Bool = false) {
+    func configure(name: String, icon: UIImage, tabCount: Int, running: Bool = false) {
         iconView.image = icon
         nameLabel.text = name
-        liveDot.isHidden = !running
+        tabBadgeLabel.text = tabCount >= 2 ? "x" + String(tabCount) : nil
+        tabBadge.isHidden = tabCount < 2
         accessibilityLabel = name
-        accessibilityValue = running ? "Đang chạy ẩn trong JarBox" : nil
+        // Keep the running state available to VoiceOver without a visual dot.
+        var details: [String] = []
+        if tabCount >= 2 { details.append(String(tabCount) + " tab") }
+        if running { details.append("Đang chạy ẩn trong JarBox") }
+        accessibilityValue = details.isEmpty ? nil : details.joined(separator: ", ")
     }
 }

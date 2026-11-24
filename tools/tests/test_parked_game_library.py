@@ -123,8 +123,8 @@ class ParkedGameLibraryTest(unittest.TestCase):
         self.assertIn('resumeParkedGame()', self.library)
         self.assertIn('stopParkedGame()', self.library)
         self.assertIn('running: hasNativeGame(for: app.path)', self.library)
-        self.assertIn('liveDot.isHidden = !running', self.cell)
-        self.assertIn('accessibilityValue = running', self.cell)
+        self.assertIn('if running { details.append("Đang chạy ẩn trong JarBox") }', self.cell)
+        self.assertIn('accessibilityValue = details.isEmpty ? nil', self.cell)
         self.assertIn('navigationItem.rightBarButtonItems = [importBarButton, jarBoxMenuButton].compactMap', self.library)
         self.assertNotIn('stopRunningGameFromLibrary', self.library)
         self.assertNotIn('UIAction(title: "Vào Tab cuối"', self.library)
@@ -142,6 +142,25 @@ class ParkedGameLibraryTest(unittest.TestCase):
         self.assertIn('showGameInformation(app)', self.library)
         self.assertIn('game.parkedSessionInformation()', self.library)
         self.assertIn('func parkedSessionInformation()', self.game)
+
+
+    def test_library_tab_badge_is_static_and_reuse_safe(self):
+        cell = self.cell
+        library = self.library
+        self.assertIn('cell.configure(name: app.name, icon: app.icon,', library)
+        self.assertIn('tabCount: app.cloneCount + 1', library)
+        self.assertNotIn('let groupTitle = app.cloneCount', library)
+        self.assertIn('nameLabel.text = name', cell)
+        self.assertIn('tabBadgeLabel.text = tabCount >= 2 ? "x" + String(tabCount) : nil', cell)
+        self.assertIn('tabBadge.isHidden = tabCount < 2', cell)
+        self.assertIn('tabBadge.topAnchor.constraint(equalTo: iconView.topAnchor, constant: -2)', cell)
+        self.assertIn('tabBadge.leadingAnchor.constraint(equalTo: iconView.leadingAnchor, constant: -3)', cell)
+        self.assertIn('tabBadge.isUserInteractionEnabled = false', cell)
+        reuse = cell.split('override func prepareForReuse()', 1)[1].split('override var isHighlighted', 1)[0]
+        self.assertIn('tabBadge.isHidden = true', reuse)
+        self.assertIn('tabBadgeLabel.text = nil', reuse)
+        self.assertNotIn('liveDot', cell)
+        self.assertNotIn('Timer(', cell)
 
     def test_global_sleep_overlay_is_in_main_menu_not_per_jar(self):
         self.assertIn('UIMenu(title: "JarBox"', self.library)

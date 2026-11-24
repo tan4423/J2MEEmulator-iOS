@@ -2321,9 +2321,8 @@ class AppsListViewController: UIViewController,
         let app = apps[indexPath.item]
         // Clone count was resolved during the existing background JAR scan.
         // Cell reuse and scrolling do no filesystem I/O or timer polling.
-        let groupTitle = app.cloneCount == 0 ? app.name :
-            app.name + " · " + String(app.cloneCount + 1) + " tab"
-        cell.configure(name: groupTitle, icon: app.icon,
+        cell.configure(name: app.name, icon: app.icon,
+                       tabCount: app.cloneCount + 1,
                        running: hasNativeGame(for: app.path))
         return cell
     }
