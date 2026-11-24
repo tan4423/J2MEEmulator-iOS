@@ -1160,3 +1160,22 @@ weak route class with Swift 6 strict concurrency and warnings-as-errors;
 Fake views only; UIKit, native callback ABI integration, the full
 repository suite and device execution are not tested. Updated existing
 C callback-route/handle harness signatures and source regressions.
+
+## 2D input teardown: quiesce before draining, retire only after drain
+
+Previously the bridge released/reset the input ring before jvm_destroy
+had drained Java workers. Stop now revokes admission and focus, disables
+and wakes Display, and rejects new native input consumers; already
+admitted Java operations retain their slot until the worker barrier
+completes. Audio and legacy producers check admission under the input
+lock. After jvm_destroy returns, release by captured launch token, not
+a freed VM address. Startup rollback retains the pre-MIDlet release path.
+Rebind with mismatched token/key is refused; legacy reset fails closed.
+No new timer, JAR, RMS, network, 3D or admission-cap changes.
+
+Validation: local clang C11 host harness using the exact new quiesce
+and token-release functions with modeled contexts, ring indices and
+wake notifications: 10,000 cycles plus 100 pthread consumer drains PASS;
+ASan+UBSan 10/10 repetitions PASS. Added source-extraction and ordering
+regression. Full native integration, UIKit, repository suite and device
+tests remain outstanding.

@@ -898,21 +898,24 @@ static void bridge_destroy_slot(JarBoxVMContext *slot) {
         gc_request_thread_status(slot->jvm->collector, GARBAGE_THREAD_STOP);
         thread_stop_all(slot->jvm);
 
-        // Step 3: Close only the audio players owned by this JVM. An
-        // unrelated JVM's players must not stop just because A exits.
-        j2me_audio_stop_for_vm(slot->jvm);
+        // Step 3: Revoke producers and wake Display, including any
+        // late audio completion. Keep the ring reserved until worker drain.
+        const uint64_t destroyed_token =
+            atomic_load_explicit(&slot->token, memory_order_acquire);
+        j2me_input_quiesce_vm(slot->jvm);
 
-        // Step 4: Unbind only this JVM's physical input and Display wait.
-        // Release makes any late native poll return empty, and signals its
-        // own condition variable without waking or modifying another VM.
-        j2me_input_release_vm(slot->jvm);
+        // Step 4: Close only this JVM's audio players.
+        j2me_audio_stop_for_vm(slot->jvm);
 
         // Step 5: jvm_destroy waits for all real native Java worker leases,
         // not just the Java ZOMBIE status. It retains the JVM heap if a
         // pthread is stuck and keeps the single-JVM gate occupied. The UI
         // already exposes an explicit process-exit recovery for stuck games.
         jvm_destroy(slot->jvm);
-        // The JVM address remains the registration key until this release;
+        // All Java input consumers and callback leases have drained.
+        // Retire by immutable token, never by the freed JVM address.
+        j2me_input_release_for_token(destroyed_token);
+        // The JVM address remains the LCDUI registration key until this release;
         // no code dereferences it after jvm_destroy.
         j2me_ui_release_vm(slot->jvm);
         slot->jvm = NULL;
@@ -955,7 +958,7 @@ int jvm_bridge_request_stop_for_token(uint64_t token) {
     }
     pthread_mutex_unlock(&g_bridge_lifecycle_lock);
     if (owner) {
-        j2me_display_wake_for_vm(owner);
+        j2me_input_quiesce_vm(owner);
         jarbox_session_callback_done(held);
     }
     if (matching)

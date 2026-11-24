@@ -34,6 +34,7 @@ typedef struct {
     uint64_t heap_key;   // native generation, guarded by g_input_context_lock
     uint64_t session_token; // launch identity, guarded by g_input_context_lock
     JarBoxInputRing ring;
+    atomic_int accepting_input; // terminal revocation, before worker drain
     atomic_int display_wait_enabled;
     pthread_mutex_t display_wait_lock;
     pthread_cond_t display_wait_cond;
@@ -71,7 +72,8 @@ static J2MEInputContext *context_for_vm(MiniJVM *vm) {
 // Never choose B's input slot for A's stale Java Runtime.
 static J2MEInputContext *context_for_runtime(Runtime *runtime) {
     if (!jarbox_native_heap_key_for_runtime(runtime)) return NULL;
-    return context_for_vm(runtime->jvm);
+    J2MEInputContext *ctx = context_for_vm(runtime->jvm);
+    return ctx && atomic_load_explicit(&ctx->accepting_input, memory_order_acquire) ? ctx : NULL;
 }
 
 static J2MEInputContext *visible_input_context(void) {
@@ -89,6 +91,12 @@ static int bind_input_context(MiniJVM *vm) {
     pthread_once(&g_input_context_once, init_input_contexts);
     pthread_mutex_lock(&g_input_context_lock);
     J2MEInputContext *ctx = context_for_vm(vm);
+    // A retired address must not inherit the previous launch's input slot.
+    if (ctx && (ctx->session_token != token || ctx->heap_key != heap_key ||
+                !atomic_load_explicit(&ctx->accepting_input, memory_order_acquire))) {
+        pthread_mutex_unlock(&g_input_context_lock);
+        return 0;
+    }
     if (!ctx) {
         for (int i = 0; i < JARBOX_INPUT_CONTEXT_CAPACITY; ++i) {
             J2MEInputContext *candidate = &g_input_contexts[i];
@@ -102,6 +110,7 @@ static int bind_input_context(MiniJVM *vm) {
                 if (ctx->generation == 0) ctx->generation = ++g_input_next_generation;
                 ctx->heap_key = heap_key;
                 ctx->session_token = token;
+                atomic_store_explicit(&ctx->accepting_input, 1, memory_order_release);
                 atomic_store_explicit(&ctx->vm, vm, memory_order_release);
                 break;
             }
@@ -120,9 +129,10 @@ static int bind_input_context(MiniJVM *vm) {
 int j2me_input_focus_vm(MiniJVM *vm) {
     pthread_mutex_lock(&g_input_context_lock);
     J2MEInputContext *ctx = context_for_vm(vm);
-    if (ctx) atomic_store_explicit(&g_visible_input_context, ctx, memory_order_release);
+    const int ready = ctx && atomic_load_explicit(&ctx->accepting_input, memory_order_acquire);
+    if (ready) atomic_store_explicit(&g_visible_input_context, ctx, memory_order_release);
     pthread_mutex_unlock(&g_input_context_lock);
-    return ctx != NULL;
+    return ready;
 }
 
 /* Parking revokes physical input only; Java event queues and the Display
@@ -175,7 +185,9 @@ static void wake_input_context(J2MEInputContext *ctx) {
     }
 }
 void j2me_display_wake(void) {
+    pthread_mutex_lock(&g_input_context_lock);
     wake_input_context(visible_input_context());
+    pthread_mutex_unlock(&g_input_context_lock);
 }
 void j2me_display_wake_for_vm(MiniJVM *vm) {
     pthread_mutex_lock(&g_input_context_lock);
@@ -183,11 +195,13 @@ void j2me_display_wake_for_vm(MiniJVM *vm) {
     pthread_mutex_unlock(&g_input_context_lock);
 }
 void treo_display_wait_set(int enabled) {
+    pthread_mutex_lock(&g_input_context_lock);
     J2MEInputContext *ctx = visible_input_context();
-    if (!ctx) return;
-    atomic_store_explicit(&ctx->display_wait_enabled, enabled != 0, memory_order_release);
-    // Also wake when disabled, so a pending native timed wait ends now.
-    signal_display_wait(ctx);
+    if (ctx && atomic_load_explicit(&ctx->accepting_input, memory_order_acquire)) {
+        atomic_store_explicit(&ctx->display_wait_enabled, enabled != 0, memory_order_release);
+        signal_display_wait(ctx);
+    }
+    pthread_mutex_unlock(&g_input_context_lock);
 }
 /* Set the Display wait mode for the *actual JVM token*, not whichever Tab
  * happens to own the physical input destination. The bridge lease protects
@@ -195,7 +209,7 @@ void treo_display_wait_set(int enabled) {
 void treo_display_wait_set_for_vm(MiniJVM *vm, int enabled) {
     pthread_mutex_lock(&g_input_context_lock);
     J2MEInputContext *ctx = context_for_vm(vm);
-    if (ctx) {
+    if (ctx && atomic_load_explicit(&ctx->accepting_input, memory_order_acquire)) {
         atomic_store_explicit(&ctx->display_wait_enabled, enabled != 0,
                               memory_order_release);
         signal_display_wait(ctx);
@@ -217,15 +231,18 @@ uint64_t treo_display_wake_signals(void) { return atomic_load_explicit(&g_displa
 
 
 void j2me_input_set_canvas_size(int width, int height) {
+    pthread_mutex_lock(&g_input_context_lock);
     J2MEInputContext *ctx = visible_input_context();
-    if (!ctx) return;
-    ctx->canvas_width = width;
-    ctx->canvas_height = height;
+    if (ctx && atomic_load_explicit(&ctx->accepting_input, memory_order_acquire)) {
+        ctx->canvas_width = width;
+        ctx->canvas_height = height;
+    }
+    pthread_mutex_unlock(&g_input_context_lock);
 }
 
 static void enqueue_to_context(J2MEInputContext *ctx,
                                int type, int x, int y, int keyCode) {
-    if (!ctx) return;
+    if (!ctx || !atomic_load_explicit(&ctx->accepting_input, memory_order_acquire)) return;
     const JarBoxInputEvent event = {type, x, y, keyCode};
     if (!jarbox_input_ring_push(&ctx->ring, &event)) {
         // A full queue is a real drop, never an invented replacement key.
@@ -237,7 +254,9 @@ static void enqueue_to_context(J2MEInputContext *ctx,
 }
 
 static void enqueue_event(int type, int x, int y, int keyCode) {
+    pthread_mutex_lock(&g_input_context_lock);
     enqueue_to_context(visible_input_context(), type, x, y, keyCode);
+    pthread_mutex_unlock(&g_input_context_lock);
 }
 
 static int dequeue_event(J2MEInputContext *ctx, JarBoxInputEvent *out) {
@@ -289,7 +308,7 @@ void j2me_input_post_touch_for_token(uint64_t token, int type, int x, int y) {
 uint64_t j2me_input_binding_generation(MiniJVM *vm) {
     pthread_mutex_lock(&g_input_context_lock);
     J2MEInputContext *ctx = context_for_vm(vm);
-    const uint64_t generation = ctx ? ctx->generation : 0;
+    const uint64_t generation = ctx && atomic_load_explicit(&ctx->accepting_input, memory_order_acquire) ? ctx->generation : 0;
     pthread_mutex_unlock(&g_input_context_lock);
     return generation;
 }
@@ -447,30 +466,49 @@ static s32 n_displayWake(Runtime *runtime, JClass *clazz) {
 // ============================================================
 
 void j2me_input_reset(void) {
-    J2MEInputContext *ctx = visible_input_context();
-    if (!ctx) return;
-    atomic_store_explicit(&ctx->display_wait_enabled, 0, memory_order_release);
-    signal_display_wait(ctx);
-    jarbox_input_ring_reset(&ctx->ring);
-    printf("[J2ME Input] Ring buffer reset for current JVM\n");
+    // A visible context can still have a Java consumer. The unscoped ABI
+    // cannot establish its retirement; only the owner release may reset it.
+    // Intentionally fail closed.
 }
 
-// Call during owning JVM teardown after stopping its Java threads. Stop and
-// wake only *this* context; no other JVM input queue or wait may be reset.
+static void input_quiesce_locked(J2MEInputContext *ctx) {
+    if (!ctx) return;
+    atomic_store_explicit(&ctx->accepting_input, 0, memory_order_release);
+    if (visible_input_context() == ctx)
+        atomic_store_explicit(&g_visible_input_context, NULL, memory_order_release);
+    atomic_store_explicit(&ctx->display_wait_enabled, 0, memory_order_release);
+    signal_display_wait(ctx);
+}
+void j2me_input_quiesce_vm(MiniJVM *vm) {
+    pthread_mutex_lock(&g_input_context_lock);
+    input_quiesce_locked(context_for_vm(vm));
+    pthread_mutex_unlock(&g_input_context_lock);
+}
+static void input_release_locked(J2MEInputContext *ctx) {
+    if (!ctx) return;
+    input_quiesce_locked(ctx);
+    jarbox_input_ring_reset(&ctx->ring);
+    ctx->heap_key = 0;
+    ctx->session_token = 0;
+    atomic_store_explicit(&ctx->vm, NULL, memory_order_release);
+}
+void j2me_input_release_for_token(uint64_t token) {
+    if (!token) return;
+    pthread_mutex_lock(&g_input_context_lock);
+    for (int i = 0; i < JARBOX_INPUT_CONTEXT_CAPACITY; ++i) {
+        J2MEInputContext *ctx = &g_input_contexts[i];
+        if (ctx->session_token == token) {
+            input_release_locked(ctx);
+            break;
+        }
+    }
+    pthread_mutex_unlock(&g_input_context_lock);
+}
+
+// Startup rollback only, before a MIDlet or Java input consumer has started.
 void j2me_input_release_vm(MiniJVM *vm) {
     pthread_mutex_lock(&g_input_context_lock);
-    J2MEInputContext *ctx = context_for_vm(vm);
-    if (ctx) {
-        atomic_store_explicit(&ctx->display_wait_enabled, 0, memory_order_release);
-        signal_display_wait(ctx);
-        if (visible_input_context() == ctx)
-            atomic_store_explicit(&g_visible_input_context, NULL, memory_order_release);
-        atomic_store_explicit(&ctx->vm, NULL, memory_order_release);
-        ctx->heap_key = 0;
-        ctx->session_token = 0;
-        jarbox_input_ring_reset(&ctx->ring);
-        printf("[J2ME Input] Released owned JVM input context\n");
-    }
+    input_release_locked(context_for_vm(vm));
     pthread_mutex_unlock(&g_input_context_lock);
 }
 

@@ -26,7 +26,12 @@ void j2me_input_park_vm(MiniJVM *jvm);
 
 /// Unbind and clear only this JVM's input and wake condition, during
 /// its own shutdown. Must never reset another still-running JVM.
+// Startup rollback only, before Java input consumers start.
 void j2me_input_release_vm(MiniJVM *jvm);
+/// Revoke producers and wake Display without resetting the owning ring.
+void j2me_input_quiesce_vm(MiniJVM *vm);
+/// Retire only after Java consumers and callback leases have drained.
+void j2me_input_release_for_token(uint64_t token);
 
 /// Post a touch event from iOS (called from main thread).
 /// @param type  J2ME_INPUT_POINTER_PRESSED/DRAGGED/RELEASED
@@ -53,7 +58,7 @@ void j2me_input_post_key_to_vm(MiniJVM *vm, uint64_t generation,
 /// Set virtual canvas size for coordinate conversion.
 void j2me_input_set_canvas_size(int width, int height);
 
-/// Reset input state (clear ring buffer). Call between game sessions.
+/// Legacy unscoped reset; intentionally does not reset a live input ring.
 void j2me_input_reset(void);
 
 // Diagnostic idle Display wait; defaults off and never affects normal mode.
