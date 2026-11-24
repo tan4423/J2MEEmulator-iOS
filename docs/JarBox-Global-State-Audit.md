@@ -754,3 +754,25 @@ executions of 100 modeled cancel/normal/duplicate-run sequences. The
 native init checkpoint order was checked on the exact connector source
 and replacement using equivalent source predicates; the complete
 Python suite, native build and device execution are still unverified.
+
+## 2026-11-24: Single-flight game presentation and coalesced stop UI
+
+Both library launch and resume now share a main-actor presentation gate
+that is claimed before calling UIKit and released by its completion,
+not an arbitrary delay. Collection selection checks the gate before
+reading clone metadata. Clone save-root validation happens once on the
+startup worker, before native init; removing redundant UI-thread
+preflight does not remove the worker's ownership and symlink checks.
+A second stop/back tap while closing no longer shows a premature
+recovery warning: the existing rescue watchdog (or failed worker
+retirement) enables recovery, and a weak alert identity prevents
+duplicate recovery presentation. The live native token still blocks
+reuse until retirement. No new polling, forced heap free or RMS change.
+
+Validation: a host Swift harness compiled the exact presentation helper
+and passed 1,000 modeled presentation cycles with 100 duplicate taps
+during each transition. The equivalent source contracts for both entry
+points and recovery gating failed on the old connector source and passed
+on the replacement. The regression file was hash-matched to the host
+test. UIKit presentation, full suite, Xcode/Codemagic and actual iPhone
+latency/data safety require device testing. Admission remains one JVM.

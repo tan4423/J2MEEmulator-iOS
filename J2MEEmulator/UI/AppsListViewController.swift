@@ -357,6 +357,7 @@ class AppsListViewController: UIViewController,
     private var lastLayoutWidth: CGFloat = 0
     private weak var animatedBackground: AnimatedBackgroundView?
     private var springboardVisible = false
+    private var gamePresentationInFlight = false
     private var importBarButton: UIBarButtonItem?
     private var jarBoxMenuButton: UIBarButtonItem?
     // CPU sampling is event-based, process-wide; never attribute it to one game.
@@ -419,12 +420,25 @@ class AppsListViewController: UIViewController,
         springboardCollectionView.reloadData()
     }
 
+    private var canPresentGame: Bool {
+        !gamePresentationInFlight && presentedViewController == nil &&
+        viewIfLoaded?.window != nil && !isBeingDismissed
+    }
+
+    private func presentGame(_ game: GameViewController, reason: String) {
+        guard canPresentGame else { return }
+        gamePresentationInFlight = true
+        setSpringboardMotion(false, reason: reason)
+        present(game, animated: false) { [weak self] in
+            self?.gamePresentationInFlight = false
+        }
+    }
+
     func resumeManagedGame(_ game: GameViewController) {
-        guard managedGames.contains(where: { $0 === game }),
-              game.ownsLiveGameSession(), presentedViewController == nil,
+        guard canPresentGame, managedGames.contains(where: { $0 === game }),
+              game.ownsLiveGameSession(),
               jvm_bridge_visible_session_token() == 0 else { return }
-        setSpringboardMotion(false, reason: "resume retained game")
-        present(game, animated: false)
+        presentGame(game, reason: "resume retained game")
     }
 
     private func chooseManagedGame(stopping: Bool, path: String? = nil) {
@@ -1598,6 +1612,7 @@ class AppsListViewController: UIViewController,
 
     func collectionView(_ collectionView: UICollectionView,
                         didSelectItemAt indexPath: IndexPath) {
+        guard canPresentGame, apps.indices.contains(indexPath.item) else { return }
         let app = apps[indexPath.item]
         do {
             let clones = try JarBoxGameStorage.registeredClones(
@@ -1852,6 +1867,7 @@ class AppsListViewController: UIViewController,
     }
 
     private func launchGameTab(_ app: AppInfo, cloneID: UUID?, tabTitle: String) {
+        guard canPresentGame else { return }
         // The same JAR may have several independent clone roots. Resume
         // exactly the selected instance; never start another worker for it.
         if let game = gameForTab(app.path, cloneID: cloneID) {
@@ -1863,7 +1879,6 @@ class AppsListViewController: UIViewController,
             showAnotherGameBlocked(app)
             return
         }
-        guard presentedViewController == nil else { return }
         if retainedGames.contains(where: { $0.holdsNativeInstance(for: app.path, cloneID: cloneID) }) {
             let alert = UIAlertController(title: "Đang đóng phiên cũ",
                 message: "Tab này vẫn đang khởi động hoặc dừng; không thể dùng chung dữ liệu.",
@@ -1883,16 +1898,8 @@ class AppsListViewController: UIViewController,
             return
         }
 
-        // No clone may launch without a registered, existing private root.
-        do {
-            if cloneID != nil {
-                _ = try JarBoxGameStorage.prepareRoot(
-                    jarPath: app.path, documents: Self.documentsDirectory, cloneID: cloneID)
-            }
-        } catch {
-            presentSaveOperationError(error)
-            return
-        }
+        // The startup worker validates the exact save root before native init.
+        // Do not repeat that filesystem work on the UI thread.
 
         let render3dScale = Self.is3DSupersampling(for: app, cloneID: cloneID) ? 3 : 1
         let res = Self.resolution(for: app, cloneID: cloneID)
@@ -1903,7 +1910,6 @@ class AppsListViewController: UIViewController,
         gameVC.modalPresentationStyle = .fullScreen
         gameVC.sessionLibrary = self
         managedGames.append(gameVC)
-        setSpringboardMotion(false, reason: "game launching")
-        present(gameVC, animated: false)
+        presentGame(gameVC, reason: "game launching")
     }
 }

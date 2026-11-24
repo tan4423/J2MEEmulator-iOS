@@ -522,6 +522,8 @@ class GameViewController: UIViewController {
     private var ownsJVMSession = false
     private var gameSessionToken: UInt64 = 0
     private var gameStopRequested = false
+    private var stopRecoveryAvailable = false
+    private weak var stopRecoveryAlert: UIAlertController?
     // One *live* miniJVM remains owned by this controller while the library
     // overlays it. This is a parked foreground session, not a second JVM.
     private var libraryIsPresented = false
@@ -989,7 +991,9 @@ class GameViewController: UIViewController {
     // threads still hold pointers into its heap. Offer a *confirmed*
     // process-level escape hatch rather than a fake view dismissal.
     private func showStuckSessionRecovery() {
-        guard ownsJVMSession, viewIfLoaded?.window != nil, !isBeingDismissed else { return }
+        guard stopRecoveryAvailable, stopRecoveryAlert == nil,
+              holdsNativeGameSession(), viewIfLoaded?.window != nil,
+              !isBeingDismissed else { return }
         let phase = jvm_bridge_session_phase()
         let alert = UIAlertController(
             title: "Game chưa dừng hẳn",
@@ -1001,9 +1005,10 @@ class GameViewController: UIViewController {
         alert.addAction(UIAlertAction(title: "Buộc đóng JarBox", style: .destructive) { [weak self] _ in
             self?.confirmEmergencyExit()
         })
+        stopRecoveryAlert = alert
         if let previous = presentedViewController {
             previous.dismiss(animated: false) { [weak self] in
-                guard let self, self.ownsJVMSession, self.view.window != nil else { return }
+                guard let self, self.holdsNativeGameSession(), self.view.window != nil else { return }
                 self.present(alert, animated: true)
             }
         } else {
@@ -3540,6 +3545,7 @@ class GameViewController: UIViewController {
                 // callbacks). Keep its controller and recovery identity.
                 if jvm_bridge_session_is_active_for_token(launchingToken) != 0 {
                     self.gameStopRequested = true
+                    self.stopRecoveryAvailable = true
                     self.finishStartupWatchdog()
                     self.sessionLibrary?.managedGameDidEnd(self)
                     self.showStuckSessionRecovery()
@@ -3773,7 +3779,7 @@ class GameViewController: UIViewController {
         }
         gameStopRequested = true
         backButton.setTitle("Đang dừng…", for: .normal)
-        backButton.accessibilityLabel = "Đang dừng game, bấm để xem trạng thái"
+        backButton.accessibilityLabel = "Đang dừng game"
         NSLog("[JarBoxVM][Lifecycle] cancel_requested reason=%@ phase=%d",
               reason, jvm_bridge_session_phase())
         finishStartupWatchdog()
@@ -3806,6 +3812,7 @@ class GameViewController: UIViewController {
             guard let self, self.gameStopRequested, self.ownsJVMSession else { return }
             NSLog("[JarBoxVM][Lifecycle] stop_pending_recovery phase=%d",
                   jvm_bridge_session_phase())
+            self.stopRecoveryAvailable = true
             self.showStuckSessionRecovery()
         }
         stopRescueWork = rescue
