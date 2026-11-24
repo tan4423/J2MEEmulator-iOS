@@ -176,7 +176,8 @@ class ParkedGameLibraryTest(unittest.TestCase):
         self.assertIn('if !ownsDisplay { hideJarBoxSleepInformation() }', self.library)
         self.assertIn('setJarBoxSleepSampling(false)', self.library)
         self.assertIn('setJarBoxSleepSampling(true)', self.library)
-        disappear = self.library.split('override func viewWillDisappear(', 1)[1].split(
+        library = self.library.split("class AppsListViewController: UIViewController,", 1)[1]
+        disappear = library.split('override func viewWillDisappear(', 1)[1].split(
             'override func viewDidDisappear(', 1)[0]
         self.assertIn('if isBeingDismissed || isMovingFromParent ||', disappear)
         self.assertIn('hideJarBoxSleepScreen()', disappear)

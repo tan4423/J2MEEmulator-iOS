@@ -217,8 +217,10 @@ class SharedSettingsAndProtectionTest(unittest.TestCase):
         self.assertIn("seconds.isEnabled = enabled", source)
         self.assertIn("(5...3600).contains(value)", source)
         self.assertIn("repeats: false", method(source, "    private func armAutoProtection()"))
+        # The status/settings controllers in this file have their own lifecycle.
+        library = source.split("class AppsListViewController: UIViewController,", 1)[1]
         for signature in ("    override func viewWillDisappear(", "    @objc private func jarBoxWillResignActive()"):
-            self.assertIn("cancelAutoProtection()", method(source, signature))
+            self.assertIn("cancelAutoProtection()", method(library, signature))
         self.assertIn("armAutoProtection()", method(source, "    @objc private func hideJarBoxSleepScreen()"))
         scene = (LIB.parents[1] / "SceneDelegate.swift").read_text(encoding="utf-8")
         self.assertIn("override func sendEvent(_ event: UIEvent)", scene)

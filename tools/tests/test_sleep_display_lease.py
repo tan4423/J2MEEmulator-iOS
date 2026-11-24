@@ -121,9 +121,11 @@ class SleepDisplayLeaseTest(unittest.TestCase):
 
     def test_lifecycle_does_not_destroy_cover_on_temporary_disappearance(self):
         src = LIB.read_text(encoding="utf-8")
-        disappear = src.split("override func viewWillDisappear(", 1)[1].split(
+        # Scope to the library, not the status modal's identically named hooks.
+        library = src.split("class AppsListViewController: UIViewController,", 1)[1]
+        disappear = library.split("override func viewWillDisappear(", 1)[1].split(
             "override func viewDidDisappear(", 1)[0]
-        appear = src.split("override func viewDidAppear(", 1)[1].split(
+        appear = library.split("override func viewDidAppear(", 1)[1].split(
             "override func viewWillDisappear(", 1)[0]
         self.assertIn("if isBeingDismissed || isMovingFromParent ||", disappear)
         self.assertIn("setJarBoxSleepSampling(false)", disappear)
