@@ -1350,3 +1350,22 @@ on OpenJDK 21 in two separate Java processes with expected checksums
 and loopback sockets, including B continuing after A termination.
 Actual same-process MiniJVM, bundled runtime/JAR compatibility, JIT,
 UIKit, Metal and iPhone integration remain untested at this checkpoint.
+
+## CoreHaptics reset callback: keep engine identity across queue hops
+
+The CoreHaptics reset handler used to read the mutable process-wide engine
+from the framework callback queue. After a single-VM retirement and new
+launch it could restart a replacement engine, and race main-queue teardown.
+Capture a weak reference to the originating engine and dispatch to the same
+main queue that owns the engine/player. Reject nil or replaced engines
+before calling start. Clear the reset handler before explicit engine stop;
+already queued resets still check identity. No timer, Treo policy, admission,
+3D, network or save-root changes.
+
+Validation: checked exact source anchors and new regression predicates
+against the candidate source, and confirmed ARC is enabled in the Xcode
+project. Full Python suite and CoreHaptics/iOS build not executed: complete
+checkout and boot runtime binary still unavailable in the compiler environment.
+This fixes an identified callback routing race; shared-engine readiness
+marker and cap one remain unchanged. Device reset and focus transitions
+still require validation.

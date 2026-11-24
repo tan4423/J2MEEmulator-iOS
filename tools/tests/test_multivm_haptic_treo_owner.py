@@ -76,6 +76,20 @@ class HapticTreoOwnerTest(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertIn("haptic owner mode gate: OK", result.stdout)
 
+    def test_reset_handler_pins_engine_identity_on_main_queue(self):
+        src = RENDER.read_text(encoding="utf-8")
+        setup = src.split("static void ensureHapticEngine(void)", 1)[1].split("\n}", 1)[0]
+        self.assertIn("__weak CHHapticEngine *resetEngine = g_hapticEngine;", setup)
+        reset = setup.split("g_hapticEngine.resetHandler = ^{", 1)[1].split("\n    };", 1)[0]
+        self.assertIn("dispatch_async(dispatch_get_main_queue(), ^{", reset)
+        self.assertLess(reset.index("dispatch_async("), reset.index("CHHapticEngine *engine = resetEngine;"))
+        self.assertLess(reset.index("if (!engine || engine != g_hapticEngine) return;"),
+                        reset.index("[engine startAndReturnError:"))
+        self.assertNotIn("[g_hapticEngine startAndReturnError:", reset)
+        cleanup = src.split("void j2me_render_cleanup_for_owner(", 1)[1]
+        self.assertLess(cleanup.index("g_hapticEngine.resetHandler = nil;"),
+                        cleanup.index("[g_hapticEngine stopWithCompletionHandler:"))
+
     def test_main_queue_rechecks_owner_before_stop_and_start(self):
         src = RENDER.read_text(encoding="utf-8")
         body = src.split("static s32 n_vibrate(", 1)[1].split("\n}", 1)[0]

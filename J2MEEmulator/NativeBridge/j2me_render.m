@@ -4606,9 +4606,16 @@ static void ensureHapticEngine(void) API_AVAILABLE(ios(13.0)) {
         g_hapticEngine = nil;
         return;
     }
+    // CoreHaptics invokes resetHandler on its own queue. Never resolve a
+    // replacement global engine there or retain an old engine through its block.
+    __weak CHHapticEngine *resetEngine = g_hapticEngine;
     g_hapticEngine.resetHandler = ^{
-        NSError *startErr = nil;
-        [g_hapticEngine startAndReturnError:&startErr];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            CHHapticEngine *engine = resetEngine;
+            if (!engine || engine != g_hapticEngine) return;
+            NSError *startErr = nil;
+            [engine startAndReturnError:&startErr];
+        });
     };
     [g_hapticEngine startAndReturnError:&err];
     if (err) {
@@ -4899,6 +4906,9 @@ void j2me_render_cleanup_for_owner(uint64_t owner_key) {
             if (@available(iOS 13.0, *)) {
                 stop_afk_haptics();
                 if (g_hapticEngine) {
+                    // A reset already queued on the main queue will reject
+                    // this retired engine even if a new one is installed.
+                    g_hapticEngine.resetHandler = nil;
                     [g_hapticEngine stopWithCompletionHandler:nil];
                     g_hapticEngine = nil;
                 }
