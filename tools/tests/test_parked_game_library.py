@@ -151,8 +151,8 @@ class ParkedGameLibraryTest(unittest.TestCase):
         self.assertNotIn('jvm_bridge_try_begin_session()', self.library)
 
     def test_sleep_overlay_timer_lifecycle(self):
-        self.assertIn('Timer.scheduledTimer(withTimeInterval: 15.0', self.library)
-        self.assertIn('timer.tolerance = 3.0', self.library)
+        self.assertIn('Timer.scheduledTimer(withTimeInterval: 30.0', self.library)
+        self.assertIn('timer.tolerance = 6.0', self.library)
         self.assertIn('jarBoxSleepTimer?.invalidate()', self.library)
         self.assertIn('guard jarBoxSleepCover != nil else { return }', self.library)
         self.assertIn('guard active, springboardVisible else { return }', self.library)
@@ -162,6 +162,28 @@ class ParkedGameLibraryTest(unittest.TestCase):
         self.assertIn('jarBoxSleepBatteryWasEnabled = device.isBatteryMonitoringEnabled', self.library)
         self.assertIn('UIDevice.current.isBatteryMonitoringEnabled = old', self.library)
         self.assertNotIn('UIScreen.main.brightness =', self.library)
+        self.assertIn('screen.brightness = 0', self.library)
+        self.assertIn('saved.screen.brightness = saved.previous', self.library)
+        self.assertIn('setJarBoxSleepBrightness(active && springboardVisible)', self.library)
+        self.assertIn('self.jarBoxSleepSamplingGeneration == generation', self.library)
+        self.assertIn('enabled && jarBoxSleepCover == nil', self.library)
+
+    def test_sleep_hud_does_not_sample_cpu_on_entry_or_thermal_event(self):
+        hud = self.library.split('private func refreshJarBoxSleepHUD()', 1)[1].split(
+            'private func showJarBoxOverview()', 1)[0]
+        sampler = self.library.split('private func sampleJarBoxSleepCPU()', 1)[1].split(
+            'private func jarBoxSleepDurationText(', 1)[0]
+        self.assertNotIn('treo_process_cpu_seconds()', hud)
+        self.assertIn('guard elapsed >= 15 else { return }', sampler)
+        self.assertIn('self.sampleJarBoxSleepCPU()', self.library)
+        self.assertIn('"CPU tổng: đang đo"', self.library)
+        self.assertIn('"Nhiệt độ: " + thermal', hud)
+        self.assertIn('"Thời gian: " + jarBoxSleepDurationText(elapsed)', hud)
+        self.assertNotIn('runningText', hud)
+        self.assertNotIn('Thời gian phủ', hud)
+        self.assertNotIn('CPU là tổng tiến trình', hud)
+        self.assertIn('info.textAlignment = .left', self.library)
+        self.assertIn('info.centerXAnchor.constraint(equalTo: cover.centerXAnchor)', self.library)
 
     def test_does_not_claim_ios_background_execution(self):
         self.assertIn('does not grant iOS background execution', self.game)
