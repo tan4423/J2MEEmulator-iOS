@@ -1784,7 +1784,12 @@ class AppsListViewController: UIViewController,
         guard jarBoxSleepCover != nil, springboardVisible,
               view.window?.windowScene?.activationState == .foregroundActive,
               let label = jarBoxSleepHUD else { return }
-        // Tapping again restarts the 15-second window with a fresh baseline.
+        // A second tap closes the HUD without closing the protection cover.
+        if !label.isHidden {
+            hideJarBoxSleepInformation()
+            return
+        }
+        // A new opening starts with a fresh CPU baseline and deadline.
         hideJarBoxSleepInformation()
         let now = ProcessInfo.processInfo.systemUptime
         jarBoxSleepHUDDeadline = now + 15

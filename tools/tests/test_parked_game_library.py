@@ -225,6 +225,8 @@ class ParkedGameLibraryTest(unittest.TestCase):
         self.assertNotIn('Timer(', cover)
         self.assertNotIn('treo_process_cpu_seconds()', cover)
         self.assertNotIn('isBatteryMonitoringEnabled', cover)
+        # A second tap must return before a fresh timer/baseline is created.
+        self.assertIn('if !label.isHidden {\n            hideJarBoxSleepInformation()\n            return\n        }'.replace('\n', '\n'), show)
         self.assertIn('jarBoxSleepHUDDeadline = now + 15', show)
         self.assertIn('systemUptime < deadline', show)
         self.assertIn('self.hideJarBoxSleepInformation()', show)
