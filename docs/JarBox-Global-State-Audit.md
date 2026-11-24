@@ -1223,3 +1223,27 @@ helpers. 10,000 sequential scenarios and 100 competing launch pairs
 passed; 10/10 ASan+UBSan repetitions passed. This is not actual two-VM
 execution or native transition proof. Repository extraction regression
 added; full suite and iOS device build not run.
+
+## Exclusive legacy 3D admission (2D-first product policy)
+
+A 3D or uncertain archive must run alone, including STARTING, PARKED,
+STOPPING and cleanup. Scan bounded class bytes for M3G/MascotCapsule/GL
+markers; nested, unreadable or oversized archives conservatively reserve
+exclusive access. Archive classification is heuristic; a shared 2D
+launch at a future cap > 1 is never registered with either legacy 3D
+backend even if a marker was missed. The default cap-one build still
+registers legacy 3D for compatibility. Legacy callers without a JAR
+reserve exclusively. Native admission checks conflicts atomically under
+the lifecycle lock, and only registry retirement releases exclusivity.
+UIKit presents a clear refusal rather than stopping any other tab.
+The previous opt-in 2D-only build option remains available; ordinary
+build behavior is exclusive 3D, not a permanently disabled 3D engine.
+
+Validation: portable policy header compiled on Linux clang C11 with
+-Wall -Wextra -Werror and ASan+UBSan, 10,000 cases each with both macro
+values passed. Tests exercise the conflict matrix, default and opt-in
+registration, direct/dotted marker detection and boundary handling.
+Updated admission harness and source assertions, but the full repository
+suite, actual archive scanner, native integration and iPhone build
+were not run in this batch. Classification of actual NSO/Avatar JARs
+is not yet verified. The public cap remains one.

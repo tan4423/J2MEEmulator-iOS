@@ -3523,9 +3523,15 @@ class GameViewController: UIViewController {
         // Reserve this worker's token together with its native slot. The
         // background launcher never reads a token that might belong to B.
         var acquiredToken: UInt64 = 0
-        guard jvm_bridge_try_begin_session_with_token(&acquiredToken) != 0,
-              acquiredToken != 0 else {
-            showBlockedSessionAlert()
+        let admission = jarPath.withCString {
+            jvm_bridge_try_begin_session_for_jar($0, &acquiredToken)
+        }
+        guard admission == 1, acquiredToken != 0 else {
+            if admission == -1 {
+                showLaunchFailure("Game 3D hoặc game chưa xác định chỉ được chạy riêng. Hãy dừng tất cả tab đang chạy trước khi mở game này.")
+            } else {
+                showBlockedSessionAlert()
+            }
             return
         }
         ownsJVMSession = true

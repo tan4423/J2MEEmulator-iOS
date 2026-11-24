@@ -148,8 +148,10 @@ def audit(root=ROOT):
     policy_path = root / "J2MEEmulator/NativeBridge/jarbox_2d_policy.h"
     policy_source = policy_path.read_text(encoding="utf-8") if policy_path.is_file() else ""
     exclusion_guard_present = (
-        "return session_cap == 1 && !JARBOX_2D_ONLY_RUNTIME;" in policy_source
-        and "if (jarbox_legacy_3d_allowed((unsigned)jvm_bridge_supported_concurrent_sessions())) {" in src["lifecycle"]
+        "return active != 0 && (existing_exclusive || requested_exclusive);" in policy_source
+        and "bridge_3d_conflict_locked(exclusive)" in src["lifecycle"]
+        and "slot->exclusive_3d = exclusive != 0;" in src["lifecycle"]
+        and "if (jarbox_legacy_3d_allowed((unsigned)jvm_bridge_supported_concurrent_sessions()," in src["lifecycle"]
         and "if (slot->legacy_3d_registered) {" in src["lifecycle"])
     blockers_2d = {name: found for name, found in sorted(blockers.items())
                    if found and (not name.startswith("3d_") or not exclusion_guard_present)}
@@ -182,7 +184,7 @@ def audit(root=ROOT):
             "Java thread roots snapshot native generation; nested Runtime frames share it. Render, LCDUI and Display Input reject stale runtime generations after pointer reuse.",
             "3D supersampling configuration is session-owned; M3G pixel buffers, EGL contexts and global cleanup remain separate blockers.",
             "Network, classloader, JIT, sockets, native image handles, and teardown still need device validation.",
-            "An opt-in 2D-only build excludes legacy 3D native registration and cleanup; the default single-VM build retains it. The cap is unchanged.",
+            "3D or unknown archives reserve exclusive access until retirement. Shared 2D launches cannot register the legacy 3D backends when cap > 1. The default single-VM build retains legacy compatibility; cap is unchanged.",
             "2d_only_candidate_blockers excludes 3D source markers only if the exclusion guard is present. It is not a certification of 3D reachability or runtime safety.",
             "Do not enable another JVM while there are unisolated native blockers.",
         ],

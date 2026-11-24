@@ -1891,6 +1891,15 @@ class AppsListViewController: UIViewController,
             return
         }
         let count = jvm_bridge_active_session_count()
+        if count > 0 && count >= jvm_bridge_supported_concurrent_sessions() &&
+            app.path.withCString({ jvm_bridge_3d_conflict_for_jar($0) }) != 0 {
+            let alert = UIAlertController(title: "Chưa hỗ trợ chạy song song game 3D",
+                message: "Game 3D hoặc game chưa xác định phải chạy riêng. Hãy giữ icon các game đang chạy và chọn Dừng game hoàn toàn trước khi mở game khác.",
+                preferredStyle: .alert)
+            alert.addAction(UIAlertAction(title: "OK", style: .cancel))
+            present(alert, animated: true)
+            return
+        }
         if count >= jvm_bridge_supported_concurrent_sessions() {
             if liveGames.isEmpty {
                 updateStuckSessionButton()

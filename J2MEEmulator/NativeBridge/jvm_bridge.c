@@ -15,9 +15,49 @@
 #include <string.h>
 #include <stdatomic.h>
 #include <pthread.h>
-#if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__ && !defined(TREO_NINJA_DEEP_DISABLED)
+#include <sys/stat.h>
 #include "miniz.h"
-#endif
+
+// Conservative launch classification, not an authorization to execute 3D.
+// Bound the scan; unreadable, oversized, nested or unknown archives run alone.
+static int bridge_jar_requires_exclusive(const char *path) {
+    struct stat st;
+    if (!path || stat(path, &st) != 0 || st.st_size <= 0 ||
+        st.st_size > 64 * 1024 * 1024) return 1;
+    mz_zip_archive zip = {0};
+    if (!mz_zip_reader_init_file(&zip, path, 0)) return 1;
+    int exclusive = 1;
+    unsigned classes = 0;
+    size_t total = 0;
+    const mz_uint count = mz_zip_reader_get_num_files(&zip);
+    if (!count || count > 20000) goto done;
+    for (mz_uint i = 0; i < count; ++i) {
+        mz_zip_archive_file_stat f;
+        if (!mz_zip_reader_file_stat(&zip, i, &f)) goto done;
+        if (mz_zip_reader_is_file_a_directory(&zip, i)) continue;
+        const size_t len = strlen(f.m_filename);
+        if (len >= 4 && (!strcmp(f.m_filename + len - 4, ".jar") ||
+                         !strcmp(f.m_filename + len - 4, ".zip"))) goto done;
+        if (len < 6 || strcmp(f.m_filename + len - 6, ".class")) continue;
+        if (f.m_is_encrypted || f.m_uncomp_size < 4 ||
+            f.m_uncomp_size > 2 * 1024 * 1024 ||
+            f.m_uncomp_size > 32 * 1024 * 1024 - total) goto done;
+        size_t size = 0;
+        unsigned char *bytes = mz_zip_reader_extract_to_heap(&zip, i, &size, 0);
+        const int suspect = !bytes || size != f.m_uncomp_size || size < 4 ||
+            memcmp(bytes, "\xca\xfe\xba\xbe", 4) != 0 ||
+            jarbox_class_mentions_3d((const unsigned char *)f.m_filename, len) ||
+            jarbox_class_mentions_3d(bytes, size);
+        if (bytes) mz_free(bytes);
+        if (suspect) goto done;
+        total += size;
+        ++classes;
+    }
+    exclusive = classes == 0;
+done:
+    mz_zip_reader_end(&zip);
+    return exclusive;
+}
 
 static atomic_int treo_exact_ninja_verified;
 // Per-JAR launch diagnostic gate (NOT a Deep Treo optimization flag).
@@ -100,6 +140,7 @@ typedef struct {
     _Atomic uint64_t token;
     int worker_busy; // lifecycle lock; prevents release/reuse during an API call
     int legacy_3d_registered; // launch-worker owned; immutable until retirement
+    int exclusive_3d; // lifecycle lock; held through STOPPING and cleanup
 } JarBoxVMContext;
 static JarBoxVMContext g_bridge_slots[JARBOX_REGISTRY_MAX_SLOTS];
 
@@ -131,6 +172,7 @@ static JarBoxVMContext *bridge_reserve_slot_locked(uint64_t token, unsigned limi
     atomic_store_explicit(&empty->token, token, memory_order_release);
     empty->worker_busy = 0;
     empty->legacy_3d_registered = 0;
+    empty->exclusive_3d = 1; // legacy admission defaults to exclusive
     atomic_store_explicit(&empty->active, 1, memory_order_release);
     return empty;
 }
@@ -140,6 +182,7 @@ static int bridge_slot_can_retire_locked(const JarBoxVMContext *slot) {
 }
 static void bridge_reset_slot_locked(JarBoxVMContext *slot) {
     slot->legacy_3d_registered = 0;
+    slot->exclusive_3d = 0;
     atomic_store_explicit(&slot->phase, BRIDGE_IDLE, memory_order_release);
     atomic_store_explicit(&slot->stop_requested, 0, memory_order_release);
     atomic_store_explicit(&slot->token, 0, memory_order_release);
@@ -411,19 +454,43 @@ const char *jvm_bridge_net_trace(void) {
  * Never ask the asynchronous Swift worker to discover its owner by reading
  * the process's latest foreground token. The current runtime still has one
  * execution slot; this is a lifetime-safe contract for its future pool. */
-int jvm_bridge_try_begin_session_with_token(uint64_t *out_token) {
+// Requires lifecycle lock: STARTING and CLEANUP count as occupied.
+static int bridge_3d_conflict_locked(int requested_exclusive) {
+    unsigned active = 0;
+    int existing_exclusive = 0;
+    for (unsigned i = 0; i < JARBOX_REGISTRY_MAX_SLOTS; ++i) {
+        JarBoxVMContext *slot = &g_bridge_slots[i];
+        if (!atomic_load_explicit(&slot->active, memory_order_acquire)) continue;
+        ++active;
+        existing_exclusive |= slot->exclusive_3d;
+    }
+    return jarbox_3d_conflict(active, existing_exclusive, requested_exclusive);
+}
+
+int jvm_bridge_3d_conflict_for_jar(const char *path) {
+    const int exclusive = bridge_jar_requires_exclusive(path);
+    pthread_mutex_lock(&g_bridge_lifecycle_lock);
+    const int conflict = bridge_3d_conflict_locked(exclusive);
+    pthread_mutex_unlock(&g_bridge_lifecycle_lock);
+    return conflict;
+}
+
+static int bridge_try_begin_session(int exclusive, uint64_t *out_token) {
     if (!out_token) return 0;
     *out_token = 0;
     // Admission is also a foreground transition. Serialize with park/focus
     // and cleanup, in the same lock order; never implicitly park another VM.
     pthread_mutex_lock(&g_bridge_focus_transition_lock);
     pthread_mutex_lock(&g_bridge_lifecycle_lock);
+    int denial = 0;
+    if (bridge_3d_conflict_locked(exclusive)) { denial = -1; goto denied; }
     if (jarbox_focus_visible(&g_bridge_focus) != 0) goto denied;
     const uint64_t token = atomic_fetch_add_explicit(
         &g_bridge_session_sequence, 1, memory_order_relaxed) + 1;
     JarBoxVMContext *slot = bridge_reserve_slot_locked(
         token, (unsigned)jvm_bridge_supported_concurrent_sessions());
     if (!slot) goto denied;
+    slot->exclusive_3d = exclusive != 0;
     if (!jarbox_registry_claim(&g_bridge_registry, &g_bridge_focus,
                                token, (unsigned)jvm_bridge_supported_concurrent_sessions())) {
         bridge_reset_slot_locked(slot);
@@ -450,7 +517,15 @@ int jvm_bridge_try_begin_session_with_token(uint64_t *out_token) {
 denied:
     pthread_mutex_unlock(&g_bridge_lifecycle_lock);
     pthread_mutex_unlock(&g_bridge_focus_transition_lock);
-    return 0;
+    return denial;
+}
+
+int jvm_bridge_try_begin_session_for_jar(const char *path, uint64_t *out_token) {
+    return bridge_try_begin_session(bridge_jar_requires_exclusive(path), out_token);
+}
+
+int jvm_bridge_try_begin_session_with_token(uint64_t *out_token) {
+    return bridge_try_begin_session(1, out_token) == 1;
 }
 
 int jvm_bridge_try_begin_session(void) {
@@ -793,9 +868,10 @@ static int bridge_init_slot(JarBoxVMContext *slot, const char *res_root, const c
     }
     j2me_render_reg_natives(slot->jvm);
     j2me_audio_reg_natives(slot->jvm);
-    // In a future multi-VM build, exclude legacy 3D for ALL launches,
-    // not only the second tab. Archive names/signatures are not a safety gate.
-    if (jarbox_legacy_3d_allowed((unsigned)jvm_bridge_supported_concurrent_sessions())) {
+    // With cap > 1 only an exclusive reservation may register legacy 3D.
+    // A missed archive marker cannot grant a shared session a 3D backend.
+    if (jarbox_legacy_3d_allowed((unsigned)jvm_bridge_supported_concurrent_sessions(),
+                                slot->exclusive_3d)) {
         j2me_micro3d_gl_reg_natives(slot->jvm);
         j2me_m3g_reg_natives(slot->jvm);
         slot->legacy_3d_registered = 1;

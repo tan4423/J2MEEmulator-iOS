@@ -13,7 +13,7 @@ PRE = r'''
 #include <pthread.h>
 #include <assert.h>
 #include <stdio.h>
-typedef struct { uint64_t token; } JarBoxVMContext;
+typedef struct { uint64_t token; int exclusive_3d; } JarBoxVMContext;
 static JarBoxVMContext slots[2];
 static pthread_mutex_t g_bridge_focus_transition_lock=PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t g_bridge_lifecycle_lock=PTHREAD_MUTEX_INITIALIZER;
@@ -21,6 +21,7 @@ static _Atomic uint64_t g_bridge_session_sequence;
 static uint64_t g_bridge_focus, g_bridge_registry;
 static int fail_claim, fail_select, fail_diag;
 static int jvm_bridge_supported_concurrent_sessions(void){return 2;}
+static int bridge_3d_conflict_locked(int exclusive){for(int i=0;i<2;i++)if(slots[i].token && (exclusive || slots[i].exclusive_3d))return 1;return 0;}
 static uint64_t jarbox_focus_visible(uint64_t *f){return *f;}
 static JarBoxVMContext *bridge_reserve_slot_locked(uint64_t token,unsigned cap){for(unsigned i=0;i<cap;i++)if(!slots[i].token){slots[i].token=token;return &slots[i];}return NULL;}
 static void bridge_reset_slot_locked(JarBoxVMContext *s){s->token=0;}
@@ -33,18 +34,22 @@ static void jvm_bridge_note_net_trace(const char *s){(void)s;}
 static void jvm_bridge_pop_java_thread_token(uint64_t token){(void)token;}
 '''
 MAIN = r'''
-static void *launch(void *p){uint64_t *token=p;jvm_bridge_try_begin_session_with_token(token);return NULL;}
+static void *launch(void *p){uint64_t *token=p;bridge_try_begin_session(0, token);return NULL;}
 int main(void){
     for(int i=0;i<10000;i++){
         uint64_t a=0,b=999;
-        assert(jvm_bridge_try_begin_session_with_token(&a)&&a);
-        assert(!jvm_bridge_try_begin_session_with_token(&b)&&!b&&g_bridge_focus==a&&slots[1].token==0);
+        assert(bridge_try_begin_session(0, &a)&&a);
+        assert(!bridge_try_begin_session(0, &b)&&!b&&g_bridge_focus==a&&slots[1].token==0);
         g_bridge_focus=0; // modeled completed park
-        fail_claim=1;assert(!jvm_bridge_try_begin_session_with_token(&b)&&!b&&!slots[1].token&&!g_bridge_focus);fail_claim=0;
-        fail_select=1;assert(!jvm_bridge_try_begin_session_with_token(&b)&&!b&&!slots[1].token&&!g_bridge_focus);fail_select=0;
-        fail_diag=1;assert(!jvm_bridge_try_begin_session_with_token(&b)&&!b&&!slots[1].token&&!g_bridge_focus);fail_diag=0;
-        assert(jvm_bridge_try_begin_session_with_token(&b)&&b&&g_bridge_focus==b&&slots[0].token==a);
-        g_bridge_focus=0;uint64_t c=0;assert(!jvm_bridge_try_begin_session_with_token(&c)&&!c);
+        assert(bridge_try_begin_session(1, &b)==-1 && !b);
+        slots[0].exclusive_3d=1;
+        assert(bridge_try_begin_session(0, &b)==-1 && !b);
+        slots[0].exclusive_3d=0;
+        fail_claim=1;assert(!bridge_try_begin_session(0, &b)&&!b&&!slots[1].token&&!g_bridge_focus);fail_claim=0;
+        fail_select=1;assert(!bridge_try_begin_session(0, &b)&&!b&&!slots[1].token&&!g_bridge_focus);fail_select=0;
+        fail_diag=1;assert(!bridge_try_begin_session(0, &b)&&!b&&!slots[1].token&&!g_bridge_focus);fail_diag=0;
+        assert(bridge_try_begin_session(0, &b)&&b&&g_bridge_focus==b&&slots[0].token==a);
+        g_bridge_focus=0;uint64_t c=0;assert(!bridge_try_begin_session(0, &c)&&!c);
         slots[0].token=slots[1].token=0;
     }
     for(int i=0;i<100;i++){
@@ -63,8 +68,8 @@ class LaunchAdmissionTest(unittest.TestCase):
         if not cc:
             self.skipTest("C compiler unavailable")
         source = BRIDGE.read_text()
-        a = source.index("int jvm_bridge_try_begin_session_with_token(uint64_t *out_token) {")
-        b = source.index("\nint jvm_bridge_try_begin_session(void)", a)
+        a = source.index("static int bridge_try_begin_session(int exclusive, uint64_t *out_token) {")
+        b = source.index("\nint jvm_bridge_try_begin_session_for_jar(", a)
         flags = ["-std=c11", "-O1", "-Wall", "-Wextra", "-Werror", "-pthread"]
         if os.environ.get("JARBOX_ADMISSION_SANITIZE") == "1":
             flags += ["-g", "-fsanitize=address,undefined"]
@@ -78,7 +83,7 @@ class LaunchAdmissionTest(unittest.TestCase):
 
     def test_source_cap_and_lock_order(self):
         src = BRIDGE.read_text()
-        body = src.split("int jvm_bridge_try_begin_session_with_token(uint64_t *out_token) {", 1)[1].split("\nint jvm_bridge_try_begin_session(void)", 1)[0]
+        body = src.split("static int bridge_try_begin_session(int exclusive, uint64_t *out_token) {", 1)[1].split("\nint jvm_bridge_try_begin_session_for_jar(", 1)[0]
         self.assertLess(body.index("pthread_mutex_lock(&g_bridge_focus_transition_lock)"),
                         body.index("pthread_mutex_lock(&g_bridge_lifecycle_lock)"))
         self.assertLess(body.index("jarbox_focus_visible(&g_bridge_focus) != 0"),

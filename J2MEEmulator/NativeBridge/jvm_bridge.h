@@ -12,6 +12,11 @@ int jvm_bridge_try_begin_session(void);
 /// Atomic launch admission + immutable session token for the Swift worker.
 /// Never infer a worker's token from the global visible/foreground session.
 int jvm_bridge_try_begin_session_with_token(uint64_t *out_token);
+/// Classify the JAR before admission. 1 acquired, -1 exclusive 3D conflict,
+/// 0 other admission failure. No existing session is stopped automatically.
+int jvm_bridge_try_begin_session_for_jar(const char *path, uint64_t *out_token);
+/// Advisory UI check only; admission rechecks under the lifecycle lock.
+int jvm_bridge_3d_conflict_for_jar(const char *path);
 /// Per-worker execution/cleanup entry points claim one native executor slot
 /// by immutable token. Admission remains limited to a single live JVM.
 int jvm_bridge_init_for_token(uint64_t token, const char *res_root,
