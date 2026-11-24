@@ -329,21 +329,35 @@ private enum JarBoxPadGrid {
         let row = min(2, Int((point.y - bounds.minY) / (bounds.height / 3)))
         return codes[row * 3 + col]
     }
+
+    static func effectiveCodes(_ pressed: Set<Int32>) -> Set<Int32> {
+        let left = !pressed.isDisjoint(with: [49, -3, 55])
+        let right = !pressed.isDisjoint(with: [51, -4, 57])
+        let up = !pressed.isDisjoint(with: [49, -1, 51])
+        let down = !pressed.isDisjoint(with: [55, -2, 57])
+        let x = (right ? 1 : 0) - (left ? 1 : 0)
+        let y = (down ? 1 : 0) - (up ? 1 : 0)
+        var result: Set<Int32> = []
+        if x != 0 || y != 0 { result.insert(codes[(y + 1) * 3 + x + 1]) }
+        if pressed.contains(-5) { result.insert(-5) }
+        return result
+    }
 }
 
-// One continuous touch owns the directional pad, not nine independent buttons.
+// One continuous touch region, with independent finger ownership.
 // Softkeys remain independent sibling controls and can be held simultaneously.
 private final class JarBoxDirectionalPad: UIView {
     private var keys: [UIButton] = []
-    private var trackedTouch: ObjectIdentifier?
+    private var trackedTouches: Set<ObjectIdentifier> = []
+    private var touchCodes: [ObjectIdentifier: Int32] = [:]
     private var trackedToken: UInt64 = 0
-    private var activeCode: Int32?
+    private var activeCodes: Set<Int32> = []
     var visibleToken: (() -> UInt64?)?
-    var onTransition: ((UInt64, Int32?, Int32?) -> Void)?
+    var onTransition: ((UInt64, Set<Int32>, Set<Int32>) -> Void)?
 
     override init(frame: CGRect) {
         super.init(frame: frame)
-        isMultipleTouchEnabled = false
+        isMultipleTouchEnabled = true
         let titles = ["↖", "↑", "↗", "←", "", "→", "↙", "↓", "↘"]
         let labels = ["Chéo trái trên", "Lên", "Chéo phải trên", "Trái", "Hành động",
                       "Phải", "Chéo trái dưới", "Xuống", "Chéo phải dưới"]
@@ -376,36 +390,55 @@ private final class JarBoxDirectionalPad: UIView {
         }
     }
 
-    private func transition(to code: Int32?) {
-        guard code != activeCode else { return }
-        let previous = activeCode
-        activeCode = code
+    private func refreshPressedCodes() {
+        let pressed = Set(touchCodes.values)
+        let next = JarBoxPadGrid.effectiveCodes(pressed)
         for (index, button) in keys.enumerated() {
-            button.backgroundColor = UIColor(white: JarBoxPadGrid.codes[index] == code ? 0.32 : 0.17, alpha: 1)
+            let code = JarBoxPadGrid.codes[index]
+            let highlighted = pressed.contains(code) || next.contains(code)
+            button.backgroundColor = UIColor(white: highlighted ? 0.32 : 0.17, alpha: 1)
         }
-        onTransition?(trackedToken, previous, code)
+        guard next != activeCodes else { return }
+        let previous = activeCodes
+        activeCodes = next
+        onTransition?(trackedToken, previous, next)
     }
 
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
-        guard trackedTouch == nil, let touch = touches.first,
-              let token = visibleToken?(), token != 0 else { return }
-        trackedTouch = ObjectIdentifier(touch)
+        guard let token = visibleToken?(), token != 0 else { return }
+        if !trackedTouches.isEmpty && trackedToken != token { cancelGameInput() }
         trackedToken = token
-        update(touch)
+        for touch in touches {
+            let id = ObjectIdentifier(touch)
+            trackedTouches.insert(id)
+            update(touch, id: id)
+        }
+        refreshPressedCodes()
     }
 
     override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
-        guard let touch = touches.first(where: { ObjectIdentifier($0) == trackedTouch }) else { return }
-        update(touch)
+        guard visibleToken?() == trackedToken else { cancelGameInput(); return }
+        for touch in touches {
+            let id = ObjectIdentifier(touch)
+            guard trackedTouches.contains(id) else { continue }
+            update(touch, id: id)
+        }
+        refreshPressedCodes()
     }
 
-    private func update(_ touch: UITouch) {
-        guard visibleToken?() == trackedToken else { cancelGameInput(); return }
-        transition(to: JarBoxPadGrid.code(at: touch.location(in: self), in: bounds, previous: activeCode))
+    private func update(_ touch: UITouch, id: ObjectIdentifier) {
+        touchCodes[id] = JarBoxPadGrid.code(at: touch.location(in: self), in: bounds,
+                                           previous: touchCodes[id])
     }
 
     override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
-        if touches.contains(where: { ObjectIdentifier($0) == trackedTouch }) { cancelGameInput() }
+        for touch in touches {
+            let id = ObjectIdentifier(touch)
+            trackedTouches.remove(id)
+            touchCodes.removeValue(forKey: id)
+        }
+        refreshPressedCodes()
+        if trackedTouches.isEmpty { trackedToken = 0 }
     }
 
     override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
@@ -413,8 +446,9 @@ private final class JarBoxDirectionalPad: UIView {
     }
 
     func cancelGameInput() {
-        transition(to: nil)
-        trackedTouch = nil
+        trackedTouches.removeAll()
+        touchCodes.removeAll()
+        refreshPressedCodes()
         trackedToken = 0
     }
 }
@@ -456,7 +490,8 @@ class GameViewController: UIViewController {
     private var portraitControlsHeight: NSLayoutConstraint?
     private var portraitPanelCollapsedHeight: NSLayoutConstraint?
     private var portraitCanvasAspect: NSLayoutConstraint?
-    private var portraitSoftKeyCenterY: NSLayoutConstraint?
+    private var portraitDirectionBottom: NSLayoutConstraint?
+    private var portraitNumberBottom: NSLayoutConstraint?
     private let screenMenu = UIButton(type: .system)
     private let gameTabScroll = UIScrollView()
     private let gameTabStack = UIStackView()
@@ -811,9 +846,9 @@ class GameViewController: UIViewController {
             height,
             // Keep the fixed controls outside the scrolling strip. A real
             // gutter and safe-area margins remain even on narrow phones.
-            gameTabScroll.topAnchor.constraint(equalTo: backButton.bottomAnchor, constant: 8),
+            gameTabScroll.topAnchor.constraint(equalTo: backButton.bottomAnchor, constant: 3),
             gameTabScroll.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 12),
-            gameTabScroll.trailingAnchor.constraint(equalTo: tabActions.leadingAnchor, constant: -14),
+            gameTabScroll.trailingAnchor.constraint(equalTo: tabActions.leadingAnchor, constant: -8),
             tabActions.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -12),
             tabActions.topAnchor.constraint(equalTo: gameTabScroll.topAnchor, constant: 5),
             tabActions.heightAnchor.constraint(equalToConstant: 40),
@@ -1002,7 +1037,7 @@ class GameViewController: UIViewController {
         closeTabButton.addTarget(self, action: #selector(closeTabTapped), for: .touchUpInside)
         NSLayoutConstraint.activate([
             backButton.widthAnchor.constraint(equalToConstant: 44),
-            closeTabButton.leadingAnchor.constraint(equalTo: backButton.trailingAnchor, constant: 10),
+            closeTabButton.leadingAnchor.constraint(equalTo: backButton.trailingAnchor, constant: 8),
             closeTabButton.topAnchor.constraint(equalTo: backButton.topAnchor),
             closeTabButton.widthAnchor.constraint(equalToConstant: 44),
             closeTabButton.heightAnchor.constraint(equalToConstant: 40)
@@ -1036,7 +1071,7 @@ class GameViewController: UIViewController {
             setupGameTabStrip()
             // Reserve only the controls' minimum height. If the game fits at
             // full width, the remaining space stays below the keypad.
-            let height = panel.heightAnchor.constraint(greaterThanOrEqualToConstant: 144)
+            let height = panel.heightAnchor.constraint(greaterThanOrEqualToConstant: 120)
             portraitControlsHeight = height
             portraitPanelCollapsedHeight = panel.heightAnchor.constraint(equalToConstant: 0)
             let aspect = emulatorView.heightAnchor.constraint(equalTo: emulatorView.widthAnchor,
@@ -1051,7 +1086,7 @@ class GameViewController: UIViewController {
                 screenMenu.trailingAnchor.constraint(equalTo: safe.trailingAnchor, constant: -12),
                 screenMenu.widthAnchor.constraint(equalToConstant: 44),
                 screenMenu.heightAnchor.constraint(equalToConstant: 40),
-                emulatorView.topAnchor.constraint(equalTo: gameTabScroll.bottomAnchor, constant: 8),
+                emulatorView.topAnchor.constraint(equalTo: gameTabScroll.bottomAnchor, constant: 3),
                 emulatorView.leadingAnchor.constraint(equalTo: safe.leadingAnchor),
                 emulatorView.trailingAnchor.constraint(equalTo: safe.trailingAnchor),
                 emulatorView.bottomAnchor.constraint(equalTo: panel.topAnchor),
@@ -1074,29 +1109,36 @@ class GameViewController: UIViewController {
             }
             left.accessibilityLabel = "Phím mềm trái"
             right.accessibilityLabel = "Phím mềm phải"
-            let softCenter = left.centerYAnchor.constraint(equalTo: panel.topAnchor, constant: 72)
-            portraitSoftKeyCenterY = softCenter
+            // First row, aligned with the upper directional keys.
+            let softTop = left.topAnchor.constraint(equalTo: panel.topAnchor, constant: 8)
             NSLayoutConstraint.activate([
                 left.leadingAnchor.constraint(equalTo: panel.leadingAnchor, constant: 4),
                 left.trailingAnchor.constraint(equalTo: dpad.leadingAnchor, constant: -4),
                 right.leadingAnchor.constraint(equalTo: dpad.trailingAnchor, constant: 4),
                 right.trailingAnchor.constraint(equalTo: panel.trailingAnchor, constant: -4),
-                softCenter,
-                right.centerYAnchor.constraint(equalTo: left.centerYAnchor),
-                left.heightAnchor.constraint(equalToConstant: 44),
-                right.heightAnchor.constraint(equalToConstant: 44)
+                softTop,
+                right.topAnchor.constraint(equalTo: left.topAnchor),
+                left.heightAnchor.constraint(equalToConstant: 40),
+                right.heightAnchor.constraint(equalToConstant: 40)
             ])
-            for (padView, padHeight) in [(numpad as UIView, CGFloat(160)), (dpad as UIView, CGFloat(132))] {
+            for (padView, minimum, preferred) in [(numpad as UIView, CGFloat(144), CGFloat(160)),
+                                                    (dpad as UIView, CGFloat(108), CGFloat(132))] {
+                let preferredHeight = padView.heightAnchor.constraint(equalToConstant: preferred)
+                // Canvas aspect wins over the optional extra keypad height.
+                preferredHeight.priority = UILayoutPriority(740)
+                let bottom = padView.bottomAnchor.constraint(lessThanOrEqualTo: panel.bottomAnchor, constant: -6)
+                if padView === dpad { portraitDirectionBottom = bottom } else { portraitNumberBottom = bottom }
                 NSLayoutConstraint.activate([
                     padView.topAnchor.constraint(equalTo: panel.topAnchor, constant: 6),
                     padView.centerXAnchor.constraint(equalTo: panel.centerXAnchor),
                     padView.widthAnchor.constraint(equalTo: panel.widthAnchor, multiplier: 2.0 / 3.0),
-                    padView.heightAnchor.constraint(equalToConstant: padHeight)
+                    padView.heightAnchor.constraint(greaterThanOrEqualToConstant: minimum),
+                    preferredHeight
                 ])
             }
             for overlay in [formView as UIView, listView as UIView] {
                 NSLayoutConstraint.activate([
-                    overlay.topAnchor.constraint(equalTo: gameTabScroll.bottomAnchor, constant: 8),
+                    overlay.topAnchor.constraint(equalTo: gameTabScroll.bottomAnchor, constant: 3),
                     overlay.leadingAnchor.constraint(equalTo: view.leadingAnchor),
                     overlay.trailingAnchor.constraint(equalTo: view.trailingAnchor),
                     overlay.bottomAnchor.constraint(equalTo: view.bottomAnchor)
@@ -1187,8 +1229,8 @@ class GameViewController: UIViewController {
             guard let self, token == self.gameSessionToken else { return }
             // Release before pressing the new direction; never retain both
             // directions just because a finger crossed the visual boundary.
-            if let previous { self.releaseDirection(previous) }
-            if let next { self.directionDown(next) }
+            for code in previous.subtracting(next).sorted() { self.releaseDirection(code) }
+            for code in next.subtracting(previous).sorted() { self.directionDown(code) }
         }
         return pad
     }
@@ -1255,35 +1297,51 @@ class GameViewController: UIViewController {
         portraitPanelCollapsedHeight?.isActive = false
         portraitControlsHeight?.isActive = false
         portraitCanvasAspect?.isActive = false
-        portraitControlsHeight?.constant = padMode == .numbers ? 172 : 144
-        portraitSoftKeyCenterY?.constant = padMode == .numbers ? 86 : 72
+        portraitDirectionBottom?.isActive = false
+        portraitNumberBottom?.isActive = false
+        portraitControlsHeight?.constant = padMode == .numbers ? 156 : 120
         if padIsVisible {
             portraitControlsHeight?.isActive = true
             portraitCanvasAspect?.isActive = true
+            portraitDirectionBottom?.isActive = padMode == .directions
+            portraitNumberBottom?.isActive = padMode == .numbers
         } else {
             portraitPanelCollapsedHeight?.isActive = true
         }
-        if jarAuditID != nil {
-            screenMenu.menu = UIMenu(children: [
-                UIAction(title: "Chẩn đoán kết nối") { [weak self] _ in self?.showNetworkDiagnostics() },
-                UIAction(title: "Hủy chẩn đoán CPU JAR", attributes: .destructive) { [weak self] _ in self?.stopJarAudit() }
-            ])
-            return
-        }
-        // User-facing menu: stable functions + exactly ONE active experiment.
-        // Historical probes remain in source for rollback, not in the UI.
-        screenMenu.menu = UIMenu(children: [
+        let keyboard = UIMenu(title: "Kiểu bàn phím", children: [
             UIAction(title: "Phím điều hướng", state: padMode == .directions ? .on : .off) { [weak self] _ in self?.setPadMode(.directions) },
             UIAction(title: "Phím số", state: padMode == .numbers ? .on : .off) { [weak self] _ in self?.setPadMode(.numbers) },
-            UIAction(title: "Ẩn phím · màn hình lớn", state: padMode == .hidden ? .on : .off) { [weak self] _ in self?.setPadMode(.hidden) },
+            UIAction(title: "Ẩn phím · màn hình lớn", state: padMode == .hidden ? .on : .off) { [weak self] _ in self?.setPadMode(.hidden) }
+        ])
+        let proxy = UIMenu(title: "Proxy", children: [UIDeferredMenuElement.uncached { [weak self] completion in
+            guard let self else { completion([]); return }
+            let key = JarBoxProxyProfiles.tabKey(path: self.jarPath, cloneID: self.cloneID)
+            let selected = JarBoxProxyProfiles.selection(for: key)
+            var actions: [UIMenuElement] = [
+                UIAction(title: "Không dùng", state: selected == nil ? .on : .off) { _ in
+                    JarBoxProxyProfiles.select(nil, for: key)
+                }
+            ]
+            actions += JarBoxProxyProfiles.all().map { profile in
+                UIAction(title: profile.name, state: selected == profile.id ? .on : .off) { _ in
+                    JarBoxProxyProfiles.select(profile.id, for: key)
+                }
+            }
+            actions.append(UIAction(title: "Chỉ lưu cấu hình · chưa định tuyến", attributes: .disabled) { _ in })
+            completion(actions)
+        }])
+        var diagnostics: [UIMenuElement] = [
             UIAction(title: "Xem kết quả đo gần nhất",
                      attributes: lastMeasurement == nil ? .disabled : []) { [weak self] _ in
                 self?.showLastMeasurement()
             },
-            UIAction(title: "Chẩn đoán kết nối") { [weak self] _ in
-                self?.showNetworkDiagnostics()
-            }
-        ])
+            UIAction(title: "Chẩn đoán kết nối") { [weak self] _ in self?.showNetworkDiagnostics() }
+        ]
+        if jarAuditID != nil {
+            diagnostics.append(UIAction(title: "Hủy chẩn đoán CPU JAR", attributes: .destructive) { [weak self] _ in self?.stopJarAudit() })
+        }
+        let debug = UIMenu(title: "Debug", children: diagnostics)
+        screenMenu.menu = UIMenu(children: [keyboard, proxy, debug])
     }
 
     @objc private func closeTabTapped() {

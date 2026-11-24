@@ -45,6 +45,20 @@ for width in [CGFloat(320), 375, 390, 430] {
     }
 }
 print("Portrait pad geometry: \(checks) checks PASS")
+for _ in 0..<1000 {
+    precondition(JarBoxPadGrid.effectiveCodes([-1, -4]) == [51])
+    precondition(JarBoxPadGrid.effectiveCodes([-1, -3]) == [49])
+    precondition(JarBoxPadGrid.effectiveCodes([-2, -4]) == [57])
+    precondition(JarBoxPadGrid.effectiveCodes([-2, -3]) == [55])
+    precondition(JarBoxPadGrid.effectiveCodes([-1]) == [-1])
+    precondition(JarBoxPadGrid.effectiveCodes([-4]) == [-4])
+    precondition(JarBoxPadGrid.effectiveCodes([-1, -2]) == [])
+    precondition(JarBoxPadGrid.effectiveCodes([-3, -4]) == [])
+    precondition(JarBoxPadGrid.effectiveCodes([51, -5]) == [51, -5])
+    precondition(JarBoxPadGrid.effectiveCodes([51, -1]) == [51])
+    precondition(JarBoxPadGrid.effectiveCodes([]) == [])
+}
+print("Portrait pad chords: 11000 checks PASS")
 '''
         with tempfile.TemporaryDirectory() as td:
             p = Path(td) / "pad.swift"
@@ -55,6 +69,7 @@ print("Portrait pad geometry: \(checks) checks PASS")
             result = subprocess.run([swift, str(p)], capture_output=True, text=True, timeout=60)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertIn("16324 checks PASS", result.stdout)
+            self.assertIn("11000 checks PASS", result.stdout)
 
     def test_touch_lifecycle_and_layout_wiring(self):
         source = GAME.read_text()
@@ -62,15 +77,20 @@ print("Portrait pad geometry: \(checks) checks PASS")
         route = source.split("private func makeDirectionalPad()", 1)[1].split("private func directionDown", 1)[0]
         self.assertIn("button.isUserInteractionEnabled = false", pad)
         self.assertIn("override func touchesMoved", pad)
-        self.assertIn("ObjectIdentifier($0) == trackedTouch", pad)
+        self.assertIn("isMultipleTouchEnabled = true", pad)
+        self.assertIn("trackedTouches.contains(id)", pad)
+        self.assertIn("touchCodes.removeValue(forKey: id)", pad)
         self.assertIn("visibleToken?() == trackedToken", pad)
-        self.assertIn("transition(to: nil)", pad)
-        self.assertIn("trackedTouch = nil", pad)
+        self.assertIn("touchCodes.removeAll()", pad)
+        self.assertIn("trackedTouches.removeAll()", pad)
+        self.assertIn("JarBoxPadGrid.effectiveCodes(pressed)", pad)
         self.assertIn("token == self.gameSessionToken", route)
-        self.assertLess(route.index("self.releaseDirection(previous)"), route.index("self.directionDown(next)"))
+        self.assertLess(route.index("previous.subtracting(next)"), route.index("next.subtracting(previous)"))
         self.assertIn("directionalPad?.cancelGameInput()", source)
         self.assertIn("multiplier: 2.0 / 3.0", source)
-        self.assertIn("greaterThanOrEqualToConstant: 144", source)
+        self.assertIn("greaterThanOrEqualToConstant: 120", source)
+        self.assertIn("left.topAnchor.constraint(equalTo: panel.topAnchor, constant: 8)", source)
+        self.assertIn("portraitDirectionBottom?.isActive = padMode == .directions", source)
         self.assertIn("portraitPanelCollapsedHeight?.isActive = true", source)
         self.assertIn("portraitCanvasAspect?.isActive = true", source)
         self.assertIn('UIImage(systemName: "square.fill")', pad)

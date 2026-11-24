@@ -43,6 +43,9 @@ class LiveStatusTest(unittest.TestCase):
         self.assertIn("jvm_bridge_status_heap_bytes_for_token(row.token, &bytes)", status)
         self.assertIn('row.path == lastPath ? "    " : row.game + " — "', status)
         self.assertIn("CPU App: %.1f%% (%.0f ms/s)", status)
+        self.assertIn("let cpuRow = metricRow(cpuLabel, cpuButton)", status)
+        self.assertIn("let ramRow = metricRow(ramLabel, ramButton)", status)
+        self.assertIn("RAM App:", status)
         for removed in ("Tiết kiệm pin", "Phiên JVM trong tiến trình", "Trạng thái JVM"):
             self.assertNotIn(removed, status)
         overview = method(source, "private func showJarBoxOverview()")

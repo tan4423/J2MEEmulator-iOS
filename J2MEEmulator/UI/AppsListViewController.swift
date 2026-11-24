@@ -642,6 +642,127 @@ enum JarBoxMemoryProtection {
 
 // A status screen, not a background monitor. Sampling owns a timer only
 // while the actual screen and scene are active.
+// Shared profile metadata; selecting a profile does not alter live sockets.
+struct JarBoxProxyProfile: Codable {
+    let id: UUID
+    var name: String
+    var host: String
+    var port: Int
+    var kind: String
+}
+
+enum JarBoxProxyProfiles {
+    private static let profilesKey = "jarbox.proxy.profiles.v1"
+    private static let selectionKey = "jarbox.proxy.selections.v1"
+
+    static func all() -> [JarBoxProxyProfile] {
+        guard let data = UserDefaults.standard.data(forKey: profilesKey),
+              let profiles = try? JSONDecoder().decode([JarBoxProxyProfile].self, from: data) else { return [] }
+        return profiles
+    }
+
+    static func save(_ profiles: [JarBoxProxyProfile]) {
+        guard let data = try? JSONEncoder().encode(profiles) else { return }
+        UserDefaults.standard.set(data, forKey: profilesKey)
+        let ids = Set(profiles.map { $0.id.uuidString })
+        let selections = UserDefaults.standard.dictionary(forKey: selectionKey) as? [String: String] ?? [:]
+        UserDefaults.standard.set(selections.filter { ids.contains($0.value) }, forKey: selectionKey)
+    }
+
+    static func tabKey(path: String, cloneID: UUID?) -> String {
+        URL(fileURLWithPath: path).lastPathComponent + "|" + (cloneID?.uuidString ?? "original")
+    }
+
+    static func selection(for key: String) -> UUID? {
+        let selections = UserDefaults.standard.dictionary(forKey: selectionKey) as? [String: String] ?? [:]
+        guard let value = selections[key], let id = UUID(uuidString: value),
+              all().contains(where: { $0.id == id }) else { return nil }
+        return id
+    }
+
+    static func select(_ id: UUID?, for key: String) {
+        if let id, !all().contains(where: { $0.id == id }) { return }
+        var selections = UserDefaults.standard.dictionary(forKey: selectionKey) as? [String: String] ?? [:]
+        selections[key] = id?.uuidString
+        UserDefaults.standard.set(selections, forKey: selectionKey)
+    }
+}
+
+final class JarBoxProxySettingsController: UITableViewController {
+    private var profiles: [JarBoxProxyProfile] = []
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        title = "Proxy"
+        navigationItem.leftBarButtonItem = UIBarButtonItem(title: "Đóng", style: .done, target: self, action: #selector(close))
+        navigationItem.rightBarButtonItem = UIBarButtonItem(barButtonSystemItem: .add, target: self, action: #selector(addProfile))
+        reloadProfiles()
+    }
+
+    private func reloadProfiles() {
+        profiles = JarBoxProxyProfiles.all()
+        tableView.reloadData()
+    }
+
+    @objc private func close() { dismiss(animated: true) }
+    @objc private func addProfile() { editProfile(nil) }
+
+    override func numberOfSections(in tableView: UITableView) -> Int { 1 }
+    override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int { profiles.count }
+    override func tableView(_ tableView: UITableView, titleForFooterInSection section: Int) -> String? {
+        "Tạo profile rồi chọn trong menu game. Hiện chỉ lưu cấu hình, chưa chuyển lưu lượng qua proxy."
+    }
+    override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
+        let profile = profiles[indexPath.row]
+        let cell = UITableViewCell(style: .subtitle, reuseIdentifier: nil)
+        cell.textLabel?.text = profile.name
+        cell.detailTextLabel?.text = "\(profile.kind) · \(profile.host):\(profile.port)"
+        cell.accessoryType = .disclosureIndicator
+        return cell
+    }
+    override func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
+        tableView.deselectRow(at: indexPath, animated: true)
+        editProfile(profiles[indexPath.row])
+    }
+    override func tableView(_ tableView: UITableView, commit editingStyle: UITableViewCell.EditingStyle, forRowAt indexPath: IndexPath) {
+        guard editingStyle == .delete else { return }
+        let id = profiles[indexPath.row].id
+        JarBoxProxyProfiles.save(JarBoxProxyProfiles.all().filter { $0.id != id })
+        reloadProfiles()
+    }
+
+    private func editProfile(_ previous: JarBoxProxyProfile?) {
+        let alert = UIAlertController(title: previous == nil ? "Thêm profile" : "Sửa profile",
+                                      message: "Loại: HTTP hoặc SOCKS5", preferredStyle: .alert)
+        alert.addTextField { $0.placeholder = "Tên"; $0.text = previous?.name }
+        alert.addTextField { $0.placeholder = "Host"; $0.text = previous?.host; $0.autocapitalizationType = .none; $0.autocorrectionType = .no }
+        alert.addTextField { $0.placeholder = "Port"; $0.text = previous.map { String($0.port) }; $0.keyboardType = .numberPad }
+        alert.addTextField { $0.placeholder = "HTTP / SOCKS5"; $0.text = previous?.kind ?? "SOCKS5"; $0.autocapitalizationType = .allCharacters }
+        alert.addAction(UIAlertAction(title: "Hủy", style: .cancel))
+        alert.addAction(UIAlertAction(title: "Lưu", style: .default) { [weak self, weak alert] _ in
+            guard let self, let fields = alert?.textFields, fields.count == 4 else { return }
+            let values = fields.map { ($0.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines) }
+            let kind = values[3].uppercased()
+            guard !values[0].isEmpty, !values[1].isEmpty,
+                  values[1].rangeOfCharacter(from: .whitespacesAndNewlines) == nil,
+                  let port = Int(values[2]), (1...65535).contains(port),
+                  ["HTTP", "SOCKS5"].contains(kind) else {
+                let error = UIAlertController(title: "Profile không hợp lệ", message: "Kiểm tra tên, host, port 1–65535 và loại proxy.", preferredStyle: .alert)
+                error.addAction(UIAlertAction(title: "OK", style: .default))
+                self.present(error, animated: true)
+                return
+            }
+            let profile = JarBoxProxyProfile(id: previous?.id ?? UUID(), name: values[0], host: values[1], port: port, kind: kind)
+            var updated = JarBoxProxyProfiles.all()
+            if let index = updated.firstIndex(where: { $0.id == profile.id }) { updated[index] = profile }
+            else { updated.append(profile) }
+            JarBoxProxyProfiles.save(updated)
+            self.reloadProfiles()
+        })
+        present(alert, animated: true)
+    }
+}
+
 final class JarBoxStatusController: UIViewController {
     typealias TabRow = (game: String, path: String, tab: String, token: UInt64)
     var readRAM: (() -> String)?
@@ -689,15 +810,27 @@ final class JarBoxStatusController: UIViewController {
             label.isHidden = true
         }
         for button in [cpuButton, ramButton] {
-            button.contentHorizontalAlignment = .left
-            button.titleLabel?.font = .systemFont(ofSize: 15, weight: .medium)
+            button.contentHorizontalAlignment = .right
+            button.setContentCompressionResistancePriority(.required, for: .horizontal)
+            button.titleLabel?.font = .systemFont(ofSize: 14, weight: .medium)
             button.heightAnchor.constraint(greaterThanOrEqualToConstant: 36).isActive = true
         }
-        cpuButton.setTitle("Chi tiết CPU ▸", for: .normal)
-        ramButton.setTitle("Chi tiết RAM (heap) ▸", for: .normal)
+        cpuButton.setTitle("Chi tiết ▸", for: .normal)
+        ramButton.setTitle("Chi tiết ▸", for: .normal)
         cpuButton.addTarget(self, action: #selector(toggleCPU), for: .touchUpInside)
         ramButton.addTarget(self, action: #selector(toggleRAM), for: .touchUpInside)
-        for child in [cpuLabel, cpuButton, cpuDetail, ramLabel, ramAvailableLabel, ramButton, ramDetail,
+        cpuButton.accessibilityLabel = "Chi tiết CPU"
+        ramButton.accessibilityLabel = "Chi tiết RAM (heap)"
+        func metricRow(_ label: UILabel, _ button: UIButton) -> UIStackView {
+            let row = UIStackView(arrangedSubviews: [label, button])
+            row.axis = .horizontal
+            row.alignment = .center
+            row.spacing = 8
+            return row
+        }
+        let cpuRow = metricRow(cpuLabel, cpuButton)
+        let ramRow = metricRow(ramLabel, ramButton)
+        for child in [cpuRow, cpuDetail, ramRow, ramDetail, ramAvailableLabel,
                       thermalLabel, batteryLabel] as [UIView] {
             stack.addArrangedSubview(child)
         }
@@ -794,13 +927,13 @@ final class JarBoxStatusController: UIViewController {
 
     @objc private func toggleCPU() {
         cpuDetail.isHidden.toggle()
-        cpuButton.setTitle(cpuDetail.isHidden ? "Chi tiết CPU ▸" : "Chi tiết CPU ▾", for: .normal)
+        cpuButton.setTitle(cpuDetail.isHidden ? "Chi tiết ▸" : "Chi tiết ▾", for: .normal)
         if !cpuDetail.isHidden { refreshDetails() }
     }
 
     @objc private func toggleRAM() {
         ramDetail.isHidden.toggle()
-        ramButton.setTitle(ramDetail.isHidden ? "Chi tiết RAM (heap) ▸" : "Chi tiết RAM (heap) ▾", for: .normal)
+        ramButton.setTitle(ramDetail.isHidden ? "Chi tiết ▸" : "Chi tiết ▾", for: .normal)
         if !ramDetail.isHidden { refreshDetails() }
     }
 
@@ -824,7 +957,7 @@ final class JarBoxStatusController: UIViewController {
             cpuText = "CPU App: —"
         }
         cpuLabel.text = cpuText
-        ramLabel.text = readRAM?() ?? "RAM: —"
+        ramLabel.text = readRAM?() ?? "RAM App: —"
         ramAvailableLabel.text = JarBoxMemoryProtection.statusText()
         let thermal: String
         switch ProcessInfo.processInfo.thermalState {
@@ -1485,8 +1618,14 @@ class AppsListViewController: UIViewController,
     private func showJarBoxSettings() {
         guard pendingTabMutation == nil, jarBoxSleepCover == nil else { return }
         let picker = UIAlertController(title: "Cài đặt", message: nil, preferredStyle: .actionSheet)
-        let proxy = UIAlertAction(title: "Proxy", style: .default)
-        proxy.isEnabled = false
+        let proxy = UIAlertAction(title: "Proxy", style: .default) { [weak self] _ in
+            guard let self else { return }
+            self.cancelAutoProtection()
+            let settings = JarBoxProxySettingsController(style: .insetGrouped)
+            let nav = JarBoxLibraryNavigationController(rootViewController: settings)
+            nav.modalPresentationStyle = .fullScreen
+            self.present(nav, animated: true)
+        }
         picker.addAction(proxy)
         picker.addAction(UIAlertAction(title: "Tự động bảo vệ màn hình", style: .default) { [weak self] _ in
             guard let self else { return }
@@ -1935,7 +2074,7 @@ class AppsListViewController: UIViewController,
               jarBoxSleepCover == nil, gameTabTransitionCover == nil else { return }
         cancelAutoProtection()
         let status = JarBoxStatusController()
-        status.readRAM = { [weak self] in self?.jarBoxRAMText() ?? "RAM: —" }
+        status.readRAM = { [weak self] in self?.jarBoxRAMText().replacingOccurrences(of: "RAM:", with: "RAM App:") ?? "RAM App: —" }
         // No game can be admitted while this full-screen modal is open.
         // Capture labels once; filter retired tokens on every detail refresh.
         let rows = statusTabRows()
