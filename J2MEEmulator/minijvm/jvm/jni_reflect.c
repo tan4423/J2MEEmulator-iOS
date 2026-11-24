@@ -498,10 +498,10 @@ s32 org_mini_vm_RefNative_getGarbageMarkCounter(Runtime *runtime, JClass *clazz)
 
 s32 org_mini_vm_RefNative_getGarbageStatus(Runtime *runtime, JClass *clazz) {
     //Put it into the stack first, then associate it with the collector to prevent multithreaded recycling
-    push_int(runtime->stack, runtime->jvm->collector->_garbage_thread_status);
+    push_int(runtime->stack, gc_thread_status(runtime->jvm->collector));
 
 #if _JVM_DEBUG_LOG_LEVEL > 5
-    jvm_printf("org_mini_vm_RefNative_getGarbageStatus %d\n", runtime->jvm->collector->_garbage_thread_status);
+    jvm_printf("org_mini_vm_RefNative_getGarbageStatus %d\n", gc_thread_status(runtime->jvm->collector));
 #endif
     return 0;
 }
@@ -527,7 +527,7 @@ s32 org_mini_vm_RefNative_defineClass(Runtime *runtime, JClass *clazz) {
 //    push_ref(runtime->stack, NULL);
 
 #if _JVM_DEBUG_LOG_LEVEL > 5
-    jvm_printf("org_mini_vm_RefNative_defineClass %d\n", runtime->jvm->collector->_garbage_thread_status);
+    jvm_printf("org_mini_vm_RefNative_defineClass %d\n", gc_thread_status(runtime->jvm->collector));
 #endif
     return 0;
 }

@@ -56,6 +56,19 @@ enum {
     GARBAGE_THREAD_DEAD,
 };
 
+/* STOP and DEAD are terminal for external control requests. The collector
+ * publishes DEAD itself after its final heap access. All readers use atomic
+ * loads, including Java diagnostics that do not own vm_share_lock. */
+static inline u8 gc_thread_status(const GcCollector *collector) {
+    return __atomic_load_n(&collector->_garbage_thread_status, __ATOMIC_ACQUIRE);
+}
+static inline void gc_request_thread_status(GcCollector *collector, u8 requested) {
+    u8 current = gc_thread_status(collector);
+    while (current < GARBAGE_THREAD_STOP &&
+           !__atomic_compare_exchange_n(&collector->_garbage_thread_status,
+                                        &current, requested, 0,
+                                        __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {}
+}
 
 // API
 

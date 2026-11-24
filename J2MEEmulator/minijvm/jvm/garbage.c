@@ -79,7 +79,7 @@ s32 gc_create(MiniJVM *jvm) {
 
     collector->runtime = runtime_create(jvm);
     collector->runtime->thrd_info->type = THREAD_TYPE_GC;
-    collector->_garbage_thread_status = GARBAGE_THREAD_PAUSE;
+    gc_request_thread_status(collector, GARBAGE_THREAD_PAUSE);
     thread_lock_init(&jvm->threadlock);
 
     collector->lastgc = currentTimeMillis();
@@ -95,7 +95,7 @@ void gc_destroy(MiniJVM *jvm) {
     GcCollector *collector = jvm->collector;
     gc_stop(collector);
     vm_share_lock(jvm);
-    while (collector->_garbage_thread_status != GARBAGE_THREAD_DEAD) {
+    while (gc_thread_status(collector) != GARBAGE_THREAD_DEAD) {
         vm_share_timedwait(jvm, 100);
     }
     vm_share_unlock(jvm);
@@ -151,19 +151,19 @@ void _garbage_clear(GcCollector *collector) {
 
 void gc_pause(GcCollector *collector) {
     vm_share_lock(collector->jvm);
-    collector->_garbage_thread_status = GARBAGE_THREAD_PAUSE;
+    gc_request_thread_status(collector, GARBAGE_THREAD_PAUSE);
     vm_share_unlock(collector->jvm);
 }
 
 void gc_resume(GcCollector *collector) {
     vm_share_lock(collector->jvm);
-    collector->_garbage_thread_status = GARBAGE_THREAD_NORMAL;
+    gc_request_thread_status(collector, GARBAGE_THREAD_NORMAL);
     vm_share_unlock(collector->jvm);
 }
 
 void gc_stop(GcCollector *collector) {
     vm_share_lock(collector->jvm);
-    collector->_garbage_thread_status = GARBAGE_THREAD_STOP;
+    gc_request_thread_status(collector, GARBAGE_THREAD_STOP);
     vm_share_unlock(collector->jvm);
 }
 
@@ -172,7 +172,7 @@ void _gc_add_obj_count(GcCollector *collector, MemoryBlock *mb) {
     if (mb->type == MEM_TYPE_CLASS) {
         return;
     }
-    if (collector->_garbage_thread_status != GARBAGE_THREAD_NORMAL) {
+    if (gc_thread_status(collector) != GARBAGE_THREAD_NORMAL) {
         return;
     }
     if (utf8_equals_c(mb->clazz->name, "javax/microedition/lcdui/Display$SerialCallTimerTask")) {
@@ -238,7 +238,7 @@ void _gc_get_obj_name(GcCollector *collector, void *memblock, Utf8String *name) 
         switch (mb->type) {
             case MEM_TYPE_CLASS: {
                 utf8_append_c(name, "C");
-                JClass *clazz = collector->_garbage_thread_status == GARBAGE_THREAD_NORMAL ? (JClass *) mb : NULL;
+                JClass *clazz = gc_thread_status(collector) == GARBAGE_THREAD_NORMAL ? (JClass *) mb : NULL;
                 if (clazz)
                     utf8_append(name, clazz->name);
                 break;
@@ -246,7 +246,7 @@ void _gc_get_obj_name(GcCollector *collector, void *memblock, Utf8String *name) 
             case MEM_TYPE_INS: {
                 Instance *ins = (Instance *) mb;
                 utf8_append_c(name, "L");
-                JClass *clazz = collector->_garbage_thread_status == GARBAGE_THREAD_NORMAL ? ins->mb.clazz : NULL;
+                JClass *clazz = gc_thread_status(collector) == GARBAGE_THREAD_NORMAL ? ins->mb.clazz : NULL;
                 if (clazz)
                     utf8_append(name, clazz->name);
                 utf8_append_c(name, ";");
@@ -256,7 +256,7 @@ void _gc_get_obj_name(GcCollector *collector, void *memblock, Utf8String *name) 
                 Instance *arr = (Instance *) mb;
 
                 utf8_append_c(name, "Array{");
-                JClass *clazz = collector->_garbage_thread_status == GARBAGE_THREAD_NORMAL ? arr->mb.clazz : NULL;
+                JClass *clazz = gc_thread_status(collector) == GARBAGE_THREAD_NORMAL ? arr->mb.clazz : NULL;
                 if (clazz)
                     utf8_append(name, clazz->name);
                 utf8_append_c(name, "}");
@@ -512,10 +512,10 @@ s32 _gc_thread_run(void *para) {
 #endif
         s64 cur_mil = currentTimeMillis();
 
-        if (collector->_garbage_thread_status == GARBAGE_THREAD_STOP) {
+        if (gc_thread_status(collector) == GARBAGE_THREAD_STOP) {
             break;
         }
-        if (collector->_garbage_thread_status == GARBAGE_THREAD_PAUSE) {
+        if (gc_thread_status(collector) == GARBAGE_THREAD_PAUSE) {
             threadSleep(1000);
             continue;
         }
@@ -589,7 +589,7 @@ s32 _gc_thread_run(void *para) {
             threadSleep(jvm->garbage_collect_period_ms / 2);
         }
     }
-    collector->_garbage_thread_status = GARBAGE_THREAD_DEAD;
+    __atomic_store_n(&collector->_garbage_thread_status, GARBAGE_THREAD_DEAD, __ATOMIC_RELEASE);
     thrd_exit(0);
     return 0;
 }
@@ -694,7 +694,7 @@ s64 _garbage_collect(GcCollector *collector) {
     MemoryBlock *nextmb = collector->header;
     MemoryBlock *curmb, *prevmb = NULL;
     //finalize
-    if (collector->_garbage_thread_status == GARBAGE_THREAD_NORMAL) {
+    if (gc_thread_status(collector) == GARBAGE_THREAD_NORMAL) {
         while (nextmb) {
             curmb = nextmb;
             nextmb = curmb->next;
@@ -877,7 +877,7 @@ s32 _gc_wait_thread_suspend(MiniJVM *jvm, Runtime *runtime) {
             ) { //
         vm_share_notifyall(jvm);
         vm_share_timedwait(jvm, 100);
-        if (jvm->collector->_garbage_thread_status != GARBAGE_THREAD_NORMAL) {
+        if (gc_thread_status(jvm->collector) != GARBAGE_THREAD_NORMAL) {
             return -1;
         }
     }

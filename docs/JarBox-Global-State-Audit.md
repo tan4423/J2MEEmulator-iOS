@@ -667,3 +667,25 @@ modeled starts per execution, including creation failure and STOPPING).
 Updated the existing teardown source assertion for the local handle;
 the full existing suite was not executed. Full JVM, Xcode/Codemagic,
 TSan and iPhone validation remain outstanding. Admission remains one.
+
+## 2026-11-24: Make GC STOP/DEAD terminal under concurrent controls
+
+The collector status previously used unsynchronized reads and ordinary
+writes across threads. A late pause/resume could overwrite STOP, and
+another stop could overwrite DEAD, preventing teardown from observing
+completion. Use an atomic status read and CAS control update that refuses
+to change STOP or DEAD. The collector publishes DEAD with a release store.
+Existing VM share lock ordering, GC cadence, heap thresholds and Treo
+mode selection are unchanged. Java reflection diagnostics now use the
+atomic accessor too. Audited direct references in the core JVM C files.
+This does not yet join the collector pthread or handle its creation
+failure; those are separate lifetime audit items.
+
+Validation: the original control excerpt, compiled against the new status
+accessor in a mock VM harness, failed the terminal STOP assertion. The
+replacement passed the new Python unit test and 50 ASan+UBSan executions,
+each exercising 100 pthread pause/resume/stop races and independent
+collector B state. Tested helper/control excerpts and the regression file
+were matched against the committed replacements. The complete GC,
+miniJVM, TSan, Codemagic and iPhone tests were not run here. Admission
+remains one.
