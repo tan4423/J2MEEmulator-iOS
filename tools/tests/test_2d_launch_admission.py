@@ -24,7 +24,7 @@ static int jvm_bridge_supported_concurrent_sessions(void){return 2;}
 static int bridge_3d_conflict_locked(int exclusive){for(int i=0;i<2;i++)if(slots[i].token && (exclusive || slots[i].exclusive_3d))return 1;return 0;}
 static uint64_t jarbox_focus_visible(uint64_t *f){return *f;}
 static JarBoxVMContext *bridge_reserve_slot_locked(uint64_t token,unsigned cap){for(unsigned i=0;i<cap;i++)if(!slots[i].token){slots[i].token=token;return &slots[i];}return NULL;}
-static void bridge_reset_slot_locked(JarBoxVMContext *s){s->token=0;}
+static void bridge_reset_slot_locked(JarBoxVMContext *s){s->token=0;s->exclusive_3d=0;}
 static int jarbox_registry_claim(uint64_t *r,uint64_t *f,uint64_t token,unsigned cap){(void)r;(void)f;(void)token;(void)cap;return !fail_claim;}
 static int jarbox_focus_select(uint64_t *f,uint64_t token){if(fail_select)return 0;*f=token;return 1;}
 static int bridge_diag_begin(uint64_t token){(void)token;return !fail_diag;}
@@ -50,14 +50,21 @@ int main(void){
         fail_diag=1;assert(!bridge_try_begin_session(0, &b)&&!b&&!slots[1].token&&!g_bridge_focus);fail_diag=0;
         assert(bridge_try_begin_session(0, &b)&&b&&g_bridge_focus==b&&slots[0].token==a);
         g_bridge_focus=0;uint64_t c=0;assert(!bridge_try_begin_session(0, &c)&&!c);
-        slots[0].token=slots[1].token=0;
+        bridge_reset_slot_locked(&slots[0]);bridge_reset_slot_locked(&slots[1]);
+        assert(bridge_try_begin_session(1,&a)==1&&a&&slots[0].exclusive_3d);
+        g_bridge_focus=0;
+        assert(bridge_try_begin_session(0,&b)==-1&&!b);
+        assert(bridge_try_begin_session(1,&b)==-1&&!b);
+        bridge_reset_slot_locked(&slots[0]);
+        assert(bridge_try_begin_session(0,&b)==1&&b&&!slots[0].exclusive_3d);
+        g_bridge_focus=0;bridge_reset_slot_locked(&slots[0]);
     }
     for(int i=0;i<100;i++){
         uint64_t a=0,b=0;pthread_t x,y;
         assert(!pthread_create(&x,NULL,launch,&a));assert(!pthread_create(&y,NULL,launch,&b));
         assert(!pthread_join(x,NULL));assert(!pthread_join(y,NULL));
         assert((a!=0)+(b!=0)==1&&g_bridge_focus==(a?a:b)&&!slots[1].token);
-        g_bridge_focus=slots[0].token=0;
+        g_bridge_focus=0;bridge_reset_slot_locked(&slots[0]);
     }
     puts("admission transaction: 10000 cycles + 100 concurrent launch pairs PASS");
 }

@@ -35,7 +35,7 @@ class ParkedGameLibraryTest(unittest.TestCase):
         self.assertIn('requestGameStop(reason: "library_stop")', self.game)
 
     def test_native_token_still_guards_single_vm(self):
-        self.assertIn('jvm_bridge_try_begin_session_with_token(&acquiredToken)', self.game)
+        self.assertIn('jvm_bridge_try_begin_session_for_jar($0, &acquiredToken)', self.game)
         self.assertIn('gameSessionToken = acquiredToken', self.game)
         self.assertIn('cloneID: instanceCloneID, token: launchingToken', self.game)
         self.assertIn('jvm_bridge_init_for_token(token, resRoot, saveRoot', self.game)

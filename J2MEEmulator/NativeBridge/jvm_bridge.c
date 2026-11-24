@@ -16,6 +16,7 @@
 #include <stdatomic.h>
 #include <pthread.h>
 #include <sys/stat.h>
+#include <strings.h>
 #include "miniz.h"
 
 // Conservative launch classification, not an authorization to execute 3D.
@@ -35,9 +36,12 @@ static int bridge_jar_requires_exclusive(const char *path) {
         mz_zip_archive_file_stat f;
         if (!mz_zip_reader_file_stat(&zip, i, &f)) goto done;
         if (mz_zip_reader_is_file_a_directory(&zip, i)) continue;
+        const mz_uint name_size = mz_zip_reader_get_filename(&zip, i, NULL, 0);
+        if (!name_size || name_size > sizeof(f.m_filename)) goto done;
         const size_t len = strlen(f.m_filename);
-        if (len >= 4 && (!strcmp(f.m_filename + len - 4, ".jar") ||
-                         !strcmp(f.m_filename + len - 4, ".zip"))) goto done;
+        if (name_size != len + 1) goto done;
+        if (len >= 4 && (!strcasecmp(f.m_filename + len - 4, ".jar") ||
+                         !strcasecmp(f.m_filename + len - 4, ".zip"))) goto done;
         if (len < 6 || strcmp(f.m_filename + len - 6, ".class")) continue;
         if (f.m_is_encrypted || f.m_uncomp_size < 4 ||
             f.m_uncomp_size > 2 * 1024 * 1024 ||
@@ -468,6 +472,12 @@ static int bridge_3d_conflict_locked(int requested_exclusive) {
 }
 
 int jvm_bridge_3d_conflict_for_jar(const char *path) {
+    // Existing exclusive ownership rejects all new launches, without any
+    // archive I/O on the UI thread. Admission always checks again.
+    pthread_mutex_lock(&g_bridge_lifecycle_lock);
+    const int existing = bridge_3d_conflict_locked(0);
+    pthread_mutex_unlock(&g_bridge_lifecycle_lock);
+    if (existing) return 1;
     const int exclusive = bridge_jar_requires_exclusive(path);
     pthread_mutex_lock(&g_bridge_lifecycle_lock);
     const int conflict = bridge_3d_conflict_locked(exclusive);

@@ -1247,3 +1247,22 @@ Updated admission harness and source assertions, but the full repository
 suite, actual archive scanner, native integration and iPhone build
 were not run in this batch. Classification of actual NSO/Avatar JARs
 is not yet verified. The public cap remains one.
+
+### Exclusive 3D follow-up: library preflight and archive regression
+
+Check exclusive conflicts in the library before presenting any new game,
+even if the structural slot pool has space. Existing exclusive owners
+reject without scanning another archive. The native launch transaction
+remains authoritative. Reject truncated/embedded-NUL ZIP names and
+case-insensitive nested JAR/ZIP extensions conservatively. Existing
+parked-tab resume bypasses new-session admission.
+
+Validation: copied the exact committed bridge_try_begin_session body
+into a Linux C11 harness with real pthread locks and modeled registry,
+slot, focus and diagnostic helpers. ASan+UBSan PASS for 10,000 cycles
+including 2D -> blocked 3D, exclusive 3D -> blocked 2D/3D, retirement
+and subsequent 2D launch; plus 100 competing launch pairs. Added a
+repository regression that compiles the extracted archive scanner
+against actual bundled miniz with generated ZIPs. That archive test
+and full suite could not be run locally because git access from the
+host fails DNS resolution; no iOS build or real NSO JAR test performed.
