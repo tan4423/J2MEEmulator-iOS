@@ -557,3 +557,24 @@ disabled Smart GC, unknown/zero tokens and no implicit visitor use.
 UIKit routing was checked against the SHA-pinned source replacement.
 Full native build, complete test suite and device memory-pressure behavior
 are not verified.
+
+## 2026-11-24: Persist late Canvas rejection across automatic repark
+
+A session that already fell back from guarded mode 8 to compatible mode 1
+could be promoted to mode 8 again on the next Back, because positive Canvas
+recognition remained set and rearming the guard reset its diagnostic fallback.
+Record a separate sticky per-session rejection when the late guard fires.
+Automatic parking must reject mode 8 for this JVM until it is destroyed,
+even if another positive Canvas sample arrives. Another clone and a fresh
+JVM still qualify independently. Legacy per-run diagnostic guard flags
+retain their prior semantics; the installed JAR preference is unchanged.
+Existing transition serialization, GC and Display fallback are unchanged.
+
+Validation: reproduced the production header locally and verified its Git
+blob SHA against the base commit. The new Python regression compiled the
+header with C11, rejected the original header at the expected repark
+assertion, and passed with the replacement (1 test). The same C harness
+passed 50 executions under Clang ASan+UBSan, each exercising 100
+park/resume transitions and independent clone/restart state. These are
+header-policy tests, not iOS rendering or real JVM concurrency evidence.
+Full checkout, native build and iPhone validation remain outstanding.

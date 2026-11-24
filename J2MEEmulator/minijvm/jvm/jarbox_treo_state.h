@@ -14,6 +14,7 @@ typedef struct JarBoxTreoState {
     int render_needs_redraw;
     int guard_auto_enabled;
     int guard_auto_fallback;
+    int deep_canvas_rejected; // sticky for the lifetime of this JVM
     uint64_t render_bypass_deadline_ns;
     uint64_t render_next_paint_ns;
     int probe_requested_ms;
@@ -71,6 +72,7 @@ static inline int jarbox_treo_guard_fell_back(const JarBoxTreoState *s) {
 static inline int jarbox_treo_guard_note_late(JarBoxTreoState *s) {
     if (!s || !__atomic_load_n(&s->guard_auto_enabled, __ATOMIC_ACQUIRE) ||
         jarbox_treo_mode_get(s) != 8) return 0;
+    __atomic_store_n(&s->deep_canvas_rejected, 1, __ATOMIC_RELEASE);
     __atomic_store_n(&s->guard_auto_fallback, 1, __ATOMIC_RELEASE);
     return 1;
 }
@@ -100,7 +102,8 @@ static inline int jarbox_treo_nso_canvas_recognized(const JarBoxTreoState *state
 /* Configuration is shared by game identity on the UIKit side; the actual
  * mode is selected using this JVM's own proof. Unknown games fail safe. */
 static inline int jarbox_treo_park_mode(const JarBoxTreoState *state, int compatible_only) {
-    return !compatible_only && jarbox_treo_nso_canvas_recognized(state) ? 8 : 1;
+    return !compatible_only && jarbox_treo_nso_canvas_recognized(state) &&
+           !__atomic_load_n(&state->deep_canvas_rejected, __ATOMIC_ACQUIRE) ? 8 : 1;
 }
 static inline void jarbox_treo_probe_set(JarBoxTreoState *state, int requested) {
     __atomic_store_n(&state->probe_requested_ms, requested == 2000 ? 2000 : 0, __ATOMIC_RELEASE);
