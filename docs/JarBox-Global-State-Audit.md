@@ -515,3 +515,21 @@ on the original method and passed on the replacement (1 test).
 class; this is syntax checking, not UIKit type checking or execution.
 Full checkout, iOS build and real Back/Treo/resume device tests remain
 outstanding.
+
+## 2026-11-24: Late completion must not infer an empty registry from token zero
+
+The Swift worker completion has already verified that its own immutable
+token is retired. The implicit session-token API returns zero both for an
+empty registry and for multiple parked owners without a selected tab.
+Consequently, it cannot authorize process-wide diagnostic/Treo resets.
+Require `jvm_bridge_active_session_count() == 0` instead. The existing
+foreign-owner early returns remain in place; this changes neither
+admission nor per-owner stop/cleanup. The current one-VM behavior is
+preserved.
+
+Validation: the updated source-contract predicates were executed against
+the exact SHA-pinned Swift text (old source rejected, replacement accepted).
+A standalone Swift host model of the guard compiled and returned reset=true
+only for count 0, false for counts 1 through 4. This is not a UIKit build
+or a real JVM concurrency test. Python full-suite and device validation
+remain outstanding.

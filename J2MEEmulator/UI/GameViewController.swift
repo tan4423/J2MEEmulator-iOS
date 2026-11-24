@@ -3539,9 +3539,10 @@ class GameViewController: UIViewController {
                     self.showStuckSessionRecovery()
                     return
                 }
-                let currentToken = jvm_bridge_session_token()
-                let mayResetNative = currentToken == 0 ||
-                    currentToken == launchingToken
+                // A zero implicit token can also mean several parked VMs.
+                // This worker's token is retired; only an empty registry
+                // authorizes legacy process-wide Treo/renderer resets.
+                let mayResetNative = jvm_bridge_active_session_count() == 0
                 // Hidden managed tabs have no UIKit destination. Their
                 // completion must not dismiss or reset a different tab.
                 if self.sessionLibrary != nil && self.libraryIsPresented {

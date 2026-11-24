@@ -43,8 +43,14 @@ class SessionCallbackOwnershipTest(unittest.TestCase):
         code = self.swift
         self.assertIn("let launchingToken = gameSessionToken", code)
         self.assertIn("self.gameSessionToken == launchingToken", code)
-        self.assertIn("let mayResetNative = currentToken == 0 ||", code)
-        self.assertIn("if !mayResetNative {", code)
+        completion = between(code, "let launchingToken = gameSessionToken",
+                             "let watchdog = DispatchWorkItem")
+        self.assertIn("let mayResetNative = jvm_bridge_active_session_count() == 0", completion)
+        self.assertNotIn("let mayResetNative = currentToken == 0", completion)
+        self.assertLess(completion.index("if jvm_bridge_session_is_active_for_token(launchingToken) != 0"),
+                        completion.index("let mayResetNative ="))
+        self.assertLess(completion.index("if !mayResetNative {"),
+                        completion.index("self.hideBlackout()"))
         self.assertIn("jvm_bridge_session_token() == gameSessionToken &&", code)
         self.assertIn("activeGameViewController === self &&", code)
 
