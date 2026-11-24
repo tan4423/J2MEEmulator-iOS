@@ -1120,3 +1120,21 @@ sequential cycles and 300,000 concurrent submissions PASS; ASan+UBSan
 20/20 PASS. Repository test extracts those functions and adds source
 guards for the Swift wiring. Swift UIKit compilation, real Java input
 delivery, full repository tests and on-device CPU savings not measured.
+
+## 2D LCDUI focus replay: pair action with its committed revision
+
+The prior focus replay read a plain last_action while separately loading
+screen_revision. A concurrent Form/Canvas builder could advance the
+revision before committing the screen, causing the previous action to
+be replayed under the new revision. Store the published action and its
+revision together in an atomic 64-bit notice; replay only if the
+current revision matches. Reset the notice on binding and retirement.
+Normal Java show callbacks and the existing Swift generation/revision
+checks remain in place. No polling, new timer or changes to JAR data.
+
+Validation: standalone Linux clang C11 harness with the identical
+notice helper bodies passed 10,000 sequential cases and 100,000
+concurrent atomic snapshot checks; 20/20 ASan+UBSan repetitions
+passed. Added production-header regression and source wiring checks.
+Full UIKit build, true MIDlet screen transitions and device validation
+remain outstanding. This does not solve all screen-lock lifetime risks.

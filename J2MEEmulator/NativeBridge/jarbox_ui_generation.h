@@ -20,4 +20,14 @@ static inline int jarbox_ui_may_present(uint64_t origin_key,
            jarbox_ui_generation_matches(origin_key, visible_render_key);
 }
 
+// A focus replay may only use an action that was published for the exact
+// completed screen revision, never combine an old action with a new build.
+static inline uint64_t jarbox_ui_notice_pack(int action, int revision) {
+    return ((uint64_t)(uint32_t)revision << 32) | (uint32_t)action;
+}
+static inline int jarbox_ui_notice_action(uint64_t notice, int revision) {
+    if ((uint32_t)(notice >> 32) != (uint32_t)revision) return 0;
+    return (int)(uint32_t)notice;
+}
+
 #endif // JARBOX_UI_GENERATION_H

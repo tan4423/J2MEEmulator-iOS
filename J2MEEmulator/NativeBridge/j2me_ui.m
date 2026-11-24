@@ -89,7 +89,7 @@ typedef struct {
     atomic_bool ui_cut_enabled;
     _Atomic uint64_t ui_canvas_applied_token;
     _Atomic uint64_t ui_saved_notices;
-    int last_action;
+    _Atomic uint64_t last_notice; // action and its committed screen revision
     void *objects; // process-lifetime CF-retained ObjC holder
     // Immutable once the generation is published; later launches may change
     // default callbacks without redirecting A's pending LCDUI notices to B.
@@ -254,7 +254,7 @@ static int ui_register_vm(MiniJVM *vm) {
                 ctx->list_item_count = 0;
                 ctx->list_type = 0;
                 ctx->alert_timeout = -2;
-                ctx->last_action = 0;
+                atomic_store_explicit(&ctx->last_notice, 0, memory_order_release);
                 // Different JVM generations must not reuse the same initial
                 // revision: an old delayed UIKit callback must not be
                 // mistaken for the new session's first Form/Canvas notice.
@@ -302,8 +302,9 @@ int j2me_ui_focus_vm(MiniJVM *vm) {
         atomic_store_explicit(&g_ui_focused_index, index, memory_order_release);
         // Refresh the latest real MIDP screen after a session switch,
         // never replay a different JVM's Form or Alert.
-        action = ctx->last_action;
+        const uint64_t notice = atomic_load_explicit(&ctx->last_notice, memory_order_acquire);
         revision = atomic_load_explicit(&ctx->screen_revision, memory_order_acquire);
+        action = jarbox_ui_notice_action(notice, revision);
         ownerKey = atomic_load_explicit(&ctx->heap_key, memory_order_acquire);
     }
     pthread_mutex_unlock(&g_ui_contexts_lock);
@@ -333,7 +334,7 @@ void j2me_ui_release_vm(MiniJVM *vm) {
         atomic_store_explicit(&ctx->heap_key, 0, memory_order_release);
         ctx->ui_callback = NULL;
         ctx->owned_ui_callback = NULL;
-        ctx->last_action = 0;
+        atomic_store_explicit(&ctx->last_notice, 0, memory_order_release);
     }
     pthread_mutex_unlock(&g_ui_contexts_lock);
 }
@@ -657,9 +658,12 @@ static s32 n_formShow(Runtime *runtime, JClass *clazz) {
         case 3: action = J2ME_UI_ACTION_SHOW_TEXTBOX; break;
         default: action = J2ME_UI_ACTION_SHOW_FORM; break;
     }
-    ui_context()->last_action = action;
+    JarBoxUIScreenContext *ctx = ui_context();
+    const int revision = atomic_load_explicit(&ctx->screen_revision, memory_order_acquire);
+    atomic_store_explicit(&ctx->last_notice, jarbox_ui_notice_pack(action, revision),
+                          memory_order_release);
     if (ui_is_focused_owner())
-        ui_publish_action(action, j2me_ui_revision(), g_ui_thread_key);
+        ui_publish_action(action, revision, g_ui_thread_key);
     return RUNTIME_STATUS_NORMAL;
 }
 
@@ -686,7 +690,9 @@ static s32 n_showCanvas(Runtime *runtime, JClass *clazz) {
         return RUNTIME_STATUS_NORMAL;
     }
     printf("[J2ME UI] showCanvas\n");
-    ui_context()->last_action = J2ME_UI_ACTION_SHOW_CANVAS;
+    atomic_store_explicit(&ui_context()->last_notice,
+                          jarbox_ui_notice_pack(J2ME_UI_ACTION_SHOW_CANVAS, revision),
+                          memory_order_release);
     if (ui_is_focused_owner()) {
         ui_publish_action(J2ME_UI_ACTION_SHOW_CANVAS, revision,
                           g_ui_thread_key);
