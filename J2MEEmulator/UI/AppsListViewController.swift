@@ -381,6 +381,7 @@ class AppsListViewController: UIViewController,
     // presentation is only the visible surface, never the lifetime owner.
     // Keep STARTING/STOPPING controllers until their native tokens retire.
     private var managedGames: [GameViewController] = []
+    private weak var lastManagedParkedGame: GameViewController?
 
     private var retainedGames: [GameViewController] {
         if let parked = parkedGameController,
@@ -402,8 +403,18 @@ class AppsListViewController: UIViewController,
         retainedGames.filter { $0.ownsLiveGameSession() }
     }
 
+    // Remember the exact tab last left for the library, not the first tab
+    // in the controller array or another clone sharing the same JAR.
+    private var lastParkedGame: GameViewController? {
+        guard let game = lastManagedParkedGame ?? parkedGameController,
+              retainedGames.contains(where: { $0 === game }),
+              game.ownsLiveGameSession() else { return nil }
+        return game
+    }
+
     func managedGameDidPark(_ game: GameViewController) {
         guard managedGames.contains(where: { $0 === game }) else { return }
+        lastManagedParkedGame = game
         updateStuckSessionButton()
         springboardCollectionView.reloadData()
     }
@@ -415,6 +426,7 @@ class AppsListViewController: UIViewController,
             updateStuckSessionButton()
             return
         }
+        if lastManagedParkedGame === game { lastManagedParkedGame = nil }
         managedGames.removeAll { $0 === game }
         updateStuckSessionButton()
         springboardCollectionView.reloadData()
@@ -523,19 +535,10 @@ class AppsListViewController: UIViewController,
             title: nil,
             image: UIImage(systemName: "ellipsis.circle"),
             primaryAction: nil,
-            menu: UIMenu(title: "JarBox", children: [
-                UIAction(title: "Màn hình Treo",
-                         image: UIImage(systemName: "moon.zzz")) { [weak self] _ in
-                    self?.showJarBoxSleepScreen()
-                },
-                UIAction(title: "Thông tin chung",
-                         image: UIImage(systemName: "info.circle")) { [weak self] _ in
-                    self?.showJarBoxOverview()
-                }
-            ]))
+            menu: nil)
         globalMenu.accessibilityLabel = "Menu tổng JarBox"
         jarBoxMenuButton = globalMenu
-        navigationItem.rightBarButtonItems = [importButton, globalMenu]
+        updateStuckSessionButton()
 
         let layout = UICollectionViewFlowLayout()
         layout.scrollDirection = .vertical
@@ -622,44 +625,46 @@ class AppsListViewController: UIViewController,
         logSpringboardEnergyState("app became active")
     }
 
-    // Event-driven recovery for sessions stranded by an unexpected UI exit.
-    // No timer, animation or background polling on the low-power library.
+    // Event-driven refresh only. Ordinary stop/resume actions do not occupy
+    // the navigation bar; exceptional native recovery remains reachable.
     private func updateStuckSessionButton() {
-        // Rebuild the entire navigation state, including the empty case.
-        // A retired tab must not leave its title or Stop button behind.
-        let games = liveGames
-        if let parked = games.first, parked.ownsLiveGameSession() {
-            navigationItem.title = games.count == 1
-                ? "Đang chạy ẩn: " + parked.appName
-                : "Đang chạy ẩn: " + String(games.count) + " tab"
-            navigationItem.leftBarButtonItem = UIBarButtonItem(
-                title: "Tiếp tục", style: .plain,
-                target: self, action: #selector(resumeParkedGame))
-            let stop = UIBarButtonItem(
-                title: "Dừng", style: .plain,
-                target: self, action: #selector(stopRunningGameFromLibrary))
-            stop.tintColor = .systemRed
-            navigationItem.rightBarButtonItems = [importBarButton, stop, jarBoxMenuButton].compactMap { $0 }
+        navigationItem.title = "Thư viện"
+        navigationItem.leftBarButtonItem = nil
+        navigationItem.rightBarButtonItems = [importBarButton, jarBoxMenuButton].compactMap { $0 }
+        jarBoxMenuButton?.menu = makeLibraryMenu()
+    }
+
+    private func makeLibraryMenu() -> UIMenu {
+        var actions: [UIMenuElement] = [
+            UIAction(title: "Vào Tab cuối",
+                     image: UIImage(systemName: "play.fill"),
+                     attributes: lastParkedGame == nil ? .disabled : []) { [weak self] _ in
+                self?.resumeLastParkedGame()
+            },
+            UIAction(title: "Bảo vệ màn hình",
+                     image: UIImage(systemName: "moon.zzz")) { [weak self] _ in
+                self?.showJarBoxSleepScreen()
+            },
+            UIAction(title: "Thông tin chung",
+                     image: UIImage(systemName: "info.circle")) { [weak self] _ in
+                self?.showJarBoxOverview()
+            }
+        ]
+        if liveGames.isEmpty, jvm_bridge_session_is_active() != 0 {
+            actions.append(UIAction(title: "Xử lý phiên kẹt",
+                                    image: UIImage(systemName: "exclamationmark.triangle")) { [weak self] _ in
+                self?.openStuckSessionRecovery()
+            })
+        }
+        return UIMenu(title: "JarBox", children: actions)
+    }
+
+    private func resumeLastParkedGame() {
+        guard canPresentGame, let game = lastParkedGame else {
+            updateStuckSessionButton()
             return
         }
-        navigationItem.rightBarButtonItems = [importBarButton, jarBoxMenuButton].compactMap { $0 }
-        if jvm_bridge_session_is_active() != 0 {
-            navigationItem.title = "Phiên JVM chưa dừng"
-            navigationItem.leftBarButtonItem = UIBarButtonItem(
-                title: "Xử lý phiên kẹt", style: .plain,
-                target: self, action: #selector(openStuckSessionRecovery))
-        } else {
-            navigationItem.title = "Thư viện"
-            navigationItem.leftBarButtonItem = nil
-        }
-    }
-
-    @objc private func resumeParkedGame() {
-        chooseManagedGame(stopping: false)
-    }
-
-    @objc private func stopRunningGameFromLibrary() {
-        chooseManagedGame(stopping: true)
+        game.resumeParkedGame()
     }
 
     private func showAnotherGameBlocked(_ app: AppInfo) {
@@ -667,16 +672,10 @@ class AppsListViewController: UIViewController,
         let alert = UIAlertController(
             title: "Đã đạt giới hạn phiên JVM",
             message: "JarBox hiện cho phép tối đa " + String(limit) +
-                " phiên đồng thời. Hãy chọn tab để tiếp tục hoặc dừng một tab trước khi mở " +
+                " phiên đồng thời. Hãy giữ icon game đang chạy và chọn Dừng game hoàn toàn trước khi mở " +
                 app.name + ".",
             preferredStyle: .alert)
-        alert.addAction(UIAlertAction(title: "Tiếp tục game cũ", style: .default) { [weak self] _ in
-            self?.resumeParkedGame()
-        })
-        alert.addAction(UIAlertAction(title: "Dừng game đang chạy", style: .destructive) { [weak self] _ in
-            self?.chooseManagedGame(stopping: true)
-        })
-        alert.addAction(UIAlertAction(title: "Ở lại thư viện", style: .cancel))
+        alert.addAction(UIAlertAction(title: "OK", style: .cancel))
         present(alert, animated: true)
     }
 
@@ -752,7 +751,7 @@ class AppsListViewController: UIViewController,
         ])
 
         let title = UILabel()
-        title.text = "JarBox · Màn hình Treo\nChạm nút giữa để trở lại thư viện"
+        title.text = "JarBox · Bảo vệ màn hình\nChạm nút giữa để trở lại thư viện"
         title.font = .systemFont(ofSize: 15, weight: .medium)
         title.textColor = UIColor(white: 0.64, alpha: 1)
         title.textAlignment = .center
@@ -767,7 +766,7 @@ class AppsListViewController: UIViewController,
         wake.layer.cornerRadius = 36
         wake.layer.borderColor = UIColor(white: 0.43, alpha: 1).cgColor
         wake.layer.borderWidth = 1
-        wake.accessibilityLabel = "Thoát màn hình Treo JarBox"
+        wake.accessibilityLabel = "Thoát bảo vệ màn hình JarBox"
         wake.accessibilityIdentifier = "jarbox-global-sleep-wake"
         wake.translatesAutoresizingMaskIntoConstraints = false
         wake.addTarget(self, action: #selector(hideJarBoxSleepScreen), for: .touchUpInside)

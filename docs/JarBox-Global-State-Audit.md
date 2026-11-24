@@ -898,3 +898,18 @@ repeat exit with DEAD status and isolation from a second collector.
 This does not execute the real Java monitor or GC implementation.
 Full suite, iOS build and device validation remain outstanding, as does
 the thread_stop_all monitor lock-order audit.
+
+
+## Library navigation: return to last parked tab
+
+Keep the library title and import/menu bar stable across live and stopped
+sessions. The global menu offers "Vào Tab cuối" using a weak reference to
+the exact most recently parked managed controller (legacy overlay retains
+its existing owner). Revalidate live ownership and presentation admission
+at invocation; a stopped last tab disables the action rather than opening
+another clone or a fresh JVM. Ordinary stop remains in the per-game icon
+context menu and is labeled "Thoát game" in the in-game menu. Native stuck
+session recovery remains available when no resumable owner remains. Rename
+the global sleep screen to "Bảo vệ màn hình" without changing Treo runtime,
+existing sampling, storage, or admission. Updated the navigation host
+harness and source guards. iOS/Codemagic and full suite remain to be run.

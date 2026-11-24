@@ -576,7 +576,7 @@ class GameViewController: UIViewController {
                          image: UIImage(systemName: "square.grid.2x2")) { [weak self] _ in
                     self?.openLibraryKeepingGame()
                 },
-                UIAction(title: "Dừng game hoàn toàn",
+                UIAction(title: "Thoát game",
                          image: UIImage(systemName: "stop.fill"),
                          attributes: .destructive) { [weak self] _ in
                     self?.stopGameFromMenu()
@@ -956,7 +956,7 @@ class GameViewController: UIViewController {
                 UIAction(title: "Về thư viện · tự động Treo") { [weak self] _ in self?.openLibraryKeepingGame() },
                 UIAction(title: "Chẩn đoán kết nối") { [weak self] _ in self?.showNetworkDiagnostics() },
                 UIAction(title: "Hủy chẩn đoán CPU JAR", attributes: .destructive) { [weak self] _ in self?.stopJarAudit() },
-                UIAction(title: "Dừng game hoàn toàn", attributes: .destructive) { [weak self] _ in self?.stopGameFromMenu() }
+                UIAction(title: "Thoát game", attributes: .destructive) { [weak self] _ in self?.stopGameFromMenu() }
             ])
             return
         }
@@ -977,7 +977,7 @@ class GameViewController: UIViewController {
             UIAction(title: "Chẩn đoán kết nối") { [weak self] _ in
                 self?.showNetworkDiagnostics()
             },
-            UIAction(title: "Dừng game hoàn toàn", attributes: .destructive) { [weak self] _ in
+            UIAction(title: "Thoát game", attributes: .destructive) { [weak self] _ in
                 self?.stopGameFromMenu()
             }
         ])
