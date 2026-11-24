@@ -866,6 +866,8 @@ static void treo_park_transition_visitor(MiniJVM *vm, void *arg) {
         ? jarbox_treo_park_mode(state, change->compatible_only) : 0;
     jarbox_treo_guard_auto_set(state, mode == 8);
     jarbox_treo_smart_set(state, mode == 8);
+    if (mode == 8 && jvm_bridge_memory_state(NULL) != 0)
+        jarbox_treo_smart_force_safe(state);
     treo_display_wait_set_for_vm(vm, 0);
     treo_apply_mode_locked(vm, mode, treo_afk_now_ns());
     if (mode == 8) treo_display_wait_set_for_vm(vm, 1);
@@ -3515,15 +3517,41 @@ static id<MTLBuffer> treo_live_vertices;
 static NSMutableDictionary *treo_live_owner_targets;       // NSNumber(key) -> MTLTexture
 static NSMutableDictionary *treo_live_owner_textures;      // NSNumber(key) -> image cache
 static NSMutableDictionary *treo_live_owner_texture_bytes; // NSNumber(key) -> NSNumber(bytes)
-// Evict only regenerable image textures; never touch live targets, canvas
-// handles or the JVM heap. If GPU submission owns the lock, skip rather than
-// blocking UIKit during a memory warning.
-int j2me_render_trim_memory_cache(void) {
-    if (!os_unfair_lock_trylock(&treo_live_gpu_lock)) return 0;
+// Regenerable image textures are bounded both per owner and across the
+// process. Nominal pixel bytes, not the full Metal allocation footprint.
+#define TREO_TEXTURE_OWNER_BUDGET (16u * 1024u * 1024u)
+#define TREO_TEXTURE_TOTAL_BUDGET (32u * 1024u * 1024u)
+static _Atomic int treo_texture_trim_queued;
+
+static int treo_texture_cache_fits(size_t used, size_t bytes, size_t limit) {
+    return bytes <= limit && used <= limit - bytes;
+}
+
+// Caller holds treo_live_gpu_lock; live targets and canvas backing survive.
+static void treo_live_trim_textures_locked(void) {
     [treo_live_owner_textures removeAllObjects];
     [treo_live_owner_texture_bytes removeAllObjects];
-    os_unfair_lock_unlock(&treo_live_gpu_lock);
-    return 1;
+}
+
+// Do not block UIKit on a GPU command. A single coalesced recovery task
+// waits for the workspace if it is busy, without retaining any JVM pointer.
+int j2me_render_trim_memory_cache(void) {
+    if (os_unfair_lock_trylock(&treo_live_gpu_lock)) {
+        treo_live_trim_textures_locked();
+        os_unfair_lock_unlock(&treo_live_gpu_lock);
+        return 1;
+    }
+    if (!atomic_exchange_explicit(&treo_texture_trim_queued, 1, memory_order_acq_rel)) {
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+            @autoreleasepool {
+                os_unfair_lock_lock(&treo_live_gpu_lock);
+                treo_live_trim_textures_locked();
+                atomic_store_explicit(&treo_texture_trim_queued, 0, memory_order_release);
+                os_unfair_lock_unlock(&treo_live_gpu_lock);
+            }
+        });
+    }
+    return 0;
 }
 
 static void treo_live_release_owner(uint64_t owner_key) {
@@ -3539,25 +3567,37 @@ static void treo_live_release_owner(uint64_t owner_key) {
 static id<MTLTexture> treo_live_texture(CGImageRef image, int cacheable,
                                        uint64_t owner_key) {
     if (!owner_key) return nil;
-    // Accessed only with the GPU workspace lock held. Every owner has an
-    // independent 16 MB cache and its own image identity namespace.
+    // Accessed only with the GPU workspace lock held. Owner identity is
+    // unchanged; the shared budget applies only to regenerable textures.
     NSNumber *owner = @(owner_key);
     NSMutableDictionary *cache = treo_live_owner_textures[owner];
-    if (cacheable && !cache) {
-        cache = [NSMutableDictionary new];
-        treo_live_owner_textures[owner] = cache;
-    }
     NSValue *key = [NSValue valueWithPointer:image];
     NSArray *entry = cacheable ? cache[key] : nil;
     if (entry) return entry[1];
     size_t w = CGImageGetWidth(image), h = CGImageGetHeight(image);
+    if (!w || !h || w > SIZE_MAX / 4 / h) return nil;
     size_t bytes = w * h * 4;
     size_t used = [treo_live_owner_texture_bytes[owner] unsignedLongLongValue];
-    if (cacheable && (bytes > 16u * 1024u * 1024u ||
-                      used > 16u * 1024u * 1024u - bytes)) {
-        [cache removeAllObjects];
-        treo_live_owner_texture_bytes[owner] = @0;
-        used = 0;
+    if (!treo_texture_cache_fits(0, bytes, TREO_TEXTURE_OWNER_BUDGET))
+        cacheable = 0;
+    if (cacheable) {
+        if (!treo_texture_cache_fits(used, bytes, TREO_TEXTURE_OWNER_BUDGET)) {
+            [cache removeAllObjects];
+            treo_live_owner_texture_bytes[owner] = @0;
+            used = 0;
+        }
+        size_t total = 0;
+        for (NSNumber *amount in [treo_live_owner_texture_bytes allValues])
+            total += amount.unsignedLongLongValue;
+        if (!treo_texture_cache_fits(total, bytes, TREO_TEXTURE_TOTAL_BUDGET)) {
+            treo_live_trim_textures_locked();
+            cache = nil;
+            used = 0;
+        }
+        if (!cache) {
+            cache = [NSMutableDictionary new];
+            treo_live_owner_textures[owner] = cache;
+        }
     }
     MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:
         MTLPixelFormatBGRA8Unorm width:w height:h mipmapped:NO];
@@ -3573,7 +3613,7 @@ static id<MTLTexture> treo_live_texture(CGImageRef image, int cacheable,
     [tex replaceRegion:MTLRegionMake2D(0, 0, w, h) mipmapLevel:0
              withBytes:CGBitmapContextGetData(bitmap) bytesPerRow:w * 4];
     CGContextRelease(bitmap);
-    if (cacheable && bytes <= 16u * 1024u * 1024u) {
+    if (cacheable) {
         cache[key] = @[(__bridge id)image, tex];
         treo_live_owner_texture_bytes[owner] = @(used + bytes);
     }
@@ -3603,6 +3643,12 @@ static id<MTLTexture> treo_live_solid(uint32_t color, NSMutableDictionary *solid
 static int treo_live_render(RenderContext *rc, TreoLiveRun *run) {
     // Recheck after acquiring the shared GPU workspace lock.
     if (!treo_rc_may_submit(rc)) return 0;
+    // Under process memory pressure the original CG path avoids creating
+    // another Metal texture set/readback buffer. The recorded run survives.
+    if (jvm_bridge_memory_state_cached() != 0) {
+        treo_live_trim_textures_locked();
+        return 0;
+    }
     if (!treo_live_pipeline) {
         treo_live_device = MTLCreateSystemDefaultDevice();
         treo_live_queue = [treo_live_device newCommandQueue];

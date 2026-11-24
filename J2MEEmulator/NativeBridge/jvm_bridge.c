@@ -532,6 +532,29 @@ int jvm_bridge_memory_state(uint64_t *out_available) {
     return bridge_memory_level(available, recent);
 }
 
+// Serialize only the inexpensive headroom sample, never a GC or heap walk.
+// Existing collectors and live Metal frames share this sample.
+int jvm_bridge_memory_state_cached(void) {
+#if defined(__APPLE__) && __JVM_OS_IOS__
+    static pthread_mutex_t sample_lock = PTHREAD_MUTEX_INITIALIZER;
+    static uint64_t last_sample;
+    static int sampled_state;
+    pthread_mutex_lock(&sample_lock);
+    const uint64_t now = bridge_memory_clock();
+    const uint64_t warning = atomic_load_explicit(&bridge_last_memory_warning, memory_order_acquire);
+    if (!last_sample || now < last_sample ||
+        now - last_sample >= UINT64_C(1000000000) || warning > last_sample) {
+        sampled_state = jvm_bridge_memory_state(NULL);
+        last_sample = now;
+    }
+    const int result = sampled_state;
+    pthread_mutex_unlock(&sample_lock);
+    return result;
+#else
+    return jvm_bridge_memory_state(NULL);
+#endif
+}
+
 static int bridge_try_begin_session(int exclusive, uint64_t *out_token) {
     if (!out_token) return 0;
     *out_token = 0;

@@ -84,7 +84,7 @@ class MultiVMJavaThreadTokenTest(unittest.TestCase):
         self.assertIn("const uint64_t bound = jvm_bridge_thread_token();", bridge)
         self.assertIn("jvm_bridge_push_java_thread_token(token);", bridge)
         self.assertIn("jvm_bridge_pop_java_thread_token(previous);", bridge)
-        self.assertIn("int jvm_bridge_supported_concurrent_sessions(void) {\n    return 2;", bridge)
+        self.assertIn("int jvm_bridge_supported_concurrent_sessions(void) {\n    return JARBOX_REGISTRY_MAX_SLOTS;", bridge)
 
 if __name__ == "__main__":
     unittest.main()

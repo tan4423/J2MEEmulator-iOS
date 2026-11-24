@@ -68,7 +68,7 @@ class JarBoxThreadTeardownTest(unittest.TestCase):
         self.assertIn("jarbox_session_callback_done(held)", focus)
         self.assertLess(focus.index("jarbox_session_enter_foreground(held)"),
                         focus.index("jarbox_session_callback_done(held)"))
-        self.assertIn("int jvm_bridge_supported_concurrent_sessions(void) {\n    return 2;", src)
+        self.assertIn("int jvm_bridge_supported_concurrent_sessions(void) {\n    return JARBOX_REGISTRY_MAX_SLOTS;", src)
         self.assertIn("j2me_render_stop_for_owner(destroyed_render_key)", src)
 
 if __name__ == "__main__":

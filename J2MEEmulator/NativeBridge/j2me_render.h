@@ -214,6 +214,7 @@ void *j2me_render_acquire_canvas(Runtime *runtime, int64_t handle,
 void j2me_render_release_canvas(void *lease);
 
 /// Nonblocking eviction of regenerable Metal image textures only.
+/// Returns 1 if cleared immediately; 0 if recovery is deferred.
 int j2me_render_trim_memory_cache(void);
 
 /// Signal render subsystem to stop (all acquire calls return NULL).

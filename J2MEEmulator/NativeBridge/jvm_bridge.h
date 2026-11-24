@@ -20,6 +20,9 @@ int jvm_bridge_try_begin_session_for_jar(const char *path, uint64_t *out_token);
 /// 0 safe, 1 warning (<=300 MiB or recent system warning), 2 critical (<150 MiB).
 /// Samples fresh; no timer or heap traversal. Zero headroom is critical.
 int jvm_bridge_memory_state(uint64_t *out_available);
+/// Shared GC/render sample (normally at most one refresh per second process-wide).
+/// Native launch admission must continue using the fresh API above.
+int jvm_bridge_memory_state_cached(void);
 /// Record a process-wide memory warning; admissions re-evaluate after 15s.
 void jvm_bridge_memory_note_warning(void);
 /// Advisory UI check only; admission rechecks under the lifecycle lock.

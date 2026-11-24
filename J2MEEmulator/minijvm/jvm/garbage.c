@@ -362,6 +362,8 @@ int treo_gc_smart_set_for_token(uint64_t token, int enabled) {
 static void treo_force_safe_active(MiniJVM *vm, void *arg) {
     (void)arg;
     jarbox_treo_smart_force_safe(&vm->session->treo_state);
+    if (jarbox_treo_probe_period(&vm->session->treo_state) > 0)
+        jarbox_treo_probe_fallback(&vm->session->treo_state);
 }
 void treo_gc_smart_force_safe(void) {
     jvm_bridge_visit_running_vm(treo_force_safe_active, NULL);
@@ -574,6 +576,14 @@ s32 _gc_thread_run(void *para) {
         if (heap >= 0) {
             jarbox_treo_peak_note(&jvm->session->treo_state.probe_heap_peak, (uint64_t)heap);
             jarbox_treo_smart_note_heap(&jvm->session->treo_state, (uint64_t)heap);
+        }
+        // Existing GC workers share a process headroom sample. Detect
+        // aggregate pressure before iOS delivers a memory warning, without
+        // a new poller or a syscall per parked JVM.
+        if ((jarbox_treo_smart_period(&jvm->session->treo_state) > desired ||
+             jarbox_treo_probe_period(&jvm->session->treo_state) > desired) &&
+            jvm_bridge_memory_state_cached() != 0) {
+            treo_force_safe_active(jvm, NULL);
         }
         // Keep the Java/native heap pressure threshold unchanged. If the
         // memory headroom shrinks, latch at 500 ms until the user leaves AFK.

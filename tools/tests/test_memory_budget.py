@@ -22,6 +22,7 @@ PRE = r'''
 #include <stdint.h>
 #include <stddef.h>
 #include <stdatomic.h>
+#include <pthread.h>
 #include <time.h>
 #include <assert.h>
 #include <stdio.h>
@@ -30,7 +31,8 @@ PRE = r'''
 #endif
 #define __JVM_OS_IOS__ 1
 static uint64_t headroom, monotonic_ns;
-static size_t os_proc_available_memory(void) { return (size_t)headroom; }
+static unsigned samples;
+static size_t os_proc_available_memory(void) { samples++; return (size_t)headroom; }
 static int fake_clock_gettime(clockid_t clock, struct timespec *ts) {
     (void)clock;
     ts->tv_sec = (time_t)(monotonic_ns / UINT64_C(1000000000));
@@ -73,6 +75,23 @@ int main(void) {
         assert(jvm_bridge_memory_state(NULL) == 1); checks++;
     }
     printf("%u memory budget checks passed\n", checks);
+    monotonic_ns += UINT64_C(60000000000);
+    headroom=800*mb;
+    unsigned before=samples;
+    assert(jvm_bridge_memory_state_cached()==0);
+    assert(samples==before+1);
+    headroom=100*mb;
+    for(unsigned i=0;i<1000;i++) assert(jvm_bridge_memory_state_cached()==0);
+    assert(samples==before+1);
+    monotonic_ns+=UINT64_C(1000000000);
+    assert(jvm_bridge_memory_state_cached()==2 && samples==before+2);
+    monotonic_ns+=UINT64_C(1000000000);
+    headroom=800*mb;
+    assert(jvm_bridge_memory_state_cached()==0);
+    monotonic_ns++;
+    jvm_bridge_memory_note_warning();
+    assert(jvm_bridge_memory_state_cached()==1);
+    puts("shared GC sample and warning invalidation: PASS");
     return 0;
 }
 '''
@@ -93,11 +112,12 @@ class MemoryBudgetTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             code, exe = Path(td) / "budget.c", Path(td) / "budget"
             code.write_text(PRE + policy + MAIN)
-            subprocess.run([cc, "-std=c11", "-Wall", "-Wextra", "-Werror",
+            subprocess.run([cc, "-std=c11", "-Wall", "-Wextra", "-Werror", "-pthread",
                             str(code), "-o", str(exe)], check=True, timeout=30)
             result = subprocess.run([str(exe)], capture_output=True, text=True,
                                     check=True, timeout=10)
             self.assertIn("12000 memory budget checks passed", result.stdout)
+            self.assertIn("shared GC sample and warning invalidation: PASS", result.stdout)
 
     def test_gate_before_reservation_and_allocation(self):
         src = BRIDGE.read_text()
@@ -143,8 +163,13 @@ class MemoryBudgetTest(unittest.TestCase):
         self.assertNotIn("removeItem(", pressure)
         trim = between(RENDER.read_text(), "int j2me_render_trim_memory_cache(void)", "\n}")
         self.assertIn("os_unfair_lock_trylock(&treo_live_gpu_lock)", trim)
-        self.assertIn("[treo_live_owner_textures removeAllObjects]", trim)
-        self.assertIn("[treo_live_owner_texture_bytes removeAllObjects]", trim)
+        clear = between(RENDER.read_text(), "static void treo_live_trim_textures_locked(void)", "\n}")
+        self.assertIn("[treo_live_owner_textures removeAllObjects]", clear)
+        self.assertIn("[treo_live_owner_texture_bytes removeAllObjects]", clear)
+        self.assertNotIn("treo_live_owner_targets", clear)
+        self.assertIn("treo_live_trim_textures_locked()", trim)
+        self.assertIn("atomic_exchange_explicit(&treo_texture_trim_queued", trim)
+        self.assertIn("dispatch_async", trim)
         self.assertNotIn("treo_live_owner_targets", trim)
         self.assertNotIn("jvm_destroy", trim)
         status = between(lib, "final class JarBoxStatusController:", "class AppsListViewController:")

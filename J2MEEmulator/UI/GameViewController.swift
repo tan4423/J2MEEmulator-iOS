@@ -789,6 +789,13 @@ class GameViewController: UIViewController {
     func restoreSafeGCForMemoryPressure() {
         guard holdsNativeGameSession() else { return }
         _ = treo_gc_smart_force_safe_for_token(gameSessionToken)
+        // A parked, non-visible controller need not retain the last UIKit
+        // snapshot. Native Canvas backing stays alive and resume redraws.
+        if libraryIsPresented, parkedTreoActive,
+           jvm_bridge_session_is_parked(gameSessionToken) == 1 {
+            emulatorView.clearPendingGameFrame()
+            emulatorView.layer.contents = nil
+        }
     }
 
     // ============================================================

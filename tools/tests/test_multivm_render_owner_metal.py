@@ -122,7 +122,7 @@ class MultiVMRenderOwnerMetalTest(unittest.TestCase):
         self.assertIn("[command waitUntilCompleted];", src)
         self.assertNotIn("static id<MTLTexture> treo_live_target;", src)
         self.assertIn(
-            "int jvm_bridge_supported_concurrent_sessions(void) {\n    return 2;",
+            "int jvm_bridge_supported_concurrent_sessions(void) {\n    return JARBOX_REGISTRY_MAX_SLOTS;",
             BRIDGE.read_text(encoding="utf-8"),
         )
 

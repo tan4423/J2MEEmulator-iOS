@@ -67,7 +67,7 @@ class MultiVMRenderScaleTest(unittest.TestCase):
             body = m3g.split("static s32 n_Graphics3D_" + method + "(", 1)[1].split("\n}", 1)[0]
             self.assertIn("jarbox_session_render_scale(runtime->jvm->session)", body)
         self.assertNotIn("g_render_3d_scale", bridge + m3g)
-        self.assertIn("int jvm_bridge_supported_concurrent_sessions(void) {\n    return 2;", bridge)
+        self.assertIn("int jvm_bridge_supported_concurrent_sessions(void) {\n    return JARBOX_REGISTRY_MAX_SLOTS;", bridge)
 
 
 if __name__ == "__main__":
