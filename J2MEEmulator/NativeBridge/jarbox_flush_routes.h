@@ -9,7 +9,7 @@
 
 #define JARBOX_FLUSH_MAX_ROUTES 8
 typedef void (*JarBoxFlushLegacy)(void *image, int width, int height);
-typedef void (*JarBoxFlushOwned)(void *image, int width, int height, uint64_t owner);
+typedef void (*JarBoxFlushOwned)(void *image, int width, int height, uint64_t owner, uint64_t token);
 typedef struct {
     uint64_t owner_key;
     JarBoxFlushLegacy legacy;

@@ -56,7 +56,7 @@ class ParkedGameLibraryTest(unittest.TestCase):
         self.assertIn('bridge_release_worker(slot);', implementation)
 
     def test_automatic_treo_on_library_transition(self):
-        self.assertIn('setGlobalEmulatorView(nil)', self.game)
+        self.assertIn('unbindGameFrameView(token: gameSessionToken)', self.game)
         self.assertIn('emulatorView.clearPendingGameFrame()', self.game)
         self.assertIn('startParkedTreo()', self.game)
         renderer = (ROOT / "J2MEEmulator/NativeBridge/j2me_render.m").read_text(encoding="utf-8")
@@ -70,7 +70,7 @@ class ParkedGameLibraryTest(unittest.TestCase):
         self.assertIn('treo_display_wait_set_for_vm(vm, 0)', renderer)
         self.assertIn('if (mode == 8) treo_display_wait_set_for_vm(vm, 1)', renderer)
         self.assertIn('stopParkedTreo()', self.game)
-        self.assertIn('setGlobalEmulatorView(self.emulatorView)', self.game)
+        self.assertIn('bindGameFrameView(self.emulatorView, token:', self.game)
         self.assertIn('libraryIsPresented', self.game)
         self.assertIn('overlay.dismiss(animated: false)', self.game)
         self.assertIn('JarBoxLibraryNavigationController(rootViewController: library)', self.game)

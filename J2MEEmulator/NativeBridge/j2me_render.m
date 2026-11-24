@@ -2370,7 +2370,10 @@ static s32 n_flushToScreen(Runtime *runtime, JClass *clazz) {
                 CGImageRelease(image);
             } else if (owned_flush) {
                 atomic_fetch_add_explicit(&sw_frames, 1, memory_order_relaxed);
-                owned_flush(image, rc->width, rc->height, rc->heap_key);
+                const uint64_t token = runtime->jvm->session ?
+                    __atomic_load_n(&runtime->jvm->session->token, __ATOMIC_ACQUIRE) : 0;
+                if (token) owned_flush(image, rc->width, rc->height, rc->heap_key, token);
+                else CGImageRelease(image);
             } else if (legacy_flush && jvm_bridge_supported_concurrent_sessions() == 1) {
                 // The old no-owner ABI is allowed only with the exclusive
                 // single-JVM gate; a future 2-JVM mode requires owned frames.

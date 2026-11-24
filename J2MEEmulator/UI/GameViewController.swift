@@ -3533,7 +3533,7 @@ class GameViewController: UIViewController {
         emulatorView.inputSessionToken = acquiredToken
         joystickView?.inputSessionToken = acquiredToken
         numpadView?.inputSessionToken = acquiredToken
-        setGlobalEmulatorView(emulatorView)
+        bindGameFrameView(emulatorView, token: acquiredToken)
         j2me_render_set_afk_suspended(0)
         j2me_render_set_flush_callback(flushCallback)
         j2me_render_set_owned_flush_callback(ownedFlushCallback)
@@ -3578,6 +3578,8 @@ class GameViewController: UIViewController {
                 // This worker's token is retired; only an empty registry
                 // authorizes legacy process-wide Treo/renderer resets.
                 let mayResetNative = jvm_bridge_active_session_count() == 0
+                unbindGameFrameView(token: launchingToken)
+                self.emulatorView.clearPendingGameFrame()
                 self.cancelGameInput()
                 // Hidden managed tabs have no UIKit destination. Their
                 // completion must not dismiss or reset a different tab.
@@ -4004,7 +4006,7 @@ class GameViewController: UIViewController {
             libraryIsPresented = true
             alertTimeoutWork?.cancel()
             alertTimeoutWork = nil
-            setGlobalEmulatorView(nil)
+            unbindGameFrameView(token: gameSessionToken)
             emulatorView.clearPendingGameFrame()
             if activeGameViewController === self { activeGameViewController = nil }
             dismiss(animated: false) { [weak self, weak library] in
@@ -4031,7 +4033,7 @@ class GameViewController: UIViewController {
         libraryIsPresented = true
         // Reuse Treo, not the old mode-1-only offscreen path. The library
         // itself performs no recurring CPU sampling or background animation.
-        setGlobalEmulatorView(nil)
+        unbindGameFrameView(token: gameSessionToken)
         emulatorView.clearPendingGameFrame()
         NSLog("[JarBoxVM][Park] session=%llu jar=%@", gameSessionToken,
               URL(fileURLWithPath: jarPath).lastPathComponent)
@@ -4056,8 +4058,8 @@ class GameViewController: UIViewController {
                 NSLog("[JarBoxVM][Focus] failed token=%llu", self.gameSessionToken)
                 return
             }
+            bindGameFrameView(self.emulatorView, token: self.gameSessionToken)
             stopParkedTreo()
-            setGlobalEmulatorView(self.emulatorView)
             if self.deferredGameAlert {
                 self.deferredGameAlert = false
                 self.showAlert()
@@ -4075,7 +4077,7 @@ class GameViewController: UIViewController {
         }
         activeGameViewController = self
         libraryIsPresented = false
-        setGlobalEmulatorView(self.emulatorView)
+        bindGameFrameView(self.emulatorView, token: gameSessionToken)
         stopParkedTreo()
         if deferredGameAlert {
             deferredGameAlert = false

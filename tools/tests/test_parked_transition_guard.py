@@ -28,7 +28,7 @@ class ParkedTransitionGuardTest(unittest.TestCase):
         self.assertLess(body.index("dismiss(animated: false)"), ready)
         self.assertLess(confirmed, body.index("dismiss(animated: false)", confirmed))
         for effect in ("finishStartupWatchdog()", "if let library = sessionLibrary",
-                       "libraryIsPresented = true", "setGlobalEmulatorView(nil)",
+                       "libraryIsPresented = true", "unbindGameFrameView(token: gameSessionToken)",
                        "emulatorView.clearPendingGameFrame()",
                        "present(navigation, animated: false)"):
             self.assertLess(confirmed, body.index(effect), effect)

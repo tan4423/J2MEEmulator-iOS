@@ -14,11 +14,11 @@ C=r"""
 #include <stdio.h>
 #include "jarbox_flush_routes.h"
 static int counts[3];
-static void a(void *img, int w, int h, uint64_t key) {
-    if (img && w==240 && h==320 && key==101) ++counts[0];
+static void a(void *img, int w, int h, uint64_t key, uint64_t token) {
+    if (img && w==240 && h==320 && key==101 && token==11) ++counts[0];
 }
-static void b(void *img, int w, int h, uint64_t key) {
-    if (img && w==240 && h==320 && key==102) ++counts[1];
+static void b(void *img, int w, int h, uint64_t key, uint64_t token) {
+    if (img && w==240 && h==320 && key==102 && token==22) ++counts[1];
 }
 static void legacy(void *img, int w, int h) {
     if (img && w==240 && h==320) ++counts[2];
@@ -33,9 +33,9 @@ int main(void) {
     jarbox_flush_default_owned(&r,b);
     if (!jarbox_flush_route_bind(&r,102)) return 2;
     if (!jarbox_flush_route_lookup(&r,101,&l,&o) || o!=a) return 3;
-    o((void*)1,240,320,101);
+    o((void*)1,240,320,101,11);
     if (!jarbox_flush_route_lookup(&r,102,&l,&o) || o!=b) return 4;
-    o((void*)1,240,320,102);
+    o((void*)1,240,320,102,22);
     if (counts[0]!=1 || counts[1]!=1) return 5;
     if (!jarbox_flush_route_unbind(&r,101) ||
         jarbox_flush_route_lookup(&r,101,&l,&o) ||

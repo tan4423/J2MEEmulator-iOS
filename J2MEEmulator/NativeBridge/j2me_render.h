@@ -23,7 +23,7 @@ void j2me_render_set_flush_callback(j2me_flush_callback callback);
 /// Owning JVM generation accompanies every frame all the way to the UIKit
 /// main-thread drain. This prevents stale queued frames after a tab switch.
 typedef void (*j2me_flush_callback_owned)(void *cgImage, int width, int height,
-                                          uint64_t owner_key);
+                                          uint64_t owner_key, uint64_t session_token);
 void j2me_render_set_owned_flush_callback(j2me_flush_callback_owned callback);
 uint64_t j2me_render_visible_owner_key(void);
 

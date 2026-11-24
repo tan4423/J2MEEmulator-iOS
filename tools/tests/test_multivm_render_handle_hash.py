@@ -24,8 +24,8 @@ PREAMBLE = r"""
 // The production stop helper now revokes the matching generation's
 // callback route as well as its Canvas handle generation.
 static JarBoxFlushRoutes g_flush_routes = JARBOX_FLUSH_ROUTES_INITIALIZER;
-static void host_flush(void *image, int width, int height, uint64_t owner_key) {
-    (void)image; (void)width; (void)height; (void)owner_key;
+static void host_flush(void *image, int width, int height, uint64_t owner_key, uint64_t token) {
+    (void)image; (void)width; (void)height; (void)owner_key; (void)token;
 }
 typedef long long s64;
 typedef struct RenderContext {

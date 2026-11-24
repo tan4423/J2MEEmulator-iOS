@@ -1138,3 +1138,25 @@ concurrent atomic snapshot checks; 20/20 ASan+UBSan repetitions
 passed. Added production-header regression and source wiring checks.
 Full UIKit build, true MIDlet screen transitions and device validation
 remain outstanding. This does not solve all screen-lock lifetime risks.
+
+## 2D framebuffer destination bound to launch token
+
+The owned native frame callback now carries both heap generation and the
+immutable launch token from the sending Runtime's session. UIKit's weak
+foreground destination is protected by a lock and bound to that token.
+A late completion from A cannot clear B's destination. Park unbinds
+only its own token; resume binds before leaving Treo. The one-frame
+mailbox carries both identities and the main-thread drain checks the
+view, visible token, generation and that token's current Treo mode.
+Unowned legacy iOS frames are consumed without displaying them.
+No new timers, extra image copies, 3D changes or admission changes.
+This is not a linearizable frame cancellation barrier for re-parking
+and resuming the same token; an old same-session frame can still race.
+The final mode check uses a synchronous owner lease on the main drain.
+
+Validation: local Swift 6.2.1 Linux host compiled the exact new generic
+weak route class with Swift 6 strict concurrency and warnings-as-errors;
+10,000 sequential cycles and 40,000 concurrent iterations PASS.
+Fake views only; UIKit, native callback ABI integration, the full
+repository suite and device execution are not tested. Updated existing
+C callback-route/handle harness signatures and source regressions.
