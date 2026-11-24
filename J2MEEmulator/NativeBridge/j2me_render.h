@@ -97,6 +97,11 @@ int treo_nso_canvas_recognized(void);
 // 8 only when this JVM proved NSO Canvas and game policy permits it;
 // 1 for compatible parking; 0 for an unavailable/stale token.
 int treo_park_mode_for_token(uint64_t token, int compatible_only);
+// Automatic Treo: begin returns the applied mode, 0 if no running owner.
+// End disarms guard and Display wait, restores GC and requests redraw.
+int treo_park_begin_for_token(uint64_t token, int compatible_only);
+int treo_park_end_for_token(uint64_t token);
+int treo_mode_for_token(uint64_t token);
 uint64_t treo_nso_repaint_requests(void);
 double treo_nso_prior_repaint_hz(void);
 double treo_nso_last_repaint_gap_ms(void);

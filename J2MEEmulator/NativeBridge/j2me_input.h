@@ -56,6 +56,8 @@ void treo_display_wait_set(int enabled);
 /// Park/unpark only the owner with this immutable session token. Returns 0
 /// when the token is stale, STOPPING, or not yet bound to a live JVM.
 int treo_display_wait_set_for_token(uint64_t token, int enabled);
+// Caller already holds a live VM worker or callback lease.
+void treo_display_wait_set_for_vm(MiniJVM *vm, int enabled);
 void j2me_display_wake(void);
 void j2me_display_wake_for_vm(MiniJVM *jvm);
 uint64_t treo_display_poll_calls(void);

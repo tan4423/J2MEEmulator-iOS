@@ -184,8 +184,7 @@ void treo_display_wait_set(int enabled) {
 /* Set the Display wait mode for the *actual JVM token*, not whichever Tab
  * happens to own the physical input destination. The bridge lease protects
  * the JVM while the input-context mutex protects slot reuse. */
-static void treo_wait_visitor(MiniJVM *vm, void *arg) {
-    const int enabled = *(const int *)arg;
+void treo_display_wait_set_for_vm(MiniJVM *vm, int enabled) {
     pthread_mutex_lock(&g_input_context_lock);
     J2MEInputContext *ctx = context_for_vm(vm);
     if (ctx) {
@@ -194,6 +193,9 @@ static void treo_wait_visitor(MiniJVM *vm, void *arg) {
         signal_display_wait(ctx);
     }
     pthread_mutex_unlock(&g_input_context_lock);
+}
+static void treo_wait_visitor(MiniJVM *vm, void *arg) {
+    treo_display_wait_set_for_vm(vm, *(const int *)arg);
 }
 int treo_display_wait_set_for_token(uint64_t token, int enabled) {
     if (!token) return 0;

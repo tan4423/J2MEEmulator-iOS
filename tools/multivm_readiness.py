@@ -62,7 +62,8 @@ def audit(root=ROOT):
                      and "jarbox_treo_smart_period(&jvm->session->treo_state)" in src["gc"]
                      and "jarbox_treo_probe_period(&jvm->session->treo_state)" in src["gc"]
                      and "jvm_bridge_visit_running_vm" in src["gc"]
-                     and "treo_gc_set_afk_mode_for_current(mode);" in src["render"])
+                     and "treo_apply_mode_locked(vm, change->mode, change->now_ns);" in src["render"]
+                      and "jarbox_treo_smart_set(state, mode == 8);" in src["render"])
     ui_owned = all(x in src["lcd_ui"] for x in (
         "JarBoxUIScreenContext", "ui_slot_for_vm(vm)",
         "j2me_ui_release_vm(MiniJVM *vm)",

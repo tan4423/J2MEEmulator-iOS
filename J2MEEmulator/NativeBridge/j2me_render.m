@@ -212,6 +212,17 @@ static int treo_runtime_mode(Runtime *r) {
 }
 // Defined after live context registry, updates only the matching generation.
 static void treo_render_owner_mode_set(uint64_t owner_key, int mode);
+// Only control transitions take this mutex; ordinary rendering and GC
+// read their own atomic fields. Never acquire a bridge lease while held.
+static pthread_mutex_t g_treo_transition_lock = PTHREAD_MUTEX_INITIALIZER;
+static void treo_apply_mode_locked(MiniJVM *vm, int mode, uint64_t now_ns) {
+    jarbox_treo_render_mode_set(&vm->session->treo_state, mode, now_ns);
+    const uint64_t key = jarbox_native_heap_key_for_vm(vm);
+    treo_render_owner_mode_set(key, mode);
+    if (jvm_bridge_supported_concurrent_sessions() == 1)
+        atomic_store_explicit(&treo_afk_mode, mode, memory_order_release);
+    if (mode) render_haptic_release_owner(key);
+}
 static inline int treo_rc_mode(const RenderContext *rc) {
     return rc ? atomic_load_explicit(&rc->afk_mode, memory_order_acquire) : 0;
 }
@@ -358,7 +369,9 @@ static _Atomic uint64_t treo_guarded_paints, treo_guarded_real, treo_guarded_lat
 // fall back to compatible AFK presentation-only mode for the current session.
 // This opt-in guard does not affect the pre-existing mode-8 A/B/A diagnostics.
 static void treo_guard_set_visitor(MiniJVM *vm, void *arg) {
+    pthread_mutex_lock(&g_treo_transition_lock);
     jarbox_treo_guard_auto_set(&vm->session->treo_state, *(int *)arg);
+    pthread_mutex_unlock(&g_treo_transition_lock);
 }
 void treo_afk_guard_auto_set(int enabled) {
     jvm_bridge_visit_running_vm(treo_guard_set_visitor, &enabled);
@@ -710,12 +723,16 @@ static s32 n_afkCanvasResult(Runtime *runtime, JClass *clazz) {
     if (outcome == 2) {
         atomic_fetch_add_explicit(&treo_guarded_late, 1, memory_order_relaxed);
         JarBoxTreoState *state = treo_runtime_state(runtime);
+        pthread_mutex_lock(&g_treo_transition_lock);
         if (jarbox_treo_guard_note_late(state)) {
-            // A late callback may not downgrade another session's raster mode.
-            jarbox_treo_render_mode_set(state, 1, treo_afk_now_ns());
-            if (runtime->jvm->session->token == jvm_bridge_session_token())
-                treo_render_set_afk_mode(1);
+            // Keep the fallback inside this transition. A resume cannot
+            // interleave between the late check and re-entering mode 1.
+            // The Java worker already owns a lease; no foreground lookup.
+            treo_display_wait_set_for_vm(runtime->jvm, 0);
+            jarbox_treo_smart_force_safe(state);
+            treo_apply_mode_locked(runtime->jvm, 1, treo_afk_now_ns());
         }
+        pthread_mutex_unlock(&g_treo_transition_lock);
     }
     return RUNTIME_STATUS_NORMAL;
 }
@@ -810,32 +827,62 @@ int j2me_render_is_afk_suspended(void) {
 typedef struct { int mode; uint64_t now_ns; } TreoModeChange;
 static void treo_render_mode_visitor(MiniJVM *vm, void *arg) {
     const TreoModeChange *change = arg;
-    jarbox_treo_render_mode_set(&vm->session->treo_state, change->mode, change->now_ns);
-    treo_render_owner_mode_set(jarbox_native_heap_key_for_vm(vm), change->mode);
+    pthread_mutex_lock(&g_treo_transition_lock);
+    treo_apply_mode_locked(vm, change->mode, change->now_ns);
+    pthread_mutex_unlock(&g_treo_transition_lock);
+    j2me_display_wake_for_vm(vm);
 }
 void treo_render_set_afk_mode(int mode) {
-    const int previous = atomic_exchange(&treo_afk_mode, mode);
     const TreoModeChange change = {mode, treo_afk_now_ns()};
-    jvm_bridge_visit_running_vm(treo_render_mode_visitor, (void *)&change);
-    // Preserve existing Smart GC dispatch until all callers are per-VM.
-    treo_gc_set_afk_mode_for_current(mode);
-    if (mode && !previous) stop_afk_haptics();
-    j2me_display_wake();
-}
-/* During single-VM operation preserve all legacy UI/haptics/Display wake
- * behavior. In a future multi-slot runtime, background A must update only
- * its own JVM and 2D render handles, never B's global GPU compatibility
- * mode or physical input destination. This is NOT a concurrency unlock. */
-int treo_render_set_afk_mode_for_token(uint64_t token, int mode) {
-    if (!token || !jvm_bridge_session_is_active_for_token(token)) return 0;
-    if (jvm_bridge_active_session_count() == 1) {
-        if (jvm_bridge_session_token() != token) return 0;
-        treo_render_set_afk_mode(mode);
-        return 1;
+    const uint64_t token = jvm_bridge_session_token();
+    if (!jvm_bridge_visit_running_vm_for_token(token, treo_render_mode_visitor,
+                                                 (void *)&change) &&
+        jvm_bridge_supported_concurrent_sessions() == 1) {
+        // Startup/teardown compatibility mirror, never another VM's mode.
+        atomic_store_explicit(&treo_afk_mode, mode, memory_order_release);
     }
+}
+int treo_render_set_afk_mode_for_token(uint64_t token, int mode) {
     const TreoModeChange change = {mode, treo_afk_now_ns()};
     return jvm_bridge_visit_running_vm_for_token(token, treo_render_mode_visitor,
                                                  (void *)&change);
+}
+
+/* Automatic parking is one serialized owner transition, not four
+ * separately leased Swift calls. The profile is a preference, never
+ * permission to skip an unverified Canvas. No per-tab timer is needed. */
+typedef struct { int compatible_only, mode, entering; } TreoParkTransition;
+static void treo_park_transition_visitor(MiniJVM *vm, void *arg) {
+    TreoParkTransition *change = arg;
+    JarBoxTreoState *state = &vm->session->treo_state;
+    pthread_mutex_lock(&g_treo_transition_lock);
+    const int mode = change->entering
+        ? jarbox_treo_park_mode(state, change->compatible_only) : 0;
+    jarbox_treo_guard_auto_set(state, mode == 8);
+    jarbox_treo_smart_set(state, mode == 8);
+    treo_display_wait_set_for_vm(vm, 0);
+    treo_apply_mode_locked(vm, mode, treo_afk_now_ns());
+    if (mode == 8) treo_display_wait_set_for_vm(vm, 1);
+    change->mode = mode;
+    pthread_mutex_unlock(&g_treo_transition_lock);
+}
+int treo_park_begin_for_token(uint64_t token, int compatible_only) {
+    TreoParkTransition change = {compatible_only, 0, 1};
+    if (!jvm_bridge_visit_running_vm_for_token(token, treo_park_transition_visitor, &change))
+        return 0;
+    return change.mode;
+}
+int treo_park_end_for_token(uint64_t token) {
+    TreoParkTransition change = {0, 0, 0};
+    return jvm_bridge_visit_running_vm_for_token(token, treo_park_transition_visitor, &change);
+}
+static void treo_read_mode_visitor(MiniJVM *vm, void *arg) {
+    *(int *)arg = jarbox_treo_mode_get(&vm->session->treo_state);
+}
+int treo_mode_for_token(uint64_t token) {
+    int mode = -1;
+    (void)jvm_bridge_visit_running_vm_for_token(token, treo_read_mode_visitor, &mode);
+    return mode;
 }
 void j2me_render_set_afk_suspended(int enabled) { treo_render_set_afk_mode(enabled ? 1 : 0); }
 
