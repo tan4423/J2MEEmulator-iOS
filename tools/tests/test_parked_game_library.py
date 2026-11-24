@@ -151,11 +151,11 @@ class ParkedGameLibraryTest(unittest.TestCase):
         self.assertNotIn('jvm_bridge_try_begin_session()', self.library)
 
     def test_sleep_overlay_timer_lifecycle(self):
-        self.assertIn('Timer.scheduledTimer(withTimeInterval: 30.0', self.library)
-        self.assertIn('timer.tolerance = 6.0', self.library)
+        self.assertIn('Timer(timeInterval: 1.0, repeats: true)', self.library)
+        self.assertIn('timer.tolerance = 0.05', self.library)
         self.assertIn('jarBoxSleepTimer?.invalidate()', self.library)
         self.assertIn('guard jarBoxSleepCover != nil else { return }', self.library)
-        self.assertIn('guard active, springboardVisible else { return }', self.library)
+        self.assertIn('if !active || !springboardVisible { hideJarBoxSleepInformation() }', self.library)
         self.assertIn('setJarBoxSleepSampling(false)', self.library)
         self.assertIn('setJarBoxSleepSampling(true)', self.library)
         self.assertIn('hideJarBoxSleepScreen()\n        libraryCPUEntry = nil', self.library)
@@ -174,16 +174,40 @@ class ParkedGameLibraryTest(unittest.TestCase):
         sampler = self.library.split('private func sampleJarBoxSleepCPU()', 1)[1].split(
             'private func jarBoxSleepDurationText(', 1)[0]
         self.assertNotIn('treo_process_cpu_seconds()', hud)
-        self.assertIn('guard elapsed >= 15 else { return }', sampler)
+        self.assertIn('guard elapsed >= 0.9 else { return }', sampler)
         self.assertIn('self.sampleJarBoxSleepCPU()', self.library)
         self.assertIn('"CPU tổng: đang đo"', self.library)
         self.assertIn('"Nhiệt độ: " + thermal', hud)
         self.assertIn('"Thời gian: " + jarBoxSleepDurationText(elapsed)', hud)
         self.assertNotIn('runningText', hud)
+        self.assertNotIn('Chế độ pin yếu', hud)
         self.assertNotIn('Thời gian phủ', hud)
         self.assertNotIn('CPU là tổng tiến trình', hud)
         self.assertIn('info.textAlignment = .left', self.library)
         self.assertIn('info.centerXAnchor.constraint(equalTo: cover.centerXAnchor)', self.library)
+
+    def test_sleep_hud_is_on_demand_and_expires(self):
+        cover = self.library.split('private func showJarBoxSleepScreen()', 1)[1].split(
+            'private func hideJarBoxSleepScreen()', 1)[0]
+        show = self.library.split('private func showJarBoxSleepInformation()', 1)[1].split(
+            'private func hideJarBoxSleepInformation()', 1)[0]
+        hide = self.library.split('private func hideJarBoxSleepInformation()', 1)[1].split(
+            'private func sampleJarBoxSleepCPU()', 1)[0]
+        self.assertIn('UIStackView(arrangedSubviews: [wake, information])', cover)
+        self.assertIn('jarbox-global-sleep-info', cover)
+        self.assertIn('info.isHidden = true', cover)
+        self.assertNotIn('Chạm nút giữa', cover)
+        self.assertNotIn('Timer(', cover)
+        self.assertNotIn('treo_process_cpu_seconds()', cover)
+        self.assertNotIn('isBatteryMonitoringEnabled', cover)
+        self.assertIn('jarBoxSleepHUDDeadline = now + 15', show)
+        self.assertIn('systemUptime < deadline', show)
+        self.assertIn('self.hideJarBoxSleepInformation()', show)
+        self.assertIn('jarBoxSleepTimer?.invalidate()', hide)
+        self.assertIn('jarBoxSleepHUD?.isHidden = true', hide)
+        self.assertIn('jarBoxSleepHUDDeadline = nil', hide)
+        self.assertIn('jarBoxSleepCPUSample = nil', hide)
+        self.assertIn('UIDevice.current.isBatteryMonitoringEnabled = old', hide)
 
     def test_does_not_claim_ios_background_execution(self):
         self.assertIn('does not grant iOS background execution', self.game)
