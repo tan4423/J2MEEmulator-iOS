@@ -477,3 +477,22 @@ now per heap generation; cleanup after worker drain removes only that key.
 The M3G engine's EGL context, interface list and pixel workspace are still
 shared. OpenGL native handles/GL thread semantics and all device rendering
 paths remain unverified. These source changes do not enable concurrency.
+
+## 2026-11-24: Readiness gate coverage for Treo and M3G teardown
+
+At base commit `ef81be891d7cfa932b21cf3ca669dc89ff0a7180`, all seven owned-component
+source predicates matched, but five previously reported blockers remained.
+The bridge also calls the process-wide `j2me_m3g_cleanup()` during slot
+destruction; M3G interface and pixel workspace ownership remains unresolved.
+Report this separately as `3d_global_m3g_cleanup`. The new
+`source_prerequisites_met` field requires every reported ownership predicate
+(including Treo/Smart GC) and no detected blocker. It is a source-only
+prerequisite, not evidence of actual concurrent JVM safety.
+
+Validation: existing audit predicates were evaluated against the SHA-pinned
+GitHub source through the connector. The new synthetic-fixture regression
+passed locally (1 test); both modified Python files passed py_compile.
+Original Python blobs and the tested replacement blobs were hash-checked.
+A complete repository checkout, full Python suite, native iOS build,
+Codemagic and device validation were not available in this environment.
+The native runtime and the single-JVM admission cap are unchanged.

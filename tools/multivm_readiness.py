@@ -105,6 +105,10 @@ def audit(root=ROOT):
             "s64 g_native_extra_heap = 0" in src["gc"],
         "gc_single_smart_treo_scheduler":
             "static int treo_gc_smart_enabled, treo_gc_smart_fallback" in src["gc"],
+        # The legacy M3G cleanup destroys process-wide engine resources.
+        # Stopping a 2D session must not tear down another session's 3D state.
+        "3d_global_m3g_cleanup":
+            "j2me_m3g_cleanup();" in src["3d"],
         "3d_single_supersampling":
             "int g_render_3d_scale = 1" in src["3d"],
     }
@@ -117,10 +121,17 @@ def audit(root=ROOT):
     # thread safety or device behavior. All known owned components must pass,
     # all shared-state blockers must disappear, and the single-VM guard must
     # remain until an independent runtime/device validation changes this gate.
-    ready = (lifecycle and input_owned and audio_owned and ui_owned
-             and native_heap_owned and runtime_generation_owned
-             and not any(blockers.values())
-             and not one_vm_gate)
+    owned = {
+        "vm_lifecycle": bool(lifecycle),
+        "input_queue_display_wait": bool(input_owned),
+        "wav_midi_players": bool(audio_owned),
+        "lcd_ui_screen_buffers": bool(ui_owned),
+        "gc_native_graphics_accounting": bool(native_heap_owned),
+        "java_runtime_generation": bool(runtime_generation_owned),
+        "treo_gc_afk_state": bool(treo_gc_owned),
+    }
+    source_prerequisites_met = all(owned.values()) and not any(blockers.values())
+    ready = source_prerequisites_met and not one_vm_gate
     # No automated source scan proves safe concurrent execution on iOS.
     # Require a separately reviewed runtime/device validation before enabling.
     runtime_device_validated = False
@@ -131,15 +142,8 @@ def audit(root=ROOT):
         "enforced_single_active_jvm": bool(one_vm_gate),
         "verified_source_structure_only": True,
         "runtime_device_concurrency_validated": runtime_device_validated,
-        "owned_native_components": {
-            "vm_lifecycle": bool(lifecycle),
-            "input_queue_display_wait": bool(input_owned),
-            "wav_midi_players": bool(audio_owned),
-            "lcd_ui_screen_buffers": bool(ui_owned),
-            "gc_native_graphics_accounting": bool(native_heap_owned),
-            "java_runtime_generation": bool(runtime_generation_owned),
-            "treo_gc_afk_state": bool(treo_gc_owned),
-        },
+        "owned_native_components": owned,
+        "source_prerequisites_met": source_prerequisites_met,
         "unisolated_native_blockers": {
             name: found for name, found in sorted(blockers.items()) if found
         },
@@ -150,6 +154,7 @@ def audit(root=ROOT):
             "MIDP List icons and ordinary 2D Canvas/Image acquire paths now validate JVM generation; live handle address reuse after a zombie thread and VM pointer reuse still require lifetime binding.",
             "Smart GC/probe, NSO signature, Canvas auto-fallback and 2D AFK mode are per session; JAR diagnostic worker, Metal replay and process-level renderer configuration remain shared.",
             "Java thread roots snapshot native generation; nested Runtime frames share it. Render, LCDUI and Display Input reject stale runtime generations after pointer reuse.",
+            "M3G global engine cleanup remains a blocker independent of MascotCapsule generation ownership.",
             "Network, classloader, JIT, sockets, native image handles, and teardown still need device validation.",
             "Do not enable another JVM while there are unisolated native blockers.",
         ],
