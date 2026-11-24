@@ -99,7 +99,13 @@ class ParkedGameLibraryTest(unittest.TestCase):
 
     def test_library_shows_running_state_and_blocks_second_game(self):
         self.assertIn('weak var parkedGameController: GameViewController?', self.library)
-        self.assertIn('parked.ownsLiveGameSession()', self.library)
+        # Managed and legacy parked controllers share the retained list.
+        retained = self.library.split('private var retainedGames:', 1)[1].split(
+            'private func gameForTab(', 1)[0]
+        self.assertIn('return managedGames + [parked]', retained)
+        live = self.library.split('private var liveGames:', 1)[1].split(
+            '\n    }', 1)[0]
+        self.assertIn('retainedGames.filter { $0.ownsLiveGameSession() }', live)
         self.assertIn('showAnotherGameBlocked(app)', self.library)
         self.assertIn('lastManagedParkedGame = game', self.library)
         self.assertIn('let game = lastParkedGame', self.library)
@@ -145,7 +151,13 @@ class ParkedGameLibraryTest(unittest.TestCase):
         self.assertIn('treo_process_cpu_seconds()', self.library)
         self.assertIn('ProcessInfo.processInfo.thermalState', self.library)
         self.assertIn('UIDevice.current.batteryLevel', self.library)
-        self.assertIn('parked.ownsLiveGameSession()', self.library)
+        # The simplified HUD displays the native slot count, not game names.
+        hud = self.library.split('private func refreshJarBoxSleepHUD()', 1)[1].split(
+            'private func showJarBoxOverview()', 1)[0]
+        self.assertIn('"Tab đang chạy: " + String(jvm_bridge_active_session_count())', hud)
+        self.assertIn('String(jvm_bridge_supported_concurrent_sessions())', hud)
+        self.assertNotIn('ownsLiveGameSession()', hud)
+        self.assertNotIn('liveGames', hud)
         self.assertIn('jvm_bridge_session_is_active()', self.library)
         self.assertNotIn('treo_render_set_afk_mode(8)', self.library)
         self.assertNotIn('jvm_bridge_try_begin_session()', self.library)
