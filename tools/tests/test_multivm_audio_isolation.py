@@ -54,11 +54,11 @@ class MultiVMAudioIsolationTests(unittest.TestCase):
     def test_stop_only_owning_session(self):
         self.assertIn('void j2me_audio_stop_for_vm(MiniJVM *vm)', self.audio)
         self.assertIn('if (vm == NULL || [owner pointerValue] == vm)', self.audio)
-        self.assertIn('j2me_audio_stop_for_vm(g_bridge_vm.jvm)', self.bridge)
+        self.assertIn('j2me_audio_stop_for_vm(slot->jvm)', self.bridge)
         self.assertNotIn('j2me_audio_stop_all();', self.bridge)
-        self.assertIn('j2me_input_release_vm(g_bridge_vm.jvm)', self.bridge)
+        self.assertIn('j2me_input_release_vm(slot->jvm)', self.bridge)
         # Still prohibit a second Java VM until renderer/MIDP UI are isolated.
-        self.assertIn('atomic_compare_exchange_strong_explicit(&g_bridge_vm.active', self.bridge)
+        self.assertIn('bridge_reserve_slot_locked(', self.bridge)
 
 
 if __name__ == "__main__":

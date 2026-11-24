@@ -398,3 +398,15 @@ The system still runs only one actual `g_bridge_vm`; there is no second
 independent native executor or tab coordinator yet. **Do not change the
 1-JVM admission cap** until those two are implemented and exercised on
 iPhone. This commit alters no network protocol, game JAR or save data.
+
+## 2026-11-24: Native executor slot pool
+
+The singleton `g_bridge_vm` has been replaced by `g_bridge_slots`, an actual
+array of independent JVM pointer, token, phase and cancellation fields.
+Native init/run/destroy now take a claimed slot, not a global VM. A worker
+operation holds its slot until return; finish refuses a busy or live slot
+and also requires registry retirement. Stop, callback pin and STARTING
+polls select the exact token/VM. Admission still calls the public capacity
+function, currently 1. Shared diagnostic buffers, 3D cleanup, launch flags,
+legacy render side effects and the library coordinator remain blockers. The
+slot pool is not a claim of a working concurrent second MIDlet.

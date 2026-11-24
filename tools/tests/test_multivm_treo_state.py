@@ -124,7 +124,7 @@ class MultiVMTreoStateTest(unittest.TestCase):
         self.assertIn("pthread_mutex_lock(&g_bridge_lifecycle_lock);", bridge)
         self.assertIn("memory_order_acquire) == BRIDGE_RUNNING", bridge)
         self.assertIn("treo_gc_set_afk_mode_for_current(mode);", renderer)
-        self.assertIn("jarbox_treo_nso_profile_set(&g_bridge_vm.jvm->session->treo_state", bridge)
+        self.assertIn("jarbox_treo_nso_profile_set(&slot->jvm->session->treo_state", bridge)
         self.assertIn("jarbox_treo_nso_family_verified(&runtime->jvm->session->treo_state)", renderer)
         self.assertIn("jarbox_treo_mode_get(&runtime->jvm->session->treo_state)", renderer)
         self.assertIn("ninja_profile_for_runtime(runtime) && canvas", renderer)

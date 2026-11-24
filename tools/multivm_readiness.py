@@ -33,7 +33,9 @@ def audit(root=ROOT):
            for label, path in FILES.items()}
     lifecycle = ("typedef struct {" in src["lifecycle"]
                  and "JarBoxVMContext" in src["lifecycle"]
-                 and "g_bridge_vm.stop_requested" in src["lifecycle"]
+                 and "g_bridge_slots[JARBOX_REGISTRY_MAX_SLOTS]" in src["lifecycle"]
+                 and "bridge_claim_worker_locked" in src["lifecycle"]
+                 and "slot->stop_requested" in src["lifecycle"]
                  and "jvm_bridge_is_stop_requested_for_vm" in src["lifecycle"])
     input_owned = all(x in src["input"] for x in (
         "JarBoxInputRing ring;", "context_for_runtime(runtime)",
@@ -106,8 +108,10 @@ def audit(root=ROOT):
             "int g_render_3d_scale = 1" in src["3d"],
     }
     # This gate must stay on while the above shared mutable state exists.
-    one_vm_gate = ("atomic_compare_exchange_strong_explicit(&g_bridge_vm.active"
-                   in src["lifecycle"])
+    one_vm_gate = ("int jvm_bridge_supported_concurrent_sessions(void) {\n    return 1;"
+                   in src["lifecycle"]
+                   and "bridge_reserve_slot_locked(" in src["lifecycle"]
+                   and "(unsigned)jvm_bridge_supported_concurrent_sessions()" in src["lifecycle"])
     # A source-shape gate may only block unsafe concurrency; it cannot certify
     # thread safety or device behavior. All known owned components must pass,
     # all shared-state blockers must disappear, and the single-VM guard must

@@ -153,10 +153,10 @@ class MultiVMRenderCleanupTest(unittest.TestCase):
     def test_bridge_cleanup_sequence_and_scoped_stop_are_truthful(self):
         render = RENDER.read_text(encoding="utf-8")
         bridge = BRIDGE.read_text(encoding="utf-8")
-        start = bridge.index("void jvm_bridge_destroy(void)")
+        start = bridge.index("static void bridge_destroy_slot(JarBoxVMContext *slot)")
         body = bridge[start:]
         self.assertLess(body.index("jarbox_native_heap_key_for_vm(destroyed_owner)"),
-                        body.index("jvm_destroy(g_bridge_vm.jvm)"))
+                        body.index("jvm_destroy(slot->jvm)"))
         self.assertLess(body.index("j2me_render_cleanup_for_owner(destroyed_render_key)"),
                         body.index("jarbox_native_heap_unregister_vm(destroyed_owner)"))
         cleanup = render[render.index("void j2me_render_cleanup_for_owner("):]
