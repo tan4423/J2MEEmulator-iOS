@@ -660,48 +660,55 @@ class GameViewController: UIViewController {
     private func setupGameTabStrip() {
         gameTabScroll.translatesAutoresizingMaskIntoConstraints = false
         gameTabScroll.showsHorizontalScrollIndicator = false
+        gameTabScroll.isDirectionalLockEnabled = true
+        gameTabScroll.clipsToBounds = true
         gameTabScroll.backgroundColor = .black
         gameTabScroll.isHidden = true
         view.addSubview(gameTabScroll)
         tabActions.axis = .horizontal
-        tabActions.spacing = 4
+        tabActions.spacing = 8
         tabActions.translatesAutoresizingMaskIntoConstraints = false
         tabActions.isHidden = true
         view.addSubview(tabActions)
         for (button, symbol, label) in [
-            (tabAddButton, "plus", "Thêm tab"),
-            (tabRemoveButton, "minus", "Xóa tab hiện tại")
+            (tabRemoveButton, "minus", "Xóa tab hiện tại"),
+            (tabAddButton, "plus", "Thêm tab")
         ] {
             button.setImage(UIImage(systemName: symbol), for: .normal)
             button.tintColor = .white
             button.backgroundColor = UIColor(white: 0.15, alpha: 1)
             button.layer.cornerRadius = 7
             button.accessibilityLabel = label
-            button.widthAnchor.constraint(equalToConstant: 36).isActive = true
+            button.setPreferredSymbolConfiguration(
+                UIImage.SymbolConfiguration(pointSize: 16, weight: .medium), forImageIn: .normal)
+            button.widthAnchor.constraint(equalToConstant: 40).isActive = true
             tabActions.addArrangedSubview(button)
         }
         tabAddButton.addTarget(self, action: #selector(addTabBesideTapped), for: .touchUpInside)
         tabRemoveButton.addTarget(self, action: #selector(removeCurrentTabTapped), for: .touchUpInside)
         gameTabStack.axis = .horizontal
         gameTabStack.alignment = .fill
-        gameTabStack.spacing = 6
+        gameTabStack.spacing = 8
+        gameTabStack.distribution = .fill
         gameTabStack.translatesAutoresizingMaskIntoConstraints = false
         gameTabScroll.addSubview(gameTabStack)
-        let height = gameTabScroll.heightAnchor.constraint(equalToConstant: 4)
+        let height = gameTabScroll.heightAnchor.constraint(equalToConstant: 10)
         gameTabHeight = height
         NSLayoutConstraint.activate([
             height,
-            gameTabScroll.topAnchor.constraint(equalTo: backButton.bottomAnchor),
-            gameTabScroll.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 8),
-            gameTabScroll.trailingAnchor.constraint(equalTo: tabActions.leadingAnchor, constant: -12),
-            tabActions.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -8),
-            tabActions.topAnchor.constraint(equalTo: gameTabScroll.topAnchor, constant: 4),
-            tabActions.heightAnchor.constraint(equalToConstant: 36),
+            // Keep the fixed controls outside the scrolling strip. A real
+            // gutter and safe-area margins remain even on narrow phones.
+            gameTabScroll.topAnchor.constraint(equalTo: backButton.bottomAnchor, constant: 8),
+            gameTabScroll.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 12),
+            gameTabScroll.trailingAnchor.constraint(equalTo: tabActions.leadingAnchor, constant: -14),
+            tabActions.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -12),
+            tabActions.topAnchor.constraint(equalTo: gameTabScroll.topAnchor, constant: 5),
+            tabActions.heightAnchor.constraint(equalToConstant: 40),
             gameTabStack.leadingAnchor.constraint(equalTo: gameTabScroll.contentLayoutGuide.leadingAnchor),
             gameTabStack.trailingAnchor.constraint(equalTo: gameTabScroll.contentLayoutGuide.trailingAnchor),
-            gameTabStack.topAnchor.constraint(equalTo: gameTabScroll.contentLayoutGuide.topAnchor, constant: 4),
-            gameTabStack.bottomAnchor.constraint(equalTo: gameTabScroll.contentLayoutGuide.bottomAnchor),
-            gameTabStack.heightAnchor.constraint(equalTo: gameTabScroll.frameLayoutGuide.heightAnchor, constant: -4)
+            gameTabStack.topAnchor.constraint(equalTo: gameTabScroll.contentLayoutGuide.topAnchor, constant: 5),
+            gameTabStack.bottomAnchor.constraint(equalTo: gameTabScroll.contentLayoutGuide.bottomAnchor, constant: -5),
+            gameTabStack.heightAnchor.constraint(equalTo: gameTabScroll.frameLayoutGuide.heightAnchor, constant: -10)
         ])
     }
 
@@ -713,7 +720,7 @@ class GameViewController: UIViewController {
             child.removeFromSuperview()
         }
         let tabs = library.gameTabItems(for: self)
-        gameTabHeight?.constant = 40
+        gameTabHeight?.constant = 50
         gameTabScroll.isHidden = false
         tabActions.isHidden = false
         let ready = ownsLiveGameSession() && startupWatchdog == nil && !gameStopRequested
@@ -729,7 +736,8 @@ class GameViewController: UIViewController {
             button.setTitleColor(.white, for: .normal)
             button.titleLabel?.font = .systemFont(ofSize: 13, weight: selected ? .semibold : .regular)
             button.titleLabel?.lineBreakMode = .byTruncatingTail
-            button.contentEdgeInsets = UIEdgeInsets(top: 4, left: 12, bottom: 0, right: 12)
+            button.contentEdgeInsets = UIEdgeInsets(top: 4, left: 14, bottom: 0, right: 14)
+            button.setContentCompressionResistancePriority(.defaultHigh, for: .horizontal)
             if tab.running {
                 let dot = UIView()
                 dot.backgroundColor = .systemGreen
@@ -748,7 +756,10 @@ class GameViewController: UIViewController {
             button.layer.cornerRadius = 7
             button.accessibilityTraits = selected ? [.button, .selected] : .button
             button.accessibilityValue = selected ? "Đang chọn" : (tab.running ? "Đang chạy ẩn" : "Chưa mở")
-            button.widthAnchor.constraint(lessThanOrEqualToConstant: 160).isActive = true
+            NSLayoutConstraint.activate([
+                button.widthAnchor.constraint(greaterThanOrEqualToConstant: 72),
+                button.widthAnchor.constraint(lessThanOrEqualToConstant: 160)
+            ])
             button.addAction(UIAction { [weak self] _ in
                 self?.switchGameTab(to: tab.id)
             }, for: .touchUpInside)
@@ -861,11 +872,13 @@ class GameViewController: UIViewController {
 
         // Browser-style controls: minimize preserves the session; close stops it.
         for (button, symbol, label) in [
-            (backButton, "minus", "Về thư viện, giữ game chạy"),
-            (closeTabButton, "xmark", "Đóng tab")
+            (backButton, "arrow.down.right.and.arrow.up.left", "Ẩn, giữ game chạy"),
+            (closeTabButton, "stop.fill", "Dừng tab")
         ] {
             button.setImage(UIImage(systemName: symbol), for: .normal)
-            button.tintColor = .white
+            button.tintColor = button === closeTabButton ? .systemRed : .white
+            button.setPreferredSymbolConfiguration(
+                UIImage.SymbolConfiguration(pointSize: 16, weight: .medium), forImageIn: .normal)
             button.accessibilityLabel = label
             button.backgroundColor = UIColor(white: 0.15, alpha: 0.85)
             button.layer.cornerRadius = 10
@@ -876,10 +889,10 @@ class GameViewController: UIViewController {
         closeTabButton.addTarget(self, action: #selector(closeTabTapped), for: .touchUpInside)
         NSLayoutConstraint.activate([
             backButton.widthAnchor.constraint(equalToConstant: 44),
-            closeTabButton.leadingAnchor.constraint(equalTo: backButton.trailingAnchor, constant: 6),
+            closeTabButton.leadingAnchor.constraint(equalTo: backButton.trailingAnchor, constant: 10),
             closeTabButton.topAnchor.constraint(equalTo: backButton.topAnchor),
             closeTabButton.widthAnchor.constraint(equalToConstant: 44),
-            closeTabButton.heightAnchor.constraint(equalToConstant: 36)
+            closeTabButton.heightAnchor.constraint(equalToConstant: 40)
         ])
 
         let canvasRatio: CGFloat = CGFloat(emulatorView.canvasWidth) / CGFloat(emulatorView.canvasHeight)
@@ -912,14 +925,14 @@ class GameViewController: UIViewController {
             height.priority = .defaultHigh
             portraitControlsHeight = height
             NSLayoutConstraint.activate([
-                backButton.topAnchor.constraint(equalTo: safe.topAnchor, constant: 4),
-                backButton.leadingAnchor.constraint(equalTo: safe.leadingAnchor, constant: 8),
-                backButton.heightAnchor.constraint(equalToConstant: 36),
+                backButton.topAnchor.constraint(equalTo: safe.topAnchor, constant: 8),
+                backButton.leadingAnchor.constraint(equalTo: safe.leadingAnchor, constant: 12),
+                backButton.heightAnchor.constraint(equalToConstant: 40),
                 screenMenu.topAnchor.constraint(equalTo: backButton.topAnchor),
-                screenMenu.trailingAnchor.constraint(equalTo: safe.trailingAnchor, constant: -8),
+                screenMenu.trailingAnchor.constraint(equalTo: safe.trailingAnchor, constant: -12),
                 screenMenu.widthAnchor.constraint(equalToConstant: 44),
-                screenMenu.heightAnchor.constraint(equalToConstant: 36),
-                emulatorView.topAnchor.constraint(equalTo: gameTabScroll.bottomAnchor, constant: 4),
+                screenMenu.heightAnchor.constraint(equalToConstant: 40),
+                emulatorView.topAnchor.constraint(equalTo: gameTabScroll.bottomAnchor, constant: 8),
                 emulatorView.leadingAnchor.constraint(equalTo: safe.leadingAnchor),
                 emulatorView.trailingAnchor.constraint(equalTo: safe.trailingAnchor),
                 emulatorView.bottomAnchor.constraint(equalTo: panel.topAnchor),
@@ -954,7 +967,7 @@ class GameViewController: UIViewController {
             }
             for overlay in [formView as UIView, listView as UIView] {
                 NSLayoutConstraint.activate([
-                    overlay.topAnchor.constraint(equalTo: gameTabScroll.bottomAnchor),
+                    overlay.topAnchor.constraint(equalTo: gameTabScroll.bottomAnchor, constant: 8),
                     overlay.leadingAnchor.constraint(equalTo: view.leadingAnchor),
                     overlay.trailingAnchor.constraint(equalTo: view.trailingAnchor),
                     overlay.bottomAnchor.constraint(equalTo: view.bottomAnchor)
@@ -1018,9 +1031,9 @@ class GameViewController: UIViewController {
             listView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
 
             // Back button: top-left
-            backButton.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 4),
-            backButton.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 4),
-            backButton.heightAnchor.constraint(equalToConstant: 36),
+            backButton.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 8),
+            backButton.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 12),
+            backButton.heightAnchor.constraint(equalToConstant: 40),
         ])
 
         // Game screen rounded corners + border
@@ -3878,7 +3891,7 @@ class GameViewController: UIViewController {
         startupWatchdog = nil
         if !gameStopRequested {
             backButton.isEnabled = true
-            closeTabButton.accessibilityLabel = "Đóng tab"
+            closeTabButton.accessibilityLabel = "Dừng tab"
         }
         gameTabStateDidChange()
     }

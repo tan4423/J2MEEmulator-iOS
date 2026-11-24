@@ -32,7 +32,7 @@ class GameStartStopUITest(unittest.TestCase):
         finish = self.src.split("private func finishStartupWatchdog() {", 1)[1].split("\n    }", 1)[0]
         self.assertIn('if !gameStopRequested {', finish)
         self.assertIn('backButton.isEnabled = true', finish)
-        self.assertIn('closeTabButton.accessibilityLabel = "Đóng tab"', finish)
+        self.assertIn('closeTabButton.accessibilityLabel = "Dừng tab"', finish)
 
     def test_worker_checks_cancel_before_storage_and_init(self):
         start = self.src.index('defer { _ = jvm_bridge_finish_session_for_token(token) }')

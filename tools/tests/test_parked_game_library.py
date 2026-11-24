@@ -88,7 +88,7 @@ class ParkedGameLibraryTest(unittest.TestCase):
         self.assertNotIn('UIAction(title: "Treo tiết kiệm', self.game)
         self.assertNotIn('UIAction(title: "Treo tương thích', self.game)
         self.assertNotIn('UIAction(title: "Về thư viện · tự động Treo"', self.game)
-        self.assertIn('(backButton, "minus", "Về thư viện, giữ game chạy")', self.game)
+        self.assertIn('(backButton, "arrow.down.right.and.arrow.up.left", "Ẩn, giữ game chạy")', self.game)
         self.assertIn('requestGameStop(reason: "close_tab")', self.game)
         self.assertIn('requestGameStop(reason: "library_stop")', self.game)
         stop = re.search(r'func stopParkedGame\(\)\s*\{(.*?)\n    \}',
@@ -133,7 +133,7 @@ class ParkedGameLibraryTest(unittest.TestCase):
         self.assertIn('return action("Dừng", snapshots)', self.library)
         self.assertIn('game.parkedSessionToken == token', self.library)
         self.assertNotIn('UIAction(title: "Thoát game"', self.game)
-        self.assertIn('(closeTabButton, "xmark", "Đóng tab")', self.game)
+        self.assertIn('(closeTabButton, "stop.fill", "Dừng tab")', self.game)
         self.assertIn('if hasNativeGame(for: destURL.path)', self.library)
         self.assertIn('UIAction(title: "Xử lý phiên kẹt"', self.library)
         self.assertIn('attributes: .destructive', self.library)
