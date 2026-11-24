@@ -377,8 +377,12 @@ s32 jvm_init(MiniJVM *jvm, c8 *p_bootclasspath, c8 *p_classpath) {
     runtime_destroy(runtime);
     runtime = NULL;
 
-    //启动垃圾回收
-    gc_resume(jvm->collector);
+    // Start the collector only after bootstrap succeeds. Creation failure
+    // must fail launch instead of leaving cleanup waiting for a nonexistent thread.
+    if (gc_start(jvm->collector) != 0) {
+        jvm->collector->exit_flag = 1;
+        return -1;
+    }
 
 #if _JVM_DEBUG_LOG_LEVEL > 0
     jvm_printf("[INFO]jvm inited\n");

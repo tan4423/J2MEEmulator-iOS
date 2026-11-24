@@ -84,21 +84,43 @@ s32 gc_create(MiniJVM *jvm) {
 
     collector->lastgc = currentTimeMillis();
 
+    return 0;
+}
+
+s32 gc_start(GcCollector *collector) {
+    // Only the bootstrap owner starts this thread, once the Java core is ready.
+    if (collector->garbage_thread_started ||
+        gc_thread_status(collector) >= GARBAGE_THREAD_STOP) return -1;
+    gc_resume(collector);
     s32 rc = thrd_create(&collector->garbage_thread, _gc_thread_run, collector);
     if (rc != thrd_success) {
         jvm_printf("ERROR: garbage thread can't create is %d\n", rc);
+        __atomic_store_n(&collector->_garbage_thread_status, GARBAGE_THREAD_DEAD, __ATOMIC_RELEASE);
+        return -1;
     }
+    collector->garbage_thread_started = 1;
     return 0;
 }
 
 void gc_destroy(MiniJVM *jvm) {
     GcCollector *collector = jvm->collector;
-    gc_stop(collector);
-    vm_share_lock(jvm);
-    while (gc_thread_status(collector) != GARBAGE_THREAD_DEAD) {
-        vm_share_timedwait(jvm, 100);
+    if (collector->garbage_thread_started) {
+        gc_stop(collector);
+        // Join without holding the VM-share lock; the collector may need it
+        // to leave an interrupted stop-the-world cycle.
+        if (thrd_join(collector->garbage_thread, NULL) != thrd_success) {
+            jvm_printf("[WARN] GC join failed; waiting for final heap access\n");
+            vm_share_lock(jvm);
+            while (gc_thread_status(collector) != GARBAGE_THREAD_DEAD) {
+                vm_share_timedwait(jvm, 100);
+            }
+            vm_share_unlock(jvm);
+        }
+    } else {
+        // Bootstrap failed or was cancelled before a collector was started.
+        // No worker can access this heap, so do not wait for a DEAD signal.
+        __atomic_store_n(&collector->_garbage_thread_status, GARBAGE_THREAD_DEAD, __ATOMIC_RELEASE);
     }
-    vm_share_unlock(jvm);
     //
     _garbage_clear(collector);
     //

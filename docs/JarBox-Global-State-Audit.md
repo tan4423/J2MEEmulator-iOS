@@ -776,3 +776,26 @@ points and recovery gating failed on the old connector source and passed
 on the replacement. The regression file was hash-matched to the host
 test. UIKit presentation, full suite, Xcode/Codemagic and actual iPhone
 latency/data safety require device testing. Admission remains one JVM.
+
+## 2026-11-24: Start GC only after bootstrap and join the collector before heap cleanup
+
+The old gc_create returned success even if thrd_create failed, then
+gc_destroy could wait forever for a DEAD signal from a nonexistent
+thread. Split collector resource initialization from worker startup.
+Start the worker once after Java bootstrap; propagate creation failure
+to the existing launch-failure path and suppress normal shutdown hooks
+for that failure. An unstarted collector is cleaned without waiting for
+a worker. A started collector is joined without holding the VM-share
+mutex before heap cleanup; on join error retain the existing final
+DEAD-access barrier. This removes the initial PAUSE sleep for successful
+startup. No admission, Treo cadence, storage or network changes.
+
+Validation: host unittest ran two tests successfully against a fixture
+containing the exact replacement gc_start/gc_destroy excerpt and a
+minimal bootstrap source fixture. The full SHA-pinned source ordering
+was also checked through the connector (baseline rejected, replacement
+accepted). Clang ASan+UBSan passed 50 runs of the same harness, each
+with 100 real pthread joins, 100 injected create failures and 100
+unstarted collector destructions. Collection, heap clearing and VM
+locks are mocked; join-error fallback, full app and device tests remain
+unverified. No concurrency increase.

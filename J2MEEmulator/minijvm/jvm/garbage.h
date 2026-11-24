@@ -35,6 +35,7 @@ struct _GcCollectorType {
 
     //
     thrd_t garbage_thread;// Garbage collection thread
+    int garbage_thread_started; // bootstrap owner only; join exactly once
     Hashtable *objs_2_count;
 
     spinlock_t lock;
@@ -73,6 +74,7 @@ static inline void gc_request_thread_status(GcCollector *collector, u8 requested
 // API
 
 s32 gc_create(MiniJVM *jvm);
+s32 gc_start(GcCollector *collector);
 
 void gc_destroy(MiniJVM *jvm);
 
