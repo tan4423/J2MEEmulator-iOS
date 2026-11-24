@@ -598,18 +598,28 @@ int jvm_bridge_interrupt_active_threads_for_token(uint64_t token) {
     if (!token) return 0;
     pthread_mutex_lock(&g_bridge_lifecycle_lock);
     JarBoxVMContext *slot = bridge_find_slot_locked(token);
-    int interrupted = 0;
+    MiniJVM *owner = NULL;
+    JarBoxSession *held = NULL;
     if (slot && atomic_load_explicit(&slot->stop_requested, memory_order_acquire) &&
-        atomic_load_explicit(&slot->phase, memory_order_acquire) == BRIDGE_RUNNING &&
-        slot->jvm) {
-        thread_stop_all(slot->jvm);
-        interrupted = 1;
+        atomic_load_explicit(&slot->phase, memory_order_acquire) == BRIDGE_RUNNING) {
+        MiniJVM *vm = atomic_load_explicit(&slot->jvm, memory_order_acquire);
+        // A requested stop rejects ordinary registry visitors, but this
+        // exact RUNNING owner may still need an interrupt. Teardown closes
+        // the heap lease gate under the same lifecycle lock.
+        if (vm && jarbox_session_reserve_callback(vm->session)) {
+            owner = vm;
+            held = vm->session;
+        }
     }
     pthread_mutex_unlock(&g_bridge_lifecycle_lock);
-    if (interrupted)
-        printf("[JarBoxVM][Lifecycle] stop=escalated_java_threads token=%llu\n",
-               (unsigned long long)token);
-    return interrupted;
+    if (!owner) return 0;
+    // Java monitor acquisition can block. Do not hold the process-wide
+    // lifecycle lock; jvm_destroy must wait for this heap-access lease.
+    thread_stop_all(owner);
+    jarbox_session_callback_done(held);
+    printf("[JarBoxVM][Lifecycle] stop=escalated_java_threads token=%llu\n",
+           (unsigned long long)token);
+    return 1;
 }
 int jvm_bridge_interrupt_active_threads(void) {
     return jvm_bridge_interrupt_active_threads_for_token(jvm_bridge_session_token());

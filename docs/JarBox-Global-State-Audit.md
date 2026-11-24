@@ -578,3 +578,27 @@ passed 50 executions under Clang ASan+UBSan, each exercising 100
 park/resume transitions and independent clone/restart state. These are
 header-policy tests, not iOS rendering or real JVM concurrency evidence.
 Full checkout, native build and iPhone validation remain outstanding.
+
+## 2026-11-24: Escalated Stop holds a heap lease, not the lifecycle mutex
+
+The stop watchdog previously called thread_stop_all under the global bridge
+lifecycle mutex. Java monitor acquisition can block there, preventing other
+sessions from making lifecycle progress. Resolve the exact RUNNING,
+stop-requested owner under that mutex and reserve its session callback
+lease before unlocking. A stop request denies ordinary registry visitors,
+but the targeted escalation may acquire this lease until actual cleanup
+closes the gate. Perform thread_stop_all outside the global mutex, then
+release the heap lease. The destruction path must still drain all leases.
+No change to admission or cooperative stop policy; the internal Java
+monitor/thread-list lock order remains a separate runtime audit item.
+
+Validation: compiled the exact original and replacement function excerpts
+with SHA-verified production JarBoxSession/TreoState headers and a mock
+VM/monitor boundary. The original failed the lifecycle-mutex trylock
+assertion; both new regressions passed after replacement. The escalation
+harness passed 50 ASan+UBSan executions of 100 modeled stop/cleanup cases
+each, checking stale and non-running tokens, closed gates, the live lease
+during cleanup, lease release and unchanged session B. The model simulates
+cleanup after unlock; it does not run real Java monitors or two miniJVMs.
+Full checkout, full unit suite, TSan, Xcode/Codemagic and device tests
+remain outstanding.
