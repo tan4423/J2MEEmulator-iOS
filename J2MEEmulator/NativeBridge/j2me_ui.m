@@ -236,7 +236,13 @@ static int ui_register_vm(MiniJVM *vm) {
     if (!vm) return 0;
     pthread_once(&g_ui_contexts_once, init_ui_contexts);
     pthread_mutex_lock(&g_ui_contexts_lock);
+    const uint64_t key = jarbox_native_heap_key_for_vm(vm);
     int index = ui_slot_for_vm(vm);
+    if (!key || (index >= 0 && key != atomic_load_explicit(
+            &g_ui_contexts[index].heap_key, memory_order_acquire))) {
+        pthread_mutex_unlock(&g_ui_contexts_lock);
+        return 0;
+    }
     if (index < 0) {
         for (int i = 0; i < JARBOX_UI_CONTEXT_CAPACITY; i++) {
             if (!atomic_load_explicit(&g_ui_contexts[i].owner, memory_order_acquire)) {
@@ -270,8 +276,6 @@ static int ui_register_vm(MiniJVM *vm) {
                 [objects->choices removeAllObjects];
                 [objects->icons removeAllObjects];
                 [objects->pendingText removeAllObjects];
-                const uint64_t key = jarbox_native_heap_key_for_vm(vm);
-                if (!key) { index = -1; break; }
                 // Capture callbacks before publishing this generation. A
                 // later GameVC can update the defaults without changing A.
                 ctx->ui_callback = g_ui_callback;
@@ -323,9 +327,17 @@ void j2me_ui_park_vm(MiniJVM *vm) {
     pthread_mutex_unlock(&g_ui_contexts_lock);
 }
 
-void j2me_ui_release_vm(MiniJVM *vm) {
+void j2me_ui_release_for_owner(uint64_t owner_key) {
+    if (!owner_key) return;
     pthread_mutex_lock(&g_ui_contexts_lock);
-    int index = ui_slot_for_vm(vm);
+    int index = -1;
+    for (int i = 0; i < JARBOX_UI_CONTEXT_CAPACITY; ++i) {
+        if (owner_key == atomic_load_explicit(&g_ui_contexts[i].heap_key,
+                                             memory_order_acquire)) {
+            index = i;
+            break;
+        }
+    }
     if (index >= 0) {
         JarBoxUIScreenContext *ctx = &g_ui_contexts[index];
         if (atomic_load_explicit(&g_ui_focused_index, memory_order_acquire) == index)
@@ -337,6 +349,11 @@ void j2me_ui_release_vm(MiniJVM *vm) {
         atomic_store_explicit(&ctx->last_notice, 0, memory_order_release);
     }
     pthread_mutex_unlock(&g_ui_contexts_lock);
+}
+
+// Live-owner compatibility only. Bridge teardown captures the key first.
+void j2me_ui_release_vm(MiniJVM *vm) {
+    j2me_ui_release_for_owner(jarbox_native_heap_key_for_vm(vm));
 }
 
 // State-compatible aliases preserve the existing Java serialization

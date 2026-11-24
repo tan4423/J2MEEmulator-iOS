@@ -427,9 +427,12 @@ int jarbox_native_heap_register_vm(MiniJVM *jvm) {
     spin_lock(&g_native_heap_lock);
     int acquired = 0;
     for (int i = 0; i < JARBOX_NATIVE_HEAP_SLOTS; ++i) {
-        if (g_native_heaps[i].owner == jvm) { acquired = 1; break; }
+        if (g_native_heaps[i].owner == jvm) {
+            spin_unlock(&g_native_heap_lock);
+            return 0;
+        }
     }
-    if (!acquired) for (int i = 0; i < JARBOX_NATIVE_HEAP_SLOTS; ++i) {
+    for (int i = 0; i < JARBOX_NATIVE_HEAP_SLOTS; ++i) {
         JarBoxNativeHeapSlot *slot = &g_native_heaps[i];
         if (slot->owner) continue;
         slot->owner = jvm;
@@ -476,6 +479,19 @@ s64 jarbox_native_heap_for_vm(MiniJVM *jvm) {
     spin_unlock(&g_native_heap_lock);
     return result;
 }
+// A late cleanup must not remove a new JVM at a recycled address.
+void jarbox_native_heap_unregister_key(uint64_t key) {
+    unsigned index = (unsigned)(key & 0xffU);
+    if (!index || index > JARBOX_NATIVE_HEAP_SLOTS) return;
+    spin_lock(&g_native_heap_lock);
+    JarBoxNativeHeapSlot *slot = &g_native_heaps[index - 1];
+    if (slot->owner && slot->key == key) {
+        slot->owner = NULL; slot->key = 0; slot->bytes = 0;
+    }
+    spin_unlock(&g_native_heap_lock);
+}
+
+// Legacy live-owner API only; teardown must use the captured generation.
 void jarbox_native_heap_unregister_vm(MiniJVM *jvm) {
     spin_lock(&g_native_heap_lock);
     for (int i = 0; i < JARBOX_NATIVE_HEAP_SLOTS; ++i) {

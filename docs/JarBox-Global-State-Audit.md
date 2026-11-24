@@ -1286,3 +1286,27 @@ and pthread lock, passed 10,000 mixed-generation cycles and 100,000
 concurrent foreign publications with ASan+UBSan enabled. Repository
 test extracts the source bodies; full suite, Objective-C integration,
 actual memory savings and device testing not performed.
+
+## Pre-bootstrap generation reservation and key-only native retirement
+
+A MiniJVM address may be recycled between jvm_destroy and native
+cleanup. Previously ledger registration accepted an already registered
+address as success. Require a fresh reservation before jvm_init (and
+before GC/Java Runtime creation), reject still-reserved addresses, and
+store its generation in the launch slot. A reservation failure before
+bootstrap releases only the newly created session and allocation.
+All initialized startup rollback paths retain the ledger until heap
+destruction returns. Normal cleanup retires LCDUI and the native heap
+ledger using the saved key, never a freed JVM address. The ledger
+reservation remains until owner-specific graphics cleanup completes.
+Legacy pointer APIs remain for live-owner compatibility only.
+This closes the identified ledger registration/retirement alias; other
+raw-pointer APIs and UIKit screen mutex lifetime need separate audit.
+
+Validation: Linux clang C11 harness with the same register, key lookup,
+accounting and key retirement bodies, modeled MiniJVM and pthread
+mutex, passed 10,000 address reuse cycles and 100,000 stale concurrent
+retire/account attempts under ASan+UBSan. Updated repository ledger
+and startup/renderer/LCDUI source regressions. Not a real JVM or UIKit
+test. Full repository suite, iOS compilation and device test not run.
+Cap remains one; 3D exclusive policy unchanged.

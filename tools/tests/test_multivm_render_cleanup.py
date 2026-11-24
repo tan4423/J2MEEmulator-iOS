@@ -155,10 +155,10 @@ class MultiVMRenderCleanupTest(unittest.TestCase):
         bridge = BRIDGE.read_text(encoding="utf-8")
         start = bridge.index("static void bridge_destroy_slot(JarBoxVMContext *slot)")
         body = bridge[start:]
-        self.assertLess(body.index("jarbox_native_heap_key_for_vm(destroyed_owner)"),
+        self.assertLess(body.index("const uint64_t destroyed_render_key = slot->native_heap_key;"),
                         body.index("jvm_destroy(slot->jvm)"))
         self.assertLess(body.index("j2me_render_cleanup_for_owner(destroyed_render_key)"),
-                        body.index("jarbox_native_heap_unregister_vm(destroyed_owner)"))
+                        body.index("jarbox_native_heap_unregister_key(destroyed_render_key)"))
         cleanup = render[render.index("void j2me_render_cleanup_for_owner("):]
         self.assertIn("take_rc_for_owner(owner_key)", cleanup)
         self.assertIn("take_img_for_owner(owner_key)", cleanup)

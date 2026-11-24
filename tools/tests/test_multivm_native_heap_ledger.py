@@ -59,7 +59,8 @@ int main(void) {
     pthread_join(t2,NULL);
     if (jarbox_native_heap_for_vm(&a) != 60000 ||
         jarbox_native_heap_for_vm(&b) != 60000) return 4;
-    jarbox_native_heap_unregister_vm(&a);
+    if (jarbox_native_heap_register_vm(&a)) return 11;
+    jarbox_native_heap_unregister_key(k1);
     // Old handle release after A terminated must never affect live B.
     jarbox_native_heap_account(k1, -60000);
     if (jarbox_native_heap_for_vm(&b) != 60000) return 5;
@@ -68,14 +69,29 @@ int main(void) {
     if (!jarbox_native_heap_register_vm(&a)) return 6;
     uint64_t k3 = jarbox_native_heap_key_for_vm(&a);
     if (k3 == k1 || !k3) return 7;
+    jarbox_native_heap_unregister_key(k1);
+    if (jarbox_native_heap_key_for_vm(&a) != k3) return 12;
     jarbox_native_heap_account(k1, 2000);
     jarbox_native_heap_account(k1, -9999999);
     if (jarbox_native_heap_for_vm(&a) != 0) return 8;
     jarbox_native_heap_account(k3, 120);
     if (jarbox_native_heap_for_vm(&a) != 120 ||
         jarbox_native_heap_for_vm(&b) != 60000) return 9;
-    jarbox_native_heap_unregister_vm(&a);
-    jarbox_native_heap_unregister_vm(&b);
+    jarbox_native_heap_unregister_key(k3);
+    jarbox_native_heap_unregister_key(k2);
+    for (int i = 0; i < 10000; ++i) {
+        if (!jarbox_native_heap_register_vm(&a)) return 13;
+        uint64_t old = jarbox_native_heap_key_for_vm(&a);
+        if (jarbox_native_heap_register_vm(&a)) return 14;
+        jarbox_native_heap_unregister_key(old);
+        if (!jarbox_native_heap_register_vm(&a)) return 15;
+        uint64_t now = jarbox_native_heap_key_for_vm(&a);
+        jarbox_native_heap_unregister_key(old);
+        jarbox_native_heap_account(old, 99);
+        if (now == old || jarbox_native_heap_key_for_vm(&a) != now ||
+            jarbox_native_heap_for_vm(&a)) return 16;
+        jarbox_native_heap_unregister_key(now);
+    }
     return 0;
 }
 """
@@ -119,7 +135,10 @@ class MultiVMNativeHeapLedgerTest(unittest.TestCase):
         self.assertIn("native_heap_add(rc->heap_key", render)
         self.assertIn("native_heap_add(img->heap_key", render)
         self.assertIn("jarbox_native_heap_register_vm(slot->jvm)", bridge)
-        self.assertIn("jarbox_native_heap_unregister_vm(destroyed_owner)", bridge)
+        self.assertIn("jarbox_native_heap_unregister_key(destroyed_render_key)", bridge)
+        self.assertLess(bridge.index("jarbox_native_heap_register_vm(slot->jvm)"),
+                        bridge.index("s32 ret = jvm_init(slot->jvm,"))
+        self.assertIn("const uint64_t destroyed_render_key = slot->native_heap_key;", bridge)
 
 
 if __name__ == "__main__":

@@ -27,7 +27,9 @@ class MultiVMUIIsolationTests(unittest.TestCase):
         self.assertIn("void j2me_ui_park_vm(MiniJVM *vm)", self.ui)
         self.assertIn("j2me_ui_park_vm(owner)", self.bridge)
         self.assertIn("if (!j2me_ui_reg_natives(slot->jvm))", self.bridge)
-        self.assertIn("j2me_ui_release_vm(slot->jvm)", self.bridge)
+        self.assertIn("j2me_ui_release_for_owner(destroyed_render_key)", self.bridge)
+        self.assertIn("void j2me_ui_release_for_owner(uint64_t owner_key)", self.ui)
+        self.assertIn("owner_key == atomic_load_explicit(&g_ui_contexts[i].heap_key,", self.ui)
         self.assertNotIn('static char g_form_title[256]', self.ui)
 
     def test_stale_java_call_cannot_inherit_focused_ui(self):

@@ -40,6 +40,8 @@ uint64_t j2me_ui_focused_owner_key(void);
 
 /// Release only the ending JVM's MIDP UI state after Java threads stop.
 void j2me_ui_release_vm(MiniJVM *jvm);
+/// Retire a drained screen by immutable native generation.
+void j2me_ui_release_for_owner(uint64_t owner_key);
 
 /// Callback for creating/showing native iOS views.
 /// Called from JVM thread — implementations must dispatch to main thread.

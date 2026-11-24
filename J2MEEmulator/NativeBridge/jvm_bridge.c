@@ -145,6 +145,7 @@ typedef struct {
     int worker_busy; // lifecycle lock; prevents release/reuse during an API call
     int legacy_3d_registered; // launch-worker owned; immutable until retirement
     int exclusive_3d; // lifecycle lock; held through STOPPING and cleanup
+    uint64_t native_heap_key; // launch-worker owned, reserved before bootstrap
 } JarBoxVMContext;
 static JarBoxVMContext g_bridge_slots[JARBOX_REGISTRY_MAX_SLOTS];
 
@@ -176,6 +177,7 @@ static JarBoxVMContext *bridge_reserve_slot_locked(uint64_t token, unsigned limi
     atomic_store_explicit(&empty->token, token, memory_order_release);
     empty->worker_busy = 0;
     empty->legacy_3d_registered = 0;
+    empty->native_heap_key = 0;
     empty->exclusive_3d = 1; // legacy admission defaults to exclusive
     atomic_store_explicit(&empty->active, 1, memory_order_release);
     return empty;
@@ -187,6 +189,7 @@ static int bridge_slot_can_retire_locked(const JarBoxVMContext *slot) {
 static void bridge_reset_slot_locked(JarBoxVMContext *slot) {
     slot->legacy_3d_registered = 0;
     slot->exclusive_3d = 0;
+    slot->native_heap_key = 0;
     atomic_store_explicit(&slot->phase, BRIDGE_IDLE, memory_order_release);
     atomic_store_explicit(&slot->stop_requested, 0, memory_order_release);
     atomic_store_explicit(&slot->token, 0, memory_order_release);
@@ -745,6 +748,8 @@ static void bridge_discard_unstarted_vm(JarBoxVMContext *slot) {
     atomic_store_explicit(&slot->stop_requested, 1, memory_order_release);
     slot->jvm->collector->exit_flag = 1;
     jvm_destroy(slot->jvm);
+    jarbox_native_heap_unregister_key(slot->native_heap_key);
+    slot->native_heap_key = 0;
     slot->jvm = NULL;
     if (jvm_bridge_supported_concurrent_sessions() == 1) {
         atomic_store_explicit(&treo_exact_ninja_verified, 0, memory_order_release);
@@ -818,6 +823,20 @@ static int bridge_init_slot(JarBoxVMContext *slot, const char *res_root, const c
     (void)jarbox_session_bind_token(
         slot->jvm->session,
         atomic_load_explicit(&slot->token, memory_order_acquire));
+    // Reserve a fresh generation BEFORE bootstrap creates Runtime/GC
+    // workers. A matching address may still belong to a retiring VM.
+    // No Java state exists yet, so a failed reservation frees only the
+    // freshly allocated session and MiniJVM, never the old ledger entry.
+    if (!jarbox_native_heap_register_vm(slot->jvm)) {
+        MiniJVM *created = slot->jvm;
+        jarbox_session_begin_stop(created->session);
+        (void)jarbox_session_mark_dead(created->session);
+        jarbox_session_release(created->session);
+        slot->jvm = NULL;
+        jvm_free(created);
+        return -7;
+    }
+    slot->native_heap_key = jarbox_native_heap_key_for_vm(slot->jvm);
     // Copy the launch-only resource signature into this JVM before any
     // Java classes execute. Later launches cannot change this owner's NSO
     // recognition or give a foreign Canvas permission to use the fast path.
@@ -853,26 +872,16 @@ static int bridge_init_slot(JarBoxVMContext *slot, const char *res_root, const c
         return -8;
     }
 
-    // GC's native-memory ledger is separate for each JVM and guarded by
-    // a generation key (including when a subsequent heap reuses an address).
-    if (!jarbox_native_heap_register_vm(slot->jvm)) {
-        printf("[JarBoxVM][Lifecycle] no free native heap ledger slot\n");
-        bridge_discard_unstarted_vm(slot);
-        return -7;
-    }
-
     // Acquire a distinct native input context before exposing the remaining
     // subsystem hooks. Never start a JVM with an unbound input destination.
     if (!j2me_input_reg_natives(slot->jvm)) {
         printf("[JarBoxVM][Lifecycle] cannot reserve independent input context\n");
-        jarbox_native_heap_unregister_vm(slot->jvm);
         bridge_discard_unstarted_vm(slot);
         return -4;
     }
     if (!j2me_ui_reg_natives(slot->jvm)) {
         printf("[JarBoxVM][Lifecycle] cannot reserve independent LCDUI context\n");
         j2me_input_release_vm(slot->jvm);
-        jarbox_native_heap_unregister_vm(slot->jvm);
         bridge_discard_unstarted_vm(slot);
         return -6;
     }
@@ -977,11 +986,9 @@ static void bridge_begin_slot_cleanup(JarBoxVMContext *slot) {
 static void bridge_destroy_slot(JarBoxVMContext *slot) {
     bridge_begin_slot_cleanup(slot);
     if (slot->jvm) {
-        MiniJVM *const destroyed_owner = slot->jvm;
         // The heap ledger generation outlives the MiniJVM allocation and
         // prevents cleanup from mistaking a reused VM pointer for this one.
-        const uint64_t destroyed_render_key =
-            jarbox_native_heap_key_for_vm(destroyed_owner);
+        const uint64_t destroyed_render_key = slot->native_heap_key;
         printf("[JVM Bridge] Destroying JVM\n");
 
         // Step 1: Revoke this JVM's right to publish pixels before stopping
@@ -1015,14 +1022,13 @@ static void bridge_destroy_slot(JarBoxVMContext *slot) {
         // All Java input consumers and callback leases have drained.
         // Retire by immutable token, never by the freed JVM address.
         j2me_input_release_for_token(destroyed_token);
-        // The JVM address remains the LCDUI registration key until this release;
-        // no code dereferences it after jvm_destroy.
-        j2me_ui_release_vm(slot->jvm);
+        // Retire the original LCDUI generation, not the freed JVM address.
+        j2me_ui_release_for_owner(destroyed_render_key);
         slot->jvm = NULL;
 
         // Step 6: Clean up other native subsystems — safe because:
         // - the generation-scoped stop denies new render acquires for this VM
-        // - jvm_destroy gave threads 3s to exit
+        // - jvm_destroy waited for the native worker and callback barrier
         // Input reset is no longer global; that JVM was released above.
         if (slot->legacy_3d_registered) {
             j2me_micro3d_gl_cleanup_for_owner(destroyed_render_key);
@@ -1030,9 +1036,9 @@ static void bridge_destroy_slot(JarBoxVMContext *slot) {
             slot->legacy_3d_registered = 0;
         }
         j2me_render_cleanup_for_owner(destroyed_render_key); // only this VM's 2D handles
-        // The C native ledger is independent of the freed Java heap pointer.
-        // Dereference is never required; compare identity and invalidate key.
-        jarbox_native_heap_unregister_vm(destroyed_owner);
+        // Keep the ledger reservation until all native cleanup completes.
+        jarbox_native_heap_unregister_key(destroyed_render_key);
+        slot->native_heap_key = 0;
         // Keep cancellation asserted until the owning Swift worker releases
         // the session. A late Back click must not bleed into the next launch.
         if (jvm_bridge_supported_concurrent_sessions() == 1) {

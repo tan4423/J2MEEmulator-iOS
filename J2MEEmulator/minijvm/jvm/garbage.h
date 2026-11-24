@@ -115,6 +115,8 @@ static inline uint64_t jarbox_native_heap_key_for_runtime(const Runtime *runtime
 void jarbox_native_heap_account(uint64_t key, s64 delta_bytes);
 s64 jarbox_native_heap_for_vm(MiniJVM *jvm);
 void jarbox_native_heap_unregister_vm(MiniJVM *jvm);
+/// Retire only the generation captured before destroying the Java heap.
+void jarbox_native_heap_unregister_key(uint64_t key);
 #if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__
 // Called by the existing renderer mode switch. Tracks current JVM GC cadence
 // only; the renderer mode itself still needs separate per-VM ownership.
