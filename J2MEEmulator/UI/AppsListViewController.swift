@@ -181,6 +181,17 @@ enum JarBoxGameStorage {
         return nil
     }
 
+    // Prefer the nearest running tab on the left, then any running tab
+    // on the right. Only launch a stopped neighbor if no running tab remains.
+    nonisolated static func deletionNeighborIndex(ordered: [UUID?], deleting: UUID?,
+                                                 running: Set<UUID?>) -> Int? {
+        guard let origin = ordered.firstIndex(of: deleting), ordered.count > 1 else { return nil }
+        let left = ordered.indices.prefix(origin).reversed()
+        let right = ordered.indices.dropFirst(origin + 1)
+        return left.first { running.contains(ordered[$0]) } ??
+            right.first { running.contains(ordered[$0]) } ?? left.first ?? right.first
+    }
+
     nonisolated static func entryTabIndex(ordered: [UUID?], remembered: UUID?,
                                           running: Set<UUID?>) -> Int? {
         guard !ordered.isEmpty else { return nil }
@@ -245,6 +256,12 @@ enum JarBoxGameStorage {
         return records[0]
     }
 
+    nonisolated static func createCloneAfter(jarPath: String, documents: String,
+                                             after: UUID?) throws -> CloneRecord {
+        try createClones(jarPath: jarPath, documents: documents, count: 1,
+                         explicitLabel: nil, insertionAfter: [after])[0]
+    }
+
     nonisolated static func createDefaultClones(jarPath: String, documents: String,
                                                  count: Int) throws -> [CloneRecord] {
         try createClones(jarPath: jarPath, documents: documents,
@@ -252,7 +269,8 @@ enum JarBoxGameStorage {
     }
 
     nonisolated private static func createClones(jarPath: String, documents: String,
-                                                   count: Int, explicitLabel: String?) throws -> [CloneRecord] {
+                                                   count: Int, explicitLabel: String?,
+                                                   insertionAfter: [UUID?] = []) throws -> [CloneRecord] {
         cloneRegistryLock.lock()
         defer { cloneRegistryLock.unlock() }
         guard FileManager.default.fileExists(atPath: jarPath) else {
@@ -263,6 +281,19 @@ enum JarBoxGameStorage {
         let maximum = allowedAddCount(cloneCount: group.clones.count)
         guard validTabQuantity(count, maximum: maximum) else {
             throw tabQuantityError(maximum: maximum)
+        }
+        // [] means append; [nil] means directly after the original.
+        let insertion: Int
+        if insertionAfter.isEmpty {
+            insertion = group.clones.count
+        } else if let after = insertionAfter[0] {
+            guard let index = group.clones.firstIndex(where: { $0.id == after }) else {
+                throw NSError(domain: "JarBox.GameStorage", code: 14,
+                    userInfo: [NSLocalizedDescriptionKey: "Tab nguồn không còn tồn tại."])
+            }
+            insertion = index + 1
+        } else {
+            insertion = 0
         }
         var used = Set(group.clones.map { $0.label })
         var records: [CloneRecord] = []
@@ -296,7 +327,7 @@ enum JarBoxGameStorage {
                 try fm.createDirectory(atPath: target, withIntermediateDirectories: false)
                 created.append(target)
             }
-            group.clones.append(contentsOf: records)
+            group.clones.insert(contentsOf: records, at: insertion)
             try writeCloneGroup(group, jarPath: jarPath, documents: documents)
         } catch {
             for target in created { try? fm.removeItem(atPath: target) }
@@ -602,7 +633,9 @@ class AppsListViewController: UIViewController,
     private weak var animatedBackground: AnimatedBackgroundView?
     private var springboardVisible = false
     private var gamePresentationInFlight = false
+    private var gameTabTransitionCover: UIView?
     private var pendingTabMutation: UUID?
+    private var foregroundTabDeletion: (ticket: UUID, path: String, id: UUID, token: UInt64)?
     private var pendingMutationNotice: String?
     private var autoProtectionTimer: Timer?
     private var autoProtectionGeneration: UInt64 = 0
@@ -673,11 +706,46 @@ class AppsListViewController: UIViewController,
         managedGames.removeAll { $0 === game }
         updateStuckSessionButton()
         springboardCollectionView.reloadData()
+        (presentedViewController as? GameViewController)?.gameTabStateDidChange()
     }
 
     private var canPresentGame: Bool {
         jarBoxSleepCover == nil && !gamePresentationInFlight && presentedViewController == nil &&
         viewIfLoaded?.window != nil && !isBeingDismissed && pendingTabMutation == nil
+    }
+
+    // Cover only the library, not the window or the incoming game. A UIKit
+    // full-screen dismiss/present pair can otherwise expose one springboard
+    // frame. This is a plain view, no screenshot, animation or polling.
+    func beginGameTabTransition() {
+        guard gameTabTransitionCover == nil else { return }
+        cancelAutoProtection()
+        setSpringboardMotion(false, reason: "tab handoff")
+        let container = navigationController?.view ?? view!
+        let cover = UIView()
+        cover.backgroundColor = .black
+        cover.isOpaque = true
+        cover.accessibilityViewIsModal = true
+        cover.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(cover)
+        NSLayoutConstraint.activate([
+            cover.topAnchor.constraint(equalTo: container.topAnchor),
+            cover.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+            cover.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            cover.trailingAnchor.constraint(equalTo: container.trailingAnchor)
+        ])
+        gameTabTransitionCover = cover
+        container.layoutIfNeeded()
+    }
+
+    func finishGameTabTransitionIfIdle() {
+        guard !gamePresentationInFlight, let cover = gameTabTransitionCover else { return }
+        gameTabTransitionCover = nil
+        cover.removeFromSuperview()
+        let visible = springboardVisible && presentedViewController == nil &&
+            viewIfLoaded?.window?.windowScene?.activationState == .foregroundActive
+        setSpringboardMotion(visible, reason: "tab handoff complete")
+        if visible { armAutoProtection() }
     }
 
     private func presentGame(_ game: GameViewController, reason: String) {
@@ -686,6 +754,7 @@ class AppsListViewController: UIViewController,
         setSpringboardMotion(false, reason: reason)
         present(game, animated: false) { [weak self] in
             self?.gamePresentationInFlight = false
+            self?.finishGameTabTransitionIfIdle()
         }
     }
 
@@ -698,10 +767,20 @@ class AppsListViewController: UIViewController,
 
     // All registered tabs, including stopped ones. Native ownership remains
     // with the existing GameVC and token, never with a UI button.
+    // Position is derived from the ordered registry; UUID and save paths
+    // never change when a new tab is inserted or an old one is removed.
+    private func displayTabs(_ clones: [JarBoxGameStorage.CloneRecord]) -> [(id: UUID?, title: String)] {
+        [(nil, "1 Gốc")] + clones.enumerated().map { index, clone in
+            let legacy = clone.label.hasPrefix("Tab ") && Int(clone.label.dropFirst(4)) != nil
+            let name = legacy ? "Tab" : clone.label
+            return (Optional(clone.id), String(index + 2) + " " + name)
+        }
+    }
+
     private func registeredTabs(for app: AppInfo) throws -> [(id: UUID?, title: String)] {
         let clones = try JarBoxGameStorage.registeredClones(
             jarPath: app.path, documents: Self.documentsDirectory)
-        return [(nil, "Tab gốc")] + clones.map { (Optional($0.id), $0.label) }
+        return displayTabs(clones)
     }
 
     func gameTabItems(for game: GameViewController) -> [(id: UUID?, title: String, running: Bool)] {
@@ -723,6 +802,10 @@ class AppsListViewController: UIViewController,
     // Only a foreground dismissal completion calls this. Hidden worker
     // exits must never steal focus from the tab the user is playing.
     func openNextRunningTabAfterExit(path: String, closing: UUID?) {
+        if let deletion = foregroundTabDeletion, deletion.path == path, deletion.id == closing {
+            completeForegroundTabDeletion(deletion)
+            return
+        }
         guard canPresentGame, jvm_bridge_visible_session_token() == 0,
               let app = apps.first(where: { $0.path == path }) else { return }
         do {
@@ -740,6 +823,108 @@ class AppsListViewController: UIViewController,
             }
             game.resumeParkedGame()
         } catch { presentSaveOperationError(error) }
+    }
+
+    func validateGameTabSwitch(_ source: GameViewController, target: UUID?) throws {
+        guard pendingTabMutation == nil, presentedViewController === source,
+              source.ownsVisibleGameSession(),
+              let app = apps.first(where: { $0.path == source.jarPath }),
+              try registeredTabs(for: app).contains(where: { $0.id == target }) else {
+            throw mutationError("Tab hoặc phiên game đã thay đổi.")
+        }
+        if let game = gameForTab(app.path, cloneID: target), game.parkedSessionToken != nil {
+            return
+        }
+        guard !retainedGames.contains(where: { $0.holdsNativeInstance(for: app.path, cloneID: target) }) else {
+            throw mutationError("Tab này vẫn đang khởi động hoặc đang dừng.")
+        }
+        try requireNewTabSlot(for: app)
+    }
+
+    private func requireNewTabSlot(for app: AppInfo) throws {
+        guard jvm_bridge_active_session_count() < jvm_bridge_supported_concurrent_sessions(),
+              app.path.withCString({ jvm_bridge_3d_conflict_for_jar($0) }) == 0 else {
+            throw mutationError("Không thể mở thêm tab. Đã hết slot JVM hoặc game phải chạy riêng.")
+        }
+    }
+
+    // Check capacity before touching the registry or parking the current VM.
+    func createTabBeside(_ source: GameViewController) throws -> UUID {
+        guard pendingTabMutation == nil, presentedViewController === source,
+              source.ownsVisibleGameSession(),
+              let app = apps.first(where: { $0.path == source.jarPath }) else {
+            throw mutationError("Phiên game đã thay đổi.")
+        }
+        let tabs = try registeredTabs(for: app)
+        guard tabs.count < JarBoxGameStorage.maxTotalTabs else {
+            throw JarBoxGameStorage.tabQuantityError(maximum: 0)
+        }
+        try requireNewTabSlot(for: app)
+        let clone = try JarBoxGameStorage.createCloneAfter(jarPath: app.path,
+            documents: Self.documentsDirectory, after: source.cloneID)
+        scanApps()
+        return clone.id
+    }
+
+    // Deletion is armed only by explicit confirmation in the visible game.
+    // The worker completion retires the token before any disk mutation.
+    func armForegroundTabDeletion(_ source: GameViewController, expectedToken: UInt64) throws {
+        guard pendingTabMutation == nil, presentedViewController === source,
+              source.ownsVisibleGameSession(), source.nativeSessionToken == expectedToken,
+              let id = source.cloneID,
+              let app = apps.first(where: { $0.path == source.jarPath }) else {
+            throw mutationError("Tab gốc không thể xóa hoặc phiên đã thay đổi.")
+        }
+        let tabs = try registeredTabs(for: app)
+        guard tabs.count > 1, tabs.contains(where: { $0.id == id }) else {
+            throw mutationError("Không thể xóa tab cuối cùng.")
+        }
+        try JarBoxGameStorage.requireMutationSafety(unrelatedTokens: retainedGames.compactMap { $0.nativeSessionToken })
+        let ticket = UUID()
+        pendingTabMutation = ticket
+        foregroundTabDeletion = (ticket, app.path, id, expectedToken)
+        cancelAutoProtection()
+        springboardCollectionView.isUserInteractionEnabled = false
+        importBarButton?.isEnabled = false
+        jarBoxMenuButton?.isEnabled = false
+    }
+
+    private func completeForegroundTabDeletion(_ deletion: (ticket: UUID, path: String, id: UUID, token: UInt64)) {
+        guard pendingTabMutation == deletion.ticket else { return }
+        foregroundTabDeletion = nil
+        do {
+            guard jvm_bridge_session_is_active_for_token(deletion.token) == 0,
+                  mutationOwners(path: deletion.path, ids: [deletion.id]).isEmpty,
+                  let app = apps.first(where: { $0.path == deletion.path }) else {
+                throw mutationError("Phiên chưa dừng hẳn. Chưa xóa dữ liệu.")
+            }
+            let tabs = try registeredTabs(for: app)
+            let running = Set(tabs.filter {
+                gameForTab(app.path, cloneID: $0.id)?.parkedSessionToken != nil
+            }.map { $0.id })
+            guard let index = JarBoxGameStorage.deletionNeighborIndex(
+                ordered: tabs.map { $0.id }, deleting: deletion.id, running: running) else {
+                throw mutationError("Không còn tab hợp lệ để chuyển.")
+            }
+            let target = tabs[index]
+            let unrelated = retainedGames.compactMap { $0.nativeSessionToken }
+            try JarBoxGameStorage.removeClones(jarPath: app.path, documents: Self.documentsDirectory,
+                                               cloneIDs: [deletion.id], unrelatedTokens: unrelated)
+            scanApps()
+            finishTabMutation(deletion.ticket)
+            let updated = try registeredTabs(for: app)
+            guard let next = updated.first(where: { $0.id == target.id }) else { return }
+            guard viewIfLoaded?.window?.windowScene?.activationState == .foregroundActive else {
+                JarBoxGameStorage.rememberLastTab(jarPath: app.path, cloneID: next.id)
+                return
+            }
+            launchGameTab(app, cloneID: next.id,
+                          tabTitle: next.id == nil ? app.name : app.name + " · " + next.title)
+        } catch {
+            finishTabMutation(deletion.ticket)
+            scanApps()
+            presentSaveOperationError(error)
+        }
     }
 
     func openGameTabAfterPark(_ source: GameViewController, cloneID: UUID?) {
@@ -813,7 +998,8 @@ class AppsListViewController: UIViewController,
     }
 
     private func setSpringboardMotion(_ enabled: Bool, reason: String) {
-        animatedBackground?.setAnimationsActive(enabled && jarBoxSleepCover == nil, reason: reason)
+        animatedBackground?.setAnimationsActive(enabled && jarBoxSleepCover == nil &&
+            gameTabTransitionCover == nil, reason: reason)
     }
 
     /// Directory where imported JARs are stored
@@ -1114,7 +1300,7 @@ class AppsListViewController: UIViewController,
     private func armAutoProtection() {
         cancelAutoProtection()
         guard JarBoxProtectionPreferences.automatic, springboardVisible,
-              jarBoxSleepCover == nil, pendingTabMutation == nil,
+              jarBoxSleepCover == nil, pendingTabMutation == nil, gameTabTransitionCover == nil,
               !gamePresentationInFlight, !contextMenuVisible, !libraryTouchActive,
               viewIfLoaded?.window?.windowScene?.activationState == .foregroundActive else { return }
         // Keep iOS auto-lock from winning the configured countdown, but
@@ -1129,7 +1315,7 @@ class AppsListViewController: UIViewController,
                 guard JarBoxProtectionPreferences.automatic, self.springboardVisible,
                       !self.contextMenuVisible, !self.libraryTouchActive,
                       !self.gamePresentationInFlight, self.pendingTabMutation == nil,
-                      self.presentedViewController == nil,
+                      self.gameTabTransitionCover == nil, self.presentedViewController == nil,
                       self.viewIfLoaded?.window?.windowScene?.activationState == .foregroundActive,
                       !self.springboardCollectionView.isDragging,
                       !self.springboardCollectionView.isDecelerating else { return }
@@ -1164,7 +1350,7 @@ class AppsListViewController: UIViewController,
 
     private func showJarBoxSleepScreen() {
         guard springboardVisible, jarBoxSleepCover == nil, pendingTabMutation == nil,
-              presentedViewController == nil,
+              gameTabTransitionCover == nil, presentedViewController == nil,
               viewIfLoaded?.window?.windowScene?.activationState == .foregroundActive else { return }
         cancelAutoProtection()
         let container = navigationController?.view ?? view!
@@ -1385,6 +1571,26 @@ class AppsListViewController: UIViewController,
         return "\(minutes / 60) giờ \(minutes % 60) phút"
     }
 
+    // mach task footprint includes the native and Java heaps of this process.
+    // Read only while the existing HUD is visible (or the overview is opened).
+    private func jarBoxRAMText() -> String {
+        var vm = task_vm_info_data_t()
+        var count = mach_msg_type_number_t(MemoryLayout<task_vm_info_data_t>.size /
+                                           MemoryLayout<integer_t>.size)
+        let result = withUnsafeMutablePointer(to: &vm) { pointer in
+            pointer.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+                task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &count)
+            }
+        }
+        let total = ProcessInfo.processInfo.physicalMemory
+        guard result == KERN_SUCCESS, total > 0, vm.phys_footprint > 0 else {
+            return "RAM: Chưa có dữ liệu"
+        }
+        let bytes = Double(vm.phys_footprint)
+        return String(format: "RAM: %.1f%% (%.0f MB)", 100 * bytes / Double(total),
+                      bytes / 1_048_576)
+    }
+
     private func refreshJarBoxSleepHUD() {
         guard jarBoxSleepCover != nil, let label = jarBoxSleepHUD,
               !label.isHidden, jarBoxSleepHUDDeadline != nil else { return }
@@ -1405,6 +1611,7 @@ class AppsListViewController: UIViewController,
         let elapsed = max(0, now - (jarBoxSleepStartedAt ?? now))
         let lines = [
             jarBoxSleepCPUText,
+            jarBoxRAMText(),
             "Pin: " + battery,
             "Nhiệt độ: " + thermal,
             "Tab đang chạy: " + String(jvm_bridge_active_session_count()) +
@@ -1457,6 +1664,7 @@ class AppsListViewController: UIViewController,
         }
         let lines = [
             "CPU toàn JarBox: " + cpuText,
+            jarBoxRAMText(),
             "Áp lực nhiệt iOS: " + thermal,
             "Pin: " + battery,
             "Tiết kiệm pin iOS: " + (info.isLowPowerModeEnabled ? "Bật" : "Tắt"),
@@ -1731,7 +1939,7 @@ class AppsListViewController: UIViewController,
             do {
                 clones = try JarBoxGameStorage.registeredClones(
                     jarPath: app.path, documents: Self.documentsDirectory)
-                tabs = [(nil, "Tab gốc")] + clones.map { (Optional($0.id), $0.label) }
+                tabs = self.displayTabs(clones)
             } catch {
                 return UIMenu(children: [UIAction(title: "Không đọc được các tab",
                                                    attributes: .disabled) { _ in }])
@@ -1784,7 +1992,7 @@ class AppsListViewController: UIViewController,
     // Read metadata and current counters only on demand from the long-press
     // "Thông tin" entry. Never start a timer for game badges or telemetry.
     private func showGameInformation(_ app: AppInfo, cloneID: UUID? = nil,
-                                     tabName: String = "Tab gốc") {
+                                     tabName: String = "1 Gốc") {
         let resolution = Self.resolution(for: app)
         let fps = Self.fpsLimit(for: app)
         let fileBytes = (try? FileManager.default.attributesOfItem(atPath: app.path)[.size] as? NSNumber)?.int64Value
@@ -1835,7 +2043,7 @@ class AppsListViewController: UIViewController,
     /// On-demand metadata log stored under the same *install-specific* root.
     /// It contains no saved record bodies; the user can inspect or copy it.
     private func showSaveLog(for app: AppInfo, cloneID: UUID? = nil,
-                             tabName: String = "Tab gốc") {
+                             tabName: String = "1 Gốc") {
         let root = JarBoxGameStorage.rootPath(
             jarPath: app.path, documents: Self.documentsDirectory, cloneID: cloneID)
         // The JVM and Swift use different append files to avoid cross-thread
@@ -2137,7 +2345,7 @@ class AppsListViewController: UIViewController,
             guard clones.isEmpty else {
                 throw mutationError("Hãy xóa các tab nhân bản trong mục Nhân bản trước khi xóa game gốc.")
             }
-            confirmTabMutation(app: app, tabs: [(nil, "Tab gốc")], title: "Xóa game",
+            confirmTabMutation(app: app, tabs: [(nil, "1 Gốc")], title: "Xóa game",
                 message: "Xóa " + app.name + ", RMS và cài đặt riêng của JAR này?",
                 action: "Xóa game") { unrelated in
                 try JarBoxGameStorage.requireMutationSafety(unrelatedTokens: unrelated)
@@ -2190,12 +2398,9 @@ class AppsListViewController: UIViewController,
         let picker = UIAlertController(title: "Thông tin các tab · " + app.name,
                                        message: "Cài đặt và nhật ký riêng của mỗi tab.",
                                        preferredStyle: .actionSheet)
-        picker.addAction(UIAlertAction(title: "Tab gốc", style: .default) { [weak self] _ in
-            self?.showGameInformation(app)
-        })
-        for clone in clones {
-            picker.addAction(UIAlertAction(title: clone.label, style: .default) { [weak self] _ in
-                self?.showGameInformation(app, cloneID: clone.id, tabName: clone.label)
+        for tab in displayTabs(clones) {
+            picker.addAction(UIAlertAction(title: tab.title, style: .default) { [weak self] _ in
+                self?.showGameInformation(app, cloneID: tab.id, tabName: tab.title)
             })
         }
         picker.addAction(UIAlertAction(title: "Hủy", style: .cancel))
@@ -2363,7 +2568,7 @@ class AppsListViewController: UIViewController,
             guard maximum > 0 else { throw JarBoxGameStorage.tabQuantityError(maximum: maximum) }
             let title = removing ? "Xóa theo số lượng" : "Thêm theo số lượng"
             let message = "Nhập số nguyên từ 1 đến " + String(maximum) +
-                (removing ? ". Chọn các tab tạo gần nhất, không xóa tab gốc." : ".")
+                (removing ? ". Chọn các tab cuối danh sách, không xóa tab gốc." : ".")
             let alert = UIAlertController(title: title, message: message, preferredStyle: .alert)
             alert.addTextField { field in
                 field.keyboardType = .numberPad
@@ -2407,8 +2612,10 @@ class AppsListViewController: UIViewController,
             let picker = UIAlertController(title: "Xóa · " + app.name,
                 message: "Chọn bản nhân cần xóa cùng dữ liệu và cài đặt.",
                 preferredStyle: .actionSheet)
+            let display = displayTabs(clones)
             for clone in clones {
-                picker.addAction(UIAlertAction(title: "Xóa " + tabStatusTitle(clone.label, path: app.path, cloneID: clone.id),
+                let title = display.first(where: { $0.id == clone.id })?.title ?? clone.label
+                picker.addAction(UIAlertAction(title: "Xóa " + tabStatusTitle(title, path: app.path, cloneID: clone.id),
                     style: .destructive) { [weak self] _ in
                     self?.confirmDeleteTabs(app, clones: [clone])
                 })
@@ -2426,8 +2633,11 @@ class AppsListViewController: UIViewController,
 
     private func confirmDeleteTabs(_ app: AppInfo, clones: [JarBoxGameStorage.CloneRecord]) {
         guard !clones.isEmpty else { return }
-        let names = clones.map { $0.label }.joined(separator: ", ")
-        let tabs: [(id: UUID?, title: String)] = clones.map { (Optional($0.id), $0.label) }
+        guard let registered = try? registeredTabs(for: app) else { return }
+        let ids = Set(clones.map { $0.id })
+        let tabs = registered.filter { tab in tab.id.map { ids.contains($0) } ?? false }
+        guard tabs.count == clones.count else { return }
+        let names = tabs.map { $0.title }.joined(separator: ", ")
         confirmTabMutation(app: app, tabs: tabs, title: "Xóa " + String(clones.count) + " tab?",
             message: names + "\n\nDữ liệu và cài đặt của các tab này sẽ bị xóa vĩnh viễn. Tab gốc được giữ nguyên.",
             action: "Xóa tab") { unrelated in

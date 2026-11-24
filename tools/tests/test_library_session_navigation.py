@@ -52,6 +52,7 @@ class GameViewController {
     func ownsLiveGameSession() -> Bool { live }
     func holdsNativeGameSession() -> Bool { native }
     func resumeParkedGame() { resumes += 1 }
+    func gameTabStateDidChange() {}
 }
 class Collection { func reloadData() {} }
 class Library {
@@ -59,6 +60,7 @@ class Library {
     let springboardCollectionView = Collection()
     var activeCount = 0
     var canPresentGame = true
+    var presentedViewController: AnyObject?
     var managedGames: [GameViewController] = []
     weak var parkedGameController: GameViewController?
     var importBarButton: UIBarButtonItem? = UIBarButtonItem("+")

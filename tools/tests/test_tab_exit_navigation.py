@@ -41,6 +41,25 @@ for size in 1...17 {
 }
 precondition(JarBoxGameStorage.entryTabIndex(ordered: [], remembered: nil, running: []) == nil)
 print("\(checks) route assertions passed")
+var deletionChecks = 0
+for size in 1...17 {
+    let tabs = Array(all.prefix(size))
+    for mask in 0..<(1 << size) where mask.nonzeroBitCount <= 2 {
+        let running = Set(tabs.indices.filter { mask & (1 << $0) != 0 }.map { tabs[$0] })
+        for origin in tabs.indices {
+            let candidates = tabs.indices.filter { $0 != origin }
+            let expected = candidates.filter { $0 < origin && running.contains(tabs[$0]) }.max() ??
+                candidates.filter { $0 > origin && running.contains(tabs[$0]) }.min() ??
+                candidates.filter { $0 < origin }.max() ?? candidates.filter { $0 > origin }.min()
+            precondition(JarBoxGameStorage.deletionNeighborIndex(ordered: tabs, deleting: tabs[origin], running: running) == expected)
+            deletionChecks += 1
+        }
+        precondition(JarBoxGameStorage.deletionNeighborIndex(ordered: tabs, deleting: stale, running: running) == nil)
+        deletionChecks += 1
+    }
+}
+precondition(JarBoxGameStorage.deletionNeighborIndex(ordered: [], deleting: nil, running: []) == nil)
+print("Deletion-neighbor selection: \(deletionChecks + 1) cases passed")
 '''
 
 def method(source, signature):
@@ -57,7 +76,7 @@ class TabExitNavigationTest(unittest.TestCase):
         source = LIB.read_text(encoding="utf-8")
         code = "import Foundation\nenum JarBoxGameStorage {\n" + "\n".join(
             method(source, "    nonisolated static func " + name + "(")
-            for name in ("nextRunningTabIndex", "entryTabIndex")) + MAIN
+            for name in ("nextRunningTabIndex", "entryTabIndex", "deletionNeighborIndex")) + MAIN
         with tempfile.TemporaryDirectory() as td:
             src = Path(td) / "route.swift"
             exe = Path(td) / "route"
@@ -65,6 +84,41 @@ class TabExitNavigationTest(unittest.TestCase):
             subprocess.run([swift, "-swift-version", "5", str(src), "-o", str(exe)], check=True, timeout=60)
             result = subprocess.run([str(exe)], check=True, capture_output=True, text=True, timeout=20)
             self.assertIn("27472 route assertions passed", result.stdout)
+            self.assertIn("Deletion-neighbor selection: 13737 cases passed", result.stdout)
+
+    def test_tab_actions_and_transition_cover(self):
+        game = GAME.read_text(encoding="utf-8")
+        lib = LIB.read_text(encoding="utf-8")
+        strip = method(game, "    private func refreshGameTabStrip()")
+        self.assertIn("button.setTitle(tab.title, for: .normal)", strip)
+        self.assertIn("if tab.running {", strip)
+        self.assertIn("dot.backgroundColor = .systemGreen", strip)
+        self.assertIn("dot.centerYAnchor.constraint(equalTo: button.topAnchor)", strip)
+        self.assertIn("tabs.count > 1 && cloneID != nil && ready", strip)
+        layout = method(game, "    private func setupGameTabStrip()")
+        self.assertIn("gameTabScroll.trailingAnchor.constraint(equalTo: tabActions.leadingAnchor, constant: -12)", layout)
+        add = method(lib, "    func createTabBeside(")
+        self.assertLess(add.index("try requireNewTabSlot(for: app)"), add.index("createCloneAfter("))
+        switch = method(game, "    private func switchGameTab(")
+        self.assertLess(switch.index("try library.validateGameTabSwitch"), switch.index("openLibraryKeepingGame()"))
+        delete = method(lib, "    private func completeForegroundTabDeletion(")
+        self.assertLess(delete.index("jvm_bridge_session_is_active_for_token(deletion.token) == 0"), delete.index("removeClones("))
+        self.assertLess(delete.index("mutationOwners("), delete.index("removeClones("))
+        self.assertLess(delete.index("removeClones("), delete.index("launchGameTab("))
+        park = method(game, "    @objc private func openLibraryKeepingGame()")
+        self.assertLess(park.index("library.beginGameTabTransition()"), park.index("dismiss(animated: false)"))
+        self.assertIn("defer { library?.finishGameTabTransitionIfIdle() }", park)
+        cover = method(lib, "    func beginGameTabTransition()")
+        self.assertIn("cover.backgroundColor = .black", cover)
+        self.assertNotIn("snapshotView", cover)
+        present = method(lib, "    private func presentGame(")
+        self.assertLess(present.index("self?.gamePresentationInFlight = false"), present.index("self?.finishGameTabTransitionIfIdle()"))
+        hud = method(lib, "    private func refreshJarBoxSleepHUD()")
+        self.assertIn("jarBoxRAMText()", hud)
+        ram = method(lib, "    private func jarBoxRAMText()")
+        self.assertIn("vm.phys_footprint", ram)
+        self.assertIn("ProcessInfo.processInfo.physicalMemory", ram)
+        self.assertIn("RAM: %.1f%% (%.0f MB)", ram)
 
     def test_visible_exit_routes_only_after_retirement_and_dismissal(self):
         game = GAME.read_text(encoding="utf-8")

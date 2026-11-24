@@ -76,7 +76,7 @@ class GameTabStripTest(unittest.TestCase):
         self.assertIn("validTabQuantity(count, maximum: current.count)", prompt)
         self.assertIn("Array(current.suffix(count))", prompt)
         confirm = part(LIB, "private func confirmDeleteTabs(", "private func launchGameTab(")
-        self.assertIn('clones.map { $0.label }.joined(separator: ", ")', confirm)
+        self.assertIn('tabs.map { $0.title }.joined(separator: ", ")', confirm)
         self.assertIn("cloneIDs: clones.map { $0.id }", confirm)
         storage = part(LIB, "static func removeClones(", "/// Never combine")
         self.assertLess(storage.index("ids.isSubset"), storage.index("fm.moveItem"))

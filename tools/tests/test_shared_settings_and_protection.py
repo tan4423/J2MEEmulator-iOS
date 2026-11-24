@@ -61,6 +61,7 @@ class Library {
     var autoProtectionGeneration: UInt64 = 0
     var autoProtectionTimer: Timer?
     var jarBoxSleepCover: Int?
+    var gameTabTransitionCover: Int?
     var libraryTouchActive = false
     var springboardVisible = true
     var pendingTabMutation: UUID?

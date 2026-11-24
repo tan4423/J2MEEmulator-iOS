@@ -238,6 +238,23 @@ struct CloneHarness {
                 "batch did not leave original only")
         require(fm.fileExists(atPath: original) && fm.fileExists(atPath: jar), "batch touched original")
 
+        // Insert next to the current UUID, without renumbering save identities.
+        let left = try JarBoxGameStorage.createDefaultClone(jarPath: jar, documents: docs, label: "Tab 1")
+        let right = try JarBoxGameStorage.createDefaultClone(jarPath: jar, documents: docs, label: "Tab 2")
+        let middle = try JarBoxGameStorage.createCloneAfter(jarPath: jar, documents: docs, after: left.id)
+        let first = try JarBoxGameStorage.createCloneAfter(jarPath: jar, documents: docs, after: nil)
+        require(try JarBoxGameStorage.registeredClones(jarPath: jar, documents: docs).map { $0.id } ==
+                [first.id, left.id, middle.id, right.id], "insertion order wrong")
+        do {
+            _ = try JarBoxGameStorage.createCloneAfter(jarPath: jar, documents: docs, after: UUID())
+            fatalError("missing anchor accepted")
+        } catch {}
+        require(try JarBoxGameStorage.registeredClones(jarPath: jar, documents: docs).count == 4,
+                "missing anchor changed registry")
+        try JarBoxGameStorage.removeClones(jarPath: jar, documents: docs,
+            cloneIDs: [first.id, left.id, middle.id, right.id])
+        require(fm.fileExists(atPath: original), "ordered insertion/deletion touched original")
+
         // Two installed JARs can have the same sanitized legacy save name.
         // Never guess which one owns the old account data.
         let collidingA = (gameDir as NSString).appendingPathComponent("Shared name.jar")

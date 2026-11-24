@@ -22,6 +22,7 @@ class Library {
     var completions: [() -> Void] = []
     var presented: [GameViewController] = []
     func setSpringboardMotion(_ enabled: Bool, reason: String) {}
+    func finishGameTabTransitionIfIdle() {}
     func present(_ game: GameViewController, animated: Bool, completion: @escaping () -> Void) {
         precondition(!animated)
         presented.append(game)

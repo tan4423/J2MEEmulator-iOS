@@ -347,6 +347,9 @@ class GameViewController: UIViewController {
     private let screenMenu = UIButton(type: .system)
     private let gameTabScroll = UIScrollView()
     private let gameTabStack = UIStackView()
+    private let tabAddButton = UIButton(type: .system)
+    private let tabRemoveButton = UIButton(type: .system)
+    private let tabActions = UIStackView()
     private var gameTabHeight: NSLayoutConstraint?
     private var requestedTabSwitch: (() -> Void)?
     private var blackout: UIButton?
@@ -600,7 +603,6 @@ class GameViewController: UIViewController {
 
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
-        refreshGameTabStrip()
         // Keep the screen awake only while the game is visible. Locking the
         // phone while NSO auto/Treo is active may suspend Java execution.
         // The library itself must NOT permanently disable auto-lock.
@@ -613,6 +615,7 @@ class GameViewController: UIViewController {
         } else {
             startGame()
         }
+        refreshGameTabStrip()
     }
 
     override func viewDidDisappear(_ animated: Bool) {
@@ -660,23 +663,45 @@ class GameViewController: UIViewController {
         gameTabScroll.backgroundColor = .black
         gameTabScroll.isHidden = true
         view.addSubview(gameTabScroll)
+        tabActions.axis = .horizontal
+        tabActions.spacing = 4
+        tabActions.translatesAutoresizingMaskIntoConstraints = false
+        tabActions.isHidden = true
+        view.addSubview(tabActions)
+        for (button, symbol, label) in [
+            (tabAddButton, "plus", "Thêm tab"),
+            (tabRemoveButton, "minus", "Xóa tab hiện tại")
+        ] {
+            button.setImage(UIImage(systemName: symbol), for: .normal)
+            button.tintColor = .white
+            button.backgroundColor = UIColor(white: 0.15, alpha: 1)
+            button.layer.cornerRadius = 7
+            button.accessibilityLabel = label
+            button.widthAnchor.constraint(equalToConstant: 36).isActive = true
+            tabActions.addArrangedSubview(button)
+        }
+        tabAddButton.addTarget(self, action: #selector(addTabBesideTapped), for: .touchUpInside)
+        tabRemoveButton.addTarget(self, action: #selector(removeCurrentTabTapped), for: .touchUpInside)
         gameTabStack.axis = .horizontal
         gameTabStack.alignment = .fill
         gameTabStack.spacing = 6
         gameTabStack.translatesAutoresizingMaskIntoConstraints = false
         gameTabScroll.addSubview(gameTabStack)
-        let height = gameTabScroll.heightAnchor.constraint(equalToConstant: 0)
+        let height = gameTabScroll.heightAnchor.constraint(equalToConstant: 4)
         gameTabHeight = height
         NSLayoutConstraint.activate([
             height,
             gameTabScroll.topAnchor.constraint(equalTo: backButton.bottomAnchor),
             gameTabScroll.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 8),
-            gameTabScroll.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -8),
+            gameTabScroll.trailingAnchor.constraint(equalTo: tabActions.leadingAnchor, constant: -12),
+            tabActions.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -8),
+            tabActions.topAnchor.constraint(equalTo: gameTabScroll.topAnchor, constant: 4),
+            tabActions.heightAnchor.constraint(equalToConstant: 36),
             gameTabStack.leadingAnchor.constraint(equalTo: gameTabScroll.contentLayoutGuide.leadingAnchor),
             gameTabStack.trailingAnchor.constraint(equalTo: gameTabScroll.contentLayoutGuide.trailingAnchor),
-            gameTabStack.topAnchor.constraint(equalTo: gameTabScroll.contentLayoutGuide.topAnchor),
+            gameTabStack.topAnchor.constraint(equalTo: gameTabScroll.contentLayoutGuide.topAnchor, constant: 4),
             gameTabStack.bottomAnchor.constraint(equalTo: gameTabScroll.contentLayoutGuide.bottomAnchor),
-            gameTabStack.heightAnchor.constraint(equalTo: gameTabScroll.frameLayoutGuide.heightAnchor)
+            gameTabStack.heightAnchor.constraint(equalTo: gameTabScroll.frameLayoutGuide.heightAnchor, constant: -4)
         ])
     }
 
@@ -688,17 +713,37 @@ class GameViewController: UIViewController {
             child.removeFromSuperview()
         }
         let tabs = library.gameTabItems(for: self)
-        gameTabHeight?.constant = 34
+        gameTabHeight?.constant = 40
         gameTabScroll.isHidden = false
+        tabActions.isHidden = false
+        let ready = ownsLiveGameSession() && startupWatchdog == nil && !gameStopRequested
+        tabAddButton.isEnabled = tabs.count < JarBoxGameStorage.maxTotalTabs && ready
+        tabRemoveButton.isEnabled = tabs.count > 1 && cloneID != nil && ready
+        tabAddButton.alpha = tabAddButton.isEnabled ? 1 : 0.35
+        tabRemoveButton.alpha = tabRemoveButton.isEnabled ? 1 : 0.35
         var selectedButton: UIButton?
         for tab in tabs {
             let selected = tab.id == cloneID
             let button = UIButton(type: .system)
-            button.setTitle((!selected && tab.running ? "● " : "") + tab.title, for: .normal)
+            button.setTitle(tab.title, for: .normal)
             button.setTitleColor(.white, for: .normal)
             button.titleLabel?.font = .systemFont(ofSize: 13, weight: selected ? .semibold : .regular)
             button.titleLabel?.lineBreakMode = .byTruncatingTail
-            button.contentEdgeInsets = UIEdgeInsets(top: 0, left: 12, bottom: 0, right: 12)
+            button.contentEdgeInsets = UIEdgeInsets(top: 4, left: 12, bottom: 0, right: 12)
+            if tab.running {
+                let dot = UIView()
+                dot.backgroundColor = .systemGreen
+                dot.layer.cornerRadius = 3
+                dot.isUserInteractionEnabled = false
+                dot.translatesAutoresizingMaskIntoConstraints = false
+                button.addSubview(dot)
+                NSLayoutConstraint.activate([
+                    dot.centerXAnchor.constraint(equalTo: button.centerXAnchor),
+                    dot.centerYAnchor.constraint(equalTo: button.topAnchor),
+                    dot.widthAnchor.constraint(equalToConstant: 6),
+                    dot.heightAnchor.constraint(equalToConstant: 6)
+                ])
+            }
             button.backgroundColor = UIColor(white: selected ? 0.30 : 0.13, alpha: 1)
             button.layer.cornerRadius = 7
             button.accessibilityTraits = selected ? [.button, .selected] : .button
@@ -717,17 +762,69 @@ class GameViewController: UIViewController {
         }
     }
 
+    func gameTabStateDidChange() {
+        guard isViewLoaded, view.window != nil, !libraryIsPresented else { return }
+        refreshGameTabStrip()
+    }
+
+    private func showTabOperationError(_ error: Error) {
+        guard viewIfLoaded?.window != nil, !isBeingDismissed else { return }
+        let alert = UIAlertController(title: "Không thể thực hiện", message: error.localizedDescription,
+                                      preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "OK", style: .cancel))
+        present(alert, animated: true)
+    }
+
+    @objc private func addTabBesideTapped() {
+        guard let library = sessionLibrary, ownsVisibleGameSession(), startupWatchdog == nil,
+              !gameStopRequested, !libraryIsPresented, presentedViewController == nil else { return }
+        do {
+            let id = try library.createTabBeside(self)
+            refreshGameTabStrip()
+            switchGameTab(to: id)
+        } catch { showTabOperationError(error) }
+    }
+
+    @objc private func removeCurrentTabTapped() {
+        guard let library = sessionLibrary, let token = nativeSessionToken, cloneID != nil,
+              ownsVisibleGameSession(), startupWatchdog == nil,
+              !gameStopRequested, !libraryIsPresented, presentedViewController == nil else { return }
+        let title = library.gameTabItems(for: self).first(where: { $0.id == cloneID })?.title ?? "Tab"
+        let alert = UIAlertController(title: "Xóa " + title + "?",
+            message: "Tab đang chạy sẽ dừng. Dữ liệu và cài đặt riêng của tab này sẽ bị xóa vĩnh viễn.",
+            preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "Hủy", style: .cancel))
+        alert.addAction(UIAlertAction(title: "Dừng và xóa", style: .destructive) { [weak self, weak library] _ in
+            guard let self, let library else { return }
+            do {
+                try library.armForegroundTabDeletion(self, expectedToken: token)
+                self.requestGameStop(reason: "delete_tab")
+            } catch { self.showTabOperationError(error) }
+        })
+        present(alert, animated: true)
+    }
+
     private func switchGameTab(to target: UUID?) {
         guard target != cloneID, let library = sessionLibrary,
               ownsLiveGameSession(), startupWatchdog == nil,
               !gameStopRequested, !libraryIsPresented,
               presentedViewController == nil else { return }
+        do {
+            try library.validateGameTabSwitch(self, target: target)
+        } catch {
+            showTabOperationError(error)
+            return
+        }
         requestedTabSwitch = { [weak self, weak library] in
             guard let self else { return }
             library?.openGameTabAfterPark(self, cloneID: target)
         }
         defer { requestedTabSwitch = nil }
         openLibraryKeepingGame()
+        if !libraryIsPresented, ownsVisibleGameSession(), presentedViewController == nil {
+            showTabOperationError(NSError(domain: "JarBox.Tab", code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "Chưa thể Treo tab hiện tại. Hãy thử lại."]))
+        }
     }
 
     private func setupNGageLayout(portrait: Bool = false) {
@@ -1075,10 +1172,15 @@ class GameViewController: UIViewController {
         let path = jarPath
         let closing = cloneID
         library?.managedGameDidEnd(self)
+        library?.beginGameTabTransition()
         let finish = { [weak self, weak library] in
-            guard let self else { return }
+            guard let self else {
+                library?.finishGameTabTransitionIfIdle()
+                return
+            }
             self.dismiss(animated: false) { [weak library] in
                 library?.openNextRunningTabAfterExit(path: path, closing: closing)
+                library?.finishGameTabTransitionIfIdle()
             }
         }
         if let modal = presentedViewController {
@@ -3778,6 +3880,7 @@ class GameViewController: UIViewController {
             backButton.isEnabled = true
             closeTabButton.accessibilityLabel = "Đóng tab"
         }
+        gameTabStateDidChange()
     }
 
     private func showBlockedSessionAlert() {
@@ -3895,6 +3998,8 @@ class GameViewController: UIViewController {
             return
         }
         gameStopRequested = true
+        tabAddButton.isEnabled = false
+        tabRemoveButton.isEnabled = false
         backButton.isEnabled = false
         closeTabButton.accessibilityLabel = "Đang dừng game"
         NSLog("[JarBoxVM][Lifecycle] cancel_requested reason=%@ phase=%d",
@@ -4120,7 +4225,9 @@ class GameViewController: UIViewController {
             emulatorView.clearPendingGameFrame()
             if activeGameViewController === self { activeGameViewController = nil }
             let switchTab = requestedTabSwitch
+            if switchTab != nil { library.beginGameTabTransition() }
             dismiss(animated: false) { [weak self, weak library] in
+                defer { library?.finishGameTabTransitionIfIdle() }
                 guard let self else { return }
                 library?.managedGameDidPark(self)
                 library?.rememberExitedGameTab(self)
