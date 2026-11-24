@@ -913,3 +913,19 @@ session recovery remains available when no resumable owner remains. Rename
 the global sleep screen to "Bảo vệ màn hình" without changing Treo runtime,
 existing sampling, storage, or admission. Updated the navigation host
 harness and source guards. iOS/Codemagic and full suite remain to be run.
+
+## Last-tab identity: snapshot the parked native token
+
+Remember the exact controller and its current parked session token at a
+successful park (or legacy overlay creation). Require both retained identity
+and the same live parked native token on menu activation; no fallback to a
+different controller or a reused token. Clear the snapshot on retirement.
+Recheck that there is no live owner before opening the exceptional recovery
+action, since a previously constructed menu may be stale. No changes to
+the library layout, native stop, Treo mode, save paths or JVM admission.
+
+Validation: isolated Swift host model of the menu and owner predicates
+passed 1,000 cycles, including token replacement, live-but-not-parked,
+stale activation, presentation gate, retirement, and legacy overlay.
+Repository regression expanded to extract the production methods and
+check the token/recovery guards. Full test suite and iOS build not run.

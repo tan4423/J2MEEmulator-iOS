@@ -7,6 +7,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 LIBRARY = ROOT / "J2MEEmulator/UI/AppsListViewController.swift"
+GAME = ROOT / "J2MEEmulator/UI/GameViewController.swift"
 PRELUDE = r'''
 import Foundation
 
@@ -45,6 +46,9 @@ class GameViewController {
     var live = true
     var native = true
     var resumes = 0
+    var token: UInt64 = 1
+    var parked = true
+    var parkedSessionToken: UInt64? { parked && live && token != 0 ? token : nil }
     func ownsLiveGameSession() -> Bool { live }
     func holdsNativeGameSession() -> Bool { native }
     func resumeParkedGame() { resumes += 1 }
@@ -57,6 +61,7 @@ class Library {
     var canPresentGame = true
     var managedGames: [GameViewController] = []
     weak var lastManagedParkedGame: GameViewController?
+    var lastManagedParkedToken: UInt64?
     weak var parkedGameController: GameViewController?
     var importBarButton: UIBarButtonItem? = UIBarButtonItem("+")
     var jarBoxMenuButton: UIBarButtonItem? = UIBarButtonItem("Menu")
@@ -67,6 +72,11 @@ class Library {
 '''
 MAIN = r'''
     func refresh() { updateStuckSessionButton() }
+    func setLegacy(_ game: GameViewController) {
+        parkedGameController = game
+        rememberLastParkedGame(game)
+        refresh()
+    }
     func menuAction(_ title: String) -> UIAction? {
         jarBoxMenuButton?.menu?.children.compactMap { $0 as? UIAction }
             .first { $0.title == title }
@@ -87,6 +97,7 @@ MAIN = r'''
 let lib = Library()
 for _ in 0..<1000 {
     let a = GameViewController(), b = GameViewController()
+    a.token = 1; b.token = 2
     lib.managedGames = [a, b]
     lib.activeCount = 2
     lib.managedGameDidPark(a)
@@ -97,6 +108,24 @@ for _ in 0..<1000 {
     lib.expect(true, false)
     lib.resume()
     precondition(a.resumes == 1 && b.resumes == 1)
+    // A stale menu cannot target the same controller with a new token, or
+    // a controller that is live but no longer parked.
+    let oldAction = lib.menuAction("Vào Tab cuối")!
+    b.token = 3
+    lib.refresh()
+    lib.expect(false, false)
+    oldAction.handler(oldAction)
+    precondition(b.resumes == 1)
+    lib.managedGameDidPark(b)
+    lib.expect(true, false)
+    b.parked = false
+    lib.refresh()
+    lib.expect(false, false)
+    lib.resume()
+    precondition(b.resumes == 1)
+    b.parked = true
+    lib.refresh()
+    lib.expect(true, false)
     lib.canPresentGame = false
     lib.resume()
     precondition(b.resumes == 1)
@@ -119,10 +148,14 @@ for _ in 0..<1000 {
     lib.managedGameDidEnd(a)
     lib.expect(false, false)
     let legacy = GameViewController()
-    lib.parkedGameController = legacy
     lib.activeCount = 1
-    lib.refresh()
+    lib.setLegacy(legacy)
     lib.expect(true, false)
+    lib.resume()
+    precondition(legacy.resumes == 1)
+    legacy.token = 4
+    lib.refresh()
+    lib.expect(false, false)
     lib.resume()
     precondition(legacy.resumes == 1)
     lib.parkedGameController = nil
@@ -137,6 +170,7 @@ def harness(source):
     starts = (
         "    private var retainedGames:",
         "    private var liveGames:",
+        "    private func rememberLastParkedGame(",
         "    private var lastParkedGame:",
         "    func managedGameDidPark(",
         "    func managedGameDidEnd(",
@@ -153,6 +187,14 @@ def harness(source):
 
 
 class LibrarySessionNavigationTest(unittest.TestCase):
+    def test_parked_token_and_recovery_guards(self):
+        game = GAME.read_text(encoding="utf-8")
+        self.assertIn("guard libraryIsPresented, parkedTreoActive, ownsLiveGameSession()", game)
+        library = LIBRARY.read_text(encoding="utf-8")
+        self.assertIn("game.parkedSessionToken == token", library)
+        self.assertIn("if let parked = parkedGameController { rememberLastParkedGame(parked) }", library)
+        self.assertIn("guard liveGames.isEmpty, jvm_bridge_session_is_active() != 0", library)
+
     def test_last_parked_owner_and_menu_lifecycle(self):
         swift = shutil.which("swiftc")
         if not swift:

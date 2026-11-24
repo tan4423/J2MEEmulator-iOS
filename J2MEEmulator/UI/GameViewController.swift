@@ -3827,6 +3827,12 @@ class GameViewController: UIViewController {
         (path == nil || path == jarPath)
     }
 
+    // Only the same live, parked native session is eligible for last-tab resume.
+    var parkedSessionToken: UInt64? {
+        guard libraryIsPresented, parkedTreoActive, ownsLiveGameSession() else { return nil }
+        return gameSessionToken
+    }
+
     /// Path alone does not identify a tab: clones share one original JAR.
     func ownsLiveInstance(for path: String, cloneID candidate: UUID?) -> Bool {
         ownsLiveGameSession(for: path) && candidate == cloneID

@@ -382,6 +382,7 @@ class AppsListViewController: UIViewController,
     // Keep STARTING/STOPPING controllers until their native tokens retire.
     private var managedGames: [GameViewController] = []
     private weak var lastManagedParkedGame: GameViewController?
+    private var lastManagedParkedToken: UInt64?
 
     private var retainedGames: [GameViewController] {
         if let parked = parkedGameController,
@@ -405,16 +406,21 @@ class AppsListViewController: UIViewController,
 
     // Remember the exact tab last left for the library, not the first tab
     // in the controller array or another clone sharing the same JAR.
+    private func rememberLastParkedGame(_ game: GameViewController) {
+        lastManagedParkedGame = game
+        lastManagedParkedToken = game.parkedSessionToken
+    }
+
     private var lastParkedGame: GameViewController? {
-        guard let game = lastManagedParkedGame ?? parkedGameController,
+        guard let game = lastManagedParkedGame, let token = lastManagedParkedToken,
               retainedGames.contains(where: { $0 === game }),
-              game.ownsLiveGameSession() else { return nil }
+              game.parkedSessionToken == token else { return nil }
         return game
     }
 
     func managedGameDidPark(_ game: GameViewController) {
         guard managedGames.contains(where: { $0 === game }) else { return }
-        lastManagedParkedGame = game
+        rememberLastParkedGame(game)
         updateStuckSessionButton()
         springboardCollectionView.reloadData()
     }
@@ -426,7 +432,10 @@ class AppsListViewController: UIViewController,
             updateStuckSessionButton()
             return
         }
-        if lastManagedParkedGame === game { lastManagedParkedGame = nil }
+        if lastManagedParkedGame === game {
+            lastManagedParkedGame = nil
+            lastManagedParkedToken = nil
+        }
         managedGames.removeAll { $0 === game }
         updateStuckSessionButton()
         springboardCollectionView.reloadData()
@@ -538,6 +547,8 @@ class AppsListViewController: UIViewController,
             menu: nil)
         globalMenu.accessibilityLabel = "Menu tổng JarBox"
         jarBoxMenuButton = globalMenu
+        // A legacy overlay belongs to one already parked controller.
+        if let parked = parkedGameController { rememberLastParkedGame(parked) }
         updateStuckSessionButton()
 
         let layout = UICollectionViewFlowLayout()
@@ -680,7 +691,7 @@ class AppsListViewController: UIViewController,
     }
 
     @objc private func openStuckSessionRecovery() {
-        guard jvm_bridge_session_is_active() != 0 else {
+        guard liveGames.isEmpty, jvm_bridge_session_is_active() != 0 else {
             updateStuckSessionButton()
             return
         }
