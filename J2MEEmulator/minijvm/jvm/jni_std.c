@@ -659,6 +659,9 @@ s32 java_lang_Runtime_exitInternal(Runtime *runtime, JClass *clazz) {
     //exit(status);
     runtime->jvm->collector->exit_flag = 1;
     runtime->jvm->collector->exit_code = status;
+    // As in host-driven shutdown, release a collector waiting for Java
+    // safepoints before taking the Java thread-list lock.
+    gc_request_thread_status(runtime->jvm->collector, GARBAGE_THREAD_STOP);
     thread_stop_all(runtime->jvm);
 #if _JVM_DEBUG_LOG_LEVEL > 5
     invoke_deepth(runtime);

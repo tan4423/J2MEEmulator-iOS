@@ -880,3 +880,21 @@ references, plus direct live-to-idle transition. Updated the old source
 guard for the snapshot expression; the full existing suite, UIKit build,
 and iPhone verification were not run. This is a UI state fix, not proof
 that every native stop completes.
+
+## 2026-11-24: Request collector STOP before Java-initiated exit drains workers
+
+The native Runtime.exitInternal path bypassed the GC STOP request already
+present in the host-driven teardown paths. It could enter thread_stop_all
+while a collector held the thread-list lock waiting for Java safepoints.
+Request terminal GC STOP for this JVM before entering the drain. Preserve
+the Java exit code and existing lifetime barriers; do not change Java
+monitor wake semantics, storage, Treo policy or admission.
+
+Validation: the host C test compiled the exact old/new JNI function
+excerpts with a modeled GC state and real pthread mutex/worker. Baseline
+failed the STOP-before-drain assertion; replacement passed 1 test
+(0.075s) and 20 ASan+UBSan runs of 100 modeled exits each. Also checks
+repeat exit with DEAD status and isolation from a second collector.
+This does not execute the real Java monitor or GC implementation.
+Full suite, iOS build and device validation remain outstanding, as does
+the thread_stop_all monitor lock-order audit.
