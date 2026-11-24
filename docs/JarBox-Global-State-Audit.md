@@ -837,3 +837,24 @@ when Integer was missing; replacement passed (1 test, 0.066s). Twenty
 ASan+UBSan runs passed, each with 100 repetitions of four injected missing
 classes and a successful bootstrap. The complete miniJVM, native app,
 Codemagic and iPhone tests were not run. Admission remains one.
+
+## 2026-11-24: Unify native startup rollback before MIDlet execution
+
+The five post-allocation native initialization failure paths called the
+ordinary jvm_destroy path even though no MIDlet had run. Centralize the
+rollback helper: latch the exact slot's stop flag, mark forced shutdown
+to skip normal Java shutdown hooks, preserve the existing worker/lease
+drain, clear the pointer only after destruction, and reset legacy mirrors
+only in the one-VM build. Existing native resource release ordering is
+unchanged. Also honor cancellation immediately after Java bootstrap,
+before registering additional native resources. Admission and save
+storage are unchanged; this is not a general solution to monitor
+deadlocks or allocation failures.
+
+Validation: host unittest executed the matching C helper with mocked JVM
+destruction (1 test, 0.066s). Twenty ASan+UBSan runs passed, each with 100
+modeled rollbacks and a separate untouched owner. Equivalent source
+predicates on the SHA-pinned full bridge rejected the original and
+accepted the replacement, including all five failure branches and
+the new cancellation checkpoint. The full Python suite, iOS build,
+real shutdown hooks and device timing/data integrity remain unverified.

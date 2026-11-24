@@ -648,6 +648,19 @@ int jvm_bridge_interrupt_active_threads(void) {
 /* 3D supersampling scale — shared by M3G (reads directly) and MC3D (via system property) */
 int g_render_3d_scale = 1;
 
+static void bridge_discard_unstarted_vm(JarBoxVMContext *slot) {
+    // No MIDlet ran. Latch cancellation and skip normal Java shutdown hooks,
+    // but retain the slot until jvm_destroy has drained every heap lease.
+    atomic_store_explicit(&slot->stop_requested, 1, memory_order_release);
+    slot->jvm->collector->exit_flag = 1;
+    jvm_destroy(slot->jvm);
+    slot->jvm = NULL;
+    if (jvm_bridge_supported_concurrent_sessions() == 1) {
+        atomic_store_explicit(&treo_exact_ninja_verified, 0, memory_order_release);
+        atomic_store_explicit(&treo_nso_init_target_active, 0, memory_order_release);
+    }
+}
+
 static int bridge_init_slot(JarBoxVMContext *slot, const char *res_root, const char *save_root, const char *midlet_jar,
                     int screen_width, int screen_height, int render_3d_scale,
                     int fps_limit) {
@@ -729,13 +742,14 @@ static int bridge_init_slot(JarBoxVMContext *slot, const char *res_root, const c
     s32 ret = jvm_init(slot->jvm, (c8 *)bootclasspath, (c8 *)classpath);
     if (ret) {
         printf("[JVM Bridge] ERROR: jvm_init() failed with code %d\n", ret);
-        jvm_destroy(slot->jvm);
-        slot->jvm = NULL;
-        if (jvm_bridge_supported_concurrent_sessions() == 1) {
-            atomic_store_explicit(&treo_exact_ninja_verified, 0, memory_order_release);
-            atomic_store_explicit(&treo_nso_init_target_active, 0, memory_order_release);
-        }
+        bridge_discard_unstarted_vm(slot);
         return -3;
+    }
+    // The Java core is initialized, but no MIDlet or native UI has started.
+    // A queued cancel can retire now instead of registering more resources.
+    if (atomic_load_explicit(&slot->stop_requested, memory_order_acquire)) {
+        bridge_discard_unstarted_vm(slot);
+        return -9;
     }
     // The registry retains an independently owned JarBoxSession reference
     // until DEAD; token/pointer reuse cannot expose a freed session.
@@ -743,8 +757,7 @@ static int bridge_init_slot(JarBoxVMContext *slot, const char *res_root, const c
             atomic_load_explicit(&slot->token, memory_order_acquire),
             slot->jvm->session)) {
         printf("[JarBoxVM][Lifecycle] failed to bind JVM registry owner\n");
-        jvm_destroy(slot->jvm);
-        slot->jvm = NULL;
+        bridge_discard_unstarted_vm(slot);
         return -8;
     }
 
@@ -752,12 +765,7 @@ static int bridge_init_slot(JarBoxVMContext *slot, const char *res_root, const c
     // a generation key (including when a subsequent heap reuses an address).
     if (!jarbox_native_heap_register_vm(slot->jvm)) {
         printf("[JarBoxVM][Lifecycle] no free native heap ledger slot\n");
-        jvm_destroy(slot->jvm);
-        slot->jvm = NULL;
-        if (jvm_bridge_supported_concurrent_sessions() == 1) {
-            atomic_store_explicit(&treo_exact_ninja_verified, 0, memory_order_release);
-            atomic_store_explicit(&treo_nso_init_target_active, 0, memory_order_release);
-        }
+        bridge_discard_unstarted_vm(slot);
         return -7;
     }
 
@@ -766,24 +774,14 @@ static int bridge_init_slot(JarBoxVMContext *slot, const char *res_root, const c
     if (!j2me_input_reg_natives(slot->jvm)) {
         printf("[JarBoxVM][Lifecycle] cannot reserve independent input context\n");
         jarbox_native_heap_unregister_vm(slot->jvm);
-        jvm_destroy(slot->jvm);
-        slot->jvm = NULL;
-        if (jvm_bridge_supported_concurrent_sessions() == 1) {
-            atomic_store_explicit(&treo_exact_ninja_verified, 0, memory_order_release);
-            atomic_store_explicit(&treo_nso_init_target_active, 0, memory_order_release);
-        }
+        bridge_discard_unstarted_vm(slot);
         return -4;
     }
     if (!j2me_ui_reg_natives(slot->jvm)) {
         printf("[JarBoxVM][Lifecycle] cannot reserve independent LCDUI context\n");
         j2me_input_release_vm(slot->jvm);
         jarbox_native_heap_unregister_vm(slot->jvm);
-        jvm_destroy(slot->jvm);
-        slot->jvm = NULL;
-        if (jvm_bridge_supported_concurrent_sessions() == 1) {
-            atomic_store_explicit(&treo_exact_ninja_verified, 0, memory_order_release);
-            atomic_store_explicit(&treo_nso_init_target_active, 0, memory_order_release);
-        }
+        bridge_discard_unstarted_vm(slot);
         return -6;
     }
     j2me_render_reg_natives(slot->jvm);
