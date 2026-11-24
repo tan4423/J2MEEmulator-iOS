@@ -83,7 +83,8 @@ class Runtime2DPolicyTest(unittest.TestCase):
         self.assertFalse(report["2d_only_runtime_validated"])
         self.assertFalse(report["concurrent_jvms_safe_to_enable"])
         self.assertFalse(report["enforced_single_active_jvm"])
-        self.assertEqual(report["configured_session_cap"], 2)
+        # The registry ceiling is not a guarantee of safe live JVM count.
+        self.assertEqual(report["configured_session_cap"], 64)
         self.assertTrue(report["experimental_multi_session_enabled"])
         self.assertNotIn("3d_global_m3g_cleanup", report["2d_only_candidate_blockers"])
         self.assertIn("3d_global_m3g_cleanup", report["unisolated_native_blockers"])
