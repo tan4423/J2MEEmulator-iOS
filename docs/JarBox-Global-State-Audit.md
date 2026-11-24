@@ -496,3 +496,22 @@ Original Python blobs and the tested replacement blobs were hash-checked.
 A complete repository checkout, full Python suite, native iOS build,
 Codemagic and device validation were not available in this environment.
 The native runtime and the single-JVM admission cap are unchanged.
+
+## 2026-11-24: Back requires a running owner and confirmed native park
+
+P1 single-VM behavior: the managed library path previously cancelled the
+startup watchdog before checking the global bridge phase; the legacy
+overlay path hid the render destination even if native park/Treo was
+refused. Back now checks the exact token via the existing pinned
+`treo_mode_for_token` visitor before altering diagnostics or input, and
+both paths share a single park attempt. The watchdog is cancelled and
+the visible game detached only after `parkedTreoActive` is confirmed.
+No new timer, native API, or runtime admission change is introduced.
+
+Validation: the SHA-pinned original Swift method was reproduced in a
+local source fixture. The new Python source-contract regression failed
+on the original method and passed on the replacement (1 test).
+`swiftc -frontend -parse` accepted the replacement method in a dummy
+class; this is syntax checking, not UIKit type checking or execution.
+Full checkout, iOS build and real Back/Treo/resume device tests remain
+outstanding.

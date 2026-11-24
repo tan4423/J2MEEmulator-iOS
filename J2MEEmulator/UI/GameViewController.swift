@@ -3919,18 +3919,21 @@ class GameViewController: UIViewController {
     /// or start another miniJVM.
     @objc private func openLibraryKeepingGame() {
         guard ownsLiveGameSession(), !libraryIsPresented, presentedViewController == nil else { return }
-        finishStartupWatchdog()
+        // Token-scoped visitor returns -1 unless this owner is RUNNING.
+        // Do not revoke STARTING focus or cancel its startup watchdog.
+        guard treo_mode_for_token(gameSessionToken) >= 0 else { return }
         stopJarAudit()
         discardCPUProfile()
         for code in Array(heldDirections) { releaseDirection(code) }
         if blackout != nil { hideBlackout() }  // restore screen brightness and probes
 
+        // Both managed and legacy libraries require a successful native
+        // park before hiding the game's only visible destination.
+        startParkedTreo()
+        guard parkedTreoActive else { return }
+        finishStartupWatchdog()
+
         if let library = sessionLibrary {
-            // Do not detach a STARTING VM: mode-8 visitors need a RUNNING
-            // owner. Leave the existing startup/cancel controls available.
-            guard jvm_bridge_session_phase() == 2 else { return }
-            startParkedTreo()
-            guard parkedTreoActive else { return }
             libraryIsPresented = true
             alertTimeoutWork?.cancel()
             alertTimeoutWork = nil
@@ -3963,7 +3966,6 @@ class GameViewController: UIViewController {
         // itself performs no recurring CPU sampling or background animation.
         setGlobalEmulatorView(nil)
         emulatorView.clearPendingGameFrame()
-        startParkedTreo()
         NSLog("[JarBoxVM][Park] session=%llu jar=%@", gameSessionToken,
               URL(fileURLWithPath: jarPath).lastPathComponent)
         present(navigation, animated: false)
