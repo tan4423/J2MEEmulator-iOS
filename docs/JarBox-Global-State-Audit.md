@@ -819,3 +819,21 @@ one Python regression and 50 ASan+UBSan executions, each checking
 boundary, negative delay and clock failure cases. The mock does not
 measure actual scheduling or mutex release on iOS. Full suite, build
 and device validation remain outstanding.
+
+## 2026-11-24: Release bootstrap Runtime when a required class is missing
+
+Check all four required core class lookups before creating instances.
+Reuse the validated Thread class and funnel all results through one
+temporary Runtime/string cleanup path. On a missing class, set exit_flag
+so the failed startup does not launch shutdown hooks. Transfer objects
+to the collector before destroying the bootstrap Runtime. No change to
+successful class initialization order or storage, Treo policy, admission,
+or MIDlet execution. This handles missing class lookup results, not all
+allocation or class-initializer failures.
+
+Validation: host unittest compiled the matching C excerpts with mocked
+class loading and heap operations. Baseline failed the cleanup assertion
+when Integer was missing; replacement passed (1 test, 0.066s). Twenty
+ASan+UBSan runs passed, each with 100 repetitions of four injected missing
+classes and a successful bootstrap. The complete miniJVM, native app,
+Codemagic and iPhone tests were not run. Admission remains one.

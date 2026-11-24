@@ -340,42 +340,47 @@ s32 jvm_init(MiniJVM *jvm, c8 *p_bootclasspath, c8 *p_classpath) {
 
     set_jvm_state(jvm, JVM_STATUS_RUNNING);
 
-    //init load thread, string etc
+    // Bootstrap owns this temporary Runtime until all required classes load.
     Runtime *runtime = runtime_create(jvm);
     runtime->thrd_info->type = THREAD_TYPE_NORMAL;
     Utf8String *clsName = utf8_create_c(STR_CLASS_JAVA_LANG_INTEGER);
-    JClass *c = classes_load_get_with_clinit(NULL, clsName, runtime);
-    if (!c) {
-        jvm_printf("[ERROR]maybe bootstrap classpath misstake: %s \n", p_bootclasspath);
-        return -1;
-    }
-    //load bootstrap class
+    s32 bootstrap_result = -1;
+    if (!classes_load_get_with_clinit(NULL, clsName, runtime)) goto bootstrap_done;
+
     utf8_clear(clsName);
     utf8_append_c(clsName, STR_CLASS_JAVA_LANG_THREAD);
-    classes_load_get_with_clinit(NULL, clsName, runtime);
+    JClass *thread_class = classes_load_get_with_clinit(NULL, clsName, runtime);
+    if (!thread_class) goto bootstrap_done;
 
     utf8_clear(clsName);
     utf8_append_c(clsName, STR_CLASS_SUN_MISC_LAUNCHER);
-    classes_load_get_with_clinit(NULL, clsName, runtime);
-    //for interrupted thread
-    utf8_clear(clsName);
-    utf8_append_c(clsName, STR_CLASS_JAVA_LANG_INTERRUPTED);//must load this class ,because it will be used when thread interrupt ,but it can not load when that thread is marked as interrupted
-    JClass *c2;
-    c2 = classes_load_get_with_clinit(NULL, clsName, runtime);
-    instance_create(runtime, c2);
-    utf8_clear(clsName);
+    if (!classes_load_get_with_clinit(NULL, clsName, runtime)) goto bootstrap_done;
 
+    // InterruptedException must already be loaded when interrupting workers.
+    utf8_clear(clsName);
+    utf8_append_c(clsName, STR_CLASS_JAVA_LANG_INTERRUPTED);
+    JClass *interrupted_class = classes_load_get_with_clinit(NULL, clsName, runtime);
+    if (!interrupted_class) goto bootstrap_done;
+    instance_create(runtime, interrupted_class);
 
     if (!jvm->collector->runtime->thrd_info->jthread) {
-        Instance *inst = instance_create(runtime, classes_get_c(jvm, NULL, STR_CLASS_JAVA_LANG_THREAD));
+        Instance *inst = instance_create(runtime, thread_class);
         jvm->collector->runtime->thrd_info->jthread = inst;
         hashset_put(jvm->collector->objs_holder, inst);
     }
+    bootstrap_result = 0;
 
+bootstrap_done:
+    if (bootstrap_result) {
+        jvm_printf("[ERROR]bootstrap class missing: %s (classpath: %s)\n", utf8_cstr(clsName), p_bootclasspath);
+        // No MIDlet ran. Do not start new shutdown-hook threads on failure.
+        jvm->collector->exit_flag = 1;
+    }
     utf8_destroy(clsName);
     gc_move_objs_thread_2_gc(runtime);
     runtime_destroy(runtime);
     runtime = NULL;
+    if (bootstrap_result) return bootstrap_result;
 
     // Start the collector only after bootstrap succeeds. Creation failure
     // must fail launch instead of leaving cleanup waiting for a nonexistent thread.
