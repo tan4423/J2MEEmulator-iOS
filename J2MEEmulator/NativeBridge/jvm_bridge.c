@@ -467,7 +467,11 @@ int jvm_bridge_park_session(uint64_t token) {
     MiniJVM *owner = bridge_pin_running_owner(token, &held);
     // The visible framebuffer is revoked before any deferred UIKit flush.
     // A STARTING VM has no published renderer to release yet.
-    if (owner) j2me_render_release_vm(owner);
+    if (owner) {
+        j2me_render_release_vm(owner);
+        j2me_input_park_vm(owner);
+        j2me_ui_park_vm(owner);
+    }
     const int parked = jarbox_focus_park_one(&g_bridge_focus, token);
     if (owner) {
         if (parked) (void)jarbox_session_park(held);
@@ -477,6 +481,9 @@ int jvm_bridge_park_session(uint64_t token) {
 }
 
 int jvm_bridge_focus_session(uint64_t token) {
+    // A tab coordinator must park the previous owner before selecting B.
+    const uint64_t visible = jarbox_focus_visible(&g_bridge_focus);
+    if (visible && visible != token) return 0;
     JarBoxSession *held = NULL;
     MiniJVM *owner = bridge_pin_running_owner(token, &held);
     if (!owner) return 0;
@@ -486,7 +493,16 @@ int jvm_bridge_focus_session(uint64_t token) {
                       j2me_input_focus_vm(owner) &&
                       j2me_ui_focus_vm(owner);
     const int selected = ready ? jarbox_focus_select(&g_bridge_focus, token) : 0;
-    if (selected) (void)jarbox_session_enter_foreground(held);
+    if (selected) {
+        (void)jarbox_session_enter_foreground(held);
+    } else {
+        // A partial native focus acquisition must not leave an input or
+        // framebuffer destination attached to a hidden/failed controller.
+        j2me_render_release_vm(owner);
+        j2me_input_park_vm(owner);
+        j2me_ui_park_vm(owner);
+        (void)jarbox_focus_park_one(&g_bridge_focus, token);
+    }
     jarbox_session_callback_done(held);
     return selected;
 }
@@ -868,16 +884,24 @@ int jvm_bridge_request_stop_for_token(uint64_t token) {
     pthread_mutex_lock(&g_bridge_lifecycle_lock);
     JarBoxVMContext *slot = bridge_find_slot_locked(token);
     const int matching = slot != NULL;
+    JarBoxSession *held = NULL;
+    MiniJVM *owner = NULL;
     if (slot) {
+        // Pin before marking the registry STOPPING (which rejects new
+        // callbacks). Wake this Display even when it is no longer visible.
+        if (atomic_load_explicit(&slot->phase, memory_order_acquire) == BRIDGE_RUNNING)
+            owner = (MiniJVM *)jarbox_registry_pin_vm(&g_bridge_registry, token, &held);
         atomic_store_explicit(&slot->stop_requested, 1, memory_order_release);
         (void)jarbox_registry_request_stop(&g_bridge_registry, token);
     }
     pthread_mutex_unlock(&g_bridge_lifecycle_lock);
-    if (matching) {
+    if (owner) {
+        j2me_display_wake_for_vm(owner);
+        jarbox_session_callback_done(held);
+    }
+    if (matching)
         printf("[JarBoxVM][Lifecycle] stop_requested token=%llu\n",
                (unsigned long long)token);
-        j2me_display_wake();
-    }
     return matching;
 }
 void jvm_bridge_request_stop(void) {

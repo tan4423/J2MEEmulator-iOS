@@ -117,6 +117,16 @@ int j2me_input_focus_vm(MiniJVM *vm) {
     return ctx != NULL;
 }
 
+/* Parking revokes physical input only; Java event queues and the Display
+ * waiter remain bound to this exact JVM. A hidden owner cannot clear B. */
+void j2me_input_park_vm(MiniJVM *vm) {
+    pthread_mutex_lock(&g_input_context_lock);
+    J2MEInputContext *ctx = context_for_vm(vm);
+    if (ctx && visible_input_context() == ctx)
+        atomic_store_explicit(&g_visible_input_context, NULL, memory_order_release);
+    pthread_mutex_unlock(&g_input_context_lock);
+}
+
 // Only enabled for the known TrungDucTV NSO mod during its normal game
 // runtime. Do not log every key or every frame on other Java ME games.
 extern _Atomic int treo_nso_init_target_active;
@@ -158,6 +168,11 @@ static void wake_input_context(J2MEInputContext *ctx) {
 }
 void j2me_display_wake(void) {
     wake_input_context(visible_input_context());
+}
+void j2me_display_wake_for_vm(MiniJVM *vm) {
+    pthread_mutex_lock(&g_input_context_lock);
+    wake_input_context(context_for_vm(vm));
+    pthread_mutex_unlock(&g_input_context_lock);
 }
 void treo_display_wait_set(int enabled) {
     J2MEInputContext *ctx = visible_input_context();

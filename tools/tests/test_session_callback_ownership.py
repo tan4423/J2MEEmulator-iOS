@@ -17,11 +17,12 @@ class SessionCallbackOwnershipTest(unittest.TestCase):
             self.swift, "private func dispatchMIDPScreenAction(",
             "\nlet gameUICallback:")
         self.assertIn("guard ownerKey != 0 else { return }", callback)
-        self.assertIn("let sourceToken = jvm_bridge_session_token()", callback)
-        self.assertIn("jvm_bridge_session_token() == sourceToken", callback)
+        self.assertNotIn("let sourceToken = jvm_bridge_session_token()", callback)
+        self.assertIn("vc.ownsVisibleGameSession()", callback)
+        self.assertIn("jvm_bridge_visible_session_token() == gameSessionToken", self.swift)
         self.assertIn("j2me_ui_focused_owner_key() == ownerKey", callback)
         self.assertIn("j2me_render_visible_owner_key() == ownerKey", callback)
-        self.assertIn("vc.ownsLiveGameSession()", callback)
+        self.assertIn("vc.ownsVisibleGameSession()", callback)
         self.assertNotIn("ownerKey == 0 ||", callback)
 
     def test_alert_action_and_timeout_reject_stale_session(self):
@@ -30,7 +31,8 @@ class SessionCallbackOwnershipTest(unittest.TestCase):
         self.assertLess(alert.index("if libraryIsPresented"),
                         alert.index("let originKey = j2me_ui_focused_owner_key()"))
         self.assertIn("self.gameSessionToken == originToken", alert)
-        self.assertIn("jvm_bridge_session_token() == originToken", alert)
+        self.assertIn("jvm_bridge_visible_session_token() == originToken", alert)
+        self.assertIn("jvm_bridge_session_is_active_for_token(originToken)", alert)
         self.assertIn("j2me_ui_focused_owner_key() == originKey", alert)
         self.assertIn("j2me_render_visible_owner_key() == originKey", alert)
         self.assertIn("j2me_ui_revision() == revision", alert)

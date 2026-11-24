@@ -311,6 +311,17 @@ int j2me_ui_focus_vm(MiniJVM *vm) {
     return index >= 0;
 }
 
+/* Keep the screen contents and its callback route for resume, but revoke
+ * the focused getter destination. Never clear a different tab's index. */
+void j2me_ui_park_vm(MiniJVM *vm) {
+    pthread_mutex_lock(&g_ui_contexts_lock);
+    int index = ui_slot_for_vm(vm);
+    if (index >= 0 &&
+        atomic_load_explicit(&g_ui_focused_index, memory_order_acquire) == index)
+        atomic_store_explicit(&g_ui_focused_index, -1, memory_order_release);
+    pthread_mutex_unlock(&g_ui_contexts_lock);
+}
+
 void j2me_ui_release_vm(MiniJVM *vm) {
     pthread_mutex_lock(&g_ui_contexts_lock);
     int index = ui_slot_for_vm(vm);

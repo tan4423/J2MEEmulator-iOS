@@ -3814,6 +3814,14 @@ class GameViewController: UIViewController {
         ownsLiveGameSession(for: path) && candidate == cloneID
     }
 
+    // Only the current visible native token may receive physical UIKit
+    // screen actions. The callback's heap generation is checked separately.
+    func ownsVisibleGameSession() -> Bool {
+        ownsLiveGameSession() &&
+        !libraryIsPresented &&
+        jvm_bridge_visible_session_token() == gameSessionToken
+    }
+
     func holdsNativeGameSession(for path: String? = nil) -> Bool {
         ownsJVMSession && gameSessionToken != 0 &&
         jvm_bridge_session_is_active_for_token(gameSessionToken) != 0 &&
@@ -4095,6 +4103,7 @@ class GameViewController: UIViewController {
             deferredGameAlert = true
             return
         }
+        guard ownsVisibleGameSession() else { return }
         let originKey = j2me_ui_focused_owner_key()
         guard originKey != 0,
               j2me_render_visible_owner_key() == originKey else { return }
@@ -4105,8 +4114,8 @@ class GameViewController: UIViewController {
             guard let self else { return false }
             return self.ownsJVMSession &&
                 self.gameSessionToken == originToken &&
-                jvm_bridge_session_token() == originToken &&
-                jvm_bridge_session_is_active() != 0 &&
+                jvm_bridge_visible_session_token() == originToken &&
+                jvm_bridge_session_is_active_for_token(originToken) != 0 &&
                 j2me_ui_focused_owner_key() == originKey &&
                 j2me_render_visible_owner_key() == originKey &&
                 j2me_ui_revision() == revision
@@ -4167,12 +4176,12 @@ private func dispatchMIDPScreenAction(_ action: Int32, _ revision: Int32,
     // The unowned legacy callback cannot prove whether A or B queued an
     // event. All iOS sessions install ownedGameUICallback; fail closed.
     guard ownerKey != 0 else { return }
-    let sourceToken = jvm_bridge_session_token()
-    guard sourceToken != 0 else { return }
+    // Native focus replay can originate on UIKit rather than a Java
+    // pthread. Do not infer its token from the previous foreground owner.
+    // The immutable heap generation identifies this event; after the hop,
+    // require the controller's own token to be the selected visible one.
     DispatchQueue.main.async {
-        guard jvm_bridge_session_token() == sourceToken,
-              jvm_bridge_session_is_active() != 0,
-              j2me_render_visible_owner_key() == ownerKey,
+        guard j2me_render_visible_owner_key() == ownerKey,
               j2me_ui_focused_owner_key() == ownerKey else { return }
         j2me_ui_lock_screen()
         defer { j2me_ui_unlock_screen() }
@@ -4180,7 +4189,7 @@ private func dispatchMIDPScreenAction(_ action: Int32, _ revision: Int32,
               j2me_render_visible_owner_key() == ownerKey,
               j2me_ui_focused_owner_key() == ownerKey,
               let vc = activeGameViewController,
-              vc.ownsLiveGameSession() else { return }
+              vc.ownsVisibleGameSession() else { return }
         switch action {
         case Int32(J2ME_UI_ACTION_SHOW_FORM), Int32(J2ME_UI_ACTION_SHOW_TEXTBOX),
              Int32(J2ME_UI_ACTION_SHOW_LIST), Int32(J2ME_UI_ACTION_SHOW_ALERT):

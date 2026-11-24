@@ -433,3 +433,14 @@ mutex is independent of lifecycle, and snapshots copy into thread-local
 storage before unlocking. The Swift runner requests the exact token's
 error/trace before retirement; no B launch resets A's record. This is
 observability isolation, not evidence of safe concurrent 3D or native JIT.
+
+## 2026-11-24: Park revokes only the selected native destinations
+
+Parking revokes physical input and LCDUI focus alongside framebuffer
+visibility, without clearing the hidden JVM's queues or screen data.
+A failed partial focus rolls back only its own destinations. The stop
+request now pins the target before closing callback admission and wakes
+that JVM's Display context even when hidden. UIKit MIDP focus replay uses
+the immutable frame generation plus the controller's visible token on the
+main queue, rather than deriving the event token from old foreground state.
+Single-JVM admission remains enforced. Device testing remains outstanding.

@@ -22,6 +22,7 @@ int j2me_input_reg_natives(MiniJVM *jvm);
 /// Bind physical iOS input focus to this already-registered JVM.
 /// Does not create, start or resume any JVM.
 int j2me_input_focus_vm(MiniJVM *jvm);
+void j2me_input_park_vm(MiniJVM *jvm);
 
 /// Unbind and clear only this JVM's input and wake condition, during
 /// its own shutdown. Must never reset another still-running JVM.
@@ -56,6 +57,7 @@ void treo_display_wait_set(int enabled);
 /// when the token is stale, STOPPING, or not yet bound to a live JVM.
 int treo_display_wait_set_for_token(uint64_t token, int enabled);
 void j2me_display_wake(void);
+void j2me_display_wake_for_vm(MiniJVM *jvm);
 uint64_t treo_display_poll_calls(void);
 uint64_t treo_display_wait_calls(void);
 uint64_t treo_display_gc_safe_wait_calls(void);

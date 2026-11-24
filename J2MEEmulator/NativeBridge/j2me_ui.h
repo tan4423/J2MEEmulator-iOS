@@ -30,6 +30,7 @@ int j2me_ui_reg_natives(MiniJVM *jvm);
 /// Select the context visible to UIKit. This does not start another JVM
 /// or grant safe concurrent execution while renderer/GC remain global.
 int j2me_ui_focus_vm(MiniJVM *jvm);
+void j2me_ui_park_vm(MiniJVM *jvm);
 
 /// Native generation of the currently focused MIDP screen; zero if parked
 /// or released. UIKit must compare this with the frame owner before showing.

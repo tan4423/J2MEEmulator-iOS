@@ -24,6 +24,8 @@ class MultiVMUIIsolationTests(unittest.TestCase):
         self.assertIn("ui_register_vm(MiniJVM *vm)", self.ui)
         self.assertIn("j2me_ui_release_vm(MiniJVM *vm)", self.ui)
         self.assertIn("j2me_ui_focus_vm(MiniJVM *vm)", self.ui)
+        self.assertIn("void j2me_ui_park_vm(MiniJVM *vm)", self.ui)
+        self.assertIn("j2me_ui_park_vm(owner)", self.bridge)
         self.assertIn("if (!j2me_ui_reg_natives(slot->jvm))", self.bridge)
         self.assertIn("j2me_ui_release_vm(slot->jvm)", self.bridge)
         self.assertNotIn('static char g_form_title[256]', self.ui)
