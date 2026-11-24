@@ -308,6 +308,117 @@ enum GameLayoutMode {
     }
 }
 
+// The logical cells include the visual gaps so sliding never drops a key there.
+private enum JarBoxPadGrid {
+    static let codes: [Int32] = [49, -1, 51, -3, -5, -4, 55, -2, 57]
+
+    static func cell(_ index: Int, in bounds: CGRect) -> CGRect {
+        let w = bounds.width / 3
+        let h = bounds.height / 3
+        return CGRect(x: bounds.minX + CGFloat(index % 3) * w,
+                      y: bounds.minY + CGFloat(index / 3) * h, width: w, height: h)
+    }
+
+    static func code(at point: CGPoint, in bounds: CGRect, previous: Int32?) -> Int32? {
+        guard bounds.width > 0, bounds.height > 0, bounds.contains(point) else { return nil }
+        if let previous, let index = codes.firstIndex(of: previous),
+           cell(index, in: bounds).insetBy(dx: -3, dy: -3).contains(point) {
+            return previous
+        }
+        let col = min(2, Int((point.x - bounds.minX) / (bounds.width / 3)))
+        let row = min(2, Int((point.y - bounds.minY) / (bounds.height / 3)))
+        return codes[row * 3 + col]
+    }
+}
+
+// One continuous touch owns the directional pad, not nine independent buttons.
+// Softkeys remain independent sibling controls and can be held simultaneously.
+private final class JarBoxDirectionalPad: UIView {
+    private var keys: [UIButton] = []
+    private var trackedTouch: ObjectIdentifier?
+    private var trackedToken: UInt64 = 0
+    private var activeCode: Int32?
+    var visibleToken: (() -> UInt64?)?
+    var onTransition: ((UInt64, Int32?, Int32?) -> Void)?
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        isMultipleTouchEnabled = false
+        let titles = ["↖", "↑", "↗", "←", "", "→", "↙", "↓", "↘"]
+        let labels = ["Chéo trái trên", "Lên", "Chéo phải trên", "Trái", "Hành động",
+                      "Phải", "Chéo trái dưới", "Xuống", "Chéo phải dưới"]
+        for (index, title) in titles.enumerated() {
+            let button = UIButton(type: .system)
+            button.isUserInteractionEnabled = false
+            button.accessibilityLabel = labels[index]
+            button.setTitle(title, for: .normal)
+            button.titleLabel?.font = .systemFont(ofSize: 19, weight: .semibold)
+            button.setTitleColor(.white, for: .normal)
+            button.tintColor = .white
+            if index == 4 {
+                button.setImage(UIImage(systemName: "square.fill"), for: .normal)
+                button.setPreferredSymbolConfiguration(
+                    UIImage.SymbolConfiguration(pointSize: 15, weight: .medium), forImageIn: .normal)
+            }
+            button.backgroundColor = UIColor(white: 0.17, alpha: 1)
+            button.layer.cornerRadius = 7
+            keys.append(button)
+            addSubview(button)
+        }
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        for (index, button) in keys.enumerated() {
+            button.frame = JarBoxPadGrid.cell(index, in: bounds).insetBy(dx: 2, dy: 2)
+        }
+    }
+
+    private func transition(to code: Int32?) {
+        guard code != activeCode else { return }
+        let previous = activeCode
+        activeCode = code
+        for (index, button) in keys.enumerated() {
+            button.backgroundColor = UIColor(white: JarBoxPadGrid.codes[index] == code ? 0.32 : 0.17, alpha: 1)
+        }
+        onTransition?(trackedToken, previous, code)
+    }
+
+    override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
+        guard trackedTouch == nil, let touch = touches.first,
+              let token = visibleToken?(), token != 0 else { return }
+        trackedTouch = ObjectIdentifier(touch)
+        trackedToken = token
+        update(touch)
+    }
+
+    override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
+        guard let touch = touches.first(where: { ObjectIdentifier($0) == trackedTouch }) else { return }
+        update(touch)
+    }
+
+    private func update(_ touch: UITouch) {
+        guard visibleToken?() == trackedToken else { cancelGameInput(); return }
+        transition(to: JarBoxPadGrid.code(at: touch.location(in: self), in: bounds, previous: activeCode))
+    }
+
+    override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
+        if touches.contains(where: { ObjectIdentifier($0) == trackedTouch }) { cancelGameInput() }
+    }
+
+    override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
+        touchesEnded(touches, with: event)
+    }
+
+    func cancelGameInput() {
+        transition(to: nil)
+        trackedTouch = nil
+        trackedToken = 0
+    }
+}
+
 // MARK: - GameViewController
 
 class GameViewController: UIViewController {
@@ -340,10 +451,12 @@ class GameViewController: UIViewController {
     private var numpadView: NumpadView?
     private enum PadMode { case directions, numbers, hidden }
     private var padMode: PadMode = .directions
-    private var directionalPad: UIStackView?
+    private var directionalPad: JarBoxDirectionalPad?
     private var portraitPanel: UIView?
     private var portraitControlsHeight: NSLayoutConstraint?
-    private var portraitPadBottomPins: [NSLayoutConstraint] = []
+    private var portraitPanelCollapsedHeight: NSLayoutConstraint?
+    private var portraitCanvasAspect: NSLayoutConstraint?
+    private var portraitSoftKeyCenterY: NSLayoutConstraint?
     private let screenMenu = UIButton(type: .system)
     private let gameTabScroll = UIScrollView()
     private let gameTabStack = UIStackView()
@@ -921,9 +1034,15 @@ class GameViewController: UIViewController {
             screenMenu.showsMenuAsPrimaryAction = true
             view.addSubview(screenMenu)
             setupGameTabStrip()
-            let height = panel.heightAnchor.constraint(equalToConstant: 198)
-            height.priority = .defaultHigh
+            // Reserve only the controls' minimum height. If the game fits at
+            // full width, the remaining space stays below the keypad.
+            let height = panel.heightAnchor.constraint(greaterThanOrEqualToConstant: 144)
             portraitControlsHeight = height
+            portraitPanelCollapsedHeight = panel.heightAnchor.constraint(equalToConstant: 0)
+            let aspect = emulatorView.heightAnchor.constraint(equalTo: emulatorView.widthAnchor,
+                                                               multiplier: 1 / canvasRatio)
+            aspect.priority = .defaultHigh
+            portraitCanvasAspect = aspect
             NSLayoutConstraint.activate([
                 backButton.topAnchor.constraint(equalTo: safe.topAnchor, constant: 8),
                 backButton.leadingAnchor.constraint(equalTo: safe.leadingAnchor, constant: 12),
@@ -939,30 +1058,40 @@ class GameViewController: UIViewController {
                 panel.leadingAnchor.constraint(equalTo: safe.leadingAnchor),
                 panel.trailingAnchor.constraint(equalTo: safe.trailingAnchor),
                 panel.bottomAnchor.constraint(equalTo: safe.bottomAnchor),
-                height
+                emulatorView.heightAnchor.constraint(greaterThanOrEqualToConstant: 0)
             ])
             let left = lskButton
             let right = rskButton
+            // The center grid uses two thirds of the safe width; softkeys
+            // occupy the side columns, without adding a fourth control row.
+            for button in [left, right] {
+                button.setTitle(nil, for: .normal)
+                button.setImage(UIImage(systemName: "minus"), for: .normal)
+                button.tintColor = .white
+                button.setPreferredSymbolConfiguration(
+                    UIImage.SymbolConfiguration(pointSize: 20, weight: .semibold), forImageIn: .normal)
+                button.layer.cornerRadius = 7
+            }
+            left.accessibilityLabel = "Phím mềm trái"
+            right.accessibilityLabel = "Phím mềm phải"
+            let softCenter = left.centerYAnchor.constraint(equalTo: panel.topAnchor, constant: 72)
+            portraitSoftKeyCenterY = softCenter
             NSLayoutConstraint.activate([
-                left.leadingAnchor.constraint(equalTo: panel.leadingAnchor, constant: 8),
-                right.trailingAnchor.constraint(equalTo: panel.trailingAnchor, constant: -8),
-                left.topAnchor.constraint(equalTo: panel.topAnchor, constant: 4),
-                right.topAnchor.constraint(equalTo: left.topAnchor),
-                left.widthAnchor.constraint(equalToConstant: 54),
-                right.widthAnchor.constraint(equalToConstant: 54),
-                left.heightAnchor.constraint(equalToConstant: 30),
-                right.heightAnchor.constraint(equalToConstant: 30)
+                left.leadingAnchor.constraint(equalTo: panel.leadingAnchor, constant: 4),
+                left.trailingAnchor.constraint(equalTo: dpad.leadingAnchor, constant: -4),
+                right.leadingAnchor.constraint(equalTo: dpad.trailingAnchor, constant: 4),
+                right.trailingAnchor.constraint(equalTo: panel.trailingAnchor, constant: -4),
+                softCenter,
+                right.centerYAnchor.constraint(equalTo: left.centerYAnchor),
+                left.heightAnchor.constraint(equalToConstant: 44),
+                right.heightAnchor.constraint(equalToConstant: 44)
             ])
-            left.setTitle("L", for: .normal)
-            right.setTitle("R", for: .normal)
-            for padView in [numpad as UIView, dpad as UIView] {
-                // Optional bottom pin lets the hidden panel collapse without conflicting constraints.
-                let bottom = padView.bottomAnchor.constraint(equalTo: panel.bottomAnchor, constant: -6)
-                portraitPadBottomPins.append(bottom)
+            for (padView, padHeight) in [(numpad as UIView, CGFloat(160)), (dpad as UIView, CGFloat(132))] {
                 NSLayoutConstraint.activate([
-                    padView.topAnchor.constraint(equalTo: left.bottomAnchor, constant: 4),
+                    padView.topAnchor.constraint(equalTo: panel.topAnchor, constant: 6),
                     padView.centerXAnchor.constraint(equalTo: panel.centerXAnchor),
-                    padView.widthAnchor.constraint(equalTo: panel.widthAnchor, multiplier: 0.76)
+                    padView.widthAnchor.constraint(equalTo: panel.widthAnchor, multiplier: 2.0 / 3.0),
+                    padView.heightAnchor.constraint(equalToConstant: padHeight)
                 ])
             }
             for overlay in [formView as UIView, listView as UIView] {
@@ -1048,45 +1177,23 @@ class GameViewController: UIViewController {
         view.bringSubviewToFront(closeTabButton)
     }
 
-    private func makeDirectionalPad() -> UIStackView {
-        // Nokia/MIDP direction and FIRE codes, also used by upstream J2ME Loader.
-        let rows: [[(String, Int)]] = [
-            [("", 0), ("↑", -1), ("", 0)],
-            [("←", -3), ("OK", -5), ("→", -4)],
-            [("", 0), ("↓", -2), ("", 0)]
-        ]
-        let stack = UIStackView()
-        stack.axis = .vertical
-        stack.distribution = .fillEqually
-        stack.spacing = 4
-        for keys in rows {
-            let row = UIStackView()
-            row.distribution = .fillEqually
-            row.spacing = 4
-            for (title, code) in keys {
-                if code == 0 {
-                    row.addArrangedSubview(UIView())
-                    continue
-                }
-                let button = UIButton(type: .system)
-                button.tag = code
-                button.setTitle(title, for: .normal)
-                button.titleLabel?.font = .systemFont(ofSize: 19, weight: .semibold)
-                button.setTitleColor(.white, for: .normal)
-                button.backgroundColor = UIColor(white: 0.17, alpha: 1)
-                button.layer.cornerRadius = 9
-                button.addTarget(self, action: #selector(directionDown(_:)), for: .touchDown)
-                button.addTarget(self, action: #selector(directionUp(_:)),
-                                 for: [.touchUpInside, .touchUpOutside, .touchCancel])
-                row.addArrangedSubview(button)
-            }
-            stack.addArrangedSubview(row)
+    private func makeDirectionalPad() -> JarBoxDirectionalPad {
+        let pad = JarBoxDirectionalPad(frame: .zero)
+        pad.visibleToken = { [weak self] in
+            guard let self, self.ownsVisibleGameSession() else { return nil }
+            return self.gameSessionToken
         }
-        return stack
+        pad.onTransition = { [weak self] token, previous, next in
+            guard let self, token == self.gameSessionToken else { return }
+            // Release before pressing the new direction; never retain both
+            // directions just because a finger crossed the visual boundary.
+            if let previous { self.releaseDirection(previous) }
+            if let next { self.directionDown(next) }
+        }
+        return pad
     }
 
-    @objc private func directionDown(_ sender: UIButton) {
-        let code = Int32(sender.tag)
+    private func directionDown(_ code: Int32) {
         guard ownsVisibleGameSession(), heldDirections.insert(code).inserted else { return }
         j2me_input_post_key_for_token(gameSessionToken, Int32(J2ME_INPUT_KEY_PRESSED), code)
         if code != -5 {
@@ -1107,10 +1214,6 @@ class GameViewController: UIViewController {
         j2me_input_post_key_for_token(gameSessionToken, Int32(J2ME_INPUT_KEY_REPEATED), code)
     }
 
-    @objc private func directionUp(_ sender: UIButton) {
-        releaseDirection(Int32(sender.tag))
-    }
-
     private func releaseDirection(_ code: Int32) {
         directionTimers.removeValue(forKey: code)?.invalidate()
         if heldDirections.remove(code) != nil {
@@ -1119,6 +1222,7 @@ class GameViewController: UIViewController {
     }
 
     private func cancelGameInput() {
+        directionalPad?.cancelGameInput()
         for code in Array(heldDirections) { releaseDirection(code) }
         for code in heldSoftKeys {
             j2me_input_post_key_for_token(gameSessionToken, Int32(J2ME_INPUT_KEY_RELEASED), code)
@@ -1147,8 +1251,18 @@ class GameViewController: UIViewController {
         screenMenu.isHidden = false
         directionalPad?.isHidden = padMode != .directions
         numpadView?.isHidden = padMode != .numbers
-        portraitControlsHeight?.constant = padIsVisible ? 198 : 0
-        for pin in portraitPadBottomPins { pin.isActive = padIsVisible }
+        if !padIsVisible { directionalPad?.cancelGameInput() }
+        portraitPanelCollapsedHeight?.isActive = false
+        portraitControlsHeight?.isActive = false
+        portraitCanvasAspect?.isActive = false
+        portraitControlsHeight?.constant = padMode == .numbers ? 172 : 144
+        portraitSoftKeyCenterY?.constant = padMode == .numbers ? 86 : 72
+        if padIsVisible {
+            portraitControlsHeight?.isActive = true
+            portraitCanvasAspect?.isActive = true
+        } else {
+            portraitPanelCollapsedHeight?.isActive = true
+        }
         if jarAuditID != nil {
             screenMenu.menu = UIMenu(children: [
                 UIAction(title: "Chẩn đoán kết nối") { [weak self] _ in self?.showNetworkDiagnostics() },
