@@ -6,10 +6,6 @@
 extern "C" {
 #endif
 
-/// 3D supersampling scale factor (shared by M3G and MascotCapsule).
-/// Set by jvm_bridge_init, read by j2me_m3g_jni.c and MC3D via system property.
-extern int g_render_3d_scale;
-
 /// Acquire the sole in-process JVM slot BEFORE dispatching the worker.
 /// Returns 1 if acquired, 0 if another game is launching/running/tearing down.
 int jvm_bridge_try_begin_session(void);

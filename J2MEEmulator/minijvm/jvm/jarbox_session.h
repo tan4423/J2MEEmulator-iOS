@@ -32,6 +32,8 @@ typedef struct JarBoxSession {
     unsigned native_callbacks; /* pinned native visitor/async work */
     unsigned lease_gate;      /* high bit = closing; low bits = live leases */
     unsigned phase;
+    // Launch configuration, owned by this session rather than the process.
+    int render_3d_scale;
     // GC and AFK diagnostics now live in this session, never on a shared
     // process-global scheduler. Guarded Canvas/NSO/JAR worker migration
     // remains a separate prerequisite for parallel JVM startup.
@@ -43,9 +45,18 @@ static inline JarBoxSession *jarbox_session_create(void *vm) {
     JarBoxSession *s = (JarBoxSession *)calloc(1, sizeof(*s));
     if (!s) return NULL;
     s->vm = vm;
+    s->render_3d_scale = 1;
     __atomic_store_n(&s->references, 1u, __ATOMIC_RELEASE);
     __atomic_store_n(&s->phase, JARBOX_SESSION_STARTING, __ATOMIC_RELEASE);
     return s;
+}
+// Only the launch owner configures the scale, before Java execution.
+static inline void jarbox_session_configure_render_scale(JarBoxSession *s, int requested) {
+    if (s) __atomic_store_n(&s->render_3d_scale, requested > 0 ? requested : 1, __ATOMIC_RELEASE);
+}
+static inline int jarbox_session_render_scale(const JarBoxSession *s) {
+    int scale = s ? __atomic_load_n(&s->render_3d_scale, __ATOMIC_ACQUIRE) : 1;
+    return scale > 0 ? scale : 1;
 }
 static inline int jarbox_session_bind_token(JarBoxSession *s, uint64_t token) {
     if (!s || !token) return 0;

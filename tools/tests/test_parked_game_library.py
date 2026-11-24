@@ -45,7 +45,8 @@ class ParkedGameLibraryTest(unittest.TestCase):
         self.assertIn('jvm_bridge_session_token() == gameSessionToken', self.game)
         self.assertIn('jvm_bridge_session_is_active()', self.game)
         self.assertIn('jvm_bridge_request_stop_for_token(token)', self.game)
-        self.assertIn('extern int g_render_3d_scale;', self.bridge)
+        self.assertNotIn('extern int g_render_3d_scale;', self.bridge)
+        self.assertIn('int render_3d_scale, int fps_limit', self.bridge)
         self.assertIn('jvm_bridge_try_begin_session(void)', self.bridge)
         self.assertIn('int jvm_bridge_try_begin_session_with_token(uint64_t *out_token)', self.bridge)
         # The header verifies the public ABI; worker implementation is C.

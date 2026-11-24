@@ -25,6 +25,8 @@ FILES = {
     "vm": "J2MEEmulator/minijvm/jvm/jvm.h",
     "session": "J2MEEmulator/minijvm/jvm/jarbox_session.h",
     "3d": "J2MEEmulator/NativeBridge/jvm_bridge.c",
+    "m3g": "J2MEEmulator/NativeBridge/m3g/j2me_m3g_jni.c",
+    "egl": "J2MEEmulator/NativeBridge/m3g/m3g_egl_ios.m",
 }
 
 
@@ -71,6 +73,11 @@ def audit(root=ROOT):
         "g_ui_thread_key = valid ? key : 0;",
         "jarbox_ui_generation_matches(key, slot_key)",
     ))
+    render_scale_owned = (
+        "int render_3d_scale;" in src["session"]
+        and "jarbox_session_configure_render_scale(slot->jvm->session, render_3d_scale)" in src["3d"]
+        and "jarbox_session_render_scale(slot->jvm->session)" in src["3d"]
+        and src["m3g"].count("jarbox_session_render_scale(runtime->jvm->session)") == 3)
     blockers = {
         "render_single_flush_callback":
             "static j2me_flush_callback g_flush_callback" in src["render"],
@@ -110,7 +117,11 @@ def audit(root=ROOT):
         "3d_global_m3g_cleanup":
             "j2me_m3g_cleanup();" in src["3d"],
         "3d_single_supersampling":
-            "int g_render_3d_scale = 1" in src["3d"],
+            "g_render_3d_scale" in src["3d"] or "g_render_3d_scale" in src["m3g"],
+        "3d_shared_m3g_pixel_buffer":
+            "static uint8_t *g_m3g_pixels" in src["m3g"],
+        "3d_shared_egl_context":
+            "static EAGLContext *g_m3g_eagl_context" in src["egl"],
     }
     # This gate must stay on while the above shared mutable state exists.
     one_vm_gate = ("int jvm_bridge_supported_concurrent_sessions(void) {\n    return 1;"
@@ -129,6 +140,7 @@ def audit(root=ROOT):
         "gc_native_graphics_accounting": bool(native_heap_owned),
         "java_runtime_generation": bool(runtime_generation_owned),
         "treo_gc_afk_state": bool(treo_gc_owned),
+        "3d_supersampling_config": bool(render_scale_owned),
     }
     source_prerequisites_met = all(owned.values()) and not any(blockers.values())
     ready = source_prerequisites_met and not one_vm_gate
@@ -154,7 +166,7 @@ def audit(root=ROOT):
             "MIDP List icons and ordinary 2D Canvas/Image acquire paths now validate JVM generation; live handle address reuse after a zombie thread and VM pointer reuse still require lifetime binding.",
             "Smart GC/probe, NSO signature, Canvas auto-fallback and 2D AFK mode are per session; JAR diagnostic worker, Metal replay and process-level renderer configuration remain shared.",
             "Java thread roots snapshot native generation; nested Runtime frames share it. Render, LCDUI and Display Input reject stale runtime generations after pointer reuse.",
-            "M3G global engine cleanup remains a blocker independent of MascotCapsule generation ownership.",
+            "3D supersampling configuration is session-owned; M3G pixel buffers, EGL contexts and global cleanup remain separate blockers.",
             "Network, classloader, JIT, sockets, native image handles, and teardown still need device validation.",
             "Do not enable another JVM while there are unisolated native blockers.",
         ],

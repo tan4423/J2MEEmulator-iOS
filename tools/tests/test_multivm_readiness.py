@@ -18,6 +18,7 @@ class MultiVMReadinessTest(unittest.TestCase):
         self.assertTrue(report["owned_native_components"]["lcd_ui_screen_buffers"])
         self.assertTrue(report["owned_native_components"]["gc_native_graphics_accounting"])
         self.assertTrue(report["owned_native_components"]["treo_gc_afk_state"])
+        self.assertTrue(report["owned_native_components"]["3d_supersampling_config"])
         self.assertTrue(report["enforced_single_active_jvm"])
         self.assertFalse(report["concurrent_jvms_safe_to_enable"])
         bridge = (ROOT / "J2MEEmulator/NativeBridge/jvm_bridge.c").read_text()
@@ -35,6 +36,7 @@ class MultiVMReadinessTest(unittest.TestCase):
         # Frame callbacks are now captured in the generation-scoped
         # JarBoxFlushRoutes registry, not the old singleton pointer.
         self.assertNotIn("render_single_flush_callback", blockers)
+        self.assertNotIn("3d_single_supersampling", blockers)
         render = (ROOT / "J2MEEmulator/NativeBridge/j2me_render.m").read_text()
         routes = (ROOT / "J2MEEmulator/NativeBridge/jarbox_flush_routes.h").read_text()
         self.assertIn("jarbox_flush_route_lookup(&g_flush_routes, callerKey", render)
@@ -45,7 +47,8 @@ class MultiVMReadinessTest(unittest.TestCase):
             "render_global_haptic_teardown",
             "lcd_ui_single_callback",
             "treo_single_global_mode",
-            "3d_single_supersampling",
+            "3d_shared_m3g_pixel_buffer",
+            "3d_shared_egl_context",
             "3d_global_m3g_cleanup",
         ):
             with self.subTest(blocker=item):
@@ -58,7 +61,9 @@ class MultiVMReadinessTest(unittest.TestCase):
             "lifecycle": """typedef struct { JarBoxVMContext
                 g_bridge_slots[JARBOX_REGISTRY_MAX_SLOTS]
                 bridge_claim_worker_locked slot->stop_requested
-                jvm_bridge_is_stop_requested_for_vm""",
+                jvm_bridge_is_stop_requested_for_vm
+                jarbox_session_configure_render_scale(slot->jvm->session, render_3d_scale)
+                jarbox_session_render_scale(slot->jvm->session)""",
             "input": """JarBoxInputRing ring; context_for_runtime(runtime)
                 j2me_input_binding_generation j2me_input_release_vm
                 #include "garbage.h"
@@ -83,7 +88,9 @@ class MultiVMReadinessTest(unittest.TestCase):
                 jarbox_treo_smart_set(state, mode == 8);""",
             "runtime": "runtime->thrd_info->jarbox_native_generation",
             "vm": "uint64_t jarbox_native_generation; JarBoxSession *session;",
-            "session": "JarBoxTreoState treo_state;",
+            "session": "JarBoxTreoState treo_state; int render_3d_scale;",
+            "m3g": "jarbox_session_render_scale(runtime->jvm->session)\n" * 3,
+            "egl": "",
         }
         with TemporaryDirectory() as td:
             root = Path(td)
@@ -110,6 +117,10 @@ class MultiVMReadinessTest(unittest.TestCase):
             self.assertNotIn("3d_global_m3g_cleanup", owned_cleanup["unisolated_native_blockers"])
             self.assertTrue(owned_cleanup["source_prerequisites_met"])
             self.assertFalse(owned_cleanup["concurrent_jvms_safe_to_enable"])
+            egl = root / FILES["egl"]
+            egl.write_text("static EAGLContext *g_m3g_eagl_context = nil;", encoding="utf-8")
+            self.assertTrue(audit(root)["unisolated_native_blockers"]["3d_shared_egl_context"])
+            self.assertFalse(audit(root)["source_prerequisites_met"])
 
     def test_audit_does_not_claim_runtime_proof(self):
         report = audit()

@@ -907,10 +907,6 @@ static s32 g_m3g_canvas_h = 0;
 static uint8_t *g_m3g_pixels = NULL;  /* M3G renders into this buffer */
 static s32 g_m3g_pixels_size = 0;
 
-/* 3D supersampling scale factor — shared with MascotCapsule.
- * Set by jvm_bridge_init, exported from jvm_bridge.c. */
-extern int g_render_3d_scale;
-
 static s32 n_Graphics3D_bindGraphics(Runtime *runtime, JClass *clazz) {
     (void)clazz;
     LocalVarItem *lv = runtime->localvar;
@@ -935,7 +931,7 @@ static s32 n_Graphics3D_bindGraphics(Runtime *runtime, JClass *clazz) {
     g_m3g_canvas_h = aHeight;
 
     /* Render at scaled resolution for supersampling */
-    s32 scale = g_render_3d_scale;
+    s32 scale = jarbox_session_render_scale(runtime->jvm->session);
     s32 scaledW = aWidth * scale;
     s32 scaledH = aHeight * scale;
 
@@ -1020,7 +1016,7 @@ static s32 n_Graphics3D_setViewport(Runtime *runtime, JClass *clazz) {
     s32 aWidth = localvar_getInt(lv, 4);
     s32 aHeight = localvar_getInt(lv, 5);
 
-    s32 scale = g_render_3d_scale;
+    s32 scale = jarbox_session_render_scale(runtime->jvm->session);
     m3gSetViewport((M3GRenderContext)aHContext,
                    aX * scale, aY * scale, aWidth * scale, aHeight * scale);
     return RUNTIME_STATUS_NORMAL;
@@ -1039,10 +1035,10 @@ static s32 n_Graphics3D_releaseGraphics(Runtime *runtime, JClass *clazz) {
 
     /* Blit rendered pixels to J2ME Canvas CGBitmapContext.
      * g_m3g_pixels contains RGBA at scaled resolution.
-     * When g_render_3d_scale > 1, downscale via Core Graphics with
+     * When this session's scale > 1, downscale via Core Graphics with
      * high-quality interpolation (same approach as MascotCapsule). */
     if (aNativeCtx && g_m3g_pixels && g_m3g_canvas_w > 0 && g_m3g_canvas_h > 0) {
-        s32 scale = g_render_3d_scale;
+        s32 scale = jarbox_session_render_scale(runtime->jvm->session);
         s32 scaledW = g_m3g_canvas_w * scale;
         s32 scaledH = g_m3g_canvas_h * scale;
 

@@ -1026,3 +1026,25 @@ marked targets/instances and independent collectors. Repository
 regression extracts the helper and guards its ordering before sweep.
 Full repository suite, actual Java finalizer/weak-reference behavior,
 Xcode and iPhone not run here.
+
+## Owner-local 3D supersampling configuration
+
+Move the launch scale from the process-global g_render_3d_scale to
+JarBoxSession, configured before jvm_init. M3G bindGraphics, setViewport
+and releaseGraphics read the calling Runtime's session; the existing
+MascotCapsule Java property receives the same owner's configured value.
+Preserve the previous positive-scale/default-one policy. No renderer
+allocation, pixel data, EGL teardown or Treo behavior is changed.
+
+Readiness now checks positive scale ownership and explicitly lists the
+still-global M3G pixel buffer and EGL context as blockers in addition
+to global M3G cleanup. Admission remains one JVM. This is configuration
+isolation only, not proof of M3G or device concurrency.
+
+Validation: Linux clang host model compiled the exact scale accessors
+with -Wall -Wextra -Werror, 10,000 cycles PASS and 20/20 ASan+UBSan
+runs (200,000 modeled cycles). Covers separate session values, zero/
+negative defaults and owner-local reconfiguration. Repository tests
+extract the accessors and guard launch and renderer wiring. Full
+repository suite, Objective-C/iOS build, actual 3D output and device
+validation remain outstanding.

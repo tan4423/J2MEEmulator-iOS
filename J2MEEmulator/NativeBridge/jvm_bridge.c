@@ -645,9 +645,6 @@ int jvm_bridge_interrupt_active_threads(void) {
     return jvm_bridge_interrupt_active_threads_for_token(jvm_bridge_session_token());
 }
 
-/* 3D supersampling scale — shared by M3G (reads directly) and MC3D (via system property) */
-int g_render_3d_scale = 1;
-
 static void bridge_discard_unstarted_vm(JarBoxVMContext *slot) {
     // No MIDlet ran. Latch cancellation and skip normal Java shutdown hooks,
     // but retain the slot until jvm_destroy has drained every heap lease.
@@ -733,6 +730,7 @@ static int bridge_init_slot(JarBoxVMContext *slot, const char *res_root, const c
     jarbox_treo_nso_profile_set(&slot->jvm->session->treo_state,
         ninja_match, init_target);
 
+    jarbox_session_configure_render_scale(slot->jvm->session, render_3d_scale);
     slot->jvm->jdwp_enable = 0;
     slot->jvm->jdwp_suspend_on_start = 0;
     slot->jvm->max_heap_size = 128 * 1024 * 1024;       // 128MB Java + this JVM's native graphics
@@ -806,9 +804,8 @@ static int bridge_init_slot(JarBoxVMContext *slot, const char *res_root, const c
     sys_properties_set_c(slot->jvm, "j2me.screen.height", sh);
 
     // 3D supersampling scale for M3G and MascotCapsule (1=native, 2=2x AA, 3=3x AA)
-    g_render_3d_scale = render_3d_scale > 0 ? render_3d_scale : 1;
     char ss[8];
-    snprintf(ss, sizeof(ss), "%d", g_render_3d_scale);
+    snprintf(ss, sizeof(ss), "%d", jarbox_session_render_scale(slot->jvm->session));
     sys_properties_set_c(slot->jvm, "micro3d.v3.fbo.scale", ss);  // MC3D reads this in Render.java
 
     // FPS limit (0 = unlimited)
