@@ -414,29 +414,28 @@ const char *jvm_bridge_net_trace(void) {
 int jvm_bridge_try_begin_session_with_token(uint64_t *out_token) {
     if (!out_token) return 0;
     *out_token = 0;
+    // Admission is also a foreground transition. Serialize with park/focus
+    // and cleanup, in the same lock order; never implicitly park another VM.
+    pthread_mutex_lock(&g_bridge_focus_transition_lock);
     pthread_mutex_lock(&g_bridge_lifecycle_lock);
+    if (jarbox_focus_visible(&g_bridge_focus) != 0) goto denied;
     const uint64_t token = atomic_fetch_add_explicit(
         &g_bridge_session_sequence, 1, memory_order_relaxed) + 1;
     JarBoxVMContext *slot = bridge_reserve_slot_locked(
         token, (unsigned)jvm_bridge_supported_concurrent_sessions());
-    if (!slot) {
-        pthread_mutex_unlock(&g_bridge_lifecycle_lock);
-        return 0;
-    }
+    if (!slot) goto denied;
     if (!jarbox_registry_claim(&g_bridge_registry, &g_bridge_focus,
                                token, (unsigned)jvm_bridge_supported_concurrent_sessions())) {
         bridge_reset_slot_locked(slot);
-        pthread_mutex_unlock(&g_bridge_lifecycle_lock);
-        return 0;
+        goto denied;
     }
-    if (!bridge_diag_begin(token)) {
+    if (!jarbox_focus_select(&g_bridge_focus, token) || !bridge_diag_begin(token)) {
         (void)jarbox_registry_finish(&g_bridge_registry, &g_bridge_focus, token);
         bridge_reset_slot_locked(slot);
-        pthread_mutex_unlock(&g_bridge_lifecycle_lock);
-        return 0;
+        goto denied;
     }
-    (void)jarbox_focus_select(&g_bridge_focus, token);
     pthread_mutex_unlock(&g_bridge_lifecycle_lock);
+    pthread_mutex_unlock(&g_bridge_focus_transition_lock);
     // Visible from the first frame in Chẩn đoán kết nối, regardless of
     // which Java network API the game calls. Detects an older installed IPA.
     const uint64_t prior_token = jvm_bridge_push_java_thread_token(token);
@@ -447,7 +446,13 @@ int jvm_bridge_try_begin_session_with_token(uint64_t *out_token) {
     printf("[JarBoxVM][Lifecycle] session=acquired phase=starting\n");
     *out_token = token;
     return 1;
+
+denied:
+    pthread_mutex_unlock(&g_bridge_lifecycle_lock);
+    pthread_mutex_unlock(&g_bridge_focus_transition_lock);
+    return 0;
 }
+
 int jvm_bridge_try_begin_session(void) {
     uint64_t acquired = 0;
     return jvm_bridge_try_begin_session_with_token(&acquired);

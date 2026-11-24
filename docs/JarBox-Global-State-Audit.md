@@ -1204,3 +1204,22 @@ ASan+UBSan 10/10 runs per build variant, 20/20 total. These exercise
 the pure policy only, not native registration, Xcode or Java. Added
 repository test for the same header and source wiring. No full
 repository suite or iOS/device test was executed.
+
+## Foreground admission transaction for 2D multi-session preparation
+
+Previously launch admission selected the new token even if another VM
+owned foreground focus; the focus policy alone could mark A parked
+without A's native Treo/input/renderer transition. Serialize admission
+with park/focus and cleanup using focus-transition then lifecycle lock.
+Reject a launch before reserving a slot when a foreground token exists.
+Check focus selection before allocating diagnostics, and unwind the
+unbound registry/slot if selection or diagnostic admission fails.
+A second slot is only a candidate after the prior owner has parked.
+Production cap remains one; no 3D, JAR, RMS, network or workflow change.
+
+Validation: exact new admission function body compiled on Linux clang
+C11 with pthread locks and modeled registry/focus/slot/diagnostic
+helpers. 10,000 sequential scenarios and 100 competing launch pairs
+passed; 10/10 ASan+UBSan repetitions passed. This is not actual two-VM
+execution or native transition proof. Repository extraction regression
+added; full suite and iOS device build not run.
