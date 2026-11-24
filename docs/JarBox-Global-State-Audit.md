@@ -1266,3 +1266,23 @@ repository regression that compiles the extracted archive scanner
 against actual bundled miniz with generated ZIPs. That archive test
 and full suite could not be run locally because git access from the
 host fails DNS resolution; no iOS build or real NSO JAR test performed.
+
+## 2D teardown: retire only the stopped owner's deferred graphics shells
+
+Previously the multi-VM path relied on subsequent Canvas frames to
+reclaim deferred RenderContext/RenderImage shells. If the remaining
+tab was parked, stopped-owner shells could remain allocated until a
+later frame. Cleanup now detaches gen0 under the existing drain lock,
+requeues other owners' shells in gen0, and removes only the retiring
+owner from gen1. It never advances another owner's grace generation.
+Run before and after owner-specific resource cleanup, after the bridge
+has drained that VM's workers and callback leases. Existing frame-path
+drain is unchanged; the change relies on that owner-lifetime barrier.
+No additional timer, polling, GPU allocation or 3D change.
+
+Validation: a standalone Linux clang C11 harness using the identical
+new helper and existing atomic enqueue bodies, modeled shell structs
+and pthread lock, passed 10,000 mixed-generation cycles and 100,000
+concurrent foreign publications with ASan+UBSan enabled. Repository
+test extracts the source bodies; full suite, Objective-C integration,
+actual memory savings and device testing not performed.

@@ -169,7 +169,8 @@ class MultiVMRenderCleanupTest(unittest.TestCase):
         self.assertIn("jvm_bridge_supported_concurrent_sessions() == 1", cleanup)
         self.assertIn("dispatch_async(dispatch_get_main_queue(), ^{", cleanup)
         self.assertIn("haptic_owner != teardown_key", cleanup)
-        self.assertIn("single_vm_shutdown = jvm_bridge_supported_concurrent_sessions() == 1", cleanup)
+        self.assertEqual(cleanup.count("process_dead_shells_for_owner(owner_key);"), 2)
+        self.assertNotIn("process_dead_shells();", cleanup)
         # A stopped A must not disable B. The one-JVM gate is kept for the
         # remaining shared UI/Metal/Treo components, not this 2D stop bit.
         self.assertNotIn("g_render_stopped", render)

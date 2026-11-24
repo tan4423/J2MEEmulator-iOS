@@ -1893,6 +1893,45 @@ static void process_dead_shells(void) {
     os_unfair_lock_unlock(&g_dead_drain_lock);
 }
 
+// Called only after the retiring owner's worker and callback leases drain.
+// Keep foreign shells in their current grace generation; do not advance
+// their reclamation epoch just because a different game stops.
+static void process_dead_shells_for_owner(uint64_t owner_key) {
+    if (!owner_key) return;
+    os_unfair_lock_lock(&g_dead_drain_lock);
+    RenderContext *rc = atomic_exchange_explicit(&g_dead_rc_gen0, NULL, memory_order_acquire);
+    while (rc) {
+        RenderContext *next = rc->next_dead;
+        if (rc->heap_key == owner_key) free(rc);
+        else enqueue_dead_rc(rc);
+        rc = next;
+    }
+    RenderImage *img = atomic_exchange_explicit(&g_dead_img_gen0, NULL, memory_order_acquire);
+    while (img) {
+        RenderImage *next = img->next_dead;
+        if (img->heap_key == owner_key) free(img);
+        else enqueue_dead_img(img);
+        img = next;
+    }
+    RenderContext **r = &g_dead_rc_gen1;
+    while (*r) {
+        RenderContext *node = *r;
+        if (node->heap_key == owner_key) {
+            *r = node->next_dead;
+            free(node);
+        } else r = &node->next_dead;
+    }
+    RenderImage **i = &g_dead_img_gen1;
+    while (*i) {
+        RenderImage *node = *i;
+        if (node->heap_key == owner_key) {
+            *i = node->next_dead;
+            free(node);
+        } else i = &node->next_dead;
+    }
+    os_unfair_lock_unlock(&g_dead_drain_lock);
+}
+
 // ============================================================
 // Reference counting: acquire / release
 // ============================================================
@@ -4810,14 +4849,9 @@ void j2me_render_cleanup_for_owner(uint64_t owner_key) {
         fprintf(stderr, "[J2ME Render] Reject cleanup with missing owner key\n");
         return;
     }
-    // The dead-shell queues are shared. Draining twice during a foreign
-    // VM's teardown would bypass another VM's two-frame ABA grace period.
-    // Only the currently enforced single-VM runtime may force-drain.
-    const int single_vm_shutdown = jvm_bridge_supported_concurrent_sessions() == 1;
-    if (single_vm_shutdown) {
-        process_dead_shells();
-        process_dead_shells();
-    }
+    // The bridge calls this only after the owning JVM's workers drain.
+    // Do not advance any other generation's dead-shell grace period.
+    process_dead_shells_for_owner(owner_key);
 
     int rc_count = 0, img_count = 0;
     RenderContext *rc;
@@ -4847,12 +4881,9 @@ void j2me_render_cleanup_for_owner(uint64_t owner_key) {
     // No Metal texture or framebuffer target of owner A may remain cached
     // after A's native context teardown; B's targets remain intact.
     treo_live_release_owner(owner_key);
-    // On a multi-VM runtime, the normal frame drain reclaims dead shells
-    // after its grace period. Never force-free a different owner's queue.
-    if (single_vm_shutdown) {
-        process_dead_shells();
-        process_dead_shells();
-    }
+    // Owner-local cache disposal above can enqueue additional dead shells.
+    // Reclaim them even when the other tab is parked and produces no frames.
+    process_dead_shells_for_owner(owner_key);
 
     // The CHHapticEngine and player are main-queue UI resources. Cleanup must
     // not touch them from the JVM teardown worker or stop a newly focused VM.
