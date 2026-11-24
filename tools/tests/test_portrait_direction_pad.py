@@ -48,7 +48,10 @@ print("Portrait pad geometry: \(checks) checks PASS")
 '''
         with tempfile.TemporaryDirectory() as td:
             p = Path(td) / "pad.swift"
-            p.write_text("import Foundation\n" + helper + main)
+            # macOS exposes CGRect through Foundation but its geometry APIs
+            # require CoreGraphics. Linux Foundation supplies them directly.
+            imports = "import Foundation\n#if canImport(CoreGraphics)\nimport CoreGraphics\n#endif\n"
+            p.write_text(imports + helper + main)
             result = subprocess.run([swift, str(p)], capture_output=True, text=True, timeout=60)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertIn("16324 checks PASS", result.stdout)
