@@ -98,6 +98,21 @@ enum JarBoxGameStorage {
         return (documents as NSString).appendingPathComponent("Games Data/inst-" + group + suffix)
     }
 
+    // Resolution is a group preference. Keep the original installation's
+    // existing keys so upgrades preserve its chosen dimensions.
+    nonisolated static func sharedResolution(jarPath: String) -> (w: Int, h: Int) {
+        let gid = installId(for: jarPath)
+        let w = UserDefaults.standard.object(forKey: "resW_" + gid) as? Int ?? 240
+        let h = UserDefaults.standard.object(forKey: "resH_" + gid) as? Int ?? 320
+        return (w, h)
+    }
+
+    nonisolated static func setSharedResolution(w: Int, h: Int, jarPath: String) {
+        let gid = installId(for: jarPath)
+        UserDefaults.standard.set(w, forKey: "resW_" + gid)
+        UserDefaults.standard.set(h, forKey: "resH_" + gid)
+    }
+
     nonisolated static func settingsId(jarPath: String, cloneID: UUID? = nil) -> String {
         let group = installId(for: jarPath)
         return cloneID.map { group + "_clone_" + $0.uuidString.lowercased() } ?? group
@@ -1489,7 +1504,13 @@ class AppsListViewController: UIViewController,
                 if clones.isEmpty { self?.showGameInformation(app) }
                 else { self?.showTabInformationPicker(for: app, clones: clones) }
             }
-            let settings = UIAction(title: "Độ phân giải, FPS và 3D",
+            let res = Self.resolution(for: app)
+            let resolution = UIAction(title: "Độ phân giải: " + String(res.w) + "×" + String(res.h),
+                image: UIImage(systemName: "rectangle.expand.vertical"),
+                attributes: isRunning ? .disabled : []) { [weak self] _ in
+                self?.showSharedResolutionOptions(for: app)
+            }
+            let settings = UIAction(title: "FPS và 3D",
                                     image: UIImage(systemName: "slider.horizontal.3")) { [weak self] _ in
                 if clones.isEmpty { self?.showTabSettings(for: app, cloneID: nil, tabName: "Tab gốc") }
                 else { self?.showTabSettingsPicker(for: app, clones: clones) }
@@ -1513,7 +1534,7 @@ class AppsListViewController: UIViewController,
             }
             let advanced = UIMenu(title: "Nâng cao",
                                   image: UIImage(systemName: "slider.horizontal.3"),
-                                  children: [treoSettings, settings, cloneMenu])
+                                  children: [treoSettings, resolution, settings, cloneMenu])
             let rename = UIAction(title: "Đổi tên", image: UIImage(systemName: "pencil")) { [weak self] _ in
                 self?.promptRenameApp(app)
             }
@@ -1526,7 +1547,7 @@ class AppsListViewController: UIViewController,
     // "Thông tin" entry. Never start a timer for game badges or telemetry.
     private func showGameInformation(_ app: AppInfo, cloneID: UUID? = nil,
                                      tabName: String = "Tab gốc") {
-        let resolution = Self.resolution(for: app, cloneID: cloneID)
+        let resolution = Self.resolution(for: app)
         let fps = Self.fpsLimit(for: app, cloneID: cloneID)
         let fileBytes = (try? FileManager.default.attributesOfItem(atPath: app.path)[.size] as? NSNumber)?.int64Value
         let sizeText = fileBytes.map {
@@ -1542,7 +1563,7 @@ class AppsListViewController: UIViewController,
             "Nhà phát triển: " + (app.vendor ?? "Không khai báo"),
             "Màn hình: " + String(resolution.w) + " × " + String(resolution.h),
             "Giới hạn FPS: " + (fps == 0 ? "Không giới hạn" : String(fps)),
-            "Cấu hình Treo (mọi tab): " +
+            "Treo: " +
                 (JarBoxGameStorage.treoCompatibleOnly(for: app.path) ? "Tương thích" : "Tự động"),
             "Trạng thái: " + (active ? "Đang chạy ẩn" : "Không chạy ẩn")
         ]
@@ -1694,21 +1715,15 @@ class AppsListViewController: UIViewController,
         ("480×800",  480, 800),
     ]
 
-    static func resolution(for app: AppInfo, cloneID: UUID? = nil) -> (w: Int, h: Int) {
-        let gid = JarBoxGameStorage.settingsId(jarPath: app.path, cloneID: cloneID)
-        let w = UserDefaults.standard.object(forKey: "resW_\(gid)") as? Int ?? 240
-        let h = UserDefaults.standard.object(forKey: "resH_\(gid)") as? Int ?? 320
-        return (w, h)
+    static func resolution(for app: AppInfo) -> (w: Int, h: Int) {
+        JarBoxGameStorage.sharedResolution(jarPath: app.path)
     }
 
-    private static func setResolution(w: Int, h: Int, for app: AppInfo,
-                                      cloneID: UUID? = nil) {
-        let gid = JarBoxGameStorage.settingsId(jarPath: app.path, cloneID: cloneID)
-        UserDefaults.standard.set(w, forKey: "resW_\(gid)")
-        UserDefaults.standard.set(h, forKey: "resH_\(gid)")
+    private static func setResolution(w: Int, h: Int, for app: AppInfo) {
+        JarBoxGameStorage.setSharedResolution(w: w, h: h, jarPath: app.path)
         JarBoxGameStorage.appendSettingEvent(jarPath: app.path,
             documents: documentsDirectory, event: "RESOLUTION",
-            value: String(w) + "x" + String(h), cloneID: cloneID)
+            value: String(w) + "x" + String(h))
     }
 
     private static let fpsLimitOptions: [(label: String, value: Int)] = [
@@ -1867,7 +1882,7 @@ class AppsListViewController: UIViewController,
     private func showTabSettingsPicker(for app: AppInfo,
                                        clones: [JarBoxGameStorage.CloneRecord]) {
         let picker = UIAlertController(title: "Cài đặt riêng · " + app.name,
-                                       message: "Mỗi tab có cài đặt độc lập. Thay đổi có hiệu lực khi khởi động tab.",
+                                       message: "FPS và 3D áp dụng riêng cho từng tab khi khởi động.",
                                        preferredStyle: .actionSheet)
         picker.addAction(UIAlertAction(title: "Tab gốc", style: .default) { [weak self] _ in
             self?.showTabSettings(for: app, cloneID: nil, tabName: "Tab gốc")
@@ -1888,16 +1903,11 @@ class AppsListViewController: UIViewController,
     }
 
     private func showTabSettings(for app: AppInfo, cloneID: UUID?, tabName: String) {
-        let res = Self.resolution(for: app, cloneID: cloneID)
         let fps = Self.fpsLimit(for: app, cloneID: cloneID)
         let enhanced3D = Self.is3DSupersampling(for: app, cloneID: cloneID)
         let picker = UIAlertController(title: app.name + " · " + tabName,
                                        message: "Cài đặt áp dụng khi tab khởi động lần tiếp theo.",
                                        preferredStyle: .actionSheet)
-        picker.addAction(UIAlertAction(title: "Màn hình: " + String(res.w) + "×" + String(res.h),
-                                       style: .default) { [weak self] _ in
-            self?.showTabResolutionOptions(for: app, cloneID: cloneID, tabName: tabName)
-        })
         picker.addAction(UIAlertAction(title: "FPS: " + (fps == 0 ? "Không giới hạn" : String(fps)),
                                        style: .default) { [weak self] _ in
             self?.showTabFPSOptions(for: app, cloneID: cloneID, tabName: tabName)
@@ -1916,14 +1926,18 @@ class AppsListViewController: UIViewController,
         present(picker, animated: true)
     }
 
-    private func showTabResolutionOptions(for app: AppInfo, cloneID: UUID?,
-                                          tabName: String) {
-        let picker = UIAlertController(title: "Độ phân giải · " + tabName,
-                                       message: "Chỉ đổi cấu hình của tab đã chọn.",
+    private func showSharedResolutionOptions(for app: AppInfo) {
+        guard !hasNativeGame(for: app.path) else { return }
+        let current = Self.resolution(for: app)
+        let picker = UIAlertController(title: "Độ phân giải · " + app.name,
+                                       message: "Áp dụng cho tất cả tab khi mở game.",
                                        preferredStyle: .actionSheet)
         for option in Self.resolutionOptions {
-            picker.addAction(UIAlertAction(title: option.label, style: .default) { _ in
-                Self.setResolution(w: option.w, h: option.h, for: app, cloneID: cloneID)
+            let label = option.label + (option.w == current.w && option.h == current.h ? " ✓" : "")
+            picker.addAction(UIAlertAction(title: label, style: .default) { [weak self] _ in
+                // Never change live Canvas dimensions or restart a tab implicitly.
+                guard let self, !self.hasNativeGame(for: app.path) else { return }
+                Self.setResolution(w: option.w, h: option.h, for: app)
             })
         }
         picker.addAction(UIAlertAction(title: "Hủy", style: .cancel))
@@ -2122,7 +2136,7 @@ class AppsListViewController: UIViewController,
         // Do not repeat that filesystem work on the UI thread.
 
         let render3dScale = Self.is3DSupersampling(for: app, cloneID: cloneID) ? 3 : 1
-        let res = Self.resolution(for: app, cloneID: cloneID)
+        let res = Self.resolution(for: app)
         let fps = Self.fpsLimit(for: app, cloneID: cloneID)
         let gameVC = GameViewController(jarPath: app.path, appName: tabTitle,
             appIcon: app.icon, canvasWidth: res.w, canvasHeight: res.h,

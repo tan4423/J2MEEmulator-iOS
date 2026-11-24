@@ -101,7 +101,14 @@ struct CloneHarness {
         require(defaults.object(forKey: "fpsLimit_" + keyA) == nil,
                 "Tab 1 inherited FPS setting")
         require(defaults.object(forKey: "resW_" + keyB) == nil,
-                "Tab 2 inherited resolution")
+                "Tab 2 copied obsolete per-tab resolution key")
+        // Old per-tab keys are ignored; the original group setting wins.
+        defaults.set(132, forKey: "resW_" + keyB)
+        JarBoxGameStorage.setSharedResolution(w: 320, h: 480, jarPath: jar)
+        let shared = JarBoxGameStorage.sharedResolution(jarPath: jar)
+        require(shared.w == 320 && shared.h == 480, "shared resolution not applied")
+        require(JarBoxGameStorage.sharedResolution(jarPath: lastTabOther).w == 240,
+                "shared resolution leaked across games")
         defaults.set(20, forKey: "fpsLimit_" + keyA)
         defaults.set(15, forKey: "fpsLimit_" + keyB)
         let recordA = (rootA as NSString).appendingPathComponent("account.rsr")
@@ -148,6 +155,8 @@ struct CloneHarness {
                 "original account save changed")
         require(defaults.object(forKey: "fpsLimit_" + baseKey) as? Int == 60,
                 "original settings changed")
+        require(JarBoxGameStorage.sharedResolution(jarPath: jar).w == 320,
+                "clone deletion erased shared resolution")
         let remaining = try JarBoxGameStorage.registeredClones(
             jarPath: jar, documents: docs)
         require(remaining.count == 1 && remaining[0].id == b.id,
@@ -333,7 +342,9 @@ class CloneInstanceStorageTest(unittest.TestCase):
         self.assertIn("cloneID: cloneID)", source)
         self.assertIn('showTabInformationPicker(for: app, clones: clones)', source)
         self.assertIn('showTabSettingsPicker(for: app, clones: clones)', source)
-        self.assertIn('Self.setResolution(w: option.w, h: option.h, for: app, cloneID: cloneID)', source)
+        self.assertIn('Self.setResolution(w: option.w, h: option.h, for: app)', source)
+        self.assertNotIn('Self.resolution(for: app, cloneID:', source)
+        self.assertIn('JarBoxGameStorage.sharedResolution(jarPath: app.path)', source)
         self.assertIn('Self.setFpsLimit(option.value, for: app, cloneID: cloneID)', source)
         self.assertIn('Self.set3DSupersampling(!enhanced3D, for: app, cloneID: cloneID)', source)
         self.assertIn('gameForTab(app.path, cloneID: tab.id) != nil', source)

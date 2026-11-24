@@ -16,7 +16,7 @@ class GameTabStripTest(unittest.TestCase):
         menu = part(LIB, "contextMenuConfigurationForItemsAt", "private func showGameInformation(")
         self.assertIn("return UIMenu(children: [stop, infoAction, advanced, rename,", menu)
         self.assertIn("self.clearDataMenu(for: app, tabs: tabs)", menu)
-        self.assertIn("children: [treoSettings, settings, cloneMenu]", menu)
+        self.assertIn("children: [treoSettings, resolution, settings, cloneMenu]", menu)
         self.assertIn("self.clearDataMenu(for: app, tabs: tabs), delete]", menu)
         self.assertIn('UIMenu(title: "Treo",', menu)
         self.assertNotIn("dùng chung mọi tab", menu)
@@ -27,6 +27,17 @@ class GameTabStripTest(unittest.TestCase):
         clear = part(LIB, "private func clearDataMenu(", "// Keep lifecycle diagnostics")
         self.assertIn('if tabs.count == 1 { return action("Xóa dữ liệu", tabs) }', clear)
         self.assertIn('children: [action("Tất cả", tabs)] + tabs.map', clear)
+
+    def test_resolution_is_shared_and_cannot_change_while_group_runs(self):
+        menu = part(LIB, "contextMenuConfigurationForItemsAt", "private func showGameInformation(")
+        self.assertIn("self?.showSharedResolutionOptions(for: app)", menu)
+        picker = part(LIB, "private func showSharedResolutionOptions(", "private func showTabFPSOptions(")
+        self.assertIn("guard !hasNativeGame(for: app.path) else { return }", picker)
+        self.assertIn("guard let self, !self.hasNativeGame(for: app.path) else { return }", picker)
+        self.assertNotIn("cloneID:", picker)
+        launch = part(LIB, "private func launchGameTab(", "\n    }")
+        self.assertIn("let res = Self.resolution(for: app)", launch)
+        self.assertNotIn("Self.resolution(for: app, cloneID:", LIB)
 
     def test_clone_menu_checks_capacity_and_confirms_exact_delete_targets(self):
         menu = part(LIB, "private func makeCloneMenu(", "private func addDefaultTabs(")
