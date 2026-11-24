@@ -625,3 +625,25 @@ ASan+UBSan runs of 100 modeled cases each, including partial-focus rollback,
 hidden A park preserving B, and focus racing actual cleanup admission.
 Only the excerpt and header model were compiled, not the complete bridge,
 UIKit or two running JVMs. Full checkout and iPhone build/test remain pending.
+
+## 2026-11-24: Deferred haptics recheck the exact JVM's Treo mode
+
+The Java vibration entry point checked its own runtime mode, but its
+deferred main-queue block still authorized hardware activity using the
+process-wide AFK mirror. Capture only immutable session token and native
+heap generation, and recheck the exact running owner's mode via the
+existing pinned visitor. Verify visible identity after the visitor as well.
+Reject invalid, parked or retired requests before touching the shared
+player, and recheck after player creation before starting it. No Runtime
+or MiniJVM pointer crosses the asynchronous boundary. The process-wide
+haptic engine and teardown, queued callbacks across same-owner park/resume,
+and physical device execution still require audit; this is not an atomic
+hardware/focus transaction or evidence of safe multi-JVM execution.
+
+Validation: the source-contract test rejected the original haptic excerpt;
+both new unit tests passed on the replacement fixture. The actual C
+authorization helper compiled with mocked mode/visible-owner lookups and
+passed 50 ASan+UBSan runs, each checking 100 repetitions of owner/mode
+cases including focus changes during the visitor. The Objective-C
+CoreHaptics implementation and complete app were not built or executed
+on this host. Admission remains 1; no changes to Codemagic, JAR or RMS.

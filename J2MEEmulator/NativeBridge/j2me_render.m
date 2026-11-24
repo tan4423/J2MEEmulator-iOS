@@ -4583,14 +4583,29 @@ static void render_haptic_release_owner(uint64_t owner_key) {
     });
 }
 
+// Main-queue haptics never authorize a request using the process-wide
+// AFK compatibility mirror. Re-read the exact running owner's Treo mode
+// through a pinned token visitor; do not retain Runtime or MiniJVM here.
+static int render_haptic_can_deliver(uint64_t owner_key, uint64_t token) {
+    if (!owner_key || !token || token != jvm_bridge_visible_session_token()) return 0;
+    if (treo_mode_for_token(token) != 0) return 0;
+    // Focus may have changed during the visitor. Check both identities again.
+    return owner_key == j2me_render_visible_owner_key() &&
+           token == jvm_bridge_visible_session_token();
+}
+
 static s32 n_vibrate(Runtime *runtime, JClass *clazz) {
     const uint64_t owner_key = jarbox_native_heap_key_for_runtime(runtime);
     if (!owner_key || owner_key != j2me_render_visible_owner_key() ||
         treo_runtime_mode(runtime) != 0) return RUNTIME_STATUS_NORMAL;
+    const uint64_t token = runtime->jvm->session ?
+        __atomic_load_n(&runtime->jvm->session->token, __ATOMIC_ACQUIRE) : 0;
+    if (!token) return RUNTIME_STATUS_NORMAL;
     s32 durationMs = runtime->jnienv->localvar_getInt(runtime->localvar, 0);
     dispatch_async(dispatch_get_main_queue(), ^{
         // An old Tab must never vibrate or stop a new Tab's player.
         if (owner_key != j2me_render_visible_owner_key()) return;
+        if (!render_haptic_can_deliver(owner_key, token)) return;
         if (@available(iOS 13.0, *)) {
             if (g_hapticPlayer) {
                 NSError *err = nil;
@@ -4598,7 +4613,7 @@ static s32 n_vibrate(Runtime *runtime, JClass *clazz) {
                 g_hapticPlayer = nil;
                 atomic_store_explicit(&g_haptic_player_owner_key, 0, memory_order_release);
             }
-            if (durationMs <= 0 || j2me_render_is_afk_suspended()) return;
+            if (durationMs <= 0) return;
 
             ensureHapticEngine();
             if (!g_hapticEngine) return;
@@ -4622,6 +4637,12 @@ static s32 n_vibrate(Runtime *runtime, JClass *clazz) {
 
             g_hapticPlayer = [g_hapticEngine createPlayerWithPattern:pattern error:&err];
             if (err || !g_hapticPlayer) return;
+            // Pattern/player creation can take time. Reject a retired or
+            // parked owner before actually starting the hardware player.
+            if (!render_haptic_can_deliver(owner_key, token)) {
+                g_hapticPlayer = nil;
+                return;
+            }
             atomic_store_explicit(&g_haptic_player_owner_key, owner_key, memory_order_release);
 
             [g_hapticPlayer startAtTime:0 error:&err];
