@@ -292,6 +292,27 @@ enum JarBoxGameStorage {
         return root
     }
 
+    /// Reset only the selected instance's files, not its UUID, preferences
+    /// or shared JAR. Keep an empty registered clone root for next startup.
+    nonisolated static func clearInstanceData(jarPath: String, documents: String,
+                                                cloneID: UUID?) throws {
+        guard jvm_bridge_active_session_count() == 0 else {
+            throw NSError(domain: "JarBox.GameStorage", code: 13,
+                userInfo: [NSLocalizedDescriptionKey: "Dừng các phiên JVM trước khi xóa dữ liệu."])
+        }
+        let root = try prepareRoot(jarPath: jarPath, documents: documents, cloneID: cloneID)
+        let fm = FileManager.default
+        let tomb = root + ".reset-" + UUID().uuidString
+        try fm.moveItem(atPath: root, toPath: tomb)
+        do {
+            try fm.createDirectory(atPath: root, withIntermediateDirectories: false)
+        } catch {
+            try? fm.moveItem(atPath: tomb, toPath: root)
+            throw error
+        }
+        try fm.removeItem(atPath: tomb)
+    }
+
     /// Retain user settings from before install-ID migration only when the
     /// legacy sanitized JAR name has one unambiguous owner on disk.
     nonisolated static func migratePreferencesIfUnique(for path: String, documents: String) {
@@ -465,32 +486,72 @@ class AppsListViewController: UIViewController,
         presentGame(game, reason: "resume retained game")
     }
 
-    private func chooseManagedGame(stopping: Bool, path: String? = nil) {
-        let choices = liveGames.filter { $0.ownsLiveGameSession(for: path) }
-        guard !choices.isEmpty else { return }
-        let perform: (GameViewController) -> Void = { [weak self] game in
-            if stopping {
-                game.stopParkedGame()
-                self?.updateStuckSessionButton()
-            } else {
-                game.resumeParkedGame()
+    // All registered tabs, including stopped ones. Native ownership remains
+    // with the existing GameVC and token, never with a UI button.
+    private func registeredTabs(for app: AppInfo) throws -> [(id: UUID?, title: String)] {
+        let clones = try JarBoxGameStorage.registeredClones(
+            jarPath: app.path, documents: Self.documentsDirectory)
+        return [(nil, "Tab gốc")] + clones.map { (Optional($0.id), $0.label) }
+    }
+
+    func gameTabItems(for game: GameViewController) -> [(id: UUID?, title: String, running: Bool)] {
+        guard let app = apps.first(where: { $0.path == game.jarPath }),
+              let tabs = try? registeredTabs(for: app) else {
+            return [(game.cloneID, game.appName, true)]
+        }
+        return tabs.map { tab in
+            (tab.id, tab.title, gameForTab(app.path, cloneID: tab.id) != nil)
+        }
+    }
+
+    func openGameTabAfterPark(_ source: GameViewController, cloneID: UUID?) {
+        guard canPresentGame, managedGames.contains(where: { $0 === source }),
+              source.parkedSessionToken != nil, source.cloneID != cloneID,
+              let app = apps.first(where: { $0.path == source.jarPath }) else { return }
+        do {
+            let tabs = try registeredTabs(for: app)
+            guard let target = tabs.first(where: { $0.id == cloneID }) else { return }
+            launchGameTab(app, cloneID: target.id,
+                          tabTitle: target.id == nil ? app.name : app.name + " · " + target.title)
+        } catch {
+            presentSaveOperationError(error)
+        }
+    }
+
+    private func stopMenu(for app: AppInfo, tabs: [(id: UUID?, title: String)]) -> UIMenuElement {
+        let snapshots = tabs.map { tab -> (title: String, game: GameViewController?, token: UInt64?) in
+            let game = gameForTab(app.path, cloneID: tab.id)
+            return (tab.title, game, game?.parkedSessionToken)
+        }
+        func action(_ title: String, _ targets: [(title: String, game: GameViewController?, token: UInt64?)]) -> UIAction {
+            let available = targets.contains { $0.token != nil }
+            return UIAction(title: title, image: UIImage(systemName: "stop.fill"),
+                            attributes: available ? .destructive : [.destructive, .disabled]) { [weak self] _ in
+                guard let self else { return }
+                for target in targets {
+                    guard let game = target.game, let token = target.token,
+                          self.retainedGames.contains(where: { $0 === game }),
+                          game.parkedSessionToken == token else { continue }
+                    game.stopParkedGame()
+                }
+                self.updateStuckSessionButton()
             }
         }
-        if choices.count == 1 {
-            perform(choices[0])
-            return
+        if snapshots.count == 1 { return action("Dừng", snapshots) }
+        return UIMenu(title: "Dừng", image: UIImage(systemName: "stop.fill"),
+                      children: [action("Tất cả", snapshots)] + snapshots.map { action($0.title, [$0]) })
+    }
+
+    private func clearDataMenu(for app: AppInfo, tabs: [(id: UUID?, title: String)]) -> UIMenuElement {
+        func action(_ title: String, _ targets: [(id: UUID?, title: String)]) -> UIAction {
+            UIAction(title: title, image: UIImage(systemName: "eraser"),
+                     attributes: jvm_bridge_active_session_count() == 0 ? .destructive : [.destructive, .disabled]) { [weak self] _ in
+                self?.confirmClearGameData(for: app, tabs: targets)
+            }
         }
-        let alert = UIAlertController(title: stopping ? "Dừng tab" : "Chọn tab đang chạy",
-                                      message: nil, preferredStyle: .alert)
-        for game in choices {
-            alert.addAction(UIAlertAction(title: game.appName,
-                style: stopping ? .destructive : .default) { [weak game] _ in
-                guard let game, game.ownsLiveGameSession() else { return }
-                perform(game)
-            })
-        }
-        alert.addAction(UIAlertAction(title: "Hủy", style: .cancel))
-        present(alert, animated: true)
+        if tabs.count == 1 { return action("Xóa dữ liệu", tabs) }
+        return UIMenu(title: "Xóa dữ liệu", image: UIImage(systemName: "eraser"),
+                      children: [action("Tất cả", tabs)] + tabs.map { action($0.title, [$0]) })
     }
 
     // Keep lifecycle diagnostics but do not restart any decorative work.
@@ -1277,84 +1338,30 @@ class AppsListViewController: UIViewController,
         guard let indexPath = indexPaths.first else { return nil }
         let app = apps[indexPath.item]
         return UIContextMenuConfiguration(actionProvider: { [weak self] _ in
-            let isRunning = self?.hasNativeGame(for: app.path) == true
+            guard let self else { return nil }
+            let clones: [JarBoxGameStorage.CloneRecord]
+            let tabs: [(id: UUID?, title: String)]
+            do {
+                clones = try JarBoxGameStorage.registeredClones(
+                    jarPath: app.path, documents: Self.documentsDirectory)
+                tabs = [(nil, "Tab gốc")] + clones.map { (Optional($0.id), $0.label) }
+            } catch {
+                return UIMenu(children: [UIAction(title: "Không đọc được các tab",
+                                                   attributes: .disabled) { _ in }])
+            }
+            let isRunning = self.hasNativeGame(for: app.path)
+            let stop = self.stopMenu(for: app, tabs: tabs)
             let infoAction = UIAction(title: "Thông tin trò chơi",
                                       image: UIImage(systemName: "info.circle")) { [weak self] _ in
-                self?.showGameInformation(app)
+                if clones.isEmpty { self?.showGameInformation(app) }
+                else { self?.showTabInformationPicker(for: app, clones: clones) }
             }
-            let saveLogAction = UIAction(title: "Nhật ký save & cài đặt",
-                                         image: UIImage(systemName: "doc.text")) { [weak self] _ in
-                self?.showSaveLog(for: app)
+            let settings = UIAction(title: "Độ phân giải, FPS và 3D",
+                                    image: UIImage(systemName: "slider.horizontal.3")) { [weak self] _ in
+                if clones.isEmpty { self?.showTabSettings(for: app, cloneID: nil, tabName: "Tab gốc") }
+                else { self?.showTabSettingsPicker(for: app, clones: clones) }
             }
-            let addTab = UIAction(title: "+ Tab · dữ liệu mặc định",
-                                  image: UIImage(systemName: "plus.square.on.square")) { [weak self] _ in
-                self?.addDefaultTab(for: app)
-            }
-            let removeTab = UIAction(title: "− Tab · xóa dữ liệu riêng",
-                                     image: UIImage(systemName: "minus.square"),
-                                     attributes: .destructive) { [weak self] _ in
-                self?.presentTabDeletion(for: app)
-            }
-            var sessionActions: [UIMenuElement] = []
-            if isRunning {
-                sessionActions = [
-                    UIAction(title: "Tiếp tục game", image: UIImage(systemName: "play.fill")) { [weak self] _ in
-                        self?.chooseManagedGame(stopping: false, path: app.path)
-                    },
-                    UIAction(title: "Dừng game hoàn toàn", image: UIImage(systemName: "stop.fill"),
-                             attributes: .destructive) { [weak self] _ in
-                        self?.chooseManagedGame(stopping: true, path: app.path)
-                    }
-                ]
-            }
-            let ssEnabled = Self.is3DSupersampling(for: app)
-            let toggle3D = UIAction(title: ssEnabled ? "Disable 3D Enhancement" : "Enable 3D Enhancement",
-                                    subtitle: ssEnabled ? "Lower quality, but closer to original" : "Smoother 3D, but not original-accurate",
-                                    image: UIImage(systemName: "cube"),
-                                    state: ssEnabled ? .on : .off) { _ in
-                Self.set3DSupersampling(!ssEnabled, for: app)
-            }
-            let rename = UIAction(title: "Đổi tên",
-                                  image: UIImage(systemName: "pencil")) { _ in
-                self?.promptRenameApp(app)
-            }
-            let clearData = UIAction(title: "Clear Game Data",
-                                     image: UIImage(systemName: "eraser"),
-                                     attributes: isRunning ? .disabled : []) { _ in
-                self?.confirmClearGameData(for: app)
-            }
-            let delete = UIAction(title: "Delete", image: UIImage(systemName: "trash"),
-                                  attributes: isRunning ? [.destructive, .disabled] : .destructive) { _ in
-                self?.confirmDeleteApp(at: indexPath)
-            }
-            let currentRes = Self.resolution(for: app)
-            let resActions = Self.resolutionOptions.map { opt in
-                UIAction(title: opt.label,
-                         state: (opt.w == currentRes.w && opt.h == currentRes.h) ? .on : .off) { _ in
-                    Self.setResolution(w: opt.w, h: opt.h, for: app)
-                }
-            }
-            let resMenu = UIMenu(title: "Screen Resolution",
-                                  image: UIImage(systemName: "aspectratio"),
-                                  children: resActions)
-
-            let currentFps = Self.fpsLimit(for: app)
-            let fpsActions = Self.fpsLimitOptions.map { opt in
-                UIAction(title: opt.label,
-                         state: opt.value == currentFps ? .on : .off) { _ in
-                    Self.setFpsLimit(opt.value, for: app)
-                }
-            }
-            let fpsMenu = UIMenu(title: "FPS Limit",
-                                  subtitle: "High FPS may break some games",
-                                  image: UIImage(systemName: "gauge.with.needle"),
-                                  children: fpsActions)
-
-            let advanced = UIMenu(title: "Nâng cao",
-                                  image: UIImage(systemName: "slider.horizontal.3"),
-                                  children: [toggle3D, fpsMenu])
-            // One configuration for every clone of this installed JAR.
-            // Freeze it while any tab in this group is alive (also STOPPING).
+            // Group-wide Treo preference remains locked during any live tab.
             let compatible = JarBoxGameStorage.treoCompatibleOnly(for: app.path)
             let treoActions = [false, true].map { value in
                 UIAction(title: value ? "Tương thích" : "Tự động · NSO nếu đã xác minh",
@@ -1365,15 +1372,29 @@ class AppsListViewController: UIViewController,
                 }
             }
             let treoSettings = UIMenu(title: "Treo · dùng chung mọi tab",
-                subtitle: isRunning ? "Dừng các tab của game để đổi cấu hình" : "Chỉ áp dụng khi chạy ẩn",
                 image: UIImage(systemName: "moon.zzz"), children: treoActions)
-            let settings = UIMenu(options: .displayInline, children: [treoSettings, resMenu, advanced])
-            let actions = UIMenu(options: .displayInline, children: [rename, clearData, delete])
-            let tabActions = UIMenu(title: "Các tab · cùng JAR, save độc lập",
-                                    image: UIImage(systemName: "square.on.square"),
-                                    children: [addTab, removeTab])
-            let information = UIMenu(options: .displayInline, children: [infoAction, saveLogAction])
-            return UIMenu(children: sessionActions + [tabActions, information, settings, actions])
+            let addTab = UIAction(title: "+ Tab",
+                                  image: UIImage(systemName: "plus.square.on.square")) { [weak self] _ in
+                self?.addDefaultTab(for: app)
+            }
+            let removeTab = UIAction(title: "− Tab",
+                                     image: UIImage(systemName: "minus.square"),
+                                     attributes: jvm_bridge_active_session_count() != 0 || clones.isEmpty
+                                        ? [.destructive, .disabled] : .destructive) { [weak self] _ in
+                self?.presentTabDeletion(for: app)
+            }
+            let delete = UIAction(title: "Xóa game", image: UIImage(systemName: "trash"),
+                                  attributes: isRunning ? [.destructive, .disabled] : .destructive) { [weak self] _ in
+                self?.confirmDeleteApp(for: app)
+            }
+            let advanced = UIMenu(title: "Nâng cao",
+                                  image: UIImage(systemName: "slider.horizontal.3"),
+                                  children: [treoSettings, settings, addTab, removeTab, delete])
+            let rename = UIAction(title: "Đổi tên", image: UIImage(systemName: "pencil")) { [weak self] _ in
+                self?.promptRenameApp(app)
+            }
+            return UIMenu(children: [stop, infoAction, advanced, rename,
+                                     self.clearDataMenu(for: app, tabs: tabs)])
         })
     }
 
@@ -1600,23 +1621,36 @@ class AppsListViewController: UIViewController,
         present(alert, animated: true)
     }
 
-    private func confirmClearGameData(for app: AppInfo) {
-        let alert = UIAlertController(title: "Xóa save game",
-                                      message: "Xóa toàn bộ dữ liệu RMS của \(app.name)? Không thể hoàn tác.",
+    private func confirmClearGameData(for app: AppInfo, tabs: [(id: UUID?, title: String)]) {
+        guard !tabs.isEmpty else { return }
+        let names = tabs.map { $0.title }.joined(separator: ", ")
+        let alert = UIAlertController(title: "Xóa dữ liệu",
+                                      message: "Xóa dữ liệu của " + app.name + " · " + names +
+                                        "? Không thể hoàn tác. Giữ nguyên JAR, tab và cài đặt.",
                                       preferredStyle: .alert)
         alert.addAction(UIAlertAction(title: "Hủy", style: .cancel))
-        alert.addAction(UIAlertAction(title: "Xóa save", style: .destructive) { [weak self] _ in
+        alert.addAction(UIAlertAction(title: "Xóa dữ liệu", style: .destructive) { [weak self] _ in
             guard let self else { return }
-            // No active Java thread may race with an external RMS deletion.
             guard jvm_bridge_session_is_active() == 0 else {
                 self.presentSaveOperationError(NSError(domain: "JarBox.GameStorage", code: 3,
-                    userInfo: [NSLocalizedDescriptionKey: "Hãy dừng các phiên JVM trước khi xóa save."]))
+                    userInfo: [NSLocalizedDescriptionKey: "Hãy dừng các phiên JVM trước khi xóa dữ liệu."]))
                 return
             }
             do {
-                let root = try JarBoxGameStorage.prepareRoot(
-                    jarPath: app.path, documents: Self.documentsDirectory)
-                try FileManager.default.removeItem(atPath: root)
+                let current = try self.registeredTabs(for: app)
+                guard tabs.allSatisfy({ tab in current.contains { $0.id == tab.id } }) else {
+                    throw NSError(domain: "JarBox.GameStorage", code: 14,
+                        userInfo: [NSLocalizedDescriptionKey: "Danh sách tab đã thay đổi. Hãy chọn lại."])
+                }
+                // Validate all targets before resetting any of their files.
+                for tab in tabs {
+                    _ = try JarBoxGameStorage.prepareRoot(jarPath: app.path,
+                        documents: Self.documentsDirectory, cloneID: tab.id)
+                }
+                for tab in tabs {
+                    try JarBoxGameStorage.clearInstanceData(jarPath: app.path,
+                        documents: Self.documentsDirectory, cloneID: tab.id)
+                }
             } catch {
                 self.presentSaveOperationError(error)
             }
@@ -1624,8 +1658,7 @@ class AppsListViewController: UIViewController,
         present(alert, animated: true)
     }
 
-    private func confirmDeleteApp(at indexPath: IndexPath) {
-        let app = apps[indexPath.item]
+    private func confirmDeleteApp(for app: AppInfo) {
         let alert = UIAlertController(title: "Xóa game",
                                       message: "Xóa \(app.name), RMS và cài đặt riêng của JAR này?",
                                       preferredStyle: .alert)
@@ -1660,11 +1693,7 @@ class AppsListViewController: UIViewController,
             for prefix in ["displayName_", "ss3d_", "resW_", "resH_", "fpsLimit_"] {
                 UserDefaults.standard.removeObject(forKey: prefix + gid)
             }
-            self.springboardCollectionView.performBatchUpdates {
-                self.apps.remove(at: indexPath.item)
-                self.springboardCollectionView.deleteItems(at: [indexPath])
-            }
-            self.emptyStateLabel.isHidden = !self.apps.isEmpty
+            self.scanApps()
         })
         present(alert, animated: true)
     }
@@ -1673,60 +1702,13 @@ class AppsListViewController: UIViewController,
                         didSelectItemAt indexPath: IndexPath) {
         guard canPresentGame, apps.indices.contains(indexPath.item) else { return }
         let app = apps[indexPath.item]
-        do {
-            let clones = try JarBoxGameStorage.registeredClones(
-                jarPath: app.path, documents: Self.documentsDirectory)
-            if clones.isEmpty {
-                launchGameTab(app, cloneID: nil, tabTitle: app.name)
-            } else {
-                showTabChooser(for: app, clones: clones)
-            }
-        } catch {
-            presentSaveOperationError(error)
+        // Open the original by default, or the last parked tab of this JAR.
+        // Other registered tabs are exposed by the in-game tab strip.
+        if let recent = lastParkedGame, recent.jarPath == app.path {
+            recent.resumeParkedGame()
+        } else {
+            launchGameTab(app, cloneID: nil, tabTitle: app.name)
         }
-    }
-
-    /// A group tile expands into independent windows/tabs. No clone is
-    /// started until tapped; each gets a separately resolved save root.
-    private func showTabChooser(for app: AppInfo,
-                                clones: [JarBoxGameStorage.CloneRecord]) {
-        let menu = UIAlertController(title: app.name + " · " + String(clones.count + 1) + " tab",
-                                     message: "Chọn tab cần mở. Các tab dùng chung JAR, không chung dữ liệu.",
-                                     preferredStyle: .actionSheet)
-        let originalRunning = gameForTab(app.path, cloneID: nil) != nil
-        menu.addAction(UIAlertAction(
-            title: originalRunning ? "● Tab gốc · đang chạy" : "Tab gốc",
-            style: .default) { [weak self] _ in
-            self?.launchGameTab(app, cloneID: nil, tabTitle: app.name)
-        })
-        for clone in clones {
-            let running = gameForTab(app.path, cloneID: clone.id) != nil
-            menu.addAction(UIAlertAction(
-                title: running ? "● " + clone.label + " · đang chạy" : clone.label,
-                style: .default) { [weak self] _ in
-                self?.launchGameTab(app, cloneID: clone.id, tabTitle: app.name + " · " + clone.label)
-            })
-        }
-        menu.addAction(UIAlertAction(title: "+ Tab", style: .default) { [weak self] _ in
-            self?.addDefaultTab(for: app)
-        })
-        menu.addAction(UIAlertAction(title: "− Tab", style: .destructive) { [weak self] _ in
-            self?.presentTabDeletion(for: app)
-        })
-        menu.addAction(UIAlertAction(title: "⚙ Cài đặt các tab", style: .default) { [weak self] _ in
-            self?.showTabSettingsPicker(for: app, clones: clones)
-        })
-        menu.addAction(UIAlertAction(title: "ⓘ Thông tin các tab", style: .default) { [weak self] _ in
-            self?.showTabInformationPicker(for: app, clones: clones)
-        })
-        menu.addAction(UIAlertAction(title: "Hủy", style: .cancel))
-        if let popover = menu.popoverPresentationController {
-            popover.sourceView = springboardCollectionView
-            popover.sourceRect = CGRect(x: springboardCollectionView.bounds.midX,
-                                        y: springboardCollectionView.bounds.midY,
-                                        width: 1, height: 1)
-        }
-        present(menu, animated: true)
     }
 
     private func showTabInformationPicker(for app: AppInfo,

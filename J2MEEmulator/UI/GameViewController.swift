@@ -343,6 +343,10 @@ class GameViewController: UIViewController {
     private var portraitControlsHeight: NSLayoutConstraint?
     private var portraitPadBottomPins: [NSLayoutConstraint] = []
     private let screenMenu = UIButton(type: .system)
+    private let gameTabScroll = UIScrollView()
+    private let gameTabStack = UIStackView()
+    private var gameTabHeight: NSLayoutConstraint?
+    private var requestedTabSwitch: (() -> Void)?
     private var blackout: UIButton?
     // Black cover swallows all touches; only the small centered child button
     // can wake the game. Neither touchesMoved nor taps outside it end Treo.
@@ -621,6 +625,7 @@ class GameViewController: UIViewController {
 
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
+        refreshGameTabStrip()
         // Keep the screen awake only while the game is visible. Locking the
         // phone while NSO auto/Treo is active may suspend Java execution.
         // The library itself must NOT permanently disable auto-lock.
@@ -673,6 +678,82 @@ class GameViewController: UIViewController {
     //  │  │joystick │  │              │  │ [*] [0] [#]  │  │
     //  │  └─────────┘  └──────────────┘  └───────────────┘  │
     //  └──────────────────────────────────────────────────────┘
+
+    private func setupGameTabStrip() {
+        gameTabScroll.translatesAutoresizingMaskIntoConstraints = false
+        gameTabScroll.showsHorizontalScrollIndicator = false
+        gameTabScroll.backgroundColor = .black
+        gameTabScroll.isHidden = true
+        view.addSubview(gameTabScroll)
+        gameTabStack.axis = .horizontal
+        gameTabStack.alignment = .fill
+        gameTabStack.spacing = 6
+        gameTabStack.translatesAutoresizingMaskIntoConstraints = false
+        gameTabScroll.addSubview(gameTabStack)
+        let height = gameTabScroll.heightAnchor.constraint(equalToConstant: 0)
+        gameTabHeight = height
+        NSLayoutConstraint.activate([
+            height,
+            gameTabScroll.topAnchor.constraint(equalTo: backButton.bottomAnchor),
+            gameTabScroll.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 8),
+            gameTabScroll.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -8),
+            gameTabStack.leadingAnchor.constraint(equalTo: gameTabScroll.contentLayoutGuide.leadingAnchor),
+            gameTabStack.trailingAnchor.constraint(equalTo: gameTabScroll.contentLayoutGuide.trailingAnchor),
+            gameTabStack.topAnchor.constraint(equalTo: gameTabScroll.contentLayoutGuide.topAnchor),
+            gameTabStack.bottomAnchor.constraint(equalTo: gameTabScroll.contentLayoutGuide.bottomAnchor),
+            gameTabStack.heightAnchor.constraint(equalTo: gameTabScroll.frameLayoutGuide.heightAnchor)
+        ])
+    }
+
+    // Event-based only. No tab timer, canvas copy, or new native owner.
+    private func refreshGameTabStrip() {
+        guard layoutMode == .portrait, let library = sessionLibrary else { return }
+        for child in gameTabStack.arrangedSubviews {
+            gameTabStack.removeArrangedSubview(child)
+            child.removeFromSuperview()
+        }
+        let tabs = library.gameTabItems(for: self)
+        gameTabHeight?.constant = 34
+        gameTabScroll.isHidden = false
+        var selectedButton: UIButton?
+        for tab in tabs {
+            let selected = tab.id == cloneID
+            let button = UIButton(type: .system)
+            button.setTitle((!selected && tab.running ? "● " : "") + tab.title, for: .normal)
+            button.setTitleColor(.white, for: .normal)
+            button.titleLabel?.font = .systemFont(ofSize: 13, weight: selected ? .semibold : .regular)
+            button.titleLabel?.lineBreakMode = .byTruncatingTail
+            button.contentEdgeInsets = UIEdgeInsets(top: 0, left: 12, bottom: 0, right: 12)
+            button.backgroundColor = UIColor(white: selected ? 0.30 : 0.13, alpha: 1)
+            button.layer.cornerRadius = 7
+            button.accessibilityTraits = selected ? [.button, .selected] : .button
+            button.accessibilityValue = selected ? "Đang chọn" : (tab.running ? "Đang chạy ẩn" : "Chưa mở")
+            button.widthAnchor.constraint(lessThanOrEqualToConstant: 160).isActive = true
+            button.addAction(UIAction { [weak self] _ in
+                self?.switchGameTab(to: tab.id)
+            }, for: .touchUpInside)
+            gameTabStack.addArrangedSubview(button)
+            if selected { selectedButton = button }
+        }
+        view.layoutIfNeeded()
+        if let selectedButton {
+            gameTabScroll.scrollRectToVisible(gameTabScroll.convert(selectedButton.bounds, from: selectedButton),
+                                              animated: false)
+        }
+    }
+
+    private func switchGameTab(to target: UUID?) {
+        guard target != cloneID, let library = sessionLibrary,
+              ownsLiveGameSession(), startupWatchdog == nil,
+              !gameStopRequested, !libraryIsPresented,
+              presentedViewController == nil else { return }
+        requestedTabSwitch = { [weak self, weak library] in
+            guard let self else { return }
+            library?.openGameTabAfterPark(self, cloneID: target)
+        }
+        defer { requestedTabSwitch = nil }
+        openLibraryKeepingGame()
+    }
 
     private func setupNGageLayout(portrait: Bool = false) {
         let joystick = JoystickView()
@@ -743,6 +824,7 @@ class GameViewController: UIViewController {
             screenMenu.accessibilityLabel = "Tùy chọn game"
             screenMenu.showsMenuAsPrimaryAction = true
             view.addSubview(screenMenu)
+            setupGameTabStrip()
             let height = panel.heightAnchor.constraint(equalToConstant: 198)
             height.priority = .defaultHigh
             portraitControlsHeight = height
@@ -754,7 +836,7 @@ class GameViewController: UIViewController {
                 screenMenu.trailingAnchor.constraint(equalTo: safe.trailingAnchor, constant: -8),
                 screenMenu.widthAnchor.constraint(equalToConstant: 44),
                 screenMenu.heightAnchor.constraint(equalToConstant: 36),
-                emulatorView.topAnchor.constraint(equalTo: backButton.bottomAnchor, constant: 4),
+                emulatorView.topAnchor.constraint(equalTo: gameTabScroll.bottomAnchor, constant: 4),
                 emulatorView.leadingAnchor.constraint(equalTo: safe.leadingAnchor),
                 emulatorView.trailingAnchor.constraint(equalTo: safe.trailingAnchor),
                 emulatorView.bottomAnchor.constraint(equalTo: panel.topAnchor),
@@ -789,7 +871,7 @@ class GameViewController: UIViewController {
             }
             for overlay in [formView as UIView, listView as UIView] {
                 NSLayoutConstraint.activate([
-                    overlay.topAnchor.constraint(equalTo: backButton.bottomAnchor),
+                    overlay.topAnchor.constraint(equalTo: gameTabScroll.bottomAnchor),
                     overlay.leadingAnchor.constraint(equalTo: view.leadingAnchor),
                     overlay.trailingAnchor.constraint(equalTo: view.trailingAnchor),
                     overlay.bottomAnchor.constraint(equalTo: view.bottomAnchor)
@@ -4015,9 +4097,11 @@ class GameViewController: UIViewController {
             unbindGameFrameView(token: gameSessionToken)
             emulatorView.clearPendingGameFrame()
             if activeGameViewController === self { activeGameViewController = nil }
+            let switchTab = requestedTabSwitch
             dismiss(animated: false) { [weak self, weak library] in
                 guard let self else { return }
                 library?.managedGameDidPark(self)
+                switchTab?()
             }
             return
         }

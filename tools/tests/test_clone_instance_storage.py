@@ -95,6 +95,21 @@ struct CloneHarness {
 
         nativeSessionCount = 1
         do {
+            try JarBoxGameStorage.clearInstanceData(jarPath: jar, documents: docs, cloneID: b.id)
+            fatalError("reset while JVM alive")
+        } catch { }
+        require(fm.fileExists(atPath: recordB), "live reset mutated save")
+        nativeSessionCount = 0
+        try JarBoxGameStorage.clearInstanceData(jarPath: jar, documents: docs, cloneID: b.id)
+        require((try fm.contentsOfDirectory(atPath: rootB)).isEmpty, "reset did not empty clone root")
+        require(try JarBoxGameStorage.registeredClones(jarPath: jar, documents: docs).contains { $0.id == b.id },
+                "reset removed clone registry")
+        require(fm.fileExists(atPath: recordA) && fm.fileExists(atPath: original), "reset touched sibling")
+        require(defaults.object(forKey: "fpsLimit_" + keyB) as? Int == 15, "reset erased preferences")
+        try Data("ACCOUNT_B".utf8).write(to: URL(fileURLWithPath: recordB))
+
+        nativeSessionCount = 1
+        do {
             try JarBoxGameStorage.removeClone(
                 jarPath: jar, documents: docs, cloneID: a.id)
             fatalError("deleted a tab while JVM was alive")
@@ -250,7 +265,8 @@ class CloneInstanceStorageTest(unittest.TestCase):
         self.assertIn('title: "− Tab"', source)
         self.assertIn("createDefaultClone(", source)
         self.assertIn("removeClone(", source)
-        self.assertIn("showTabChooser(for: app, clones: clones)", source)
+        self.assertIn("func gameTabItems(for game: GameViewController)", source)
+        self.assertIn("func openGameTabAfterPark(", source)
         self.assertIn("cloneCount:", source)
         self.assertIn("cloneID: cloneID)", source)
         self.assertIn('showTabInformationPicker(for: app, clones: clones)', source)
@@ -258,8 +274,8 @@ class CloneInstanceStorageTest(unittest.TestCase):
         self.assertIn('Self.setResolution(w: option.w, h: option.h, for: app, cloneID: cloneID)', source)
         self.assertIn('Self.setFpsLimit(option.value, for: app, cloneID: cloneID)', source)
         self.assertIn('Self.set3DSupersampling(!enhanced3D, for: app, cloneID: cloneID)', source)
-        self.assertIn('let originalRunning = gameForTab(app.path, cloneID: nil) != nil', source)
-        self.assertIn('let running = gameForTab(app.path, cloneID: clone.id) != nil', source)
+        self.assertIn('gameForTab(app.path, cloneID: tab.id) != nil', source)
+        self.assertIn('return UIMenu(children: [stop, infoAction, advanced, rename,', source)
         self.assertIn('blockedClonedJAR = true', source)
         self.assertIn('try fm.replaceItemAt(destURL, withItemAt: pending)', source)
         self.assertIn("rms-events.log", source)
