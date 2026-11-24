@@ -142,6 +142,17 @@ def audit(root=ROOT):
         "treo_gc_afk_state": bool(treo_gc_owned),
         "3d_supersampling_config": bool(render_scale_owned),
     }
+    # Separate the 2D target from the full (including legacy 3D) audit.
+    # This only reports a source guard, not proof that every 3D entry point
+    # is unreachable, nor that the opt-in flag was used for a device build.
+    policy_path = root / "J2MEEmulator/NativeBridge/jarbox_2d_policy.h"
+    policy_source = policy_path.read_text(encoding="utf-8") if policy_path.is_file() else ""
+    exclusion_guard_present = (
+        "return session_cap == 1 && !JARBOX_2D_ONLY_RUNTIME;" in policy_source
+        and "if (jarbox_legacy_3d_allowed((unsigned)jvm_bridge_supported_concurrent_sessions())) {" in src["lifecycle"]
+        and "if (slot->legacy_3d_registered) {" in src["lifecycle"])
+    blockers_2d = {name: found for name, found in sorted(blockers.items())
+                   if found and (not name.startswith("3d_") or not exclusion_guard_present)}
     source_prerequisites_met = all(owned.values()) and not any(blockers.values())
     ready = source_prerequisites_met and not one_vm_gate
     # No automated source scan proves safe concurrent execution on iOS.
@@ -156,6 +167,9 @@ def audit(root=ROOT):
         "runtime_device_concurrency_validated": runtime_device_validated,
         "owned_native_components": owned,
         "source_prerequisites_met": source_prerequisites_met,
+        "2d_only_legacy_3d_exclusion_guard_present": bool(exclusion_guard_present),
+        "2d_only_candidate_blockers": blockers_2d,
+        "2d_only_runtime_validated": False,
         "unisolated_native_blockers": {
             name: found for name, found in sorted(blockers.items()) if found
         },
@@ -168,6 +182,8 @@ def audit(root=ROOT):
             "Java thread roots snapshot native generation; nested Runtime frames share it. Render, LCDUI and Display Input reject stale runtime generations after pointer reuse.",
             "3D supersampling configuration is session-owned; M3G pixel buffers, EGL contexts and global cleanup remain separate blockers.",
             "Network, classloader, JIT, sockets, native image handles, and teardown still need device validation.",
+            "An opt-in 2D-only build excludes legacy 3D native registration and cleanup; the default single-VM build retains it. The cap is unchanged.",
+            "2d_only_candidate_blockers excludes 3D source markers only if the exclusion guard is present. It is not a certification of 3D reachability or runtime safety.",
             "Do not enable another JVM while there are unisolated native blockers.",
         ],
     }

@@ -1,6 +1,7 @@
 #include "jvm_bridge.h"
 #include "jarbox_focus_policy.h"
 #include "jarbox_session_registry.h"
+#include "jarbox_2d_policy.h"
 #include "jvm.h"
 #include "jvm_util.h"
 #include "garbage.h"
@@ -98,6 +99,7 @@ typedef struct {
     atomic_int phase;
     _Atomic uint64_t token;
     int worker_busy; // lifecycle lock; prevents release/reuse during an API call
+    int legacy_3d_registered; // launch-worker owned; immutable until retirement
 } JarBoxVMContext;
 static JarBoxVMContext g_bridge_slots[JARBOX_REGISTRY_MAX_SLOTS];
 
@@ -128,6 +130,7 @@ static JarBoxVMContext *bridge_reserve_slot_locked(uint64_t token, unsigned limi
     atomic_store_explicit(&empty->phase, BRIDGE_STARTING, memory_order_release);
     atomic_store_explicit(&empty->token, token, memory_order_release);
     empty->worker_busy = 0;
+    empty->legacy_3d_registered = 0;
     atomic_store_explicit(&empty->active, 1, memory_order_release);
     return empty;
 }
@@ -136,6 +139,7 @@ static int bridge_slot_can_retire_locked(const JarBoxVMContext *slot) {
         !atomic_load_explicit(&slot->jvm, memory_order_acquire);
 }
 static void bridge_reset_slot_locked(JarBoxVMContext *slot) {
+    slot->legacy_3d_registered = 0;
     atomic_store_explicit(&slot->phase, BRIDGE_IDLE, memory_order_release);
     atomic_store_explicit(&slot->stop_requested, 0, memory_order_release);
     atomic_store_explicit(&slot->token, 0, memory_order_release);
@@ -784,8 +788,13 @@ static int bridge_init_slot(JarBoxVMContext *slot, const char *res_root, const c
     }
     j2me_render_reg_natives(slot->jvm);
     j2me_audio_reg_natives(slot->jvm);
-    j2me_micro3d_gl_reg_natives(slot->jvm);
-    j2me_m3g_reg_natives(slot->jvm);
+    // In a future multi-VM build, exclude legacy 3D for ALL launches,
+    // not only the second tab. Archive names/signatures are not a safety gate.
+    if (jarbox_legacy_3d_allowed((unsigned)jvm_bridge_supported_concurrent_sessions())) {
+        j2me_micro3d_gl_reg_natives(slot->jvm);
+        j2me_m3g_reg_natives(slot->jvm);
+        slot->legacy_3d_registered = 1;
+    }
 
     // Set system properties
     sys_properties_set_c(slot->jvm, "os.name", "iOS");
@@ -924,8 +933,11 @@ static void bridge_destroy_slot(JarBoxVMContext *slot) {
         // - the generation-scoped stop denies new render acquires for this VM
         // - jvm_destroy gave threads 3s to exit
         // Input reset is no longer global; that JVM was released above.
-        j2me_micro3d_gl_cleanup_for_owner(destroyed_render_key);
-        j2me_m3g_cleanup();
+        if (slot->legacy_3d_registered) {
+            j2me_micro3d_gl_cleanup_for_owner(destroyed_render_key);
+            j2me_m3g_cleanup();
+            slot->legacy_3d_registered = 0;
+        }
         j2me_render_cleanup_for_owner(destroyed_render_key); // only this VM's 2D handles
         // The C native ledger is independent of the freed Java heap pointer.
         // Dereference is never required; compare identity and invalidate key.

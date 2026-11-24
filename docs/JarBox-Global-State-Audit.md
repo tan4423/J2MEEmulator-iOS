@@ -1179,3 +1179,28 @@ wake notifications: 10,000 cycles plus 100 pthread consumer drains PASS;
 ASan+UBSan 10/10 repetitions PASS. Added source-extraction and ordering
 regression. Full native integration, UIKit, repository suite and device
 tests remain outstanding.
+
+## 2D-first native backend exclusion (opt-in, cap unchanged)
+
+Default single-VM builds retain both existing 3D backends. With the
+opt-in compile definition JARBOX_2D_ONLY_RUNTIME=1, or whenever the
+public session cap is not exactly one, the bridge registers neither
+M3G nor MascotCapsule native methods. This is decided before MIDlet
+execution, regardless of archive fingerprint or how many slots are
+currently occupied. Only a launch that actually registered legacy 3D
+calls its cleanup after worker drain. No 3D engine implementation or
+workflow is modified. The ordinary interpreter's missing-native path
+remains in place; real Java API compatibility in 2D-only mode needs
+device validation. No claim of complete exclusion across every native
+entry point, or safe multi-VM runtime.
+
+The readiness report now separates 2D candidate blockers from the full
+legacy-3D audit if the exclusion source guard is present. The full
+blockers and cap remain unchanged, and runtime validation stays false.
+
+Validation: compiled the exact new portable policy header with clang
+C11 -Wall -Wextra -Werror for both macro values (10,000 cases each).
+ASan+UBSan 10/10 runs per build variant, 20/20 total. These exercise
+the pure policy only, not native registration, Xcode or Java. Added
+repository test for the same header and source wiring. No full
+repository suite or iOS/device test was executed.
