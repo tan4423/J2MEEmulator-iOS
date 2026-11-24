@@ -943,8 +943,21 @@ s32 _gc_big_search(GcCollector *collector) {
     return 0;
 }
 
+// Registered shutdown hooks are strong Java references owned by this JVM.
+// Snapshot them under the queue lock while the collector owns the root copy.
+static void gc_copy_shutdown_hook_roots(MiniJVM *jvm) {
+    ArrayList *hooks = jvm->shutdown_hook;
+    spin_lock(&hooks->spinlock);
+    for (s32 i = 0; i < hooks->length; ++i) {
+        ArrayListValue hook = arraylist_get_value_unsafe(hooks, i);
+        if (hook) arraylist_push_back_unsafe(jvm->collector->runtime_refer_copy, hook);
+    }
+    spin_unlock(&hooks->spinlock);
+}
+
 void _gc_copy_objs(MiniJVM *jvm) {
     arraylist_clear(jvm->collector->runtime_refer_copy);
+    gc_copy_shutdown_hook_roots(jvm);
     s32 i;
     //jvm_printf("thread set size:%d\n", thread_list->length);
     for (i = 0; i < jvm->thread_list->length; i++) {

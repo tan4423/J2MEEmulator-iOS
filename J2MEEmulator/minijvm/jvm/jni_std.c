@@ -707,6 +707,17 @@ s32 java_lang_Runtime_gc(Runtime *runtime, JClass *clazz) {
 s32 java_lang_Runtime_addShutdownHook(Runtime *runtime, JClass *clazz) {
     Instance *jruntime = (Instance *) localvar_getRefer(runtime->localvar, 0);
     Instance *jthread = (Instance *) localvar_getRefer(runtime->localvar, 1);
+    if (!jthread) {
+        exception_throw(JVM_EXCEPTION_NULLPOINTER, runtime, NULL);
+        return RUNTIME_STATUS_EXCEPTION;
+    }
+    // Finalizers run during heap destruction too. Do not let them recreate
+    // a shutdown-hook root after the session has begun terminal cleanup.
+    if (runtime->jvm->collector->exit_flag ||
+        jarbox_session_phase(runtime->jvm->session) >= JARBOX_SESSION_STOPPING) {
+        exception_throw(JVM_EXCEPTION_VMSTOP, runtime, NULL);
+        return RUNTIME_STATUS_EXCEPTION;
+    }
     arraylist_push_back(runtime->jvm->shutdown_hook, jthread);
 
 #if _JVM_DEBUG_LOG_LEVEL > 5

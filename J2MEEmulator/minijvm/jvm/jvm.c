@@ -405,17 +405,21 @@ void jvm_destroy(MiniJVM *jvm) {
      */
     if (!jvm->collector->exit_flag) {
         Runtime *parent = runtime_create(jvm);
-        while (parent && !jvm->collector->exit_flag &&
-               jvm->shutdown_hook->length) {
+        while (parent && !jvm->collector->exit_flag) {
+            // Keep the queue's strong GC root during launch and join.
+            // The queue has one consumer; registration may append only.
             Instance *inst = arraylist_get_value(jvm->shutdown_hook, 0);
-            arraylist_remove_at(jvm->shutdown_hook, 0);
+            if (!inst) break;
             thrd_t t = jthread_start(inst, parent);
             if (t) {
-                if (thrd_join(t, NULL) != thrd_success)
+                if (thrd_join(t, NULL) != thrd_success) {
                     jvm_printf("[WARN] shutdown hook join failed; worker lease retained\n");
+                    break;
+                }
             } else {
                 jvm_printf("[WARN] shutdown hook did not start\n");
             }
+            arraylist_remove_at(jvm->shutdown_hook, 0);
         }
         if (parent) runtime_destroy(parent);
     } else if (jvm->shutdown_hook->length) {
@@ -459,7 +463,11 @@ void jvm_destroy(MiniJVM *jvm) {
     }
 
     jdwp_stop_server(jvm);
-    //
+    // No Java worker or callback may still consume the hook queue. Remove
+    // skipped/failed hooks from the root set before final heap collection.
+    spin_lock(&jvm->shutdown_hook->spinlock);
+    arraylist_clear(jvm->shutdown_hook);
+    spin_unlock(&jvm->shutdown_hook->spinlock);
     gc_destroy(jvm);
 
     hashtable_destroy(jvm->table_jstring_const);

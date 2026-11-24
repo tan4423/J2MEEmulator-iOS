@@ -120,7 +120,7 @@ class JavaWorkerStartHandleTest(unittest.TestCase):
         self.assertNotIn("thrd_rt->", start)
         jvm = (JVM / "jvm.c").read_text()
         self.assertIn("if (t) {\n                if (thrd_join(t, NULL)", jvm)
-        self.assertIn("while (parent && !jvm->collector->exit_flag &&", jvm)
+        self.assertIn("while (parent && !jvm->collector->exit_flag)", jvm)
 
     def test_success_path_does_not_read_child_runtime(self):
         src = (JVM / "jvm_util.c").read_text()

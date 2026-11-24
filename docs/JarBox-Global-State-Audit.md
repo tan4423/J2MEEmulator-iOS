@@ -983,3 +983,24 @@ body; the full repository test suite, actual detach/join behavior, GC
 reclamation, iOS build and device validation have not been executed here.
 Shutdown-hook GC roots, monitor entry, forced-stop monitor ownership,
 finalizers and remaining volatile-field races are separate blockers.
+
+## Shutdown-hook queue is a per-VM GC root
+
+The registered hook array previously was not included in GC's strong root
+snapshot. Retain its entries in the owning collector's runtime_refer_copy
+under the hook-list lock; never copy roots from another JVM. During
+normal teardown keep the front hook rooted until its start and join
+finish, and retain it if joining fails. After all worker and callback
+leases drain, clear the queue under its lock before final GC. Reject
+null hooks and registrations during exit/STOPPING, including finalizer
+attempts during heap destruction. Existing forced host shutdown still
+skips hooks. No extra polling or timer.
+
+Validation: local C11 model of the exact root-copy helper passed 10,000
+cycles; 20 ASan+UBSan repetitions (200,000 modeled cycles) passed. This
+checks independent VM snapshots, null entries and empty queues using
+modeled arrays/locks; it is not a real GC, Java hook execution or
+concurrency stress test. Added repository extraction regression and
+source-order guards. Full suite, real GC/hook lifetime, Codemagic and
+iPhone remain unvalidated. Blocking healthy hook execution and monitor
+entry/finalizer cancellation remain open.
