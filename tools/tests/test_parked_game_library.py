@@ -100,7 +100,7 @@ class ParkedGameLibraryTest(unittest.TestCase):
         self.assertIn('weak var parkedGameController: GameViewController?', self.library)
         self.assertIn('parked.ownsLiveGameSession()', self.library)
         self.assertIn('showAnotherGameBlocked(app)', self.library)
-        self.assertIn('if let parked = liveGames.first {', self.library)
+        self.assertIn('if let parked = games.first, parked.ownsLiveGameSession() {', self.library)
         self.assertIn('private var managedGames: [GameViewController] = []', self.library)
         self.assertIn('managedGames.append(gameVC)', self.library)
         self.assertIn('gameVC.sessionLibrary = self', self.library)

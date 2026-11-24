@@ -625,38 +625,31 @@ class AppsListViewController: UIViewController,
     // Event-driven recovery for sessions stranded by an unexpected UI exit.
     // No timer, animation or background polling on the low-power library.
     private func updateStuckSessionButton() {
-        if let parked = liveGames.first {
-            if parked.ownsLiveGameSession() {
-                navigationItem.title = liveGames.count == 1
-                    ? "Đang chạy ẩn: " + parked.appName
-                    : "Đang chạy ẩn: " + String(liveGames.count) + " tab"
-                navigationItem.leftBarButtonItem = UIBarButtonItem(
-                    title: "Tiếp tục", style: .plain,
-                    target: self, action: #selector(resumeParkedGame))
-                let stop = UIBarButtonItem(
-                    title: "Dừng", style: .plain,
-                    target: self, action: #selector(stopRunningGameFromLibrary))
-                stop.tintColor = .systemRed
-                navigationItem.rightBarButtonItems = [importBarButton, stop, jarBoxMenuButton].compactMap { $0 }
-                return
-            }
-            navigationItem.rightBarButtonItems = [importBarButton, jarBoxMenuButton].compactMap { $0 }
-            if jvm_bridge_session_is_active() != 0 {
-                navigationItem.title = "Đang dừng game..."
-                navigationItem.leftBarButtonItem = UIBarButtonItem(
-                    title: "Xử lý phiên kẹt", style: .plain,
-                    target: self, action: #selector(openStuckSessionRecovery))
-                return
-            }
-            navigationItem.title = "Thư viện"
-            navigationItem.leftBarButtonItem = nil
+        // Rebuild the entire navigation state, including the empty case.
+        // A retired tab must not leave its title or Stop button behind.
+        let games = liveGames
+        if let parked = games.first, parked.ownsLiveGameSession() {
+            navigationItem.title = games.count == 1
+                ? "Đang chạy ẩn: " + parked.appName
+                : "Đang chạy ẩn: " + String(games.count) + " tab"
+            navigationItem.leftBarButtonItem = UIBarButtonItem(
+                title: "Tiếp tục", style: .plain,
+                target: self, action: #selector(resumeParkedGame))
+            let stop = UIBarButtonItem(
+                title: "Dừng", style: .plain,
+                target: self, action: #selector(stopRunningGameFromLibrary))
+            stop.tintColor = .systemRed
+            navigationItem.rightBarButtonItems = [importBarButton, stop, jarBoxMenuButton].compactMap { $0 }
             return
         }
+        navigationItem.rightBarButtonItems = [importBarButton, jarBoxMenuButton].compactMap { $0 }
         if jvm_bridge_session_is_active() != 0 {
+            navigationItem.title = "Phiên JVM chưa dừng"
             navigationItem.leftBarButtonItem = UIBarButtonItem(
-                title: "Dừng phiên kẹt", style: .plain,
+                title: "Xử lý phiên kẹt", style: .plain,
                 target: self, action: #selector(openStuckSessionRecovery))
         } else {
+            navigationItem.title = "Thư viện"
             navigationItem.leftBarButtonItem = nil
         }
     }

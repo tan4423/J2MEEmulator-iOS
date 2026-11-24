@@ -858,3 +858,25 @@ predicates on the SHA-pinned full bridge rejected the original and
 accepted the replacement, including all five failure branches and
 the new cancellation checkpoint. The full Python suite, iOS build,
 real shutdown hooks and device timing/data integrity remain unverified.
+
+## 2026-11-24: Reset library navigation after the last game stops
+
+User reports a stale "Đang chạy ẩn" title and Stop action after closing
+a game. The old empty-liveGames branch only updated the left item, leaving
+the previous title and right-side Stop item untouched. Rebuild all three
+navigation properties from one live-games snapshot, and preserve the
+native registry check. If no resumable owner remains but a native slot
+is still occupied, show recovery rather than a fake running tab or an
+idle library. Once the registry is empty, restore "Thư viện" and only
+the ordinary import/menu actions. No new polling, changes to JVM stop
+behavior, storage, or admission.
+
+Validation: host Swift unittest using the exact old/new method excerpts
+(with Objective-C selectors replaced by opaque names and UIKit/registry
+test doubles) reproduced the stale "Đang chạy ẩn: B" title on the old
+method. Replacement passed 1 test (0.538s), exercising 1,000 modeled
+cycles of multiple live owners, stopping, retirement and stale controller
+references, plus direct live-to-idle transition. Updated the old source
+guard for the snapshot expression; the full existing suite, UIKit build,
+and iPhone verification were not run. This is a UI state fix, not proof
+that every native stop completes.
