@@ -4153,7 +4153,7 @@ class GameViewController: UIViewController {
             "Thời gian Treo: " + String(format: "%.0f giây", seconds),
             "Display chờ theo sự kiện: " + deepIdle,
             "Phiên JVM: " + String(gameSessionToken),
-            "CPU toàn tiến trình nằm trong Thông tin chung; không gán cho riêng tab."
+            "CPU toàn tiến trình nằm trong Trạng thái; chưa đo riêng từng tab."
         ].joined(separator: "\n")
     }
 

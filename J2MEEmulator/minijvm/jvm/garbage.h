@@ -29,6 +29,9 @@ struct _GcCollectorType {
     MemoryBlock *header, *tmp_header, *tmp_tailer;
     s64 obj_count;
     s64 obj_heap_size;
+    // Last existing GC heap measurement + 1 (zero means not sampled).
+    // Read atomically under a native session callback lease.
+    uint64_t jarbox_status_heap_sample;
     s64 lastgc;//last gc at mills
     Runtime *runtime;
     //

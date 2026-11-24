@@ -643,6 +643,22 @@ int jvm_bridge_visit_running_vm_for_token(
     jarbox_session_callback_done(held_session);
     return 1;
 }
+static void bridge_status_heap_snapshot(MiniJVM *vm, void *arg) {
+    if (!vm || !vm->collector) return;
+    *(uint64_t *)arg = __atomic_load_n(
+        &vm->collector->jarbox_status_heap_sample, __ATOMIC_ACQUIRE);
+}
+
+int jvm_bridge_status_heap_bytes_for_token(uint64_t token, uint64_t *out_bytes) {
+    if (!out_bytes) return 0;
+    *out_bytes = 0;
+    uint64_t encoded = 0;
+    if (!jvm_bridge_visit_running_vm_for_token(token, bridge_status_heap_snapshot, &encoded) ||
+        !encoded) return 0;
+    *out_bytes = encoded - 1;
+    return 1;
+}
+
 void jvm_bridge_visit_running_vm(void (*visitor)(MiniJVM *, void *), void *arg) {
     (void)jvm_bridge_visit_running_vm_for_token(jvm_bridge_session_token(),
                                                 visitor, arg);

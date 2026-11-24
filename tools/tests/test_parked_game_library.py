@@ -146,7 +146,7 @@ class ParkedGameLibraryTest(unittest.TestCase):
     def test_global_sleep_overlay_is_in_main_menu_not_per_jar(self):
         self.assertIn('UIMenu(title: "JarBox"', self.library)
         self.assertIn('UIAction(title: "Bảo vệ màn hình"', self.library)
-        self.assertIn('UIAction(title: "Thông tin chung"', self.library)
+        self.assertIn('UIAction(title: "Trạng thái"', self.library)
         self.assertIn('showJarBoxSleepScreen()', self.library)
         self.assertIn('jarbox-global-sleep-screen', self.library)
         self.assertIn('jarbox-global-sleep-wake', self.library)

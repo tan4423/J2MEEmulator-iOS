@@ -87,6 +87,8 @@ MAIN = r'''
         precondition(navigationItem.rightBarButtonItems?.map { $0.title } == ["+", "Menu"])
         precondition(menuAction("Vào Tab cuối") == nil)
         precondition(menuAction("Cài đặt") != nil)
+        precondition(menuAction("Trạng thái") != nil)
+        precondition(menuAction("Thông tin chung") == nil)
         precondition((menuAction("Xử lý phiên kẹt") != nil) == recovery)
         precondition(menuAction("Bảo vệ màn hình") != nil)
     }

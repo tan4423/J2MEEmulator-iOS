@@ -42,6 +42,9 @@ int jvm_bridge_visit_running_vm_for_token(
 /// Checks whether a token still occupies a claimed/starting/running/stopping
 /// slot without dereferencing a JVM. Useful to retain a parked VC identity.
 int jvm_bridge_session_is_active_for_token(uint64_t token);
+/// Last GC-measured Java heap + accounted native bytes (not physical footprint).
+/// Returns 1 with a sample, 0 if unavailable. Does not walk or collect the heap.
+int jvm_bridge_status_heap_bytes_for_token(uint64_t token, uint64_t *out_bytes);
 /// Check the actual ownership flag (phase may briefly be idle during start).
 int jvm_bridge_session_is_active(void);
 /// Truthful number of live native VM slots (currently 0 or 1).

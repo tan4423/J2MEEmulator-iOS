@@ -622,6 +622,237 @@ final class JarBoxProtectionSettingsController: UIViewController {
     }
 }
 
+// A status screen, not a background monitor. Sampling owns a timer only
+// while the actual screen and scene are active.
+final class JarBoxStatusController: UIViewController {
+    typealias TabRow = (game: String, path: String, tab: String, token: UInt64)
+    var readRAM: (() -> String)?
+    var readTabs: (() -> [TabRow])?
+    private let cpuLabel = UILabel()
+    private let ramLabel = UILabel()
+    private let thermalLabel = UILabel()
+    private let batteryLabel = UILabel()
+    private let cpuDetail = UILabel()
+    private let ramDetail = UILabel()
+    private let cpuButton = UIButton(type: .system)
+    private let ramButton = UIButton(type: .system)
+    private var timer: Timer?
+    private var generation: UInt64 = 0
+    private var visible = false
+    private var previousBatteryMonitoring: Bool?
+    private var baseline: (time: TimeInterval, cpu: Double)?
+    private var cpuText = "CPU App: đang đo"
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        title = "Trạng thái"
+        view.backgroundColor = .systemGroupedBackground
+        navigationItem.rightBarButtonItem = UIBarButtonItem(title: "Đóng", style: .done,
+            target: self, action: #selector(close))
+        let scroll = UIScrollView()
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(scroll)
+        let stack = UIStackView()
+        stack.axis = .vertical
+        stack.alignment = .fill
+        stack.spacing = 10
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        scroll.addSubview(stack)
+        for label in [cpuLabel, ramLabel, thermalLabel, batteryLabel, cpuDetail, ramDetail] {
+            label.textAlignment = .left
+            label.numberOfLines = 0
+            label.font = .monospacedDigitSystemFont(ofSize: 16, weight: .regular)
+            label.textColor = .label
+        }
+        for label in [cpuDetail, ramDetail] {
+            label.font = .monospacedDigitSystemFont(ofSize: 14, weight: .regular)
+            label.textColor = .secondaryLabel
+            label.isHidden = true
+        }
+        for button in [cpuButton, ramButton] {
+            button.contentHorizontalAlignment = .left
+            button.titleLabel?.font = .systemFont(ofSize: 15, weight: .medium)
+            button.heightAnchor.constraint(greaterThanOrEqualToConstant: 36).isActive = true
+        }
+        cpuButton.setTitle("Chi tiết CPU ▸", for: .normal)
+        ramButton.setTitle("Chi tiết RAM (heap) ▸", for: .normal)
+        cpuButton.addTarget(self, action: #selector(toggleCPU), for: .touchUpInside)
+        ramButton.addTarget(self, action: #selector(toggleRAM), for: .touchUpInside)
+        for child in [cpuLabel, cpuButton, cpuDetail, ramLabel, ramButton, ramDetail,
+                      thermalLabel, batteryLabel] as [UIView] {
+            stack.addArrangedSubview(child)
+        }
+        stack.setCustomSpacing(20, after: cpuDetail)
+        stack.setCustomSpacing(20, after: ramDetail)
+        NSLayoutConstraint.activate([
+            scroll.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
+            scroll.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor),
+            scroll.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor),
+            scroll.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor),
+            stack.topAnchor.constraint(equalTo: scroll.contentLayoutGuide.topAnchor, constant: 24),
+            stack.bottomAnchor.constraint(equalTo: scroll.contentLayoutGuide.bottomAnchor, constant: -24),
+            stack.leadingAnchor.constraint(equalTo: scroll.contentLayoutGuide.leadingAnchor, constant: 20),
+            stack.trailingAnchor.constraint(equalTo: scroll.contentLayoutGuide.trailingAnchor, constant: -20),
+            stack.widthAnchor.constraint(equalTo: scroll.frameLayoutGuide.widthAnchor, constant: -40)
+        ])
+    }
+
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        visible = true
+        let center = NotificationCenter.default
+        center.addObserver(self, selector: #selector(startSampling),
+                           name: UIApplication.didBecomeActiveNotification, object: nil)
+        center.addObserver(self, selector: #selector(stopSampling),
+                           name: UIApplication.willResignActiveNotification, object: nil)
+        center.addObserver(self, selector: #selector(stopSampling),
+                           name: UIApplication.didEnterBackgroundNotification, object: nil)
+        center.addObserver(self, selector: #selector(sceneActivated(_:)),
+                           name: UIScene.didActivateNotification, object: nil)
+        center.addObserver(self, selector: #selector(sceneDeactivated(_:)),
+                           name: UIScene.willDeactivateNotification, object: nil)
+        center.addObserver(self, selector: #selector(sceneDeactivated(_:)),
+                           name: UIScene.didDisconnectNotification, object: nil)
+        startSampling()
+    }
+
+    override func viewWillDisappear(_ animated: Bool) {
+        super.viewWillDisappear(animated)
+        visible = false
+        stopSampling()
+        NotificationCenter.default.removeObserver(self)
+    }
+
+    @objc private func close() { dismiss(animated: true) }
+
+    @objc private func sceneActivated(_ note: Notification) {
+        guard let scene = note.object as? UIScene, scene === view.window?.windowScene else { return }
+        startSampling()
+    }
+
+    @objc private func sceneDeactivated(_ note: Notification) {
+        guard let scene = note.object as? UIScene, scene === view.window?.windowScene else { return }
+        stopSampling()
+    }
+
+    @objc private func startSampling() {
+        guard visible, timer == nil,
+              viewIfLoaded?.window?.windowScene?.activationState == .foregroundActive else { return }
+        let device = UIDevice.current
+        previousBatteryMonitoring = device.isBatteryMonitoringEnabled
+        device.isBatteryMonitoringEnabled = true
+        baseline = nil
+        cpuText = "CPU App: đang đo"
+        refreshStatus()
+        generation &+= 1
+        let current = generation
+        let next = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self, self.generation == current, self.timer != nil else { return }
+                guard self.visible,
+                      self.viewIfLoaded?.window?.windowScene?.activationState == .foregroundActive else {
+                    self.stopSampling()
+                    return
+                }
+                self.refreshStatus()
+            }
+        }
+        next.tolerance = 0.05
+        timer = next
+        RunLoop.main.add(next, forMode: .common)
+    }
+
+    @objc private func stopSampling() {
+        generation &+= 1
+        timer?.invalidate()
+        timer = nil
+        baseline = nil
+        if let previous = previousBatteryMonitoring {
+            UIDevice.current.isBatteryMonitoringEnabled = previous
+            previousBatteryMonitoring = nil
+        }
+    }
+
+    @objc private func toggleCPU() {
+        cpuDetail.isHidden.toggle()
+        cpuButton.setTitle(cpuDetail.isHidden ? "Chi tiết CPU ▸" : "Chi tiết CPU ▾", for: .normal)
+        if !cpuDetail.isHidden { refreshDetails() }
+    }
+
+    @objc private func toggleRAM() {
+        ramDetail.isHidden.toggle()
+        ramButton.setTitle(ramDetail.isHidden ? "Chi tiết RAM (heap) ▸" : "Chi tiết RAM (heap) ▾", for: .normal)
+        if !ramDetail.isHidden { refreshDetails() }
+    }
+
+    private func refreshStatus() {
+        let now = ProcessInfo.processInfo.systemUptime
+        let cpu = treo_process_cpu_seconds()
+        if cpu.isFinite, cpu >= 0, now.isFinite {
+            if let before = baseline, cpu >= before.cpu, now >= before.time {
+                let elapsed = now - before.time
+                if elapsed >= 0.9 {
+                    let rate = (cpu - before.cpu) / elapsed
+                    cpuText = String(format: "CPU App: %.1f%% (%.0f ms/s)", 100 * rate, 1000 * rate)
+                    baseline = (now, cpu)
+                }
+            } else {
+                baseline = (now, cpu)
+                cpuText = "CPU App: đang đo"
+            }
+        } else {
+            baseline = nil
+            cpuText = "CPU App: —"
+        }
+        cpuLabel.text = cpuText
+        ramLabel.text = readRAM?() ?? "RAM: —"
+        let thermal: String
+        switch ProcessInfo.processInfo.thermalState {
+        case .nominal: thermal = "Bình thường"
+        case .fair: thermal = "Tăng nhẹ"
+        case .serious: thermal = "Cao"
+        case .critical: thermal = "Rất cao"
+        @unknown default: thermal = "Không xác định"
+        }
+        thermalLabel.text = "Nhiệt độ: " + thermal
+        let battery = UIDevice.current.batteryLevel
+        batteryLabel.text = battery >= 0 ? String(format: "Pin: %.0f%%", Double(battery) * 100) : "Pin: —"
+        refreshDetails()
+    }
+
+    private func refreshDetails() {
+        guard visible, viewIfLoaded?.window?.windowScene?.activationState == .foregroundActive,
+              !cpuDetail.isHidden || !ramDetail.isHidden else { return }
+        let rows = readTabs?() ?? []
+        if !cpuDetail.isHidden {
+            cpuDetail.text = detailLines(rows) { _ in "Chưa đo riêng" }
+        }
+        if !ramDetail.isHidden {
+            let total = ProcessInfo.processInfo.physicalMemory
+            ramDetail.text = detailLines(rows) { row in
+                var bytes: UInt64 = 0
+                guard total > 0, jvm_bridge_status_heap_bytes_for_token(row.token, &bytes) != 0 else {
+                    return "Đang chờ mẫu"
+                }
+                return String(format: "%.1f%% (%.1f MB)", 100 * Double(bytes) / Double(total),
+                              Double(bytes) / 1_048_576)
+            }
+        }
+    }
+
+    private func detailLines(_ rows: [TabRow], value: (TabRow) -> String) -> String {
+        guard !rows.isEmpty else { return "Không có tab đang chạy" }
+        var lastPath: String?
+        var lines: [String] = []
+        for row in rows {
+            let prefix = row.path == lastPath ? "    " : row.game + " — "
+            lines.append(prefix + row.tab + " — " + value(row))
+            lastPath = row.path
+        }
+        return lines.joined(separator: "\n")
+    }
+}
+
 class AppsListViewController: UIViewController,
                       UICollectionViewDataSource,
                       UICollectionViewDelegate,
@@ -644,7 +875,6 @@ class AppsListViewController: UIViewController,
     private var importBarButton: UIBarButtonItem?
     private var jarBoxMenuButton: UIBarButtonItem?
     // CPU sampling is event-based, process-wide; never attribute it to one game.
-    private var libraryCPUEntry: (time: TimeInterval, cpu: Double)?
     // Black cover is idle by default. A requested HUD runs at 1 Hz for
     // 15 seconds; no periodic HUD work while it is hidden.
     private var jarBoxSleepCover: UIView?
@@ -1098,7 +1328,6 @@ class AppsListViewController: UIViewController,
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
         springboardVisible = true
-        libraryCPUEntry = (ProcessInfo.processInfo.systemUptime, treo_process_cpu_seconds())
         let sceneActive = view.window?.windowScene?.activationState == .foregroundActive
         // A temporary UIKit presentation must not forget protection mode.
         if let cover = jarBoxSleepCover {
@@ -1140,7 +1369,6 @@ class AppsListViewController: UIViewController,
             setJarBoxSleepSampling(false)
             jarBoxSleepCover?.isHidden = true
         }
-        libraryCPUEntry = nil
         setSpringboardMotion(false, reason: "springboard disappearing")
     }
 
@@ -1179,8 +1407,8 @@ class AppsListViewController: UIViewController,
                      image: UIImage(systemName: "moon.zzz")) { [weak self] _ in
                 self?.showJarBoxSleepScreen()
             },
-            UIAction(title: "Thông tin chung",
-                     image: UIImage(systemName: "info.circle")) { [weak self] _ in
+            UIAction(title: "Trạng thái",
+                     image: UIImage(systemName: "chart.bar.xaxis")) { [weak self] _ in
                 self?.showJarBoxOverview()
             },
             UIAction(title: "Cài đặt", image: UIImage(systemName: "gearshape")) { [weak self] _ in
@@ -1622,64 +1850,36 @@ class AppsListViewController: UIViewController,
         if label.text != updated { label.text = updated }
     }
 
-    // General JarBox information is intentionally separated from game metadata.
-    // iOS exposes thermal *pressure*, not an exact chip temperature in °C.
-    // Read only when the user requests it; no background HUD or sampling timer.
-    private func showJarBoxOverview() {
-        let info = ProcessInfo.processInfo
-        let thermal: String
-        switch info.thermalState {
-        case .nominal: thermal = "Bình thường"
-        case .fair: thermal = "Tăng nhẹ"
-        case .serious: thermal = "Cao"
-        case .critical: thermal = "Rất cao"
-        @unknown default: thermal = "Không xác định"
-        }
-        let device = UIDevice.current
-        let previousBatteryMonitoring = device.isBatteryMonitoringEnabled
-        if !previousBatteryMonitoring { device.isBatteryMonitoringEnabled = true }
-        let level = device.batteryLevel
-        if !previousBatteryMonitoring { device.isBatteryMonitoringEnabled = false }
-        let battery = level >= 0
-            ? String(format: "%.0f%%", Double(level) * 100)
-            : "iOS chưa cung cấp"
-
-        let phase = jvm_bridge_session_phase()
-        let phaseLabel: String
-        switch phase {
-        case 0: phaseLabel = "Không có phiên JVM"
-        case 1: phaseLabel = "Đang khởi động"
-        case 2: phaseLabel = "Đang chạy"
-        case 3: phaseLabel = "Đang dừng"
-        default: phaseLabel = "Không xác định"
-        }
-        let activeCount = jvm_bridge_active_session_count()
-        var cpuText = "Chưa có khoảng đo hợp lệ"
-        if let entry = libraryCPUEntry {
-            let elapsed = ProcessInfo.processInfo.systemUptime - entry.time
-            let end = treo_process_cpu_seconds()
-            if elapsed >= 1, entry.cpu >= 0, end >= entry.cpu {
-                cpuText = String(format: "%.1f%% (TB %.0f giây)", 100 * (end - entry.cpu) / elapsed, elapsed)
+    private func statusTabRows() -> [(game: String, path: String, tab: String, token: UInt64)] {
+        // Use the registered display order, not the order controllers were opened.
+        var rows: [(game: String, path: String, tab: String, token: UInt64)] = []
+        let owners = retainedGames.filter { $0.nativeSessionToken != nil }
+        let paths = Set(owners.map { $0.jarPath })
+        for app in apps where paths.contains(app.path) {
+            guard let tabs = try? registeredTabs(for: app) else { continue }
+            for tab in tabs {
+                guard let owner = owners.first(where: {
+                    $0.holdsNativeInstance(for: app.path, cloneID: tab.id)
+                }), let token = owner.nativeSessionToken else { continue }
+                rows.append((app.name, app.path, tab.title, token))
             }
         }
-        let lines = [
-            "CPU toàn JarBox: " + cpuText,
-            jarBoxRAMText(),
-            "Áp lực nhiệt iOS: " + thermal,
-            "Pin: " + battery,
-            "Tiết kiệm pin iOS: " + (info.isLowPowerModeEnabled ? "Bật" : "Tắt"),
-            "Phiên JVM trong tiến trình: " + String(activeCount) +
-                "/" + String(jvm_bridge_supported_concurrent_sessions()),
-            "Trạng thái JVM: " + phaseLabel,
-            "CPU là của toàn JarBox, không phải riêng game.",
-            "Nhiệt là mức áp lực hệ thống, không phải số °C.",
-            "Thông số được cập nhật khi mở mục này."
-        ]
-        let alert = UIAlertController(title: "Thông tin chung · JarBox",
-                                      message: lines.joined(separator: "\n"),
-                                      preferredStyle: .alert)
-        alert.addAction(UIAlertAction(title: "Đóng", style: .default))
-        present(alert, animated: true)
+        return rows
+    }
+
+    private func showJarBoxOverview() {
+        guard presentedViewController == nil, pendingTabMutation == nil,
+              jarBoxSleepCover == nil, gameTabTransitionCover == nil else { return }
+        cancelAutoProtection()
+        let status = JarBoxStatusController()
+        status.readRAM = { [weak self] in self?.jarBoxRAMText() ?? "RAM: —" }
+        // No game can be admitted while this full-screen modal is open.
+        // Capture labels once; filter retired tokens on every detail refresh.
+        let rows = statusTabRows()
+        status.readTabs = { rows.filter { jvm_bridge_session_is_active_for_token($0.token) != 0 } }
+        let nav = JarBoxLibraryNavigationController(rootViewController: status)
+        nav.modalPresentationStyle = .fullScreen
+        present(nav, animated: true)
     }
 
     private func logSpringboardEnergyState(_ reason: String) {

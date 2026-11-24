@@ -563,6 +563,10 @@ s32 _gc_thread_run(void *para) {
         };
 
         s64 heap = gc_sum_heap(collector);
+        if (heap >= 0) {
+            __atomic_store_n(&collector->jarbox_status_heap_sample,
+                             (uint64_t)heap + 1, __ATOMIC_RELEASE);
+        }
         s64 threshold = jvm->max_heap_size * jvm->heap_overload_percent / 100;
         s64 native_extra = jarbox_native_heap_for_vm(jvm);
         s64 desired = jvm->garbage_collect_period_ms;
@@ -615,6 +619,10 @@ s32 _gc_thread_run(void *para) {
             treo_diag_gc_cycle_end();
 #endif
             s64 heap_after = gc_sum_heap(collector);
+            if (heap_after >= 0) {
+                __atomic_store_n(&collector->jarbox_status_heap_sample,
+                                 (uint64_t)heap_after + 1, __ATOMIC_RELEASE);
+            }
             s64 native_after = jarbox_native_heap_for_vm(jvm);
             jvm_printf("[GC] collected: java %lldKB→%lldKB, native %lldKB, total %lldKB→%lldKB (threshold %lldKB) objs=%lld\n",
                        (heap_before - native_extra) / 1024, (heap_after - native_after) / 1024,
