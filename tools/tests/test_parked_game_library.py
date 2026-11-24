@@ -48,9 +48,11 @@ class ParkedGameLibraryTest(unittest.TestCase):
         self.assertIn('extern int g_render_3d_scale;', self.bridge)
         self.assertIn('jvm_bridge_try_begin_session(void)', self.bridge)
         self.assertIn('int jvm_bridge_try_begin_session_with_token(uint64_t *out_token)', self.bridge)
-        self.assertIn('static JarBoxVMContext *bridge_claim_worker(uint64_t token)', self.bridge)
-        self.assertIn('if (!slot) return -10;', self.bridge)
-        self.assertIn('bridge_release_worker(slot);', self.bridge)
+        # The header verifies the public ABI; worker implementation is C.
+        implementation = (ROOT / "J2MEEmulator/NativeBridge/jvm_bridge.c").read_text(encoding="utf-8")
+        self.assertIn('static JarBoxVMContext *bridge_claim_worker(uint64_t token)', implementation)
+        self.assertIn('if (!slot) return -10;', implementation)
+        self.assertIn('bridge_release_worker(slot);', implementation)
 
     def test_automatic_treo_on_library_transition(self):
         self.assertIn('setGlobalEmulatorView(nil)', self.game)
