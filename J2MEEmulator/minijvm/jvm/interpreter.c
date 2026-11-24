@@ -536,7 +536,7 @@ const char *treo_vm_paint_sample_report(void) {
 #if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__
 extern _Atomic int treo_afk_mode;
 extern int treo_afk_elide_graphics(Runtime *runtime, JClass *clazz, Instance *receiver);
-extern int treo_direct_graphics_enabled(void);
+extern int treo_direct_graphics_enabled_for_runtime(Runtime *runtime);
 
 static int treo_headless_eligible(MethodInfo *m) {
     u8 tag = __atomic_load_n(&m->treo_afk_kind, __ATOMIC_RELAXED);
@@ -628,7 +628,11 @@ void _op_notsupport(u8 *opCode, Runtime *runtime) {
 
 
 #if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__
-extern _Atomic int treo_nso_init_target_active;
+// Use the calling heap's profile even if a different JAR is starting.
+static inline int treo_nso_init_for_runtime(const Runtime *rt) {
+    return rt && rt->jvm && rt->jvm->session &&
+        jarbox_treo_nso_init_target_active(&rt->jvm->session->treo_state);
+}
 extern void jvm_bridge_note_net_trace(const char *detail);
 extern void jvm_bridge_mod_popup_tick(void);
 extern void jvm_bridge_mod_loop_note_stage(int stage);
@@ -697,7 +701,7 @@ s32 exception_handle(RuntimeStack *stack, Runtime *runtime) {
                  utf8_cstr(ins->mb.clazz->name));
         jvm_bridge_note_net_trace(event);
     } else if (ins && ins->mb.clazz && runtime->clazz && runtime->method &&
-               atomic_load_explicit(&treo_nso_init_target_active, memory_order_relaxed) &&
+               treo_nso_init_for_runtime(runtime) &&
                ((utf8_equals_c(runtime->clazz->name, "Class_cu") &&
                  (utf8_equals_c(runtime->method->name, "run") ||
                   utf8_equals_c(runtime->method->name, "l"))) ||
@@ -1296,7 +1300,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
     // Class_fq.d or Class_gv.g. A popup can be a server-supplied message
     // or a local failure fallback. The caller PC disambiguates them,
     // without observing or logging text, request bytes, host or identity.
-    if (atomic_load_explicit(&treo_nso_init_target_active, memory_order_relaxed) &&
+    if (treo_nso_init_for_runtime(pruntime) &&
         method && method->_this_class &&
         pruntime && pruntime->clazz && pruntime->method &&
         utf8_equals_c(method->_this_class->name, "Class_cu") &&
@@ -1333,7 +1337,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
     // counters let one frozen-screen snapshot distinguish being stuck
     // inside popup update, repaint, serviceRepaints or game-thread sleep.
     // No Java state or packet is read and there is no per-frame text log.
-    if (atomic_load_explicit(&treo_nso_init_target_active, memory_order_relaxed) &&
+    if (treo_nso_init_for_runtime(pruntime) &&
         pruntime && pruntime->clazz && pruntime->method &&
         utf8_equals_c(pruntime->clazz->name, "Class_cu") &&
         utf8_equals_c(pruntime->method->name, "run")) {
@@ -1539,7 +1543,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
     int nso_init_probe = 0;
     Instance *nso_init_receiver = NULL;
     Instance *nso_init_argument = NULL;
-    if (atomic_load_explicit(&treo_nso_init_target_active, memory_order_relaxed)) {
+    if (treo_nso_init_for_runtime(runtime)) {
         // The private-server dialog is painted inside Class_em/Class_cc,
         // not native J2ME Alert. Count its per-frame update method to detect
         // a stalled game loop without a timer, Java stack walk or log spam.
@@ -1646,7 +1650,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
             if (method->para_slots == 10 && method->return_slots == 0 &&
                 !method->is_static && !method->is_sync && !jvm->jdwp_enable &&
                 !runtime->thrd_info->suspend_count &&
-                treo_direct_graphics_enabled() &&
+                treo_direct_graphics_enabled_for_runtime(runtime) &&
                 treo_is_bundled_draw_region(method, clazz) &&
                 treo_try_graphics_draw_region(runtime, clazz)) {
                 localvar_dispose(runtime);
@@ -3693,7 +3697,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                             // Exact first-line acceptance branch in the
                             // unmodified JAR: Class_fq.d PC587 and
                             // Class_gv.g PC153. Record boolean only.
-                            if (atomic_load_explicit(&treo_nso_init_target_active, memory_order_relaxed) &&
+                            if (treo_nso_init_for_runtime(runtime) &&
                                 ((utf8_equals_c(clazz->name, "Class_fq") &&
                                   utf8_equals_c(method->name, "d") &&
                                   (s32)(runtime->pc - ca->code) == 587) ||
@@ -4408,7 +4412,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                                 // receiver and resolved owner before concluding
                                 // the missing-method error comes from this call.
                                 // Emit at most twice, never per frame.
-                                if (atomic_load_explicit(&treo_nso_init_target_active, memory_order_relaxed) &&
+                                if (treo_nso_init_for_runtime(runtime) &&
                                     utf8_equals_c(clazz->name, "Class_cu") &&
                                     utf8_equals_c(method->name, "run") &&
                                     (s32)(runtime->pc - ca->code) == 306 &&
@@ -4427,7 +4431,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
 #endif
                                 if (!m) {
 #if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__
-                                    if (atomic_load_explicit(&treo_nso_init_target_active, memory_order_relaxed) &&
+                                    if (treo_nso_init_for_runtime(runtime) &&
                                         jvm_bridge_mod_method_missing_slot()) {
                                         char event[312];
                                         snprintf(event, sizeof(event),
@@ -5518,7 +5522,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                     label_nosuchmethod_throw:
                     {
 #if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__
-                        if (atomic_load_explicit(&treo_nso_init_target_active, memory_order_relaxed) &&
+                        if (treo_nso_init_for_runtime(runtime) &&
                             jvm_bridge_mod_method_missing_slot()) {
                             const uintptr_t start = ca && ca->code ? (uintptr_t)ca->code : 0;
                             const uintptr_t at = (uintptr_t)runtime->pc;

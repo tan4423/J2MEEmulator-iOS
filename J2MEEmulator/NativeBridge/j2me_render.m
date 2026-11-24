@@ -920,6 +920,13 @@ static inline int treo_rc_fast_canvas(const RenderContext *rc) {
 int treo_direct_graphics_enabled(void) {
     return treo_afk_fast_canvas() || atomic_load_explicit(&treo_direct_graphics_on, memory_order_relaxed);
 }
+// The Java fast-path dispatch must not inherit another tab's mode 9.
+// The historical global A/B switch is available only in one-VM builds.
+int treo_direct_graphics_enabled_for_runtime(Runtime *runtime) {
+    return treo_runtime_mode(runtime) == TreoAFKFastCanvas ||
+        (jvm_bridge_supported_concurrent_sessions() == 1 &&
+         atomic_load_explicit(&treo_direct_graphics_on, memory_order_relaxed));
+}
 void treo_direct_graphics_set_enabled(int enabled) {
     atomic_store_explicit(&treo_direct_graphics_on, enabled != 0, memory_order_relaxed);
 }
