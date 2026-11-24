@@ -64,6 +64,16 @@ int main(void) {
     if (jarbox_focus_register(&policy, 101)) return 4; /* no duplicate */
     if (jarbox_focus_select(&policy, 999)) return 5; /* no phantom */
     if (jarbox_focus_visible(&policy) != 101) return 6;
+    // Parking a hidden tab must leave the foreground tab selected.
+    if (!jarbox_focus_park_one(&policy, 102) ||
+        jarbox_focus_park_one(&policy, 999) ||
+        jarbox_focus_visible(&policy) != 101 ||
+        jarbox_focus_is_parked(&policy, 101) != 0 ||
+        !invariant(&policy)) return 17;
+    if (!jarbox_focus_park_one(&policy, 101) ||
+        jarbox_focus_visible(&policy) ||
+        jarbox_focus_is_parked(&policy, 101) != 1 ||
+        !jarbox_focus_select(&policy, 101)) return 18;
     pthread_t threads[3];
     Worker workers[3] = {
         {&policy,101,10000}, {&policy,102,10000}, {&policy,103,10000}
@@ -127,6 +137,8 @@ class MultiVMFocusPolicyTest(unittest.TestCase):
         self.assertIn("jarbox_registry_pin_vm(&g_bridge_registry, token, held)", source)
         self.assertIn("jarbox_session_callback_done(held);", source)
         self.assertIn("jarbox_registry_contains_token(&g_bridge_registry, token)", source)
+        self.assertIn("jarbox_focus_park_one(&g_bridge_focus, token)", source)
+        self.assertNotIn("jarbox_focus_park_all(&g_bridge_focus)", source)
         self.assertIn("j2me_render_focus_vm(owner)", source)
         self.assertIn("j2me_input_focus_vm(owner)", source)
         self.assertIn("j2me_ui_focus_vm(owner)", source)

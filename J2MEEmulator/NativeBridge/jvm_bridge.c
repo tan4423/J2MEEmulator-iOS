@@ -396,12 +396,12 @@ int jvm_bridge_park_session(uint64_t token) {
     // The visible framebuffer is revoked before any deferred UIKit flush.
     // A STARTING VM has no published renderer to release yet.
     if (owner) j2me_render_release_vm(owner);
-    jarbox_focus_park_all(&g_bridge_focus);
+    const int parked = jarbox_focus_park_one(&g_bridge_focus, token);
     if (owner) {
-        (void)jarbox_session_park(held);
+        if (parked) (void)jarbox_session_park(held);
         jarbox_session_callback_done(held);
     }
-    return jarbox_focus_is_parked(&g_bridge_focus, token) == 1;
+    return parked;
 }
 
 int jvm_bridge_focus_session(uint64_t token) {

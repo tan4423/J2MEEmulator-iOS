@@ -73,6 +73,25 @@ static inline int jarbox_focus_select(JarBoxFocusPolicy *policy, uint64_t token)
     return found;
 }
 
+/* Park just this token. Parking A while B is visible must not blank B's
+ * window. A stale token has no authority to mutate the focus policy. */
+static inline int jarbox_focus_park_one(JarBoxFocusPolicy *policy, uint64_t token) {
+    if (!policy || !token) return 0;
+    pthread_mutex_lock(&policy->mutex);
+    int found = 0;
+    for (int i = 0; i < JARBOX_FOCUS_MAX_SESSIONS; ++i) {
+        JarBoxFocusEntry *entry = &policy->entries[i];
+        if (entry->live && entry->token == token) {
+            entry->parked = 1;
+            if (policy->visible_token == token) policy->visible_token = 0;
+            found = 1;
+            break;
+        }
+    }
+    pthread_mutex_unlock(&policy->mutex);
+    return found;
+}
+
 /* Back -> library: every live VM stays alive but becomes parked. */
 static inline void jarbox_focus_park_all(JarBoxFocusPolicy *policy) {
     if (!policy) return;

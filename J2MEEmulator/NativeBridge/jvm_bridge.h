@@ -16,8 +16,8 @@ int jvm_bridge_try_begin_session(void);
 /// Atomic launch admission + immutable session token for the Swift worker.
 /// Never infer a worker's token from the global visible/foreground session.
 int jvm_bridge_try_begin_session_with_token(uint64_t *out_token);
-/// Per-worker execution/cleanup entry points. Reject a different generation;
-/// they are not yet an independently runnable second JVM context.
+/// Per-worker execution/cleanup entry points claim one native executor slot
+/// by immutable token. Admission remains limited to a single live JVM.
 int jvm_bridge_init_for_token(uint64_t token, const char *res_root,
                               const char *save_root, const char *midlet_jar,
                               int screen_width, int screen_height,
@@ -30,7 +30,8 @@ int jvm_bridge_finish_session_for_token(uint64_t token);
 int jvm_bridge_session_phase(void);
 struct _MiniJVM;
 // Synchronous visitor, allowed only while this session is RUNNING. The VM
-// pointer is never returned outside the lifecycle lock. No new poller/thread.
+// pointer is never returned; the callback lease protects it until the
+// synchronous visitor finishes. No new poller/thread.
 void jvm_bridge_visit_running_vm(void (*visitor)(struct _MiniJVM *, void *),
                                  void *arg);
 /// Explicit token-scoped visitor; returns 1 only if the exact owner was
@@ -57,7 +58,7 @@ uint64_t jvm_bridge_push_java_thread_token(uint64_t token);
 void jvm_bridge_pop_java_thread_token(uint64_t previous);
 /// Focus invariant: at most one JVM is visible, all others stay parked.
 /// A zero visible token means library: every live session is in Treo.
-/// Currently only the existing one-JVM bridge slot can be operated on.
+/// Operations resolve a slot by token; admission currently allows one.
 int jvm_bridge_park_session(uint64_t token);
 int jvm_bridge_focus_session(uint64_t token);
 /// -1 = stale/unknown token, 0 = focused, 1 = parked.
