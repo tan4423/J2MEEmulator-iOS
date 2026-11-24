@@ -2273,6 +2273,26 @@ CGImageRef j2me_render_copy_image_for_vm(int64_t handle, MiniJVM *vm) {
     return image;
 }
 
+void *j2me_render_acquire_canvas(Runtime *runtime, int64_t handle,
+                                 CGContextRef *out_context) {
+    if (!out_context) return NULL;
+    *out_context = NULL;
+    RenderContext *rc = rc_acquire(handle, jarbox_native_heap_key_for_runtime(runtime));
+    if (!rc) return NULL;
+    if (!rc->ctx) {
+        rc_release(rc);
+        return NULL;
+    }
+    // Pixel reads/writes must see preceding queued 2D drawing, even when
+    // the game is parked. Do not start a global Metal replay here.
+    treo_live_barrier(rc);
+    *out_context = rc->ctx;
+    return rc;
+}
+void j2me_render_release_canvas(void *lease) {
+    rc_release((RenderContext *)lease);
+}
+
 static CGImageRef treo_canvas_snapshot(RenderContext *rc) {
     if (!rc->softwarePixels) return CGBitmapContextCreateImage(rc->ctx);
     const size_t stride = (size_t)rc->width * 4;

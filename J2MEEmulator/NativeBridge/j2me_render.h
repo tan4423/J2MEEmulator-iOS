@@ -204,6 +204,14 @@ CGImageRef _Nullable j2me_render_copy_image(int64_t handle) CF_RETURNS_RETAINED;
 CGImageRef _Nullable j2me_render_copy_image_for_vm(int64_t handle, MiniJVM *vm)
     CF_RETURNS_RETAINED;
 
+/// 3D bridges borrow a registry-validated RenderContext for the duration
+/// of one pixel transfer. The returned opaque lease must be released;
+/// out_context is borrowed only while the lease is held. Never dereference
+/// the Java long as a CGContextRef pointer.
+void *j2me_render_acquire_canvas(Runtime *runtime, int64_t handle,
+                                 CGContextRef *out_context);
+void j2me_render_release_canvas(void *lease);
+
 /// Signal render subsystem to stop (all acquire calls return NULL).
 /// Must be called before cleanup to protect against zombie threads.
 // Stop new 2D native handle acquisitions only for this exact JVM generation.

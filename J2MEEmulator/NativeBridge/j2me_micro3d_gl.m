@@ -12,6 +12,7 @@
 #import <CoreGraphics/CoreGraphics.h>
 #import <Foundation/Foundation.h>
 #include "j2me_micro3d_gl.h"
+#include "j2me_render.h"
 #include "jvm.h"
 #include "jvm_util.h"
 #include <stdio.h>
@@ -656,8 +657,6 @@ static s32 n_glReadPixelsAddr(Runtime *runtime, JClass *clazz) {
 // GL framebuffer is RGBA bottom-to-top. CGBitmapContext is BGRA top-to-bottom.
 // This method reads the GL buffer and writes it into the Canvas's context.
 
-extern s64 g_native_extra_heap; // from j2me_render.m
-
 static s32 n_mc3dBlitToGraphics(Runtime *runtime, JClass *clazz) {
     s64 ctxHandle = ENV->localvar_getLong_2slot(runtime->localvar, 0);
     s64 pixAddr   = ENV->localvar_getLong_2slot(runtime->localvar, 2);
@@ -666,11 +665,9 @@ static s32 n_mc3dBlitToGraphics(Runtime *runtime, JClass *clazz) {
 
     if (!ctxHandle || !pixAddr) return RUNTIME_STATUS_NORMAL;
 
-    // The ctxHandle points to our RenderContext struct (from j2me_render.m)
-    // RenderContext.ctx is a CGContextRef to a CGBitmapContext
-    CGContextRef *ctxPtr = (CGContextRef *)(intptr_t)ctxHandle;
-    CGContextRef ctx = *ctxPtr;
-    if (!ctx) return RUNTIME_STATUS_NORMAL;
+    CGContextRef ctx = NULL;
+    void *lease = j2me_render_acquire_canvas(runtime, ctxHandle, &ctx);
+    if (!lease) return RUNTIME_STATUS_NORMAL;
 
     uint8_t *glPixels = (uint8_t *)(intptr_t)pixAddr;
     uint8_t *canvasPixels = (uint8_t *)CGBitmapContextGetData(ctx);
@@ -678,7 +675,10 @@ static s32 n_mc3dBlitToGraphics(Runtime *runtime, JClass *clazz) {
     size_t canvasH = CGBitmapContextGetHeight(ctx);
     size_t canvasBPR = CGBitmapContextGetBytesPerRow(ctx);
 
-    if (!canvasPixels || !glPixels) return RUNTIME_STATUS_NORMAL;
+    if (!canvasPixels || !glPixels) {
+        j2me_render_release_canvas(lease);
+        return RUNTIME_STATUS_NORMAL;
+    }
 
     // Blit: GL RGBA → Canvas BGRA
     // NO Y-flip: MascotCapsule projection renders scene upside-down in GL
@@ -726,6 +726,7 @@ static s32 n_mc3dBlitToGraphics(Runtime *runtime, JClass *clazz) {
         CGColorSpaceRelease(cs);
     }
 
+    j2me_render_release_canvas(lease);
     return RUNTIME_STATUS_NORMAL;
 }
 
@@ -743,16 +744,19 @@ static s32 n_mc3dReadCanvasPixels(Runtime *runtime, JClass *clazz) {
 
     if (!ctxHandle || !dstAddr) return RUNTIME_STATUS_NORMAL;
 
-    CGContextRef *ctxPtr = (CGContextRef *)(intptr_t)ctxHandle;
-    CGContextRef ctx = *ctxPtr;
-    if (!ctx) return RUNTIME_STATUS_NORMAL;
+    CGContextRef ctx = NULL;
+    void *lease = j2me_render_acquire_canvas(runtime, ctxHandle, &ctx);
+    if (!lease) return RUNTIME_STATUS_NORMAL;
 
     uint8_t *canvasPixels = (uint8_t *)CGBitmapContextGetData(ctx);
     size_t canvasW = CGBitmapContextGetWidth(ctx);
     size_t canvasH = CGBitmapContextGetHeight(ctx);
     size_t canvasBPR = CGBitmapContextGetBytesPerRow(ctx);
 
-    if (!canvasPixels) return RUNTIME_STATUS_NORMAL;
+    if (!canvasPixels) {
+        j2me_render_release_canvas(lease);
+        return RUNTIME_STATUS_NORMAL;
+    }
 
     uint8_t *dst = (uint8_t *)(intptr_t)dstAddr;
     int copyW = (w < (int)canvasW) ? w : (int)canvasW;
@@ -772,6 +776,7 @@ static s32 n_mc3dReadCanvasPixels(Runtime *runtime, JClass *clazz) {
         }
     }
 
+    j2me_render_release_canvas(lease);
     return RUNTIME_STATUS_NORMAL;
 }
 

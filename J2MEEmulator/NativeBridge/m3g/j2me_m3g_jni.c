@@ -9,6 +9,7 @@
  */
 
 #include "m3g_jni_compat.h"
+#include "../j2me_render.h"
 #include <string.h>
 #include <stdlib.h>
 #include <zlib.h>
@@ -958,9 +959,9 @@ static s32 n_Graphics3D_bindGraphics(Runtime *runtime, JClass *clazz) {
      * When supersampling, nearest-neighbor upscale the Canvas content. */
     int pixelsCopied = 0;
     if (aNativeCtx) {
-        CGContextRef *ctxPtr = (CGContextRef *)(intptr_t)aNativeCtx;
-        CGContextRef cgCtx = *ctxPtr;
-        if (cgCtx) {
+        CGContextRef cgCtx = NULL;
+        void *lease = j2me_render_acquire_canvas(runtime, aNativeCtx, &cgCtx);
+        if (lease) {
             uint8_t *canvasPixels = (uint8_t *)CGBitmapContextGetData(cgCtx);
             size_t canvasBPR = CGBitmapContextGetBytesPerRow(cgCtx);
             size_t canvasW = CGBitmapContextGetWidth(cgCtx);
@@ -987,6 +988,7 @@ static s32 n_Graphics3D_bindGraphics(Runtime *runtime, JClass *clazz) {
                 }
                 pixelsCopied = 1;
             }
+            j2me_render_release_canvas(lease);
         }
     }
     if (!pixelsCopied) {
@@ -1044,9 +1046,9 @@ static s32 n_Graphics3D_releaseGraphics(Runtime *runtime, JClass *clazz) {
         s32 scaledW = g_m3g_canvas_w * scale;
         s32 scaledH = g_m3g_canvas_h * scale;
 
-        CGContextRef *ctxPtr = (CGContextRef *)(intptr_t)aNativeCtx;
-        CGContextRef cgCtx = *ctxPtr;
-        if (cgCtx) {
+        CGContextRef cgCtx = NULL;
+        void *lease = j2me_render_acquire_canvas(runtime, aNativeCtx, &cgCtx);
+        if (lease) {
             size_t canvasW = CGBitmapContextGetWidth(cgCtx);
             size_t canvasH = CGBitmapContextGetHeight(cgCtx);
 
@@ -1097,6 +1099,7 @@ static s32 n_Graphics3D_releaseGraphics(Runtime *runtime, JClass *clazz) {
                 }
                 CGColorSpaceRelease(cs);
             }
+            j2me_render_release_canvas(lease);
         }
     }
     return RUNTIME_STATUS_NORMAL;
