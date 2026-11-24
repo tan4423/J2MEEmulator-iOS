@@ -84,8 +84,10 @@ class FormView: UIView {
     private var fieldLimits: [Int: Int] = [:]
 
     private var screenRevision: Int32 = 0
+    private var screenOwnerKey: UInt64 = 0
 
-    func buildFromNativeData() {
+    func buildFromNativeData(ownerKey: UInt64) {
+        screenOwnerKey = ownerKey
         screenRevision = j2me_ui_revision()
         // Clear previous content
         stackView.arrangedSubviews.forEach { $0.removeFromSuperview() }
@@ -120,6 +122,7 @@ class FormView: UIView {
 
         // Commands
         let revision = screenRevision
+        let commandOwner = screenOwnerKey
         let cmdCount = j2me_ui_get_command_count()
         var overflow: [UIAction] = []
         for i in 0..<cmdCount {
@@ -129,7 +132,7 @@ class FormView: UIView {
             let keepVisible = cmdCount <= 2 || cmdLabel == "Lưu" || cmdLabel == "Quay lại"
             if !keepVisible {
                 overflow.append(UIAction(title: cmdLabel) { [weak self] _ in
-                    self?.sendFormCommand(cmdId, revision: revision)
+                    self?.sendFormCommand(cmdId, revision: revision, ownerKey: commandOwner)
                 })
                 continue
             }
@@ -250,26 +253,29 @@ class FormView: UIView {
     }
 
     @objc private func commandTapped(_ sender: UIButton) {
-        sendFormCommand(Int32(sender.tag), revision: screenRevision)
+        guard commandButtons.contains(where: { $0 === sender }) else { return }
+        sendFormCommand(Int32(sender.tag), revision: screenRevision, ownerKey: screenOwnerKey)
     }
 
-    private func sendFormCommand(_ cmdId: Int32, revision: Int32) {
-        guard revision == screenRevision, revision == j2me_ui_revision() else { return }
+    private func sendFormCommand(_ cmdId: Int32, revision: Int32, ownerKey: UInt64) {
+        guard ownerKey != 0, ownerKey == screenOwnerKey,
+              ownerKey == j2me_ui_focused_owner_key(), ownerKey == j2me_render_visible_owner_key(),
+              revision == screenRevision, revision == j2me_ui_revision() else { return }
         endEditing(true)
         for field in editableFields where field.isEnabled {
             let limit = fieldLimits[field.tag] ?? 0
             let units = Array((field.text ?? "").utf16.prefix(limit))
             units.withUnsafeBufferPointer { p in
-                j2me_ui_stage_text(revision, Int32(field.tag), p.baseAddress, Int32(p.count))
+                j2me_ui_stage_text_for_owner(ownerKey, revision, Int32(field.tag), p.baseAddress, Int32(p.count))
             }
         }
         for (index, selection) in choiceSelections {
             let units = Array(String(selection).utf16)
             units.withUnsafeBufferPointer { p in
-                j2me_ui_stage_text(revision, Int32(index), p.baseAddress, Int32(p.count))
+                j2me_ui_stage_text_for_owner(ownerKey, revision, Int32(index), p.baseAddress, Int32(p.count))
             }
         }
-        j2me_input_post_touch(Int32(J2ME_UI_COMMAND_ACTION), revision, cmdId)
+        j2me_input_post_touch_for_owner(ownerKey, Int32(J2ME_UI_COMMAND_ACTION), revision, cmdId)
     }
 
 }
@@ -336,8 +342,10 @@ class J2MEListView: UIView, UITableViewDataSource, UITableViewDelegate {
     }
 
     private var screenRevision: Int32 = 0
+    private var screenOwnerKey: UInt64 = 0
 
-    func buildFromNativeData() {
+    func buildFromNativeData(ownerKey: UInt64) {
+        screenOwnerKey = ownerKey
         screenRevision = j2me_ui_revision()
         titleLabel.text = String(cString: j2me_ui_get_form_title())
 
@@ -353,6 +361,7 @@ class J2MEListView: UIView, UITableViewDataSource, UITableViewDelegate {
         selectedRow = nil
         commandBar.arrangedSubviews.forEach { $0.removeFromSuperview() }
         let revision = screenRevision
+        let commandOwner = screenOwnerKey
         var actions: [UIAction] = []
         var launchID: Int32?
         for i in 0..<j2me_ui_get_command_count() {
@@ -363,7 +372,7 @@ class J2MEListView: UIView, UITableViewDataSource, UITableViewDelegate {
                 launchID = id
             }
             actions.append(UIAction(title: label) { [weak self] _ in
-                self?.sendCommand(id, revision: revision)
+                self?.sendCommand(id, revision: revision, ownerKey: commandOwner)
             })
         }
         if let launchID {
@@ -392,20 +401,26 @@ class J2MEListView: UIView, UITableViewDataSource, UITableViewDelegate {
     }
 
     func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
+        guard screenOwnerKey != 0,
+              screenOwnerKey == j2me_ui_focused_owner_key(),
+              screenOwnerKey == j2me_render_visible_owner_key(),
+              screenRevision == j2me_ui_revision() else { return }
         selectedRow = indexPath.row
-        j2me_input_post_touch(Int32(J2ME_UI_LIST_SELECT), screenRevision, Int32(indexPath.row))
+        j2me_input_post_touch_for_owner(screenOwnerKey, Int32(J2ME_UI_LIST_SELECT), screenRevision, Int32(indexPath.row))
     }
 
     @objc private func commandTapped(_ sender: UIButton) {
-        sendCommand(Int32(sender.tag), revision: screenRevision)
+        sendCommand(Int32(sender.tag), revision: screenRevision, ownerKey: screenOwnerKey)
     }
 
-    private func sendCommand(_ id: Int32, revision: Int32) {
-        guard revision == screenRevision, revision == j2me_ui_revision() else { return }
+    private func sendCommand(_ id: Int32, revision: Int32, ownerKey: UInt64) {
+        guard ownerKey != 0, ownerKey == screenOwnerKey,
+              ownerKey == j2me_ui_focused_owner_key(), ownerKey == j2me_render_visible_owner_key(),
+              revision == screenRevision, revision == j2me_ui_revision() else { return }
         // Commit the highlighted row immediately before invoking the MIDlet's action.
         if let selectedRow {
-            j2me_input_post_touch(Int32(J2ME_UI_LIST_SELECT), screenRevision, -Int32(selectedRow) - 1)
+            j2me_input_post_touch_for_owner(ownerKey, Int32(J2ME_UI_LIST_SELECT), revision, -Int32(selectedRow) - 1)
         }
-        j2me_input_post_touch(Int32(J2ME_UI_COMMAND_ACTION), revision, id)
+        j2me_input_post_touch_for_owner(ownerKey, Int32(J2ME_UI_COMMAND_ACTION), revision, id)
     }
 }

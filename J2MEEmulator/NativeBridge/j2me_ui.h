@@ -22,6 +22,8 @@ int j2me_ui_revision(void);
 void j2me_ui_lock_screen(void);
 void j2me_ui_unlock_screen(void);
 void j2me_ui_stage_text(int revision, int index, const uint16_t *units, int count);
+void j2me_ui_stage_text_for_owner(uint64_t owner_key, int revision, int index,
+                                 const uint16_t *units, int count);
 
 /// Reserve a separate Form/List/Alert screen context for a JVM.
 /// Returns 0 if every context is occupied; never shares another VM's state.

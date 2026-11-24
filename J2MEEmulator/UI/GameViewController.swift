@@ -4086,11 +4086,11 @@ class GameViewController: UIViewController {
         applyPadMode()
     }
 
-    func showFormView() {
+    func showFormView(ownerKey: UInt64) {
         deferredGameAlert = false
         finishStartupWatchdog()
         placeholderIconView?.isHidden = true
-        formView.buildFromNativeData()
+        formView.buildFromNativeData(ownerKey: ownerKey)
         formView.isHidden = false
         emulatorView.isHidden = true
         joystickView?.isHidden = true
@@ -4100,11 +4100,11 @@ class GameViewController: UIViewController {
         applyPadMode()
     }
 
-    func showListView() {
+    func showListView(ownerKey: UInt64) {
         deferredGameAlert = false
         finishStartupWatchdog()
         placeholderIconView?.isHidden = true
-        listView.buildFromNativeData()
+        listView.buildFromNativeData(ownerKey: ownerKey)
         listView.isHidden = false
         emulatorView.isHidden = true
         joystickView?.isHidden = true
@@ -4156,7 +4156,7 @@ class GameViewController: UIViewController {
             alert.addAction(UIAlertAction(title: "OK", style: .default) { [weak self] _ in
                 guard canDeliver() else { return }
                 self?.alertTimeoutWork?.cancel()
-                j2me_input_post_touch(Int32(J2ME_UI_ALERT_DISMISSED), revision, 0)
+                j2me_input_post_touch_for_owner(originKey, Int32(J2ME_UI_ALERT_DISMISSED), revision, 0)
             })
         } else {
             for i in 0..<cmdCount {
@@ -4165,7 +4165,7 @@ class GameViewController: UIViewController {
                 alert.addAction(UIAlertAction(title: label, style: .default) { [weak self] _ in
                     guard canDeliver() else { return }
                     self?.alertTimeoutWork?.cancel()
-                    j2me_input_post_touch(Int32(J2ME_UI_COMMAND_ACTION), revision, cmdId)
+                    j2me_input_post_touch_for_owner(originKey, Int32(J2ME_UI_COMMAND_ACTION), revision, cmdId)
                 })
             }
         }
@@ -4178,7 +4178,7 @@ class GameViewController: UIViewController {
                 guard canDeliver() else { return }
                 alert?.dismiss(animated: true) {
                     guard canDeliver() else { return }
-                    j2me_input_post_touch(Int32(J2ME_UI_ALERT_DISMISSED), revision, 0)
+                    j2me_input_post_touch_for_owner(originKey, Int32(J2ME_UI_ALERT_DISMISSED), revision, 0)
                 }
             }
             alertTimeoutWork = work
@@ -4223,8 +4223,8 @@ private func dispatchMIDPScreenAction(_ action: Int32, _ revision: Int32,
         case Int32(J2ME_UI_ACTION_SHOW_CANVAS):
             vc.showCanvasView()
             treo_afk_ui_canvas_applied(revision)
-        case Int32(J2ME_UI_ACTION_SHOW_FORM), Int32(J2ME_UI_ACTION_SHOW_TEXTBOX): vc.showFormView()
-        case Int32(J2ME_UI_ACTION_SHOW_LIST):    vc.showListView()
+        case Int32(J2ME_UI_ACTION_SHOW_FORM), Int32(J2ME_UI_ACTION_SHOW_TEXTBOX): vc.showFormView(ownerKey: ownerKey)
+        case Int32(J2ME_UI_ACTION_SHOW_LIST):    vc.showListView(ownerKey: ownerKey)
         case Int32(J2ME_UI_ACTION_SHOW_ALERT):   vc.showAlert()
         default: break
         }

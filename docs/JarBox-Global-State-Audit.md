@@ -1074,3 +1074,28 @@ and 100,000 concurrent stale/missing-owner checks. 20/20 ASan+UBSan
 repetitions passed. Repository regression extracts the helper and
 checks recording/submit/flush wiring. No full repository test suite,
 Apple Metal build, on-device power measurement, or iPhone test run.
+
+## 2D LCDUI: bind Form/List/Alert input and staged text to its original generation
+
+A revision check in UIKit is not enough when a focus or slot-reuse
+transition occurs before posting an event. Store the native heap key in
+the input binding; the new owner-bound touch API checks that key and
+enqueues under the input-context lock. Form and List views capture the
+generation from the owned callback, capture it in menu closures and use
+the new API for commands/selection. Alert callbacks carry the same
+existing origin key down to the queue. Stage Form text/choice data into
+one explicit screen context under the registration and pending-text
+locks, checking generation and revision without re-resolving the
+focused context between validation and write. Legacy unowned text
+staging remains single-VM only.
+
+This is a targeted LCDUI route fix, not all physical key/touch ownership
+or a full Java/Swift callback lifetime proof. No RMS, JAR, networking,
+Treo algorithm, 3D or admission changes.
+
+Validation: Linux clang C11 standalone harness of the exact new
+owner-bound input function with modeled queues, 10,000 transition cycles
+and 300,000 concurrent submissions PASS. 20/20 ASan+UBSan repetitions
+PASS. Source regression verifies the input binding and all three UIKit
+paths. Full repository suite, UIKit/Objective-C compilation, real
+form submission and iPhone validation remain outstanding.

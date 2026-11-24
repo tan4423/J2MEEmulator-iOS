@@ -33,6 +33,8 @@ void j2me_input_release_vm(MiniJVM *jvm);
 /// @param x     Virtual canvas X coordinate
 /// @param y     Virtual canvas Y coordinate
 void j2me_input_post_touch(int type, int x, int y);
+/// Post only to the focused input context with this immutable heap generation.
+void j2me_input_post_touch_for_owner(uint64_t owner_key, int type, int x, int y);
 
 /// Post a key event from iOS (called from main thread).
 /// @param type    J2ME_INPUT_KEY_PRESSED/RELEASED/REPEATED

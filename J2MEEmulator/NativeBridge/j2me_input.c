@@ -31,6 +31,7 @@
 typedef struct {
     _Atomic(MiniJVM *) vm;
     uint64_t generation; // guarded by g_input_context_lock
+    uint64_t heap_key;   // native generation, guarded by g_input_context_lock
     JarBoxInputRing ring;
     atomic_int display_wait_enabled;
     pthread_mutex_t display_wait_lock;
@@ -80,6 +81,8 @@ static J2MEInputContext *visible_input_context(void) {
 // receives input events belonging to any other bound JVM.
 static int bind_input_context(MiniJVM *vm) {
     if (!vm) return 0;
+    const uint64_t heap_key = jarbox_native_heap_key_for_vm(vm);
+    if (!heap_key) return 0;
     pthread_once(&g_input_context_once, init_input_contexts);
     pthread_mutex_lock(&g_input_context_lock);
     J2MEInputContext *ctx = context_for_vm(vm);
@@ -94,6 +97,7 @@ static int bind_input_context(MiniJVM *vm) {
                 ctx->canvas_height = 320;
                 ctx->generation = ++g_input_next_generation;
                 if (ctx->generation == 0) ctx->generation = ++g_input_next_generation;
+                ctx->heap_key = heap_key;
                 atomic_store_explicit(&ctx->vm, vm, memory_order_release);
                 break;
             }
@@ -242,6 +246,17 @@ static int dequeue_event(J2MEInputContext *ctx, JarBoxInputEvent *out) {
 
 void j2me_input_post_touch(int type, int x, int y) {
     enqueue_event(type, x, y, 0);
+}
+
+// LCDUI commands carry the exact heap generation of the presenting view.
+// Focus/release/rebind cannot change this destination between check and push.
+void j2me_input_post_touch_for_owner(uint64_t owner_key, int type, int x, int y) {
+    if (!owner_key) return;
+    pthread_mutex_lock(&g_input_context_lock);
+    J2MEInputContext *ctx = visible_input_context();
+    if (ctx && ctx->heap_key == owner_key)
+        enqueue_to_context(ctx, type, x, y, 0);
+    pthread_mutex_unlock(&g_input_context_lock);
 }
 
 void j2me_input_post_key(int type, int keyCode) {
@@ -431,6 +446,7 @@ void j2me_input_release_vm(MiniJVM *vm) {
         if (visible_input_context() == ctx)
             atomic_store_explicit(&g_visible_input_context, NULL, memory_order_release);
         atomic_store_explicit(&ctx->vm, NULL, memory_order_release);
+        ctx->heap_key = 0;
         jarbox_input_ring_reset(&ctx->ring);
         printf("[J2ME Input] Released owned JVM input context\n");
     }

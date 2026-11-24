@@ -408,13 +408,33 @@ static s32 n_screenRevision(Runtime *runtime, JClass *clazz) {
     return RUNTIME_STATUS_NORMAL;
 }
 
-void j2me_ui_stage_text(int revision, int index, const uint16_t *units, int count) {
-    if (index < 0 || index >= MAX_FORM_ITEMS || count < 0) return;
-    @synchronized ([NSProcessInfo class]) {
-        if (revision != j2me_ui_revision()) return;
-        g_pending_text[@(index)] = count == 0 ? [NSData data] :
-            [NSData dataWithBytes:units length:(NSUInteger)count * sizeof(uint16_t)];
+void j2me_ui_stage_text_for_owner(uint64_t owner_key, int revision, int index,
+                                 const uint16_t *units, int count) {
+    if (!owner_key || index < 0 || index >= MAX_FORM_ITEMS ||
+        count < 0 || (count > 0 && !units)) return;
+    // Lock only the registration and pending-text domains, never take the
+    // screen mutex here (Java screen builders may already hold it).
+    pthread_mutex_lock(&g_ui_contexts_lock);
+    const int focused = atomic_load_explicit(&g_ui_focused_index, memory_order_acquire);
+    if (focused >= 0 && focused < JARBOX_UI_CONTEXT_CAPACITY &&
+        jarbox_ui_may_present(owner_key, ui_focused_owner_key(),
+                              j2me_render_visible_owner_key())) {
+        JarBoxUIScreenContext *ctx = &g_ui_contexts[focused];
+        @synchronized ([NSProcessInfo class]) {
+            if (revision == atomic_load_explicit(&ctx->screen_revision, memory_order_acquire)) {
+                JarBoxUIScreenObjects *objects = (__bridge JarBoxUIScreenObjects *)ctx->objects;
+                objects->pendingText[@(index)] = count == 0 ? [NSData data] :
+                    [NSData dataWithBytes:units length:(NSUInteger)count * sizeof(uint16_t)];
+            }
+        }
     }
+    pthread_mutex_unlock(&g_ui_contexts_lock);
+}
+
+void j2me_ui_stage_text(int revision, int index, const uint16_t *units, int count) {
+    // Legacy callers have no originating key; never use that ABI for multi-VM.
+    if (jvm_bridge_supported_concurrent_sessions() == 1)
+        j2me_ui_stage_text_for_owner(ui_focused_owner_key(), revision, index, units, count);
 }
 
 static s32 n_takeText(Runtime *runtime, JClass *clazz) {
