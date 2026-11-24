@@ -24,8 +24,8 @@ class MultiVMUIIsolationTests(unittest.TestCase):
         self.assertIn("ui_register_vm(MiniJVM *vm)", self.ui)
         self.assertIn("j2me_ui_release_vm(MiniJVM *vm)", self.ui)
         self.assertIn("j2me_ui_focus_vm(MiniJVM *vm)", self.ui)
-        self.assertIn("if (!j2me_ui_reg_natives(g_bridge_vm.jvm))", self.bridge)
-        self.assertIn("j2me_ui_release_vm(g_bridge_vm.jvm)", self.bridge)
+        self.assertIn("if (!j2me_ui_reg_natives(slot->jvm))", self.bridge)
+        self.assertIn("j2me_ui_release_vm(slot->jvm)", self.bridge)
         self.assertNotIn('static char g_form_title[256]', self.ui)
 
     def test_stale_java_call_cannot_inherit_focused_ui(self):
@@ -88,7 +88,7 @@ class MultiVMUIIsolationTests(unittest.TestCase):
         # UIKit presentation callback still needs token-scoped dispatch,
         # as do the global render and Smart Treo modes.
         self.assertIn("static j2me_ui_callback g_ui_callback = NULL", self.ui)
-        self.assertIn("atomic_compare_exchange_strong_explicit(&g_bridge_vm.active",
+        self.assertIn("(unsigned)jvm_bridge_supported_concurrent_sessions()",
                       self.bridge)
 
 

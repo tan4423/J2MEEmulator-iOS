@@ -42,7 +42,7 @@ class MultiVMFrameOwnershipTest(unittest.TestCase):
         self.assertIn("const uint64_t callerKey = jarbox_native_heap_key_for_runtime(runtime);",
                       self.render)
         self.assertIn("const int afk = treo_runtime_mode(runtime) != 0;", self.render)
-        self.assertIn("j2me_render_release_vm(g_bridge_vm.jvm)", self.bridge)
+        self.assertIn("j2me_render_release_vm(slot->jvm)", self.bridge)
 
     def test_pending_frame_keeps_its_own_vm_key(self):
         self.assertIn("private var pending: (image: CGImage, ownerKey: UInt64)?",

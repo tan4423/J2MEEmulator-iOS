@@ -118,7 +118,7 @@ class MultiVMNativeHeapLedgerTest(unittest.TestCase):
         self.assertIn("native_heap_sub(img->heap_key, pixels)", render)
         self.assertIn("native_heap_add(rc->heap_key", render)
         self.assertIn("native_heap_add(img->heap_key", render)
-        self.assertIn("jarbox_native_heap_register_vm(g_bridge_vm.jvm)", bridge)
+        self.assertIn("jarbox_native_heap_register_vm(slot->jvm)", bridge)
         self.assertIn("jarbox_native_heap_unregister_vm(destroyed_owner)", bridge)
 
 

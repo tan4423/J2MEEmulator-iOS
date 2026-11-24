@@ -878,17 +878,20 @@ int jvm_bridge_is_stop_requested_for_vm(const void *vm) {
     // old exact STARTING-owner behavior for this narrow pre-bind interval.
     // After binding, a foreign/stale pointer always fails closed.
     if (!vm) return 1;
-    pthread_mutex_lock(&g_bridge_lifecycle_lock);
+    // Do not take the lifecycle mutex from a Java stop poll: the interrupt
+    // watchdog can hold it while acquiring Java monitors. During STARTING,
+    // compare only atomic identity fields; never dereference a slot's VM.
     for (unsigned i = 0; i < JARBOX_REGISTRY_MAX_SLOTS; ++i) {
         JarBoxVMContext *slot = &g_bridge_slots[i];
-        if (atomic_load_explicit(&slot->active, memory_order_acquire) &&
+        const uint64_t token = atomic_load_explicit(&slot->token, memory_order_acquire);
+        if (!token || !atomic_load_explicit(&slot->active, memory_order_acquire) ||
+            atomic_load_explicit(&slot->phase, memory_order_acquire) != BRIDGE_STARTING ||
+            atomic_load_explicit(&slot->jvm, memory_order_acquire) != vm) continue;
+        const int stop = atomic_load_explicit(&slot->stop_requested, memory_order_acquire);
+        if (atomic_load_explicit(&slot->token, memory_order_acquire) == token &&
             atomic_load_explicit(&slot->phase, memory_order_acquire) == BRIDGE_STARTING &&
-            atomic_load_explicit(&slot->jvm, memory_order_acquire) == vm) {
-            int stop = atomic_load_explicit(&slot->stop_requested, memory_order_acquire);
-            pthread_mutex_unlock(&g_bridge_lifecycle_lock);
+            atomic_load_explicit(&slot->jvm, memory_order_acquire) == vm)
             return stop;
-        }
     }
-    pthread_mutex_unlock(&g_bridge_lifecycle_lock);
     return jarbox_registry_should_stop_vm(&g_bridge_registry, vm);
 }
