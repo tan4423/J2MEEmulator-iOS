@@ -18,6 +18,10 @@
 #include <sys/stat.h>
 #include <strings.h>
 #include "miniz.h"
+#if defined(__APPLE__) && __JVM_OS_IOS__
+#include <os/proc.h>
+#include <time.h>
+#endif
 
 // Conservative launch classification, not an authorization to execute 3D.
 // Bound the scan; unreadable, oversized, nested or unknown archives run alone.
@@ -488,6 +492,46 @@ int jvm_bridge_3d_conflict_for_jar(const char *path) {
     return conflict;
 }
 
+// Advisory budget, sampled fresh at each admission. Never derive it from
+// installed RAM. A warning can arrive even when the app's own headroom is
+// large, so give iOS a short recovery interval before admitting another VM.
+static int bridge_memory_level(uint64_t available, int recent_warning) {
+    if (available < UINT64_C(150) * 1024 * 1024) return 2;
+    if (recent_warning || available <= UINT64_C(300) * 1024 * 1024) return 1;
+    return 0;
+}
+
+#if defined(__APPLE__) && __JVM_OS_IOS__
+static _Atomic uint64_t bridge_last_memory_warning;
+static uint64_t bridge_memory_clock(void) {
+    struct timespec ts;
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) return 0;
+    return (uint64_t)ts.tv_sec * UINT64_C(1000000000) + (uint64_t)ts.tv_nsec;
+}
+#endif
+
+void jvm_bridge_memory_note_warning(void) {
+#if defined(__APPLE__) && __JVM_OS_IOS__
+    atomic_store_explicit(&bridge_last_memory_warning, bridge_memory_clock(), memory_order_release);
+#endif
+}
+
+int jvm_bridge_memory_state(uint64_t *out_available) {
+#if defined(__APPLE__) && __JVM_OS_IOS__
+    const uint64_t available = (uint64_t)os_proc_available_memory();
+    const uint64_t last = atomic_load_explicit(&bridge_last_memory_warning, memory_order_acquire);
+    const uint64_t now = bridge_memory_clock();
+    const int recent = last != 0 && (now < last || now - last < UINT64_C(15000000000));
+#else
+    // Non-iOS host smoke tests have no iOS process budget. Do not confuse
+    // unsupported telemetry with zero bytes on a real device.
+    const uint64_t available = UINT64_MAX;
+    const int recent = 0;
+#endif
+    if (out_available) *out_available = available;
+    return bridge_memory_level(available, recent);
+}
+
 static int bridge_try_begin_session(int exclusive, uint64_t *out_token) {
     if (!out_token) return 0;
     *out_token = 0;
@@ -498,6 +542,7 @@ static int bridge_try_begin_session(int exclusive, uint64_t *out_token) {
     int denial = 0;
     if (bridge_3d_conflict_locked(exclusive)) { denial = -1; goto denied; }
     if (jarbox_focus_visible(&g_bridge_focus) != 0) goto denied;
+    if (jvm_bridge_memory_state(NULL) != 0) { denial = -2; goto denied; }
     const uint64_t token = atomic_fetch_add_explicit(
         &g_bridge_session_sequence, 1, memory_order_relaxed) + 1;
     JarBoxVMContext *slot = bridge_reserve_slot_locked(
@@ -831,6 +876,9 @@ static int bridge_init_slot(JarBoxVMContext *slot, const char *res_root, const c
     printf("[JVM Bridge] bootclasspath: %s\n", bootclasspath);
     printf("[JVM Bridge] classpath: %s\n", classpath);
 
+    // Recheck after archive recognition, immediately before allocating the
+    // new heap. The worker's existing deferred finish retires an empty slot.
+    if (jvm_bridge_memory_state(NULL) != 0) return -12;
     // Create JVM instance
     slot->jvm = jvm_create();
     if (!slot->jvm) {

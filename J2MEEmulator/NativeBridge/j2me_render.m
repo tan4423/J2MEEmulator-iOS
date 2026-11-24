@@ -3515,6 +3515,17 @@ static id<MTLBuffer> treo_live_vertices;
 static NSMutableDictionary *treo_live_owner_targets;       // NSNumber(key) -> MTLTexture
 static NSMutableDictionary *treo_live_owner_textures;      // NSNumber(key) -> image cache
 static NSMutableDictionary *treo_live_owner_texture_bytes; // NSNumber(key) -> NSNumber(bytes)
+// Evict only regenerable image textures; never touch live targets, canvas
+// handles or the JVM heap. If GPU submission owns the lock, skip rather than
+// blocking UIKit during a memory warning.
+int j2me_render_trim_memory_cache(void) {
+    if (!os_unfair_lock_trylock(&treo_live_gpu_lock)) return 0;
+    [treo_live_owner_textures removeAllObjects];
+    [treo_live_owner_texture_bytes removeAllObjects];
+    os_unfair_lock_unlock(&treo_live_gpu_lock);
+    return 1;
+}
+
 static void treo_live_release_owner(uint64_t owner_key) {
     if (!owner_key) return;
     os_unfair_lock_lock(&treo_live_gpu_lock);

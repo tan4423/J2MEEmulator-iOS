@@ -213,6 +213,9 @@ void *j2me_render_acquire_canvas(Runtime *runtime, int64_t handle,
                                  CGContextRef *out_context);
 void j2me_render_release_canvas(void *lease);
 
+/// Nonblocking eviction of regenerable Metal image textures only.
+int j2me_render_trim_memory_cache(void);
+
 /// Signal render subsystem to stop (all acquire calls return NULL).
 /// Must be called before cleanup to protect against zombie threads.
 // Stop new 2D native handle acquisitions only for this exact JVM generation.

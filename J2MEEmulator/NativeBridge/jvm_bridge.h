@@ -13,12 +13,20 @@ int jvm_bridge_try_begin_session(void);
 /// Never infer a worker's token from the global visible/foreground session.
 int jvm_bridge_try_begin_session_with_token(uint64_t *out_token);
 /// Classify the JAR before admission. 1 acquired, -1 exclusive 3D conflict,
+/// -2 memory budget denied,
 /// 0 other admission failure. No existing session is stopped automatically.
 int jvm_bridge_try_begin_session_for_jar(const char *path, uint64_t *out_token);
+/// Current process headroom in bytes (UINT64_MAX on non-iOS host).
+/// 0 safe, 1 warning (<=300 MiB or recent system warning), 2 critical (<150 MiB).
+/// Samples fresh; no timer or heap traversal. Zero headroom is critical.
+int jvm_bridge_memory_state(uint64_t *out_available);
+/// Record a process-wide memory warning; admissions re-evaluate after 15s.
+void jvm_bridge_memory_note_warning(void);
 /// Advisory UI check only; admission rechecks under the lifecycle lock.
 int jvm_bridge_3d_conflict_for_jar(const char *path);
 /// Per-worker execution/cleanup entry points claim one native executor slot
 /// by immutable token. Admission remains limited to a single live JVM.
+/// Init returns -12 if the memory budget became unsafe before allocation.
 int jvm_bridge_init_for_token(uint64_t token, const char *res_root,
                               const char *save_root, const char *midlet_jar,
                               int screen_width, int screen_height,

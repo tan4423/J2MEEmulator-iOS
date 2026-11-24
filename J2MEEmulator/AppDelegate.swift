@@ -17,6 +17,20 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         return true
     }
 
+    func applicationDidReceiveMemoryWarning(_ application: UIApplication) {
+        // Record exactly one process-wide warning even if all games are hidden.
+        jvm_bridge_memory_note_warning()
+        _ = j2me_render_trim_memory_cache()
+        for scene in application.connectedScenes {
+            guard let windowScene = scene as? UIWindowScene else { continue }
+            for window in windowScene.windows {
+                guard let nav = window.rootViewController as? UINavigationController,
+                      let library = nav.viewControllers.first as? AppsListViewController else { continue }
+                library.handleAppMemoryPressure()
+            }
+        }
+    }
+
     // MARK: UISceneSession Lifecycle
 
     func application(_ application: UIApplication, configurationForConnecting connectingSceneSession: UISceneSession, options: UIScene.ConnectionOptions) -> UISceneConfiguration {

@@ -622,6 +622,24 @@ final class JarBoxProtectionSettingsController: UIViewController {
     }
 }
 
+// Shared native policy for every installed game, not a per-tab RAM quota.
+enum JarBoxMemoryProtection {
+    static func launchDenialMessage() -> String? {
+        var bytes: UInt64 = 0
+        guard jvm_bridge_memory_state(&bytes) != 0 else { return nil }
+        return String(format: "RAM khả dụng: %.0f MB. Chưa đủ an toàn để mở thêm game. Hãy dừng bớt tab hoặc thử lại khi bộ nhớ phục hồi.",
+                      Double(bytes) / 1_048_576)
+    }
+
+    static func statusText() -> String {
+        var bytes: UInt64 = 0
+        let state = jvm_bridge_memory_state(&bytes)
+        if bytes == UInt64.max { return "RAM khả dụng: —" }
+        let label = state == 2 ? "Nguy hiểm" : state == 1 ? "Cảnh báo" : "An toàn"
+        return String(format: "RAM khả dụng: %.0f MB · %@", Double(bytes) / 1_048_576, label)
+    }
+}
+
 // A status screen, not a background monitor. Sampling owns a timer only
 // while the actual screen and scene are active.
 final class JarBoxStatusController: UIViewController {
@@ -630,6 +648,7 @@ final class JarBoxStatusController: UIViewController {
     var readTabs: (() -> [TabRow])?
     private let cpuLabel = UILabel()
     private let ramLabel = UILabel()
+    private let ramAvailableLabel = UILabel()
     private let thermalLabel = UILabel()
     private let batteryLabel = UILabel()
     private let cpuDetail = UILabel()
@@ -658,7 +677,7 @@ final class JarBoxStatusController: UIViewController {
         stack.spacing = 10
         stack.translatesAutoresizingMaskIntoConstraints = false
         scroll.addSubview(stack)
-        for label in [cpuLabel, ramLabel, thermalLabel, batteryLabel, cpuDetail, ramDetail] {
+        for label in [cpuLabel, ramLabel, ramAvailableLabel, thermalLabel, batteryLabel, cpuDetail, ramDetail] {
             label.textAlignment = .left
             label.numberOfLines = 0
             label.font = .monospacedDigitSystemFont(ofSize: 16, weight: .regular)
@@ -678,7 +697,7 @@ final class JarBoxStatusController: UIViewController {
         ramButton.setTitle("Chi tiết RAM (heap) ▸", for: .normal)
         cpuButton.addTarget(self, action: #selector(toggleCPU), for: .touchUpInside)
         ramButton.addTarget(self, action: #selector(toggleRAM), for: .touchUpInside)
-        for child in [cpuLabel, cpuButton, cpuDetail, ramLabel, ramButton, ramDetail,
+        for child in [cpuLabel, cpuButton, cpuDetail, ramLabel, ramAvailableLabel, ramButton, ramDetail,
                       thermalLabel, batteryLabel] as [UIView] {
             stack.addArrangedSubview(child)
         }
@@ -806,6 +825,7 @@ final class JarBoxStatusController: UIViewController {
         }
         cpuLabel.text = cpuText
         ramLabel.text = readRAM?() ?? "RAM: —"
+        ramAvailableLabel.text = JarBoxMemoryProtection.statusText()
         let thermal: String
         switch ProcessInfo.processInfo.thermalState {
         case .nominal: thermal = "Bình thường"
@@ -1071,7 +1091,18 @@ class AppsListViewController: UIViewController,
         try requireNewTabSlot(for: app)
     }
 
+    private func memoryLaunchDenial() -> String? {
+        guard JarBoxMemoryProtection.launchDenialMessage() != nil else { return nil }
+        _ = j2me_render_trim_memory_cache()
+        restoreRetainedGamesForMemoryPressure()
+        // Re-sample after trimming; never grant admission using old headroom.
+        return JarBoxMemoryProtection.launchDenialMessage()
+    }
+
     private func requireNewTabSlot(for app: AppInfo) throws {
+        if let reason = memoryLaunchDenial() {
+            throw mutationError(reason)
+        }
         guard jvm_bridge_active_session_count() < jvm_bridge_supported_concurrent_sessions(),
               app.path.withCString({ jvm_bridge_3d_conflict_for_jar($0) }) == 0 else {
             throw mutationError("Không thể mở thêm tab. Đã hết slot JVM hoặc game phải chạy riêng.")
@@ -1242,11 +1273,38 @@ class AppsListViewController: UIViewController,
 
     override func didReceiveMemoryWarning() {
         super.didReceiveMemoryWarning()
+        restoreRetainedGamesForMemoryPressure()
+    }
+
+    private func restoreRetainedGamesForMemoryPressure() {
         // Parked controllers are retained offscreen. Forward this event to
         // each exact owner; do not depend on hidden views receiving it.
         for game in retainedGames {
             game.restoreSafeGCForMemoryPressure()
         }
+    }
+
+    private var lastMemoryNotice: TimeInterval?
+    // AppDelegate receives the warning even when this library is hidden.
+    // No forced stop, no destructive cleanup and no extra polling timer.
+    func handleAppMemoryPressure() {
+        restoreRetainedGamesForMemoryPressure()
+        var bytes: UInt64 = 0
+        let state = jvm_bridge_memory_state(&bytes)
+        NSLog("[JarBoxMemory] warning headroom=%llu state=%d", bytes, state)
+        guard springboardVisible, pendingTabMutation == nil, jarBoxSleepCover == nil,
+              gameTabTransitionCover == nil, !gamePresentationInFlight, !contextMenuVisible,
+              !isBeingDismissed, presentedViewController == nil,
+              viewIfLoaded?.window?.windowScene?.activationState == .foregroundActive else { return }
+        let now = ProcessInfo.processInfo.systemUptime
+        if let last = lastMemoryNotice, now - last < 30 { return }
+        lastMemoryNotice = now
+        cancelAutoProtection()
+        let alert = UIAlertController(title: state == 2 ? "RAM rất thấp" : "Cảnh báo bộ nhớ",
+            message: "iOS đang thiếu bộ nhớ. JarBox tạm chặn mở game mới. Hãy dừng bớt tab nếu cần để tránh iOS đóng toàn bộ ứng dụng.",
+            preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "OK", style: .cancel) { [weak self] _ in self?.armAutoProtection() })
+        present(alert, animated: true)
     }
 
     override func viewDidLoad() {
@@ -2883,6 +2941,13 @@ class AppsListViewController: UIViewController,
             } else {
                 showAnotherGameBlocked(app)
             }
+            return
+        }
+
+        if let reason = memoryLaunchDenial() {
+            let alert = UIAlertController(title: "Không đủ RAM", message: reason, preferredStyle: .alert)
+            alert.addAction(UIAlertAction(title: "OK", style: .cancel))
+            present(alert, animated: true)
             return
         }
 

@@ -3723,7 +3723,9 @@ class GameViewController: UIViewController {
             jvm_bridge_try_begin_session_for_jar($0, &acquiredToken)
         }
         guard admission == 1, acquiredToken != 0 else {
-            if admission == -1 {
+            if admission == -2 {
+                showLaunchFailure("RAM khả dụng quá thấp hoặc iOS vừa cảnh báo thiếu bộ nhớ. Hãy thử lại sau khi RAM phục hồi.")
+            } else if admission == -1 {
                 showLaunchFailure("Game 3D hoặc game chưa xác định chỉ được chạy riêng. Hãy dừng tất cả tab đang chạy trước khi mở game này.")
             } else {
                 showBlockedSessionAlert()
@@ -3977,6 +3979,9 @@ class GameViewController: UIViewController {
         let initResult = jvm_bridge_init_for_token(token, resRoot, saveRoot,
                                                     jarPath, width, height, scale, fps)
         NSLog("[J2ME Treo] JVM initialization returned %d", initResult)
+        if initResult == -12 {
+            return "RAM khả dụng đã giảm trong lúc khởi động. JVM mới chưa được cấp phát."
+        }
         guard initResult == 0 else { return "Java runtime initialization failed (\(initResult))." }
         if jvm_bridge_is_stop_requested_for_token(token) != 0 {
             NSLog("[JarBoxVM][Lifecycle] cancelled after JVM init, before MIDlet start")

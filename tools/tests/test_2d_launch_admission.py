@@ -19,7 +19,8 @@ static pthread_mutex_t g_bridge_focus_transition_lock=PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t g_bridge_lifecycle_lock=PTHREAD_MUTEX_INITIALIZER;
 static _Atomic uint64_t g_bridge_session_sequence;
 static uint64_t g_bridge_focus, g_bridge_registry;
-static int fail_claim, fail_select, fail_diag;
+static int fail_claim, fail_select, fail_diag, memory_level;
+static int jvm_bridge_memory_state(uint64_t *bytes){(void)bytes;return memory_level;}
 static int jvm_bridge_supported_concurrent_sessions(void){return 2;}
 static int bridge_3d_conflict_locked(int exclusive){for(int i=0;i<2;i++)if(slots[i].token && (exclusive || slots[i].exclusive_3d))return 1;return 0;}
 static uint64_t jarbox_focus_visible(uint64_t *f){return *f;}
@@ -38,6 +39,9 @@ static void *launch(void *p){uint64_t *token=p;bridge_try_begin_session(0, token
 int main(void){
     for(int i=0;i<10000;i++){
         uint64_t a=0,b=999;
+        memory_level=2;
+        assert(bridge_try_begin_session(0, &a)==-2 && !a && !slots[0].token && !g_bridge_focus);
+        memory_level=0;
         assert(bridge_try_begin_session(0, &a)&&a);
         assert(!bridge_try_begin_session(0, &b)&&!b&&g_bridge_focus==a&&slots[1].token==0);
         g_bridge_focus=0; // modeled completed park
@@ -45,6 +49,9 @@ int main(void){
         slots[0].exclusive_3d=1;
         assert(bridge_try_begin_session(0, &b)==-1 && !b);
         slots[0].exclusive_3d=0;
+        memory_level=1;
+        assert(bridge_try_begin_session(0, &b)==-2 && !b && slots[0].token==a && !slots[1].token && !g_bridge_focus);
+        memory_level=0;
         fail_claim=1;assert(!bridge_try_begin_session(0, &b)&&!b&&!slots[1].token&&!g_bridge_focus);fail_claim=0;
         fail_select=1;assert(!bridge_try_begin_session(0, &b)&&!b&&!slots[1].token&&!g_bridge_focus);fail_select=0;
         fail_diag=1;assert(!bridge_try_begin_session(0, &b)&&!b&&!slots[1].token&&!g_bridge_focus);fail_diag=0;
@@ -94,6 +101,8 @@ class LaunchAdmissionTest(unittest.TestCase):
         self.assertLess(body.index("pthread_mutex_lock(&g_bridge_focus_transition_lock)"),
                         body.index("pthread_mutex_lock(&g_bridge_lifecycle_lock)"))
         self.assertLess(body.index("jarbox_focus_visible(&g_bridge_focus) != 0"),
+                        body.index("bridge_reserve_slot_locked("))
+        self.assertLess(body.index("jvm_bridge_memory_state(NULL) != 0"),
                         body.index("bridge_reserve_slot_locked("))
         self.assertIn("int jvm_bridge_supported_concurrent_sessions(void) {\n    return 2;", src)
 
