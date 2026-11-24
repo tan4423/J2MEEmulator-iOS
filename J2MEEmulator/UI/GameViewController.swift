@@ -4101,6 +4101,7 @@ class GameViewController: UIViewController {
             dismiss(animated: false) { [weak self, weak library] in
                 guard let self else { return }
                 library?.managedGameDidPark(self)
+                library?.rememberExitedGameTab(self)
                 switchTab?()
             }
             return

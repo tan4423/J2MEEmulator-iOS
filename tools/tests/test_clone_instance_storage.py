@@ -54,6 +54,22 @@ struct CloneHarness {
         let b = try JarBoxGameStorage.createDefaultClone(
             jarPath: jar, documents: docs, label: "Tab 2")
         require(a.id != b.id, "UUID reuse")
+        let lastTabOther = (gameDir as NSString).appendingPathComponent("NSO.jar")
+        defer {
+            JarBoxGameStorage.rememberLastTab(jarPath: jar, cloneID: nil)
+            JarBoxGameStorage.rememberLastTab(jarPath: lastTabOther, cloneID: nil)
+        }
+        JarBoxGameStorage.rememberLastTab(jarPath: jar, cloneID: a.id)
+        JarBoxGameStorage.rememberLastTab(jarPath: lastTabOther, cloneID: b.id)
+        require(JarBoxGameStorage.lastTab(jarPath: jar, registered: [a.id, b.id]) == a.id,
+                "last tab leaked across games")
+        require(JarBoxGameStorage.lastTab(jarPath: lastTabOther, registered: [a.id, b.id]) == b.id,
+                "other game did not retain its own tab")
+        require(JarBoxGameStorage.lastTab(jarPath: jar, registered: [b.id]) == nil,
+                "deleted tab did not fall back to original")
+        JarBoxGameStorage.rememberLastTab(jarPath: jar, cloneID: nil)
+        require(JarBoxGameStorage.lastTab(jarPath: jar, registered: [a.id, b.id]) == nil,
+                "original selection did not clear remembered clone")
         let rootA = try JarBoxGameStorage.prepareRoot(
             jarPath: jar, documents: docs, cloneID: a.id)
         let rootB = try JarBoxGameStorage.prepareRoot(

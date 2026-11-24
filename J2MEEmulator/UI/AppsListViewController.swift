@@ -84,6 +84,24 @@ enum JarBoxGameStorage {
         return cloneID.map { group + "_clone_" + $0.uuidString.lowercased() } ?? group
     }
 
+    // Remember the last exited tab per installed JAR, independent of the
+    // global last-live-token shortcut. UUIDs survive app relaunch.
+    nonisolated static func rememberLastTab(jarPath: String, cloneID: UUID?) {
+        let key = "lastTab_" + installId(for: jarPath)
+        if let cloneID {
+            UserDefaults.standard.set(cloneID.uuidString, forKey: key)
+        } else {
+            UserDefaults.standard.removeObject(forKey: key)
+        }
+    }
+
+    nonisolated static func lastTab(jarPath: String, registered: [UUID]) -> UUID? {
+        let key = "lastTab_" + installId(for: jarPath)
+        guard let value = UserDefaults.standard.string(forKey: key),
+              let id = UUID(uuidString: value), registered.contains(id) else { return nil }
+        return id
+    }
+
     struct CloneRecord: Codable, Equatable {
         let id: UUID
         let label: String
@@ -504,6 +522,12 @@ class AppsListViewController: UIViewController,
         }
     }
 
+    func rememberExitedGameTab(_ game: GameViewController) {
+        guard managedGames.contains(where: { $0 === game }),
+              game.parkedSessionToken != nil else { return }
+        JarBoxGameStorage.rememberLastTab(jarPath: game.jarPath, cloneID: game.cloneID)
+    }
+
     func openGameTabAfterPark(_ source: GameViewController, cloneID: UUID?) {
         guard canPresentGame, managedGames.contains(where: { $0 === source }),
               source.parkedSessionToken != nil, source.cloneID != cloneID,
@@ -747,7 +771,7 @@ class AppsListViewController: UIViewController,
         let alert = UIAlertController(
             title: "Đã đạt giới hạn phiên JVM",
             message: "JarBox hiện cho phép tối đa " + String(limit) +
-                " phiên đồng thời. Hãy giữ icon game đang chạy và chọn Dừng game hoàn toàn trước khi mở " +
+                " phiên đồng thời. Hãy giữ icon game đang chạy và chọn Dừng trước khi mở " +
                 app.name + ".",
             preferredStyle: .alert)
         alert.addAction(UIAlertAction(title: "OK", style: .cancel))
@@ -1690,6 +1714,7 @@ class AppsListViewController: UIViewController,
             }
             let gid = Self.gameId(for: app)
             UserDefaults.standard.removeObject(forKey: JarBoxGameStorage.treoPreferenceKey(for: app.path))
+            JarBoxGameStorage.rememberLastTab(jarPath: app.path, cloneID: nil)
             for prefix in ["displayName_", "ss3d_", "resW_", "resH_", "fpsLimit_"] {
                 UserDefaults.standard.removeObject(forKey: prefix + gid)
             }
@@ -1702,12 +1727,17 @@ class AppsListViewController: UIViewController,
                         didSelectItemAt indexPath: IndexPath) {
         guard canPresentGame, apps.indices.contains(indexPath.item) else { return }
         let app = apps[indexPath.item]
-        // Open the original by default, or the last parked tab of this JAR.
-        // Other registered tabs are exposed by the in-game tab strip.
-        if let recent = lastParkedGame, recent.jarPath == app.path {
-            recent.resumeParkedGame()
-        } else {
-            launchGameTab(app, cloneID: nil, tabTitle: app.name)
+        // Direct entry, not an action sheet. Resolve the exact remembered
+        // instance against the current registry before resuming or launching.
+        do {
+            let tabs = try registeredTabs(for: app)
+            let id = JarBoxGameStorage.lastTab(jarPath: app.path,
+                                               registered: tabs.compactMap { $0.id })
+            let target = tabs.first { $0.id == id }
+            launchGameTab(app, cloneID: id,
+                          tabTitle: id == nil ? app.name : app.name + " · " + (target?.title ?? "Tab"))
+        } catch {
+            presentSaveOperationError(error)
         }
     }
 
@@ -1931,7 +1961,7 @@ class AppsListViewController: UIViewController,
         let count = jvm_bridge_active_session_count()
         if count > 0 && app.path.withCString({ jvm_bridge_3d_conflict_for_jar($0) }) != 0 {
             let alert = UIAlertController(title: "Chưa hỗ trợ chạy song song game 3D",
-                message: "Game 3D hoặc game chưa xác định phải chạy riêng. Hãy giữ icon các game đang chạy và chọn Dừng game hoàn toàn trước khi mở game khác.",
+                message: "Game 3D hoặc game chưa xác định phải chạy riêng. Hãy giữ icon các game đang chạy và chọn Dừng trước khi mở game khác.",
                 preferredStyle: .alert)
             alert.addAction(UIAlertAction(title: "OK", style: .cancel))
             present(alert, animated: true)

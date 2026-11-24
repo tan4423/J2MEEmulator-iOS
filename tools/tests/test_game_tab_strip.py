@@ -38,6 +38,20 @@ class GameTabStripTest(unittest.TestCase):
         self.assertIn("launchGameTab(app, cloneID: target.id,", launch)
         self.assertIn("gameForTab(app.path, cloneID: cloneID)", LIB)
 
+    def test_game_icon_opens_last_tab_directly(self):
+        tap = part(LIB, "didSelectItemAt indexPath:", "private func showTabInformationPicker(")
+        self.assertIn("JarBoxGameStorage.lastTab(jarPath: app.path,", tap)
+        self.assertIn("registered: tabs.compactMap", tap)
+        self.assertIn("launchGameTab(app, cloneID: id,", tap)
+        self.assertNotIn("showTabChooser", tap)
+        park = part(GAME, "@objc private func openLibraryKeepingGame() {", "func resumeParkedGame()")
+        self.assertLess(park.index("library?.managedGameDidPark(self)"),
+                        park.index("library?.rememberExitedGameTab(self)"))
+        self.assertLess(park.index("library?.rememberExitedGameTab(self)"), park.index("switchTab?()"))
+        strip = part(GAME, "private func refreshGameTabStrip()", "private func switchGameTab(")
+        self.assertIn("gameTabStack.addArrangedSubview(button)", strip)
+        self.assertIn("let selected = tab.id == cloneID", strip)
+
     def test_reset_keeps_registry_and_revalidates_native_slots(self):
         clear = part(LIB, "private func confirmClearGameData(", "private func confirmDeleteApp(")
         self.assertLess(clear.index("jvm_bridge_session_is_active() == 0"), clear.index("clearInstanceData("))
