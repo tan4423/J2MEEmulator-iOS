@@ -410,3 +410,17 @@ polls select the exact token/VM. Admission still calls the public capacity
 function, currently 1. Shared diagnostic buffers, 3D cleanup, launch flags,
 legacy render side effects and the library coordinator remain blockers. The
 slot pool is not a claim of a working concurrent second MIDlet.
+
+## 2026-11-24: Root library retains independently owned game controllers
+
+The normal library launch path now retains each GameViewController in a
+root-owned collection. A managed controller parks its native token and
+dismisses only its view; a subsequent selection re-presents the same
+controller and restores focus, never starts another MIDlet for that clone.
+The weak reverse reference avoids a cycle. Hidden completion removes only
+that controller, without dismissing another game's view. STARTING/STOPPING
+native tokens are retained and duplicate instance launches are rejected.
+Capacity is queried from the native bridge (currently 1). The legacy overlay
+path remains a fallback for externally-created controllers. Import/clone
+removal conservatively protects live save data. This source change has not
+been compiled or validated on iPhone, and it does not unlock two JVMs.

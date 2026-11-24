@@ -528,6 +528,9 @@ class GameViewController: UIViewController {
     // One *live* miniJVM remains owned by this controller while the library
     // overlays it. This is a parked foreground session, not a second JVM.
     private var libraryIsPresented = false
+    // The root library holds a strong reference to this controller while
+    // its JVM lives. The reverse link must remain weak.
+    weak var sessionLibrary: AppsListViewController?
     // Automatic Treo belongs to the parked JVM, not a black-screen UI.
     // Explicitly undone on resume, Stop and JVM termination.
     private var parkedTreoActive = false
@@ -628,7 +631,11 @@ class GameViewController: UIViewController {
             gameIdleTimerPreviouslyDisabled = UIApplication.shared.isIdleTimerDisabled
         }
         UIApplication.shared.isIdleTimerDisabled = true
-        startGame()
+        if sessionLibrary != nil, libraryIsPresented {
+            restoreManagedGameFocus()
+        } else {
+            startGame()
+        }
     }
 
     override func viewDidDisappear(_ animated: Bool) {
@@ -636,6 +643,9 @@ class GameViewController: UIViewController {
         if let previous = gameIdleTimerPreviouslyDisabled {
             UIApplication.shared.isIdleTimerDisabled = previous
             gameIdleTimerPreviouslyDisabled = nil
+        }
+        if !ownsJVMSession && (isBeingDismissed || presentingViewController == nil) {
+            sessionLibrary?.managedGameDidEnd(self)
         }
     }
 
@@ -3526,12 +3536,40 @@ class GameViewController: UIViewController {
                 // The native worker has already finished/unregistered A.
                 // If B acquired the global slot meanwhile, A's late UIKit
                 // cleanup must not reset B's Treo or render state.
+                // A failed finish may leave a live slot (e.g. undrained
+                // callbacks). Keep its controller and recovery identity.
+                if jvm_bridge_session_is_active_for_token(launchingToken) != 0 {
+                    self.gameStopRequested = true
+                    self.finishStartupWatchdog()
+                    self.sessionLibrary?.managedGameDidEnd(self)
+                    self.showStuckSessionRecovery()
+                    return
+                }
                 let currentToken = jvm_bridge_session_token()
                 let mayResetNative = currentToken == 0 ||
                     currentToken == launchingToken
+                // Hidden managed tabs have no UIKit destination. Their
+                // completion must not dismiss or reset a different tab.
+                if self.sessionLibrary != nil && self.libraryIsPresented {
+                    self.stopEscalationWork?.cancel()
+                    self.stopRescueWork?.cancel()
+                    self.alertTimeoutWork?.cancel()
+                    self.finishStartupWatchdog()
+                    self.parkedTreoActive = false
+                    self.parkedNSODeepIdle = false
+                    self.ownsJVMSession = false
+                    self.gameSessionToken = 0
+                    self.libraryIsPresented = false
+                    self.sessionLibrary?.managedGameDidEnd(self)
+                    if let failure {
+                        NSLog("[JarBoxVM][Lifecycle] managed parked session exited: %@", failure)
+                    }
+                    return
+                }
                 self.ownsJVMSession = false
                 self.gameSessionToken = 0
-                if !mayResetNative {
+                self.sessionLibrary?.managedGameDidEnd(self)
+                if !mayResetNative && self.sessionLibrary == nil {
                     self.parkedTreoActive = false
                     self.parkedNSODeepIdle = false
                     self.parkedStartedAt = nil
@@ -3539,6 +3577,13 @@ class GameViewController: UIViewController {
                     self.stopEscalationWork?.cancel()
                     self.stopRescueWork?.cancel()
                     self.finishStartupWatchdog()
+                    return
+                }
+                if !mayResetNative {
+                    // Managed foreground A exited while another native
+                    // owner exists. Never reset process-wide diagnostics.
+                    self.finishStartupWatchdog()
+                    self.dismiss(animated: true)
                     return
                 }
                 self.stopEscalationWork?.cancel()
@@ -3604,6 +3649,10 @@ class GameViewController: UIViewController {
     }
 
     private func showBlockedSessionAlert() {
+        if sessionLibrary != nil {
+            showLaunchFailure("Không còn slot JVM trống. Hãy quay về thư viện và chọn tab.")
+            return
+        }
         let blockedToken = jvm_bridge_session_token()
         let alert = UIAlertController(
             title: "Phiên JVM cũ chưa kết thúc",
@@ -3638,7 +3687,9 @@ class GameViewController: UIViewController {
             UIPasteboard.general.string = message
         })
         alert.addAction(UIAlertAction(title: "Về thư viện", style: .cancel) { [weak self] _ in
-            self?.dismiss(animated: true)
+            guard let self else { return }
+            self.sessionLibrary?.managedGameDidEnd(self)
+            self.dismiss(animated: true)
         })
         // A startup-timeout alert may still be open when the Java worker
         // fails; dismiss it first so the real Java error is not hidden.
@@ -3763,6 +3814,16 @@ class GameViewController: UIViewController {
         ownsLiveGameSession(for: path) && candidate == cloneID
     }
 
+    func holdsNativeGameSession(for path: String? = nil) -> Bool {
+        ownsJVMSession && gameSessionToken != 0 &&
+        jvm_bridge_session_is_active_for_token(gameSessionToken) != 0 &&
+        (path == nil || path == jarPath)
+    }
+
+    func holdsNativeInstance(for path: String, cloneID candidate: UUID?) -> Bool {
+        holdsNativeGameSession(for: path) && candidate == cloneID
+    }
+
     // The same proven mode-8 headless Canvas + smart GC path as Treo.
     // On suspicious late-pixel access, the native guard automatically falls
     // back to the compatible mode 1. No timer, fullscreen black cover or
@@ -3802,7 +3863,7 @@ class GameViewController: UIViewController {
             return "Phiên Java: không có phiên Treo đang hoạt động."
         }
         let seconds = max(0, ProcessInfo.processInfo.systemUptime - (parkedStartedAt ?? ProcessInfo.processInfo.systemUptime))
-        let fallback = treo_afk_guard_auto_fell_back() != 0
+        let fallback = treo_afk_guard_auto_fell_back_for_token(gameSessionToken) != 0
         let mode = fallback ? "Tương thích (tự chuyển khi Canvas không an toàn)"
                             : "Treo sâu tự động"
         let deepIdle = parkedNSODeepIdle ? "Đã bật cho Canvas NSO được xác minh" : "Không áp dụng"
@@ -3872,6 +3933,25 @@ class GameViewController: UIViewController {
         for code in Array(heldDirections) { releaseDirection(code) }
         if blackout != nil { hideBlackout() }  // restore screen brightness and probes
 
+        if let library = sessionLibrary {
+            // Do not detach a STARTING VM: mode-8 visitors need a RUNNING
+            // owner. Leave the existing startup/cancel controls available.
+            guard jvm_bridge_session_phase() == 2 else { return }
+            startParkedTreo()
+            guard parkedTreoActive else { return }
+            libraryIsPresented = true
+            alertTimeoutWork?.cancel()
+            alertTimeoutWork = nil
+            setGlobalEmulatorView(nil)
+            emulatorView.clearPendingGameFrame()
+            if activeGameViewController === self { activeGameViewController = nil }
+            dismiss(animated: false) { [weak self, weak library] in
+                guard let self else { return }
+                library?.managedGameDidPark(self)
+            }
+            return
+        }
+
         let library = AppsListViewController()
         library.parkedGameController = self
         let navigation = JarBoxLibraryNavigationController(rootViewController: library)
@@ -3898,6 +3978,11 @@ class GameViewController: UIViewController {
     }
 
     func resumeParkedGame() {
+        if let library = sessionLibrary {
+            guard libraryIsPresented, ownsLiveGameSession() else { return }
+            library.resumeManagedGame(self)
+            return
+        }
         guard libraryIsPresented,
               let navigation = presentedViewController as? UINavigationController else { return }
         navigation.dismiss(animated: false) { [weak self] in
@@ -3917,6 +4002,23 @@ class GameViewController: UIViewController {
                 self.showAlert()
             }
             NSLog("[JarBoxVM][Park] resumed session=%llu", self.gameSessionToken)
+        }
+    }
+
+    private func restoreManagedGameFocus() {
+        guard ownsLiveGameSession(),
+              jvm_bridge_focus_session(self.gameSessionToken) != 0 else {
+            NSLog("[JarBoxVM][Focus] failed managed token=%llu", gameSessionToken)
+            dismiss(animated: false)
+            return
+        }
+        activeGameViewController = self
+        libraryIsPresented = false
+        setGlobalEmulatorView(self.emulatorView)
+        stopParkedTreo()
+        if deferredGameAlert {
+            deferredGameAlert = false
+            showAlert()
         }
     }
 

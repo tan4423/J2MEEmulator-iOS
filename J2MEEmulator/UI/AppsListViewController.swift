@@ -361,6 +361,85 @@ class AppsListViewController: UIViewController,
     // from treating a subsequent game as this session.
     weak var parkedGameController: GameViewController?
 
+    // Root library owns the controllers of all admitted tabs. UIKit modal
+    // presentation is only the visible surface, never the lifetime owner.
+    // Keep STARTING/STOPPING controllers until their native tokens retire.
+    private var managedGames: [GameViewController] = []
+
+    private var retainedGames: [GameViewController] {
+        if let parked = parkedGameController,
+           !managedGames.contains(where: { $0 === parked }) {
+            return managedGames + [parked]
+        }
+        return managedGames
+    }
+
+    private func gameForTab(_ path: String, cloneID: UUID?) -> GameViewController? {
+        retainedGames.first { $0.ownsLiveInstance(for: path, cloneID: cloneID) }
+    }
+
+    private func hasNativeGame(for path: String) -> Bool {
+        retainedGames.contains { $0.holdsNativeGameSession(for: path) }
+    }
+
+    private var liveGames: [GameViewController] {
+        retainedGames.filter { $0.ownsLiveGameSession() }
+    }
+
+    func managedGameDidPark(_ game: GameViewController) {
+        guard managedGames.contains(where: { $0 === game }) else { return }
+        updateStuckSessionButton()
+        springboardCollectionView.reloadData()
+    }
+
+    func managedGameDidEnd(_ game: GameViewController) {
+        // A failed/stuck cleanup must retain the controller as long as the
+        // exact native token still occupies a slot.
+        guard !game.holdsNativeGameSession() else {
+            updateStuckSessionButton()
+            return
+        }
+        managedGames.removeAll { $0 === game }
+        updateStuckSessionButton()
+        springboardCollectionView.reloadData()
+    }
+
+    func resumeManagedGame(_ game: GameViewController) {
+        guard managedGames.contains(where: { $0 === game }),
+              game.ownsLiveGameSession(), presentedViewController == nil,
+              jvm_bridge_visible_session_token() == 0 else { return }
+        setSpringboardMotion(false, reason: "resume retained game")
+        present(game, animated: false)
+    }
+
+    private func chooseManagedGame(stopping: Bool, path: String? = nil) {
+        let choices = liveGames.filter { $0.ownsLiveGameSession(for: path) }
+        guard !choices.isEmpty else { return }
+        let perform: (GameViewController) -> Void = { [weak self] game in
+            if stopping {
+                game.stopParkedGame()
+                self?.updateStuckSessionButton()
+            } else {
+                game.resumeParkedGame()
+            }
+        }
+        if choices.count == 1 {
+            perform(choices[0])
+            return
+        }
+        let alert = UIAlertController(title: stopping ? "Dừng tab" : "Chọn tab đang chạy",
+                                      message: nil, preferredStyle: .alert)
+        for game in choices {
+            alert.addAction(UIAlertAction(title: game.appName,
+                style: stopping ? .destructive : .default) { [weak game] _ in
+                guard let game, game.ownsLiveGameSession() else { return }
+                perform(game)
+            })
+        }
+        alert.addAction(UIAlertAction(title: "Hủy", style: .cancel))
+        present(alert, animated: true)
+    }
+
     // Keep lifecycle diagnostics but do not restart any decorative work.
     func sceneActivityChanged(_ active: Bool) {
         guard springboardVisible else { return }
@@ -508,9 +587,11 @@ class AppsListViewController: UIViewController,
     // Event-driven recovery for sessions stranded by an unexpected UI exit.
     // No timer, animation or background polling on the low-power library.
     private func updateStuckSessionButton() {
-        if let parked = parkedGameController {
+        if let parked = liveGames.first {
             if parked.ownsLiveGameSession() {
-                navigationItem.title = "Đang chạy ẩn: " + parked.appName
+                navigationItem.title = liveGames.count == 1
+                    ? "Đang chạy ẩn: " + parked.appName
+                    : "Đang chạy ẩn: " + String(liveGames.count) + " tab"
                 navigationItem.leftBarButtonItem = UIBarButtonItem(
                     title: "Tiếp tục", style: .plain,
                     target: self, action: #selector(resumeParkedGame))
@@ -543,29 +624,26 @@ class AppsListViewController: UIViewController,
     }
 
     @objc private func resumeParkedGame() {
-        parkedGameController?.resumeParkedGame()
+        chooseManagedGame(stopping: false)
     }
 
     @objc private func stopRunningGameFromLibrary() {
-        parkedGameController?.stopParkedGame()
-        updateStuckSessionButton()
+        chooseManagedGame(stopping: true)
     }
 
     private func showAnotherGameBlocked(_ app: AppInfo) {
-        guard let parked = parkedGameController, parked.ownsLiveGameSession() else { return }
+        let limit = jvm_bridge_supported_concurrent_sessions()
         let alert = UIAlertController(
-            title: "Đang có game chạy ẩn",
-            message: parked.appName + " vẫn đang chạy. MiniJVM hiện chỉ có " +
-                "một phiên trong tiến trình, nên không thể mở " + app.name +
-                " đồng thời mà không làm hỏng dữ liệu JVM. " +
-                "Bạn có thể quay lại game cũ hoặc dừng nó trước khi mở game mới.",
+            title: "Đã đạt giới hạn phiên JVM",
+            message: "JarBox hiện cho phép tối đa " + String(limit) +
+                " phiên đồng thời. Hãy chọn tab để tiếp tục hoặc dừng một tab trước khi mở " +
+                app.name + ".",
             preferredStyle: .alert)
         alert.addAction(UIAlertAction(title: "Tiếp tục game cũ", style: .default) { [weak self] _ in
             self?.resumeParkedGame()
         })
         alert.addAction(UIAlertAction(title: "Dừng game đang chạy", style: .destructive) { [weak self] _ in
-            self?.parkedGameController?.stopParkedGame()
-            self?.updateStuckSessionButton()
+            self?.chooseManagedGame(stopping: true)
         })
         alert.addAction(UIAlertAction(title: "Ở lại thư viện", style: .cancel))
         present(alert, animated: true)
@@ -768,8 +846,9 @@ class AppsListViewController: UIViewController,
             : "Chưa có dữ liệu"
         let active = jvm_bridge_session_is_active() != 0
         let runningText: String
-        if let parked = parkedGameController, parked.ownsLiveGameSession() {
-            runningText = parked.appName + " · Treo tự động"
+        if let parked = liveGames.first, parked.ownsLiveGameSession() {
+            runningText = liveGames.count == 1 ? parked.appName + " · Treo tự động"
+                : String(liveGames.count) + " tab · Treo tự động"
         } else if active {
             runningText = "Phiên JVM đang khởi động/dừng"
         } else {
@@ -916,7 +995,7 @@ class AppsListViewController: UIViewController,
                 .appendingPathComponent(url.lastPathComponent)
 
             // Never overwrite the JAR that the still-running JVM owns.
-            if parkedGameController?.ownsLiveGameSession(for: destURL.path) == true {
+            if hasNativeGame(for: destURL.path) {
                 blockedRunningJAR = true
                 continue
             }
@@ -1091,7 +1170,7 @@ class AppsListViewController: UIViewController,
         let groupTitle = app.cloneCount == 0 ? app.name :
             app.name + " · " + String(app.cloneCount + 1) + " tab"
         cell.configure(name: groupTitle, icon: app.icon,
-                       running: parkedGameController?.ownsLiveGameSession(for: app.path) == true)
+                       running: hasNativeGame(for: app.path))
         return cell
     }
 
@@ -1101,7 +1180,7 @@ class AppsListViewController: UIViewController,
         guard let indexPath = indexPaths.first else { return nil }
         let app = apps[indexPath.item]
         return UIContextMenuConfiguration(actionProvider: { [weak self] _ in
-            let isRunning = self?.parkedGameController?.ownsLiveGameSession(for: app.path) == true
+            let isRunning = self?.hasNativeGame(for: app.path) == true
             let infoAction = UIAction(title: "Thông tin trò chơi",
                                       image: UIImage(systemName: "info.circle")) { [weak self] _ in
                 self?.showGameInformation(app)
@@ -1123,12 +1202,11 @@ class AppsListViewController: UIViewController,
             if isRunning {
                 sessionActions = [
                     UIAction(title: "Tiếp tục game", image: UIImage(systemName: "play.fill")) { [weak self] _ in
-                        self?.resumeParkedGame()
+                        self?.chooseManagedGame(stopping: false, path: app.path)
                     },
                     UIAction(title: "Dừng game hoàn toàn", image: UIImage(systemName: "stop.fill"),
                              attributes: .destructive) { [weak self] _ in
-                        self?.parkedGameController?.stopParkedGame()
-                        self?.updateStuckSessionButton()
+                        self?.chooseManagedGame(stopping: true, path: app.path)
                     }
                 ]
             }
@@ -1198,8 +1276,8 @@ class AppsListViewController: UIViewController,
         let sizeText = fileBytes.map {
             String(format: "%.2f MB", Double($0) / 1_048_576)
         } ?? "Không đọc được"
-        let active = parkedGameController?.ownsLiveInstance(
-            for: app.path, cloneID: cloneID) == true
+        let activeGame = gameForTab(app.path, cloneID: cloneID)
+        let active = activeGame != nil
         var lines: [String] = [
             "Tab: " + tabName,
             "Tệp JAR: " + app.fileName,
@@ -1223,7 +1301,7 @@ class AppsListViewController: UIViewController,
         } else {
             lines.append("RMS: chưa có hoặc chưa chuyển dữ liệu cũ")
         }
-        if active, let game = parkedGameController {
+        if let game = activeGame {
             lines.append("")
             lines.append(game.parkedSessionInformation())
         }
@@ -1500,16 +1578,14 @@ class AppsListViewController: UIViewController,
         let menu = UIAlertController(title: app.name + " · " + String(clones.count + 1) + " tab",
                                      message: "Chọn tab cần mở. Các tab dùng chung JAR, không chung dữ liệu.",
                                      preferredStyle: .actionSheet)
-        let originalRunning = parkedGameController?.ownsLiveInstance(
-            for: app.path, cloneID: nil) == true
+        let originalRunning = gameForTab(app.path, cloneID: nil) != nil
         menu.addAction(UIAlertAction(
             title: originalRunning ? "● Tab gốc · đang chạy" : "Tab gốc",
             style: .default) { [weak self] _ in
             self?.launchGameTab(app, cloneID: nil, tabTitle: app.name)
         })
         for clone in clones {
-            let running = parkedGameController?.ownsLiveInstance(
-                for: app.path, cloneID: clone.id) == true
+            let running = gameForTab(app.path, cloneID: clone.id) != nil
             menu.addAction(UIAlertAction(
                 title: running ? "● " + clone.label + " · đang chạy" : clone.label,
                 style: .default) { [weak self] _ in
@@ -1716,6 +1792,12 @@ class AppsListViewController: UIViewController,
         alert.addAction(UIAlertAction(title: "Hủy", style: .cancel))
         alert.addAction(UIAlertAction(title: "− Xóa Tab", style: .destructive) { [weak self] _ in
             guard let self else { return }
+            // Check all native slots, including STOPPING, at confirmation.
+            guard jvm_bridge_session_is_active() == 0 else {
+                self.presentSaveOperationError(NSError(domain: "JarBox.GameStorage", code: 4,
+                    userInfo: [NSLocalizedDescriptionKey: "Hãy dừng các phiên JVM trước khi xóa dữ liệu tab."]))
+                return
+            }
             do {
                 try JarBoxGameStorage.removeClone(
                     jarPath: app.path, documents: Self.documentsDirectory,
@@ -1729,30 +1811,34 @@ class AppsListViewController: UIViewController,
     }
 
     private func launchGameTab(_ app: AppInfo, cloneID: UUID?, tabTitle: String) {
-        // The library may overlay an existing JVM. Never treat the same JAR
-        // file as the same running *tab* unless the instance UUID also matches.
-        if let parked = parkedGameController {
-            if parked.ownsLiveGameSession() {
-                if parked.ownsLiveInstance(for: app.path, cloneID: cloneID) {
-                    resumeParkedGame()
-                } else {
-                    showAnotherGameBlocked(app)
-                }
-            } else if jvm_bridge_session_is_active() != 0 {
+        // The same JAR may have several independent clone roots. Resume
+        // exactly the selected instance; never start another worker for it.
+        if let game = gameForTab(app.path, cloneID: cloneID) {
+            game.resumeParkedGame()
+            return
+        }
+        if parkedGameController != nil {
+            // Legacy overlay is only a fallback for externally-created VCs.
+            showAnotherGameBlocked(app)
+            return
+        }
+        guard presentedViewController == nil else { return }
+        if retainedGames.contains(where: { $0.holdsNativeInstance(for: app.path, cloneID: cloneID) }) {
+            let alert = UIAlertController(title: "Đang đóng phiên cũ",
+                message: "Tab này vẫn đang khởi động hoặc dừng; không thể dùng chung dữ liệu.",
+                preferredStyle: .alert)
+            alert.addAction(UIAlertAction(title: "OK", style: .default))
+            present(alert, animated: true)
+            return
+        }
+        let count = jvm_bridge_active_session_count()
+        if count >= jvm_bridge_supported_concurrent_sessions() {
+            if liveGames.isEmpty {
                 updateStuckSessionButton()
                 openStuckSessionRecovery()
             } else {
-                let alert = UIAlertController(title: "Đang đóng phiên cũ",
-                    message: "Hãy chờ JarBox quay về thư viện chính trước khi mở tab tiếp theo.",
-                    preferredStyle: .alert)
-                alert.addAction(UIAlertAction(title: "OK", style: .default))
-                present(alert, animated: true)
+                showAnotherGameBlocked(app)
             }
-            return
-        }
-        if jvm_bridge_session_is_active() != 0 {
-            updateStuckSessionButton()
-            openStuckSessionRecovery()
             return
         }
 
@@ -1774,6 +1860,8 @@ class AppsListViewController: UIViewController,
             appIcon: app.icon, canvasWidth: res.w, canvasHeight: res.h,
             render3dScale: render3dScale, fpsLimit: fps, cloneID: cloneID)
         gameVC.modalPresentationStyle = .fullScreen
+        gameVC.sessionLibrary = self
+        managedGames.append(gameVC)
         setSpringboardMotion(false, reason: "game launching")
         present(gameVC, animated: false)
     }
