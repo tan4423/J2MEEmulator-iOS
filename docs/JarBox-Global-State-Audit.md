@@ -799,3 +799,23 @@ with 100 real pthread joins, 100 injected create failures and 100
 unstarted collector destructions. Collection, heap clearing and VM
 locks are mocked; join-error fallback, full app and device tests remain
 unverified. No concurrency increase.
+
+## 2026-11-24: Normalize VM-share absolute wait deadlines
+
+The shared VM condition wait added fractional milliseconds to tv_nsec
+without carrying into tv_sec. On a second boundary this generated an
+invalid absolute deadline, so the condition wait could return immediately
+without releasing the VM lock. Normalize the deadline, handle a failed
+clock read, and clamp negative delay to zero. No new timer, change in
+requested cadence, Java monitor policy, storage change or admission
+increase. This fixes the deadline computation; lock-order safety and
+real device latency are separate concerns.
+
+Validation: compiled exact SHA-pinned old/new vm_share_timedwait excerpts
+against a mock clock and condition wait. The old code failed the first
+boundary assertion (unittest error, SIGABRT); replacement passed
+one Python regression and 50 ASan+UBSan executions, each checking
+11,000 combinations of clock fraction and wait duration plus explicit
+boundary, negative delay and clock failure cases. The mock does not
+measure actual scheduling or mutex release on iOS. Full suite, build
+and device validation remain outstanding.
