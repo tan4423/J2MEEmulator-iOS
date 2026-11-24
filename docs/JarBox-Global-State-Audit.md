@@ -1004,3 +1004,25 @@ concurrency stress test. Added repository extraction regression and
 source-order guards. Full suite, real GC/hook lifetime, Codemagic and
 iPhone remain unvalidated. Blocking healthy hook execution and monitor
 entry/finalizer cancellation remain open.
+
+## GC deferred-object list: avoid finalizer/weak-reference self-cycle
+
+A single unreachable instance could qualify for both finalize() and
+weak-reference enqueue. The old code linked that same MemoryBlock into
+the deferred remark chain twice, setting tmp_next to itself if both
+branches ran. This can prevent GC from returning and block JVM shutdown.
+Process each instance's existing callbacks in the same order, link once,
+and unlink each node while remarking. Check terminal collector STOP
+at dispatch boundaries and still remark previously processed objects.
+This does not interrupt an already executing Java callback, solve
+finalizer resurrection semantics, or change Treo scheduling.
+
+Validation: Linux clang C11 (-Wall -Wextra -Werror) standalone harness
+using the exact new helper body and modeled Java callbacks/heap passed
+10,000 cycles. ASan+UBSan 20/20 runs passed (200,000 modeled cycles).
+Cases: both callbacks on one object, multiple objects, STOP during
+either callback, initial STOP/PAUSE, previously finalized objects,
+marked targets/instances and independent collectors. Repository
+regression extracts the helper and guards its ordering before sweep.
+Full repository suite, actual Java finalizer/weak-reference behavior,
+Xcode and iPhone not run here.

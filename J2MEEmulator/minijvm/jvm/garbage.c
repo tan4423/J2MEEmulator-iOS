@@ -617,6 +617,50 @@ s32 _gc_thread_run(void *para) {
 }
 
 
+static void gc_process_deferred_objects(GcCollector *collector) {
+    MiniJVM *jvm = collector->jvm;
+    MemoryBlock *head = NULL;
+    if (gc_thread_status(collector) != GARBAGE_THREAD_NORMAL) return;
+    for (MemoryBlock *curmb = collector->header; curmb;) {
+        MemoryBlock *nextmb = curmb->next;
+        // STOP is terminal. Finish remarking already dispatched objects,
+        // but do not begin another Java callback after observing STOP.
+        if (gc_thread_status(collector) >= GARBAGE_THREAD_STOP) break;
+        if (curmb->type == MEM_TYPE_INS) {
+            int defer = 0;
+            if (curmb->clazz->finalizeMethod &&
+                curmb->garbage_mark != collector->mark_cnt &&
+                !GCFLAG_FINALIZED_GET(curmb->gcflag)) {
+                instance_finalize((Instance *)curmb, collector->runtime);
+                GCFLAG_FINALIZED_SET(curmb->gcflag);
+                defer = 1;
+            }
+            if (gc_thread_status(collector) < GARBAGE_THREAD_STOP &&
+                GCFLAG_WEAKREFERENCE_GET(curmb->gcflag)) {
+                Instance *target = getFieldRefer(getInstanceFieldPtr(
+                    (Instance *)curmb, jvm->shortcut.reference_target));
+                if (target && target->mb.garbage_mark != collector->mark_cnt) {
+                    instance_of_reference_enqueue((Instance *)curmb, collector->runtime);
+                    defer = 1;
+                }
+            }
+            // One object may qualify for BOTH callbacks. Link it once;
+            // a second insertion would set tmp_next to itself.
+            if (defer) {
+                curmb->tmp_next = head;
+                head = curmb;
+            }
+        }
+        curmb = nextmb;
+    }
+    while (head) {
+        MemoryBlock *curmb = head;
+        head = curmb->tmp_next;
+        curmb->tmp_next = NULL;
+        _gc_mark_object(collector, curmb, collector->mark_cnt);
+    }
+}
+
 /**
  * Executes a full garbage collection cycle.
  *
@@ -712,58 +756,8 @@ s64 _garbage_collect(GcCollector *collector) {
     //
 
 
-    MemoryBlock *head = NULL;//find all finalize obj and weak obj
-
-    MemoryBlock *nextmb = collector->header;
-    MemoryBlock *curmb, *prevmb = NULL;
-    //finalize
-    if (gc_thread_status(collector) == GARBAGE_THREAD_NORMAL) {
-        while (nextmb) {
-            curmb = nextmb;
-            nextmb = curmb->next;
-            if (curmb->type == MEM_TYPE_INS) {
-                //execute finalize() method
-                if (curmb->clazz->finalizeMethod) {// there is a method called finalize
-                    if (curmb->garbage_mark != collector->mark_cnt && !GCFLAG_FINALIZED_GET(curmb->gcflag)) {
-                        instance_finalize((Instance *) curmb, collector->runtime);
-                        if (!head) {
-                            head = curmb;
-                            curmb->tmp_next = NULL;
-                        } else {
-                            curmb->tmp_next = head;
-                            head = curmb;
-                        }
-                        GCFLAG_FINALIZED_SET(curmb->gcflag);
-                    }
-                }
-                //process weakreference
-                if (GCFLAG_WEAKREFERENCE_GET(curmb->gcflag)) {//is weakreference
-                    Instance *target = getFieldRefer(getInstanceFieldPtr((Instance *) curmb, jvm->shortcut.reference_target));
-                    //jvm_printf("weak reference : %llx %s, %d\n", (s64) (intptr_t) curmb, utf8_cstr(target->mb.clazz->name), curmb->garbage_mark);
-                    if (target && target->mb.garbage_mark != collector->mark_cnt) {
-                        instance_of_reference_enqueue((Instance *) curmb, collector->runtime);
-                        if (!head) {
-                            head = curmb;
-                            curmb->tmp_next = NULL;
-                        } else {
-                            curmb->tmp_next = head;
-                            head = curmb;
-                        }
-                    } else {
-                        s32 debug = 1;
-                    }
-                }
-            }
-        }
-
-        //remark this obj
-        nextmb = head;
-        while (nextmb) {
-            curmb = nextmb;
-            nextmb = curmb->tmp_next;
-            _gc_mark_object(collector, curmb, collector->mark_cnt);//mark it collect on next time
-        }
-    }
+    gc_process_deferred_objects(collector);
+    MemoryBlock *nextmb, *curmb, *prevmb = NULL;
 
 #if _JVM_DEBUG_GARBAGE
     jvm_printf("garbage_finalize %lld\n", (currentTimeMillis() - time));
