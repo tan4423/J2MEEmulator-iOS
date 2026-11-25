@@ -24,6 +24,7 @@ PRE=r"""
 #include <stdio.h>
 #include <string.h>
 #include <netinet/in.h>
+#include <arpa/inet.h>
 #include "jarbox_net_lifecycle.h"
 typedef struct {int fd;} mbedtls_net_context;
 """
@@ -72,7 +73,9 @@ int main(void){
     int listener=socket(AF_INET,SOCK_STREAM,0);
     CHECK(listener>=0);
     struct sockaddr_in addr={0};
-    addr.sin_family=AF_INET;addr.sin_addr.s_addr=htonl(INADDR_LOOPBACK);
+    addr.sin_family=AF_INET;
+    // Darwin strict POSIX feature mode hides the BSD INADDR_LOOPBACK macro.
+    CHECK(inet_pton(AF_INET,"127.0.0.1",&addr.sin_addr)==1);
     CHECK(bind(listener,(struct sockaddr*)&addr,sizeof(addr))==0);
     CHECK(listen(listener,2)==0);
     socklen_t sz=sizeof(addr);

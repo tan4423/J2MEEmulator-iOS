@@ -660,7 +660,8 @@ static int treo_diag_method_ref(JClass *clazz, const u8 *op,
 static int treo_diag_version_gate(Runtime *runtime, CodeAttribute *ca) {
     const uintptr_t base = ca && ca->code ? (uintptr_t)ca->code : 0;
     const uintptr_t at = (uintptr_t)runtime->pc;
-    if (!base || at < base || at - base < 9 || at - base + 3 > ca->code_length)
+    if (!base || ca->code_length < 12 || at < base || at - base < 9 ||
+        at - base > (uintptr_t)(ca->code_length - 3))
         return 0;
     const u8 *pc = (const u8 *)runtime->pc;
     if ((pc[-3] != op_getstatic && pc[-3] != op_getstatic_byte) ||

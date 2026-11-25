@@ -35,9 +35,9 @@ int main(void){
     u16 a[]={99,65,0,66,99}, b[]={65,0,66};
     Instance av={.mb={.arr_type_index=5},.arr_length=5,.arr_body=a};
     Instance bv={.mb={.arr_type_index=5},.arr_length=3,.arr_body=b};
-    Instance x={.mb={&str},.value=&av,.count=3,.offset=1};
-    Instance y={.mb={&str},.value=&bv,.count=3};
-    Instance z={.mb={&other}};
+    Instance x={.mb={.clazz=&str},.value=&av,.count=3,.offset=1};
+    Instance y={.mb={.clazz=&str},.value=&bv,.count=3};
+    Instance z={.mb={.clazz=&other}};
     if(!jstring_equals(&x,&y,&rt))return 1;
     if(jstring_equals(&x,&z,&rt)||jstring_equals(&x,0,&rt))return 2;
     if(!jstring_equals(&x,&x,&rt))return 3;
@@ -90,6 +90,7 @@ int main(void) {
     ca.code_length=553;if(treo_diag_version_gate(&rt,&ca))return 4;ca.code_length=560;
     code[552]=4;if(treo_diag_version_gate(&rt,&ca))return 5;code[552]=3;
     code[149]=8;if(treo_diag_version_gate(&rt,&ca))return 6;
+    code[149]=9;ca.code_length=-1;if(treo_diag_version_gate(&rt,&ca))return 7;
     return 0;
 }
 """
