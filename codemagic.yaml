@@ -145,6 +145,11 @@ workflows:
           javap "$core_verify/java/io/OutputStreamWriter.class" > "$RUNNER_TEMP/writer-class.txt"
           grep -Fq 'public static final java.nio.charset.Charset UTF_8;' "$RUNNER_TEMP/utf8-class.txt"
           grep -Fq 'java.io.OutputStreamWriter(java.io.OutputStream, java.nio.charset.Charset);' "$RUNNER_TEMP/writer-class.txt"
+          javap -c -p "$core_verify/java/io/OutputStreamWriter.class" > "$RUNNER_TEMP/writer-bytecode.txt"
+          grep -Fq 'java/io/OutputStreamWriter$CharsetBuffer' "$RUNNER_TEMP/writer-bytecode.txt"
+          (cd "$core_verify" && jar xf "$jars/minijvm_rt.jar" 'java/io/OutputStreamWriter$CharsetBuffer.class')
+          javap -c -p "$core_verify/"'java/io/OutputStreamWriter$CharsetBuffer.class' > "$RUNNER_TEMP/writer-buffer-bytecode.txt"
+          grep -Fq 'java/io/BufferedOutputStream' "$RUNNER_TEMP/writer-buffer-bytecode.txt"
           javap -c "$core_verify/com/sun/cldc/i18n/j2me/UTF_8_Reader.class" > "$RUNNER_TEMP/utf8-reader-bytecode.txt"
           grep -Fq 'ready:()Z' "$RUNNER_TEMP/utf8-reader-bytecode.txt"
           javap "$core_verify/java/time/LocalTime.class" > "$RUNNER_TEMP/localtime-signatures.txt"

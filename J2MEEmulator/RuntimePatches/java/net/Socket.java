@@ -44,6 +44,13 @@ public class Socket extends SocketImpl {
     InputStream inputStream;
     OutputStream outputStream;
 
+    // Java SE state queries: connected stays true after a connected
+    // socket is closed, whereas isClosed reflects descriptor ownership.
+    public boolean isConnected() { return isConnected; }
+    public boolean isClosed() { return fd == null; }
+    public boolean isInputShutdown() { return inputShutdown; }
+    public boolean isOutputShutdown() { return outputShutdown; }
+
     private byte[] requireConnected() throws IOException {
         if (fd == null || !isConnected) throw new IOException("socket not connected");
         return fd;

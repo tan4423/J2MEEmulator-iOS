@@ -56,6 +56,19 @@ public class OutputStreamWriter extends Writer {
      * The underlying character-output stream.
      */
     private Writer out;
+    // The old FilterOutputStream.close() swallows flush errors. Own the
+    // close here: flush once, close the underlying stream even on failure,
+    // and never retry a partially transmitted buffer during cleanup.
+    private static final class CharsetBuffer extends BufferedOutputStream {
+        private boolean closed;
+        CharsetBuffer(OutputStream stream) { super(stream, 1024); }
+        public synchronized void close() throws IOException {
+            if (closed) return;
+            closed = true;
+            try { flush(); }
+            finally { out.close(); }
+        }
+    }
 
     /**
      * Create an OutputStreamWriter that uses the default character encoding.
@@ -87,11 +100,16 @@ public class OutputStreamWriter extends Writer {
      * as the existing String constructor to preserve encoding semantics.
      */
     public OutputStreamWriter(OutputStream os, Charset charset) {
-        if (charset == null) {
+        if (os == null || charset == null) {
             throw new NullPointerException("charset");
         }
         try {
-            out = Helper.getStreamWriter(os, charset.name());
+            // Java SE character writers buffer encoded bytes. The CLDC
+            // UTF-8 converter writes one small byte array per code point.
+            // Coalesce those writes across print() and println() until
+            // the caller flushes (including PrintWriter auto-flush).
+            // Do not change the legacy CLDC String/default constructors.
+            out = Helper.getStreamWriter(new CharsetBuffer(os), charset.name());
         } catch (UnsupportedEncodingException unsupported) {
             throw new IllegalArgumentException("Unsupported charset: " + charset.name());
         }
@@ -171,8 +189,8 @@ public class OutputStreamWriter extends Writer {
      */
     public void close() throws IOException {
         if (out != null) {
-            out.close();
-            out = null;
+            try { out.close(); }
+            finally { out = null; }
         }
     }
 

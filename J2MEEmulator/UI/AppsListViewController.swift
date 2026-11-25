@@ -1069,6 +1069,10 @@ class AppsListViewController: UIViewController,
         retainedGames.contains { $0.holdsNativeGameSession(for: path) }
     }
 
+    private func hasRunningGame(for path: String) -> Bool {
+        retainedGames.contains { $0.ownsLiveGameSession(for: path) }
+    }
+
     private var liveGames: [GameViewController] {
         retainedGames.filter { $0.ownsLiveGameSession() }
     }
@@ -1079,11 +1083,19 @@ class AppsListViewController: UIViewController,
         springboardCollectionView.reloadData()
     }
 
+    func managedGameDidRequestStop(_ game: GameViewController) {
+        guard retainedGames.contains(where: { $0 === game }) else { return }
+        // The last live tab removes the dot immediately, even while native
+        // cleanup still owns the token. Other tabs keep the indicator on.
+        springboardCollectionView.reloadData()
+    }
+
     func managedGameDidEnd(_ game: GameViewController) {
         // A failed/stuck cleanup must retain the controller as long as the
         // exact native token still occupies a slot.
         guard !game.holdsNativeGameSession() else {
             updateStuckSessionButton()
+            springboardCollectionView.reloadData()
             return
         }
         managedGames.removeAll { $0 === game }
@@ -2345,7 +2357,7 @@ class AppsListViewController: UIViewController,
         // Cell reuse and scrolling do no filesystem I/O or timer polling.
         cell.configure(name: app.name, icon: app.icon,
                        tabCount: app.cloneCount + 1,
-                       running: hasNativeGame(for: app.path))
+                       running: hasRunningGame(for: app.path))
         return cell
     }
 

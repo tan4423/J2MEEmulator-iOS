@@ -16,6 +16,8 @@ class SpringboardCell: UICollectionViewCell {
     // Static tab-count badge; no animation, blur, or polling.
     private let tabBadge = UIView()
     private let tabBadgeLabel = UILabel()
+    // Event-driven running indicator; no animation or per-cell polling.
+    private let liveDot = UIView()
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -42,6 +44,15 @@ class SpringboardCell: UICollectionViewCell {
         tabBadgeLabel.translatesAutoresizingMaskIntoConstraints = false
         tabBadge.addSubview(tabBadgeLabel)
 
+        liveDot.backgroundColor = .systemGreen
+        liveDot.layer.cornerRadius = 5
+        liveDot.layer.borderWidth = 1
+        liveDot.layer.borderColor = UIColor(white: 0.10, alpha: 1).cgColor
+        liveDot.isHidden = true
+        liveDot.isUserInteractionEnabled = false
+        liveDot.translatesAutoresizingMaskIntoConstraints = false
+        contentView.addSubview(liveDot)
+
         // Static text: no shadow blur or offscreen text effect.
         nameLabel.font = .systemFont(ofSize: 11.5, weight: .medium)
         nameLabel.textColor = .white
@@ -63,6 +74,10 @@ class SpringboardCell: UICollectionViewCell {
             tabBadgeLabel.centerYAnchor.constraint(equalTo: tabBadge.centerYAnchor),
             tabBadgeLabel.leadingAnchor.constraint(equalTo: tabBadge.leadingAnchor, constant: 5),
             tabBadgeLabel.trailingAnchor.constraint(equalTo: tabBadge.trailingAnchor, constant: -5),
+            liveDot.widthAnchor.constraint(equalToConstant: 10),
+            liveDot.heightAnchor.constraint(equalToConstant: 10),
+            liveDot.topAnchor.constraint(equalTo: iconView.topAnchor, constant: -1),
+            liveDot.trailingAnchor.constraint(equalTo: iconView.trailingAnchor, constant: 1),
 
             nameLabel.topAnchor.constraint(equalTo: iconView.bottomAnchor, constant: 5),
             nameLabel.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: -2),
@@ -80,6 +95,7 @@ class SpringboardCell: UICollectionViewCell {
         nameLabel.text = nil
         tabBadge.isHidden = true
         tabBadgeLabel.text = nil
+        liveDot.isHidden = true
         accessibilityLabel = nil
         accessibilityValue = nil
     }
@@ -95,7 +111,8 @@ class SpringboardCell: UICollectionViewCell {
         tabBadgeLabel.text = tabCount >= 2 ? "x" + String(tabCount) : nil
         tabBadge.isHidden = tabCount < 2
         accessibilityLabel = name
-        // Keep the running state available to VoiceOver without a visual dot.
+        liveDot.isHidden = !running
+        // Also expose the running state to VoiceOver.
         var details: [String] = []
         if tabCount >= 2 { details.append(String(tabCount) + " tab") }
         if running { details.append("Đang chạy ẩn trong JarBox") }

@@ -122,7 +122,7 @@ class ParkedGameLibraryTest(unittest.TestCase):
         self.assertIn('title: "Đang đóng phiên cũ"', self.library)
         self.assertIn('resumeParkedGame()', self.library)
         self.assertIn('stopParkedGame()', self.library)
-        self.assertIn('running: hasNativeGame(for: app.path)', self.library)
+        self.assertIn('running: hasRunningGame(for: app.path)', self.library)
         self.assertIn('if running { details.append("Đang chạy ẩn trong JarBox") }', self.cell)
         self.assertIn('accessibilityValue = details.isEmpty ? nil', self.cell)
         self.assertIn('navigationItem.rightBarButtonItems = [importBarButton, jarBoxMenuButton].compactMap', self.library)
@@ -159,7 +159,16 @@ class ParkedGameLibraryTest(unittest.TestCase):
         reuse = cell.split('override func prepareForReuse()', 1)[1].split('override var isHighlighted', 1)[0]
         self.assertIn('tabBadge.isHidden = true', reuse)
         self.assertIn('tabBadgeLabel.text = nil', reuse)
-        self.assertNotIn('liveDot', cell)
+        self.assertIn('liveDot.isHidden = !running', cell)
+        self.assertIn('liveDot.isHidden = true', reuse)
+        self.assertIn('liveDot.topAnchor.constraint(equalTo: iconView.topAnchor', cell)
+        self.assertIn('liveDot.trailingAnchor.constraint(equalTo: iconView.trailingAnchor', cell)
+        self.assertIn('liveDot.isUserInteractionEnabled = false', cell)
+        self.assertIn('retainedGames.contains { $0.ownsLiveGameSession(for: path) }', library)
+        self.assertIn('retainedGames.contains { $0.holdsNativeGameSession(for: path) }', library)
+        self.assertIn('sessionLibrary?.managedGameDidRequestStop(self)', self.game)
+        stop = library.split('func managedGameDidRequestStop(', 1)[1].split('\n    }', 1)[0]
+        self.assertIn('springboardCollectionView.reloadData()', stop)
         self.assertNotIn('Timer(', cell)
 
     def test_global_sleep_overlay_is_in_main_menu_not_per_jar(self):

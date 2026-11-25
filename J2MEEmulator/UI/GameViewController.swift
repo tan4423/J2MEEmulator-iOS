@@ -4228,6 +4228,7 @@ class GameViewController: UIViewController {
         // Scope stop to THIS game so a late callback cannot stop a clone.
         let token = gameSessionToken
         _ = jvm_bridge_request_stop_for_token(token)
+        sessionLibrary?.managedGameDidRequestStop(self)
 
         // Cooperative stop first; interrupt the still-running Java threads
         // only after a grace period, on a background queue.
