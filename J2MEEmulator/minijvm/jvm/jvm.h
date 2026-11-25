@@ -1156,6 +1156,7 @@ void constant_list_destroy(JClass *clazz);
 s32 class_destroy(JClass *clazz);
 
 JClass *class_parse(Instance *loader, ByteBuf *bytebuf, Runtime *runtime);
+void jarbox_prepared_code_cache_trim(void);
 
 JClass *load_class(Instance *jloader, Utf8String *pClassName, Runtime *runtime);
 

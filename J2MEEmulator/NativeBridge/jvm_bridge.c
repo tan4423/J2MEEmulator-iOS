@@ -25,7 +25,10 @@
 #include <time.h>
 #endif
 
-void jvm_bridge_trim_classpath_cache(void) { zip_classpath_cache_trim(); }
+void jvm_bridge_trim_classpath_cache(void) {
+    zip_classpath_cache_trim();
+    jarbox_prepared_code_cache_trim();
+}
 
 // Conservative launch classification, not an authorization to execute 3D.
 // Bound the scan; unreadable, oversized, nested or unknown archives run alone.

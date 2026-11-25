@@ -12,6 +12,15 @@
 #include "jvm_util.h"
 #include "garbage.h"
 #include "jit.h"
+#if defined(__APPLE__) || defined(__linux__)
+#include "jarbox_prepared_code_cache.h"
+#endif
+
+void jarbox_prepared_code_cache_trim(void) {
+#if defined(__APPLE__) || defined(__linux__)
+    jarbox_prepared_trim();
+#endif
+}
 
 void _annotations_destroy(RuntimeVisibleAnnotationsAttr *annotations);
 
@@ -739,6 +748,17 @@ void _changeBytesOrder(MethodInfo *method) {
     method->jump_2_pos = pairlist_create(4);
     CodeAttribute *ca = method->converted_code;
     spin_init(&ca->compile_lock, 0);
+    int preparation_complete = 1;
+#if defined(__APPLE__) || defined(__linux__)
+    const unsigned prepared_epoch = atomic_load(&jarbox_prepared_epoch);
+    const uint64_t prepared_hash = ca->bytecode_for_jit ?
+        jarbox_prepared_hash(ca->code, ca->code_length) : 0;
+    if (jarbox_prepared_lookup(method, prepared_hash, prepared_epoch))
+        goto prepared_finish;
+    // Reuse the already allocated second buffer as the raw cache key on a
+    // miss. The final copy below restores its original converted contents.
+    if (prepared_hash) memcpy(ca->bytecode_for_jit, ca->code, (size_t)ca->code_length);
+#endif
 
     u8 *ip = ca->code;
     u8 *end = ca->code_length + ip;
@@ -997,8 +1017,8 @@ void _changeBytesOrder(MethodInfo *method) {
                 u8 *addr = ip + 1;
                 *((s16 *) addr) = s2c.s;
                 s32 jumpto = code_idx + s2c.s;
-                pairlist_putl(method->pos_2_label, jumpto, -1);// save label pos in list
-                pairlist_putl(method->pos_2_label, code_idx + 3, -1);// save label pos in list
+                if (pairlist_putl(method->pos_2_label, jumpto, -1) < 0) preparation_complete = 0;// save label pos in list
+                if (pairlist_putl(method->pos_2_label, code_idx + 3, -1) < 0) preparation_complete = 0;// save label pos in list
                 ip += 3;
                 break;
             }
@@ -1020,7 +1040,7 @@ void _changeBytesOrder(MethodInfo *method) {
                 i2c.c1 = ip[pos++];
                 i2c.c0 = ip[pos++];
                 s32 default_offset = i2c.i;
-                pairlist_putl(method->pos_2_label, code_idx + i2c.i, -1);
+                if (pairlist_putl(method->pos_2_label, code_idx + i2c.i, -1) < 0) preparation_complete = 0;
                 *((s32 *) addr) = i2c.i;
                 addr += 4;
                 i2c.c3 = ip[pos++];
@@ -1046,7 +1066,7 @@ void _changeBytesOrder(MethodInfo *method) {
                     i2c.c1 = ip[pos++];
                     i2c.c0 = ip[pos++];
                     *((s32 *) addr) = i2c.i;
-                    pairlist_putl(method->pos_2_label, code_idx + i2c.i, -1);// save label pos in list
+                    if (pairlist_putl(method->pos_2_label, code_idx + i2c.i, -1) < 0) preparation_complete = 0;// save label pos in list
                     addr += 4;
                 }
                 ip += pos;
@@ -1065,7 +1085,7 @@ void _changeBytesOrder(MethodInfo *method) {
                 i2c.c1 = ip[pos++];
                 i2c.c0 = ip[pos++];
                 s32 default_offset = i2c.i;
-                pairlist_putl(method->pos_2_label, code_idx + i2c.i, -1);
+                if (pairlist_putl(method->pos_2_label, code_idx + i2c.i, -1) < 0) preparation_complete = 0;
                 *((s32 *) addr) = i2c.i;
                 i2c.c3 = ip[pos++];
                 i2c.c2 = ip[pos++];
@@ -1090,7 +1110,7 @@ void _changeBytesOrder(MethodInfo *method) {
                     i2c.c1 = ip[pos++];
                     i2c.c0 = ip[pos++];
                     offset = i2c.i;
-                    pairlist_putl(method->pos_2_label, code_idx + i2c.i, -1);// save label pos in list
+                    if (pairlist_putl(method->pos_2_label, code_idx + i2c.i, -1) < 0) preparation_complete = 0;// save label pos in list
                     addr += 4;
                     *((s32 *) addr) = i2c.i;
                 }
@@ -1297,6 +1317,7 @@ void _changeBytesOrder(MethodInfo *method) {
                         break;
                     }
                     default:
+                        preparation_complete = 0;
                         jvm_printf("instruct wide %x not found\n", cur_inst);
                 }
                 break;
@@ -1324,7 +1345,7 @@ void _changeBytesOrder(MethodInfo *method) {
                 *((u16 *) addr) = s2c.us;
 
                 s32 jumpto = code_idx + s2c.s;
-                pairlist_putl(method->pos_2_label, jumpto, -1);// save label pos in list
+                if (pairlist_putl(method->pos_2_label, jumpto, -1) < 0) preparation_complete = 0;// save label pos in list
 
                 ip += 3;
                 break;
@@ -1347,7 +1368,7 @@ void _changeBytesOrder(MethodInfo *method) {
                 *((s32 *) addr) = i2f.i;
 
                 s32 jumpto = code_idx + i2f.i;
-                pairlist_putl(method->pos_2_label, jumpto, -1);// save label pos in list
+                if (pairlist_putl(method->pos_2_label, jumpto, -1) < 0) preparation_complete = 0;// save label pos in list
 
                 ip += 5;
 
@@ -1366,17 +1387,25 @@ void _changeBytesOrder(MethodInfo *method) {
                 *((s32 *) addr) = i2f.i;
 
                 s32 jumpto = code_idx + i2f.i;
-                pairlist_putl(method->pos_2_label, jumpto, -1);// save label pos in list
-                pairlist_putl(method->pos_2_label, code_idx + 5, -1);// save label pos in list
+                if (pairlist_putl(method->pos_2_label, jumpto, -1) < 0) preparation_complete = 0;// save label pos in list
+                if (pairlist_putl(method->pos_2_label, code_idx + 5, -1) < 0) preparation_complete = 0;// save label pos in list
 
                 ip += 5;
                 break;
             }
             default:
+                preparation_complete = 0;
                 jvm_printf("adapte instruct %x not found\n", cur_inst);
         }
     }
 
+#if defined(__APPLE__) || defined(__linux__)
+    if (preparation_complete && ip == end)
+        jarbox_prepared_publish(method, prepared_hash, prepared_epoch);
+prepared_finish:
+#else
+    (void)preparation_complete;
+#endif
     memcpy(ca->bytecode_for_jit, ca->code, ca->code_length);
 
     u8 *mc = ca->code;
