@@ -2,6 +2,7 @@
 #define JARBOX_TREO_STATE_H
 
 #include <stdint.h>
+#include "jarbox_background_trace.h"
 
 // Owned by one MiniJVM allocation and never shared with a different JVM.
 // Atomic builtins allow the collector thread and the UIKit control thread
@@ -27,6 +28,7 @@ typedef struct JarBoxTreoState {
     int nso_init_target_active;
     int nso_canvas_seen;
     uint64_t nso_repaint_requests, nso_skips[3];
+    JarBoxBackgroundTrace background_trace;
     uint64_t int_leaf_fast_calls; // batched count, all modes, per JVM
     uint64_t ref_leaf_fast_calls;
     uint64_t aload_field_fusions;

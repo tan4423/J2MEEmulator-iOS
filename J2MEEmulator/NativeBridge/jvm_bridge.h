@@ -2,6 +2,7 @@
 #define JVM_BRIDGE_H
 #include <stdint.h>
 #include "../minijvm/jvm/jarbox_cpu_window.h"
+#include "../minijvm/jvm/jarbox_background_trace.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -76,6 +77,15 @@ void jvm_bridge_cpu_worker_begin(struct JarBoxSession *session,int kind);
 void jvm_bridge_cpu_worker_end(struct JarBoxSession *session);
 void jvm_bridge_cpu_mode_changed(struct JarBoxSession *session);
 int jvm_bridge_cpu_snapshot_for_token(uint64_t token,JarBoxCpuSnapshot *out);
+// Scene-boundary diagnostics: immutable tokens only, including parked owners.
+// A failed sample is unavailable, never a zero-activity observation.
+typedef struct {
+    JarBoxCpuPoint cpu;
+    JarBoxBackgroundProgress progress;
+    int mode, family, canvas, trace_ok;
+} JarBoxBackgroundSample;
+int jvm_bridge_background_tokens(uint64_t *out,int capacity);
+int jvm_bridge_background_sample(uint64_t token,int entering,JarBoxBackgroundSample *out);
 /// Check the actual ownership flag (phase may briefly be idle during start).
 int jvm_bridge_session_is_active(void);
 /// Truthful number of reserved live native VM slots.

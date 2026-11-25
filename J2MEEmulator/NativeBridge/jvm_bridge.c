@@ -915,6 +915,51 @@ int jvm_bridge_cpu_snapshot_for_token(uint64_t token,JarBoxCpuSnapshot *out) {
 #endif
 }
 
+int jvm_bridge_background_tokens(uint64_t *out,int capacity) {
+    if (!out || capacity<=0) return 0;
+    int count=0;
+    pthread_mutex_lock(&g_bridge_lifecycle_lock);
+    for (unsigned i=0;i<JARBOX_REGISTRY_MAX_SLOTS && count<capacity;++i) {
+        JarBoxVMContext *slot=&g_bridge_slots[i];
+        if (atomic_load_explicit(&slot->active,memory_order_acquire))
+            out[count++]=atomic_load_explicit(&slot->token,memory_order_acquire);
+    }
+    pthread_mutex_unlock(&g_bridge_lifecycle_lock);
+    return count;
+}
+#if defined(__APPLE__) && __JVM_OS_IOS__
+typedef struct { int entering; JarBoxBackgroundSample *out; } BridgeBackgroundSample;
+static void bridge_background_sample_visitor(MiniJVM *vm,void *arg) {
+    BridgeBackgroundSample *call=arg;
+    JarBoxBackgroundSample *out=call->out;
+    JarBoxSession *s=vm->session;
+    uint64_t now=clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW);
+    if (call->entering)
+        out->trace_ok=jarbox_background_begin(&s->treo_state.background_trace,now);
+    else
+        out->trace_ok=jarbox_background_end(&s->treo_state.background_trace,now,&out->progress);
+    pthread_mutex_lock(&bridge_cpu_lock);
+    out->cpu=bridge_cpu_point(s);
+    pthread_mutex_unlock(&bridge_cpu_lock);
+    // Unlike the CPU mode history, this window spans device sleep and mode changes.
+    out->cpu.wall_ns=now;
+    out->mode=jarbox_treo_mode_get(&s->treo_state);
+    out->family=jarbox_treo_nso_family_verified(&s->treo_state);
+    out->canvas=jarbox_treo_nso_canvas_recognized(&s->treo_state);
+}
+#endif
+int jvm_bridge_background_sample(uint64_t token,int entering,JarBoxBackgroundSample *out) {
+    if (!out) return 0;
+    memset(out,0,sizeof(*out));
+#if defined(__APPLE__) && __JVM_OS_IOS__
+    BridgeBackgroundSample call={entering,out};
+    return jvm_bridge_visit_running_vm_for_token(token,bridge_background_sample_visitor,&call);
+#else
+    (void)token; (void)entering;
+    return 0;
+#endif
+}
+
 static void bridge_treo_snapshot(MiniJVM *vm, void *arg) {
     JarBoxTreoSnapshot *out = arg;
     JarBoxTreoState *s = &vm->session->treo_state;

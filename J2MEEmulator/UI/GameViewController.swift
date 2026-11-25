@@ -1335,7 +1335,10 @@ class GameViewController: UIViewController {
                      attributes: lastMeasurement == nil ? .disabled : []) { [weak self] _ in
                 self?.showLastMeasurement()
             },
-            UIAction(title: "Chẩn đoán kết nối") { [weak self] _ in self?.showNetworkDiagnostics() }
+            UIAction(title: "Chẩn đoán kết nối") { [weak self] _ in self?.showNetworkDiagnostics() },
+            UIAction(title: "Log Treo tắt màn hình") { [weak self] _ in
+                if let self { JarBoxBackgroundDiagnostics.show(from: self) }
+            }
         ]
         if jarAuditID != nil {
             diagnostics.append(UIAction(title: "Hủy chẩn đoán CPU JAR", attributes: .destructive) { [weak self] _ in self?.stopJarAudit() })

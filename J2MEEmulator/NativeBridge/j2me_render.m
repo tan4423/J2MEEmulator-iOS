@@ -715,7 +715,13 @@ static s32 n_ninjaDeepSkip(Runtime *runtime, JClass *clazz) {
         treo_nso_simple_canvas_paint(canvas->mb.clazz);
     if (qualified) {
         jarbox_treo_nso_canvas_note(treo_runtime_state(runtime));
-        if (stage == 0) jarbox_treo_nso_note_request(treo_runtime_state(runtime));
+        if (stage == 0) {
+            JarBoxTreoState *state=treo_runtime_state(runtime);
+            jarbox_treo_nso_note_request(state);
+            if (state && jarbox_background_enabled(&state->background_trace))
+                jarbox_background_note(&state->background_trace,
+                    clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW));
+        }
         // Legacy heartbeat/work probes are process-wide diagnostics. Do
         // not mix samples from two tabs or run the extra benchmark in multi.
         if (jvm_bridge_supported_concurrent_sessions() == 1) {
