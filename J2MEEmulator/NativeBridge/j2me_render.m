@@ -714,7 +714,7 @@ static s32 n_ninjaDeepSkip(Runtime *runtime, JClass *clazz) {
             if (stage == 0) treo_nso_note_request(runtime);
         }
     }
-    const int skip = qualified && treo_runtime_mode(runtime) == 8;
+    const int skip = qualified && ninja_deep_active(runtime);
     if (skip) jarbox_treo_nso_note_skip(treo_runtime_state(runtime), stage);
     push_int(runtime->stack, skip);
     return RUNTIME_STATUS_NORMAL;

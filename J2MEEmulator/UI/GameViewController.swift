@@ -1437,32 +1437,42 @@ class GameViewController: UIViewController {
         let hasStartupProbe = trace.contains("probe:java8_utf8_boot_patch=v1")
         var treo = JarBoxTreoSnapshot()
         let treoAvailable = jvm_bridge_treo_snapshot_for_token(gameSessionToken, &treo) != 0
-        let treoLine = treoAvailable
-            ? "treo_session:mode=\(treo.mode),family=\(treo.family),canvas=\(treo.canvas),requests=\(treo.repaint_requests),repaint_skips=\(treo.repaint_skips),service_skips=\(treo.service_skips),paint_skips=\(treo.paint_skips),smart_gc_cycles=\(treo.smart_gc_cycles),smart_gc_cpu_ns=\(treo.smart_gc_cpu_ns),smart_period_ms=\(treo.smart_period_ms),smart_fallback=\(treo.smart_fallback),int_leaf_fast_calls_approx=\(treo.int_leaf_fast_calls)"
-            : "treo_session:unavailable"
-        // The cumulative counters can be compared across two copied
-        // snapshots to distinguish a frozen Java Display or game loop
-        // from a working loop that simply awaits a modal acknowledgement.
-        let report = "JarBoxNET\n" +
-            "build_commit=" + buildID + "\n" +
-            "boot_patch=" + bootPatch + "\n" +
-            "session_token=" + String(gameSessionToken) + "\n" +
-            "visible_session_token=" + String(jvm_bridge_visible_session_token()) + "\n" +
-            "first_surface=" + startupFirstSurface + "\n" +
-            "request_to_surface=" + startupRequestToSurface + "\n" +
-            "startup_admission_ms=" + startupAdmissionMs + "\n" +
-            "vm_start_probe=" + (hasStartupProbe ? "seen" : "missing") + "\n" +
-            treoLine + "\n" +
-            "display_poll_count=" + String(treo_display_poll_calls()) + "\n" +
-            "popup_update_count=" + String(jvm_bridge_mod_popup_tick_count()) + "\n" +
-            "game_loop_last_call=" + String(jvm_bridge_mod_loop_last_stage()) + "\n" +
-            "game_loop_calls=popup:" + String(jvm_bridge_mod_loop_stage_count(1)) +
-            ",repaint:" + String(jvm_bridge_mod_loop_stage_count(2)) +
-            ",serviceRepaints:" + String(jvm_bridge_mod_loop_stage_count(3)) +
-            ",sleep:" + String(jvm_bridge_mod_loop_stage_count(4)) + "\n" +
-            (trace.isEmpty
-                ? "Chưa ghi nhận TCP hoặc exception mạng của game."
-                : trace)
+        let treoFields: [String] = [
+            "mode=\(treo.mode)", "family=\(treo.family)", "canvas=\(treo.canvas)",
+            "requests=\(treo.repaint_requests)", "repaint_skips=\(treo.repaint_skips)",
+            "service_skips=\(treo.service_skips)", "paint_skips=\(treo.paint_skips)",
+            "smart_gc_cycles=\(treo.smart_gc_cycles)", "smart_gc_cpu_ns=\(treo.smart_gc_cpu_ns)",
+            "smart_period_ms=\(treo.smart_period_ms)", "smart_fallback=\(treo.smart_fallback)",
+            "int_leaf_fast_calls_approx=\(treo.int_leaf_fast_calls)"
+        ]
+        let treoLine = "treo_session:" + (treoAvailable ? treoFields.joined(separator: ",") : "unavailable")
+        // Keep these cumulative diagnostics cheap: only construct on demand.
+        // Separate fields also avoid a long overloaded '+' expression for
+        // Swift's type checker.
+        let loopCounts = [
+            "popup:\(jvm_bridge_mod_loop_stage_count(1))",
+            "repaint:\(jvm_bridge_mod_loop_stage_count(2))",
+            "serviceRepaints:\(jvm_bridge_mod_loop_stage_count(3))",
+            "sleep:\(jvm_bridge_mod_loop_stage_count(4))"
+        ].joined(separator: ",")
+        let reportLines: [String] = [
+            "JarBoxNET",
+            "build_commit=" + buildID,
+            "boot_patch=" + bootPatch,
+            "session_token=" + String(gameSessionToken),
+            "visible_session_token=" + String(jvm_bridge_visible_session_token()),
+            "first_surface=" + startupFirstSurface,
+            "request_to_surface=" + startupRequestToSurface,
+            "startup_admission_ms=" + startupAdmissionMs,
+            "vm_start_probe=" + (hasStartupProbe ? "seen" : "missing"),
+            treoLine,
+            "display_poll_count=" + String(treo_display_poll_calls()),
+            "popup_update_count=" + String(jvm_bridge_mod_popup_tick_count()),
+            "game_loop_last_call=" + String(jvm_bridge_mod_loop_last_stage()),
+            "game_loop_calls=" + loopCounts,
+            trace.isEmpty ? "Chưa ghi nhận TCP hoặc exception mạng của game." : trace
+        ]
+        let report = reportLines.joined(separator: "\n")
         let alert = UIAlertController(title: "Chẩn đoán kết nối",
                                       message: report, preferredStyle: .alert)
         alert.addAction(UIAlertAction(title: "Sao chép", style: .default) { _ in
