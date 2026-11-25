@@ -85,6 +85,35 @@ int main(int argc, char **argv) {
 #if defined(__APPLE__) || defined(__linux__)
     CHECK(jarbox_classpath_cache[0].path != NULL);
     CHECK(jarbox_classpath_cache[1].path == NULL);
+    CHECK(jarbox_classpath_data_count == 2);
+    CHECK(jarbox_classpath_data_bytes <= JARBOX_CLASSPATH_DATA_BUDGET);
+    // Changing a VM's returned buffer must not change another VM's bytes.
+    CHECK(zip_classpath_loadfile(jar, "a.class", &b) == 0);
+    b.buf[0] = '!';
+    ByteBuf other = {1, 0, 0, malloc(1)};
+    CHECK(other.buf != NULL);
+    fail_expand = 1;
+    CHECK(zip_classpath_loadfile(jar, "a.class", &other) == -1);
+    fail_expand = 0;
+    CHECK(zip_classpath_loadfile(jar, "a.class", &other) == 0);
+    CHECK(other.wp == 3 && memcmp(other.buf, "low", 3) == 0);
+    CHECK(b.buf[0] == '!');
+    free(other.buf);
+    CHECK(zip_classpath_loadfile(jar, "empty", &b) == 0 && b.wp == 0);
+    CHECK(jarbox_classpath_data_count == 2);
+    CHECK(zip_classpath_loadfile(jar, "too-large", &b) == 0);
+    CHECK(b.wp == JARBOX_CLASSPATH_DATA_MAX_ENTRY + 1);
+    CHECK(jarbox_classpath_data_count == 2);
+    // Fill beyond the total budget; reads must still work.
+    for (int n = 0; n < 30; ++n) {
+        char name[32];
+        snprintf(name, sizeof(name), "resource/%d.bin", n);
+        CHECK(zip_classpath_loadfile(jar, name, &b) == 0);
+        CHECK(b.wp == JARBOX_CLASSPATH_DATA_MAX_ENTRY);
+        CHECK(b.buf[0] == (char)n);
+        CHECK(jarbox_classpath_data_bytes <= JARBOX_CLASSPATH_DATA_BUDGET);
+    }
+    CHECK(jarbox_classpath_data_count < 32);
     // Contention must use the uncached reader, never wait for another owner.
     CHECK(pthread_mutex_lock(&jarbox_classpath_lock) == 0);
     CHECK(zip_classpath_loadfile(jar, "a.class", &b) == 0);
@@ -94,10 +123,14 @@ int main(int argc, char **argv) {
     CHECK(zip_classpath_loadfile(jar, "a.class", &b) == 0);
     CHECK(b.wp == 7 && memcmp(b.buf, "new-low", 7) == 0);
     CHECK(zip_classpath_loadfile(jar, "A.class", &b) == -1);
+#if defined(__APPLE__) || defined(__linux__)
+    CHECK(jarbox_classpath_data_count == 1);
+#endif
     zip_classpath_cache_trim();
 #if defined(__APPLE__) || defined(__linux__)
     for (unsigned n = 0; n < JARBOX_CLASSPATH_CACHE_SLOTS; ++n)
         CHECK(jarbox_classpath_cache[n].path == NULL);
+    CHECK(jarbox_classpath_data_bytes == 0 && jarbox_classpath_data_count == 0);
 #endif
     CHECK(zip_classpath_loadfile(jar, "a.class", &b) == 0);
     CHECK(b.wp == 7 && memcmp(b.buf, "new-low", 7) == 0);
@@ -123,6 +156,9 @@ class ZipCaseSensitiveTest(unittest.TestCase):
                                    ("img/Title.png", b"img"), ("empty", b""),
                                    ("large", b"x" * 1024)):
                     archive.writestr(name, data)
+                archive.writestr("too-large", b"x" * (256 * 1024 + 1))
+                for i in range(30):
+                    archive.writestr(f"resource/{i}.bin", bytes([i]) * (256 * 1024))
             replacement = path / "replacement.jar"
             with zipfile.ZipFile(replacement, "w", zipfile.ZIP_DEFLATED) as archive:
                 archive.writestr("a.class", b"new-low")

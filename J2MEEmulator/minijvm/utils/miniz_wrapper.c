@@ -90,8 +90,8 @@ s32 zip_get_file_index(char const *jarpath, char const *filename) {
 }
 
 
-/* Classpath-only reader reuse. These slots contain archive metadata and a
- * read-only file handle, never Java objects, decompressed classes or RMS.
+/* Classpath-only reader and immutable entry-byte reuse. The cached bytes
+ * are never handed to a JVM directly. Every lookup returns a private copy.
  * Four process-wide slots bound file descriptors and retained memory even
  * with 64 VMs. Try-lock fallback avoids blocking another VM's class load.
  * Keep the ordinary ZIP APIs and writer path uncached.
@@ -99,10 +99,25 @@ s32 zip_get_file_index(char const *jarpath, char const *filename) {
 #if defined(__APPLE__) || defined(__linux__)
 #define JARBOX_CLASSPATH_CACHE_SLOTS 4
 #define JARBOX_CLASSPATH_CACHE_MAX_BYTES (8 * 1024 * 1024)
+// Process-wide budget includes entry headers, names and decompressed bytes.
+// Reader metadata remains separately bounded by the existing reader limits.
+#define JARBOX_CLASSPATH_DATA_BUDGET (6u * 1024u * 1024u)
+#define JARBOX_CLASSPATH_DATA_MAX_ENTRY (256u * 1024u)
+#define JARBOX_CLASSPATH_DATA_MAX_COUNT 2048u
+#define JARBOX_CLASSPATH_DATA_BUCKETS 256u
+typedef struct JarBoxClasspathData {
+    struct JarBoxClasspathData *next;
+    size_t name_bytes;
+    u32 size;
+    char payload[]; // exact entry name including NUL, then immutable bytes
+} JarBoxClasspathData;
+static size_t jarbox_classpath_data_bytes;
+static unsigned jarbox_classpath_data_count;
 typedef struct {
     char *path;
     struct stat identity;
     mz_zip_archive archive;
+    JarBoxClasspathData *data[JARBOX_CLASSPATH_DATA_BUCKETS];
 } JarBoxClasspathReader;
 static JarBoxClasspathReader jarbox_classpath_cache[JARBOX_CLASSPATH_CACHE_SLOTS];
 static unsigned jarbox_classpath_next;
@@ -121,7 +136,67 @@ static int jarbox_classpath_same_file(const struct stat *a, const struct stat *b
            a->st_ctim.tv_nsec == b->st_ctim.tv_nsec;
 #endif
 }
+// All entry cache operations are protected by the existing reader lock.
+// Hashing is only a bucket selection; strcmp establishes exact identity.
+static unsigned jarbox_classpath_data_bucket(const char *entry) {
+    uint32_t hash = 2166136261u;
+    for (const unsigned char *p = (const unsigned char *)entry; *p; ++p)
+        hash = (hash ^ *p) * 16777619u;
+    return hash % JARBOX_CLASSPATH_DATA_BUCKETS;
+}
+static JarBoxClasspathData *jarbox_classpath_data_find(JarBoxClasspathReader *reader,
+                                                      const char *entry) {
+    for (JarBoxClasspathData *item = reader->data[jarbox_classpath_data_bucket(entry)];
+         item; item = item->next) {
+        if (strcmp(item->payload, entry) == 0) return item;
+    }
+    return NULL;
+}
+static void jarbox_classpath_data_add(JarBoxClasspathReader *reader, const char *entry,
+                                      const ByteBuf *buf) {
+    if (!buf->buf || !buf->wp || buf->wp > JARBOX_CLASSPATH_DATA_MAX_ENTRY ||
+        jarbox_classpath_data_count >= JARBOX_CLASSPATH_DATA_MAX_COUNT)
+        return;
+    size_t name_bytes = strlen(entry) + 1;
+    if (name_bytes > 1024) return;
+    size_t cost = sizeof(JarBoxClasspathData) + name_bytes + buf->wp;
+    if (cost > JARBOX_CLASSPATH_DATA_BUDGET - jarbox_classpath_data_bytes)
+        return;
+    JarBoxClasspathData *item = malloc(cost);
+    if (!item) return;
+    item->name_bytes = name_bytes;
+    item->size = buf->wp;
+    memcpy(item->payload, entry, name_bytes);
+    memcpy(item->payload + name_bytes, buf->buf, item->size);
+    unsigned bucket = jarbox_classpath_data_bucket(entry);
+    item->next = reader->data[bucket];
+    reader->data[bucket] = item;
+    jarbox_classpath_data_bytes += cost;
+    ++jarbox_classpath_data_count;
+}
+static s32 jarbox_classpath_data_copy(const JarBoxClasspathData *item, ByteBuf *buf) {
+    if (item->size > buf->_alloc_size) bytebuf_expand(buf, item->size);
+    if (!buf->buf || item->size > buf->_alloc_size) return -1;
+    memcpy(buf->buf, item->payload + item->name_bytes, item->size);
+    buf->rp = 0;
+    buf->wp = item->size;
+    return 0;
+}
+static void jarbox_classpath_data_clear(JarBoxClasspathReader *reader) {
+    for (unsigned n = 0; n < JARBOX_CLASSPATH_DATA_BUCKETS; ++n) {
+        JarBoxClasspathData *item = reader->data[n];
+        while (item) {
+            JarBoxClasspathData *next = item->next;
+            jarbox_classpath_data_bytes -= sizeof(*item) + item->name_bytes + item->size;
+            --jarbox_classpath_data_count;
+            free(item);
+            item = next;
+        }
+        reader->data[n] = NULL;
+    }
+}
 static void jarbox_classpath_close(JarBoxClasspathReader *reader) {
+    jarbox_classpath_data_clear(reader);
     if (reader->path) {
         mz_zip_reader_end(&reader->archive);
         free(reader->path);
@@ -198,20 +273,26 @@ s32 zip_classpath_loadfile(const char *jarpath, const char *filename, ByteBuf *b
         }
     }
 
-    // The same exact-case lookup and size checks as zip_loadfile.
+    // Cache hits avoid both the ZIP name lookup and decompression. A
+    // private caller buffer is required because class parsing may mutate it.
     const char *entry = filename[0] == '/' ? filename + 1 : filename;
-    int index = mz_zip_reader_locate_file(&reader->archive, entry, NULL,
-                                         MZ_ZIP_FLAG_CASE_SENSITIVE);
-    mz_zip_archive_file_stat info = {0};
-    if (index >= 0 && mz_zip_reader_file_stat(&reader->archive, (mz_uint)index, &info) &&
-        info.m_uncomp_size <= INT32_MAX) {
-        u32 size = (u32)info.m_uncomp_size;
-        if (size > buf->_alloc_size) bytebuf_expand(buf, size);
-        if (buf->buf && size <= buf->_alloc_size &&
-            mz_zip_reader_extract_to_mem(&reader->archive, (mz_uint)index, buf->buf, size, 0)) {
-            buf->rp = 0;
-            buf->wp = size;
-            ret = 0;
+    JarBoxClasspathData *cached = jarbox_classpath_data_find(reader, entry);
+    if (cached) {
+        ret = jarbox_classpath_data_copy(cached, buf);
+    } else {
+        int index = mz_zip_reader_locate_file(&reader->archive, entry, NULL,
+                                             MZ_ZIP_FLAG_CASE_SENSITIVE);
+        mz_zip_archive_file_stat info = {0};
+        if (index >= 0 && mz_zip_reader_file_stat(&reader->archive, (mz_uint)index, &info) &&
+            info.m_uncomp_size <= INT32_MAX) {
+            u32 size = (u32)info.m_uncomp_size;
+            if (size > buf->_alloc_size) bytebuf_expand(buf, size);
+            if (buf->buf && size <= buf->_alloc_size &&
+                mz_zip_reader_extract_to_mem(&reader->archive, (mz_uint)index, buf->buf, size, 0)) {
+                buf->rp = 0;
+                buf->wp = size;
+                ret = 0;
+            }
         }
     }
     // A rename or rewrite during the read must not return stale class bytes.
@@ -219,6 +300,9 @@ s32 zip_classpath_loadfile(const char *jarpath, const char *filename, ByteBuf *b
         jarbox_classpath_close(reader);
         goto done;
     }
+    // Publish only after rechecking the archive identity. Cache allocation
+    // failure or budget exhaustion must not affect the caller's result.
+    if (!cached && ret == 0) jarbox_classpath_data_add(reader, entry, buf);
     fallback = 0;
 done:
     jarbox_classpath_trim_locked();

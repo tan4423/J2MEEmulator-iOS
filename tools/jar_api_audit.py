@@ -2,7 +2,8 @@
 """Offline class/method/field API audit against JarBox runtime JARs.
 
 Never executes game Java code. Reports potential static references only:
-reflection and dynamic classloading cannot be predicted.
+reflection and dynamic classloading cannot be predicted. Includes inherited
+references whose symbolic owner is a game class and caller provenance.
 """
 from __future__ import annotations
 import argparse
@@ -187,9 +188,11 @@ def resolve_member(owner, signature, field, universe):
             continue
         if signature in cl["fields" if field else "methods"]:
             return True
-        if cl["parent"] and signature[0] != "<init>":
-            pending.append(cl["parent"])
-        if not field:
+        # Constructors belong to the referenced class, never ancestors.
+        # Interface fields are inherited too (JVMS 5.4.3.2).
+        if signature[0] != "<init>":
+            if cl["parent"]:
+                pending.append(cl["parent"])
             pending.extend(cl["interfaces"])
     return None if incomplete else False
 
@@ -200,6 +203,11 @@ def audit(game, boot, api, maximum=100):
     universe.update(game)
     missing_classes, missing_methods, missing_fields = set(), set(), set()
     external = set()
+    callers = {"classes": {}, "methods": {}, "fields": {}}
+
+    def note(kind, label, caller):
+        callers[kind].setdefault(label, set()).add(caller)
+
     for cl in game.values():
         for owner in cl["needed"]:
             if owner in game:
@@ -207,17 +215,22 @@ def audit(game, boot, api, maximum=100):
             external.add(owner)
             if owner not in universe:
                 missing_classes.add(owner)
+                note("classes", owner, cl["name"])
         for field, refs in ((False, cl["methodrefs"]), (True, cl["fieldrefs"])):
             for owner, name, descriptor in refs:
-                if owner in game:
-                    continue
-                external.add(owner)
+                # javac may use a game subclass as the symbolic owner of
+                # inherited platform APIs. Skipping internal owners misses
+                # precisely these unresolved method/field references.
+                if owner not in game:
+                    external.add(owner)
                 if owner not in universe:
                     missing_classes.add(owner)
+                    note("classes", owner, cl["name"])
                 elif resolve_member(owner, (name, descriptor), field, universe) is False:
                     label = (f"{owner}.{name}:{descriptor}" if field
                              else f"{owner}.{name}{descriptor}")
                     (missing_fields if field else missing_methods).add(label)
+                    note("fields" if field else "methods", label, cl["name"])
     return {
         "classes_in_game": len(game),
         "external_classes_referenced": len(external),
@@ -227,6 +240,11 @@ def audit(game, boot, api, maximum=100):
         "missing_classes": sorted(missing_classes)[:maximum],
         "missing_methods": sorted(missing_methods)[:maximum],
         "missing_fields": sorted(missing_fields)[:maximum],
+        "missing_reference_callers": {
+            kind: {label: sorted(entries[label])[:20]
+                   for label in sorted(entries)[:maximum]}
+            for kind, entries in callers.items()
+        },
     }
 
 

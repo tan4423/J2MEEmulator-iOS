@@ -80,6 +80,42 @@ class JarAuditTest(unittest.TestCase):
         self.assertEqual(r["missing_methods"], [])
         self.assertEqual(r["missing_fields"], [])
 
+    def test_missing_inherited_api_with_game_owner_and_callers(self):
+        _, api_dir = self.compile("old", {
+            "q/Base.java": "package q; public class Base { public int flag; public void timeout(int n) {} }",
+        })
+        jar, _ = self.compile("game", {
+            "g/Child.java": "package g; public class Child extends q.Base {}",
+            "g/First.java": "package g; public class First { int f(Child c){c.timeout(3);return c.flag;} }",
+            "g/Second.java": "package g; public class Second {void f(Child c){c.timeout(7);} }",
+        }, dep=api_dir)
+        runtime, _ = self.compile("runtime", {
+            "q/Base.java": "package q; public class Base {}",
+        })
+        game, _ = load_jar(jar)
+        api, _ = load_jar(runtime)
+        result = audit(game, api, {})
+        self.assertIn("g/Child.timeout(I)V", result["missing_methods"])
+        self.assertIn("g/Child.flag:I", result["missing_fields"])
+        self.assertEqual(result["missing_reference_callers"]["methods"]["g/Child.timeout(I)V"],
+                         ["g/First", "g/Second"])
+        self.assertEqual(result["missing_reference_callers"]["fields"]["g/Child.flag:I"],
+                         ["g/First"])
+
+    def test_interface_fields_and_constructors(self):
+        from jar_api_audit import resolve_member
+        def cl(parent=None, interfaces=(), methods=(), fields=()):
+            return {"parent": parent, "interfaces": interfaces,
+                    "methods": set(methods), "fields": set(fields)}
+        classes = {
+            "q/I": cl(fields=[("flag", "I")]),
+            "q/Base": cl(methods=[("<init>", "(I)V")]),
+            "q/Child": cl("q/Base", ["q/I"], methods=[("<init>", "()V")]),
+        }
+        self.assertTrue(resolve_member("q/Child", ("flag", "I"), True, classes))
+        self.assertFalse(resolve_member("q/Child", ("<init>", "(I)V"), False, classes))
+        self.assertTrue(resolve_member("q/Child", ("<init>", "()V"), False, classes))
+
     def test_bad_class_not_fatal_to_archive(self):
         jar, _ = self.compile("game", {
             "g/Game.java": "package g; public class Game {}",

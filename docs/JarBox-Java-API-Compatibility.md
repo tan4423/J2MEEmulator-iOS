@@ -25,7 +25,9 @@ No user JAR is uploaded and the report is not a build gate.
 
 The inventory reports referenced external classes, missing class definitions,
 missing method descriptors and missing fields. Inherited methods/fields are
-checked. It deliberately does not fail builds for unused code references,
+checked even when the symbolic owner is a game subclass. The report includes
+bounded caller provenance (`missing_reference_callers`) to find affected
+classes, handles inherited interface fields, and does not inherit constructors. It deliberately does not fail builds for unused code references,
 reflection, dynamically loaded classes, native calls, incomplete ancestor
 hierarchies or behavioral differences. The tool does not address arbitrary
 bytecode rewrites or version-specific game checks.
