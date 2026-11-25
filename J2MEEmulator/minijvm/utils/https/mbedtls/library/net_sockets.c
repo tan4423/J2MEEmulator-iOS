@@ -165,9 +165,11 @@ static void jarbox_net_close_context(mbedtls_net_context *ctx, int shutdown_firs
             free(entry);
         }
         if (shutdown_first) shutdown(fd, SHUT_RDWR);
-        close(fd);
     }
     pthread_mutex_unlock(&jarbox_net_lock);
+    // SO_LINGER can make close slow. Never hold the global registry lock
+    // across close; the fd remains allocated until this call releases it.
+    if (fd >= 0) close(fd);
 }
 unsigned jarbox_net_stop_owner(JarBoxSession *owner) {
     if (!owner) return 0;
@@ -187,17 +189,24 @@ unsigned jarbox_net_release_owner(JarBoxSession *owner) {
     if (!owner) return 0;
     pthread_mutex_lock(&jarbox_net_lock);
     unsigned count = 0;
+    JarBoxNetFd *detached = NULL;
     JarBoxNetFd **p = &jarbox_net_fds;
     while (*p) {
         JarBoxNetFd *entry = *p;
         if (entry->owner != owner) { p = &entry->next; continue; }
         *p = entry->next;
         shutdown(entry->fd, SHUT_RDWR);
-        close(entry->fd);
-        free(entry);
+        entry->next = detached;
+        detached = entry;
         ++count;
     }
     pthread_mutex_unlock(&jarbox_net_lock);
+    while (detached) {
+        JarBoxNetFd *next = detached->next;
+        close(detached->fd);
+        free(detached);
+        detached = next;
+    }
     return count;
 }
 int jarbox_net_duplicate_for_tls(int fd) {
@@ -225,6 +234,7 @@ static int jarbox_net_connect_fd(int fd, const struct sockaddr *addr, socklen_t 
                                  int64_t deadline) {
     if (!jarbox_net_scope.owner) return connect(fd, addr, len);
     if (jarbox_net_owner_stopped(jarbox_net_scope.owner)) { errno = ECANCELED; return -1; }
+    if (deadline && jarbox_net_now_ms() >= deadline) { errno = ETIMEDOUT; return -1; }
     int flags = fcntl(fd, F_GETFL);
     if (flags < 0 || fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0) return -1;
     int ret = connect(fd, addr, len);
@@ -351,8 +361,10 @@ int mbedtls_net_connect( mbedtls_net_context *ctx, const char *host,
             break;
         }
 
-        int timed_out = errno == ETIMEDOUT;
+        int saved_errno = errno;
+        int timed_out = saved_errno == ETIMEDOUT;
         jarbox_net_close_context(ctx, 0);
+        errno = saved_errno;
         ret = timed_out ? MBEDTLS_ERR_SSL_TIMEOUT : MBEDTLS_ERR_NET_CONNECT_FAILED;
         if (timed_out) break;
     }

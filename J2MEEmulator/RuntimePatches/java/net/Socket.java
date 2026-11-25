@@ -15,7 +15,10 @@ import java.io.OutputStream;
 public class Socket extends SocketImpl {
 
     boolean isConnected = false;
-    private boolean inputShutdown, outputShutdown;
+    private volatile boolean inputShutdown, outputShutdown;
+    private int pendingReadTimeout;
+    private boolean pendingNoDelay = true; // preserve JarBox's TCP_NODELAY default
+    private boolean noDelayConfigured;
     private static native int jarboxConnect0(byte[] handle, byte[] host, byte[] port, int protocol, int timeout);
     private static native int jarboxShutdown0(byte[] handle, int direction);
     private static native int jarboxRead0(byte[] handle, byte[] data, int offset, int length);
@@ -59,8 +62,10 @@ public class Socket extends SocketImpl {
         inputStream = new InputStream() {
             private final byte[] one = new byte[1];
             @Override public int read() throws IOException {
-                int n = read(one, 0, 1);
-                return n < 0 ? -1 : one[0] & 255;
+                synchronized (one) {
+                    int n = read(one, 0, 1);
+                    return n < 0 ? -1 : one[0] & 255;
+                }
             }
             @Override public int read(byte[] b, int offset, int len) throws IOException {
                 checkRange(b, offset, len);
@@ -118,6 +123,12 @@ public class Socket extends SocketImpl {
                 SocketNative.toCStyle(Integer.toString(port)), SocketNative.NET_PROTO_TCP, timeout);
         if (ret == -2) throw new SocketTimeoutException("connect timeout");
         if (ret < 0) throw new IOException("socket connect error");
+        if ((pendingReadTimeout > 0 &&
+                SocketNative.setOption0(fd, SocketNative.SO_TIMEOUT, pendingReadTimeout, 0) != 0) ||
+            (noDelayConfigured && SocketNative.setOption0(fd, 7, pendingNoDelay ? 1 : 0, 0) != 0)) {
+            close();
+            throw new IOException("socket option setup failed");
+        }
         this.host = host;
         this.port = port;
         isConnected = true;
@@ -154,11 +165,14 @@ public class Socket extends SocketImpl {
     }
 
     public void setTcpNoDelay(boolean on) throws SocketException {
-        if (fd == null || SocketNative.setOption0(fd, 7, on ? 1 : 0, 0) != 0)
+        if (fd == null || (isConnected && SocketNative.setOption0(fd, 7, on ? 1 : 0, 0) != 0))
             throw new SocketException("TCP_NODELAY failed");
+        pendingNoDelay = on;
+        noDelayConfigured = true;
     }
 
     public boolean getTcpNoDelay() throws SocketException {
+        if (fd != null && !isConnected) return pendingNoDelay;
         int value = fd == null ? -1 : SocketNative.getOption0(fd, 7);
         if (value < 0) throw new SocketException("TCP_NODELAY unavailable");
         return value != 0;
@@ -174,12 +188,14 @@ public class Socket extends SocketImpl {
 
     public void setSoTimeout(int millSecond) {
         if (millSecond < 0) throw new IllegalArgumentException("negative timeout");
-        if (fd == null || SocketNative.setOption0(fd, SocketNative.SO_TIMEOUT, millSecond, 0) != 0)
+        if (fd == null || (isConnected && SocketNative.setOption0(fd, SocketNative.SO_TIMEOUT, millSecond, 0) != 0))
             throw new IllegalStateException("socket timeout unavailable");
+        pendingReadTimeout = millSecond;
     }
 
     public int getSoTimeout() {
-        return SocketNative.getOption0(fd, SocketNative.SO_TIMEOUT);
+        return fd == null ? -1 : !isConnected ? pendingReadTimeout :
+                SocketNative.getOption0(fd, SocketNative.SO_TIMEOUT);
     }
 
     public void setSendBufferSize(int size) {
@@ -203,11 +219,13 @@ public class Socket extends SocketImpl {
     }
 
     public boolean getKeepAlive() {
-        return SocketNative.getOption0(fd, SocketNative.SO_KEEPALIVE) == 0 ? false : true;
+        return fd != null && SocketNative.getOption0(fd, SocketNative.SO_KEEPALIVE) > 0;
     }
 
     public SocketAddress getRemoteSocketAddress() {
+        if (fd == null || !isConnected) return null;
         String s = SocketNative.getSockAddr(fd, 0);
+        if (s == null) return null;
         if (s != null) {
             int index = s.lastIndexOf(':');
             if (index >= 0) {
@@ -220,7 +238,9 @@ public class Socket extends SocketImpl {
     }
 
     public SocketAddress getLocalSocketAddress() {
+        if (fd == null) return null;
         String s = SocketNative.getSockAddr(fd, 1);
+        if (s == null) return null;
         if (s != null) {
             int index = s.lastIndexOf(':');
             if (index >= 0) {

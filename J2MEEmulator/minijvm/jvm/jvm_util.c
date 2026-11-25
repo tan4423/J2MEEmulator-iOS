@@ -1791,9 +1791,9 @@ s32 jstring_equals(Instance *jstr1, Instance *jstr2, Runtime *runtime) {
         offset2 = jstring_get_offset(jstr2, runtime);
     }
     if (count1 < 0 || count2 < 0 || count1 != count2 ||
-        (arr1 && (arr1->arr_type_index != DATATYPE_JCHAR || offset1 < 0 ||
+        (arr1 && (arr1->mb.arr_type_index != DATATYPE_JCHAR || offset1 < 0 ||
                   offset1 > arr1->arr_length || count1 > arr1->arr_length - offset1)) ||
-        (arr2 && (arr2->arr_type_index != DATATYPE_JCHAR || offset2 < 0 ||
+        (arr2 && (arr2->mb.arr_type_index != DATATYPE_JCHAR || offset2 < 0 ||
                   offset2 > arr2->arr_length || count2 > arr2->arr_length - offset2))) {
         return 0;
     } else if (count1 == 0 && count2 == 0) {

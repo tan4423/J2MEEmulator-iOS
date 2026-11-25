@@ -927,7 +927,7 @@ static unsigned jarbox_version_string_shape(Instance *s, Runtime *runtime, s32 *
     const s32 offset = jstring_get_offset(s, runtime);
     Instance *a = jstring_get_value_array(s, runtime);
     if (count < 0 || offset < 0 || (!a && count) ||
-        (a && (a->arr_type_index != DATATYPE_JCHAR || offset > a->arr_length ||
+        (a && (a->mb.arr_type_index != DATATYPE_JCHAR || offset > a->arr_length ||
                count > a->arr_length - offset || (count && !a->arr_body)))) return 0;
     *length = count;
     // Bit 0: non-ASCII, bit 1: control, bit 2: replacement character,

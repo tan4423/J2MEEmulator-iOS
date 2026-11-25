@@ -146,7 +146,8 @@ s32 sock_option(VmSock *vmsock, s32 opType, s32 opValue, s32 opValue2) {
             break;
         }
         case SOCK_OP_TYPE_REUSEADDR: {//
-            s32 x = opValue != 0;
+            // SocketNative.VAL_REUSEADDR is 0, VAL_NON_REUSEADDR is 1.
+            s32 x = opValue == 0;
             ret = setsockopt(vmsock->contex.fd, SOL_SOCKET, SO_REUSEADDR, (c8 *) &x, sizeof(x));
             if (ret == 0) vmsock->reuseaddr = x;
             break;
@@ -539,7 +540,7 @@ static s32 sock_recv_impl(VmSock *vmsock, u8 *buf, s32 count, Runtime *runtime, 
             if (ret == MBEDTLS_ERR_SSL_TIMEOUT && timeout > 0)
                 remaining -= wait;
         }
-        if (runtime->thrd_info->is_interrupt) return -1;
+        if (runtime->thrd_info->is_interrupt) return strict ? -3 : -1;
         if (ret == MBEDTLS_ERR_SSL_TIMEOUT) {
             if (vmsock->non_block) return -2;
             if (timeout > 0 && remaining <= 0) return -2;
@@ -552,7 +553,7 @@ static s32 sock_recv_impl(VmSock *vmsock, u8 *buf, s32 count, Runtime *runtime, 
         }
         return ret > 0 ? ret : ret == 0 ? -1 : strict ? -3 : -1; // EOF differs from I/O failure
     }
-    return -1;
+    return strict ? -3 : -1;
 }
 
 static s32 sock_recv(VmSock *vmsock, u8 *buf, s32 count, Runtime *runtime) {
@@ -852,6 +853,7 @@ s32 org_mini_net_SocketNative_host2ip(Runtime *runtime, JClass *clazz) {
 
 s32 org_mini_net_SocketNative_sslc_construct_entry(Runtime *runtime, JClass *clazz) {
     Instance *jbyte_arr = jarray_create_by_type_index(runtime, sizeof(struct _SSLC_Entry), DATATYPE_BYTE);
+    if (jbyte_arr) mbedtls_net_init(&((SSLC_Entry *)jbyte_arr->arr_body)->server_fd);
     push_ref(runtime->stack, jbyte_arr);
 #if _JVM_DEBUG_LOG_LEVEL > 5
     invoke_deepth(runtime);
@@ -861,9 +863,9 @@ s32 org_mini_net_SocketNative_sslc_construct_entry(Runtime *runtime, JClass *cla
 }
 
 s32 org_mini_net_SocketNative_sslc_init(Runtime *runtime, JClass *clazz) {
-    s32 v = 0;
+    s32 v = -1;
     Instance *jbyte_arr = (Instance *) localvar_getRefer(runtime->localvar, 0);
-    if (jbyte_arr) {
+    if (jbyte_arr && jbyte_arr->arr_length >= (s32)sizeof(SSLC_Entry)) {
         v = sslc_init((SSLC_Entry *) jbyte_arr->arr_body);
     }
     push_int(runtime->stack, v);
@@ -879,7 +881,9 @@ s32 org_mini_net_SocketNative_sslc_wrap(Runtime *runtime, JClass *clazz) {
     Instance *jbyte_arr = (Instance *) localvar_getRefer(runtime->localvar, 0);
     Instance *conn_arr = (Instance *) localvar_getRefer(runtime->localvar, 1);
     Instance *host_arr = (Instance *) localvar_getRefer(runtime->localvar, 2);
-    if (jbyte_arr && conn_arr && host_arr) {
+    if (jbyte_arr && jbyte_arr->arr_length >= (s32)sizeof(SSLC_Entry) &&
+        conn_arr && conn_arr->arr_length >= (s32)sizeof(VmSock) && host_arr &&
+        host_arr->arr_length > 1 && host_arr->arr_body[host_arr->arr_length - 1] == '\0') {
         VmSock *vmsock = (VmSock *) conn_arr->arr_body;
         mbedtls_net_context *ctx = &vmsock->contex;
         JarBoxNetScope prior = jarbox_net_scope_enter(runtime->jvm->session, 0);
@@ -902,7 +906,10 @@ s32 org_mini_net_SocketNative_sslc_connect(Runtime *runtime, JClass *clazz) {
     Instance *jbyte_arr = (Instance *) localvar_getRefer(runtime->localvar, 0);
     Instance *host_arr = (Instance *) localvar_getRefer(runtime->localvar, 1);
     Instance *port_arr = (Instance *) localvar_getRefer(runtime->localvar, 2);
-    if (jbyte_arr && host_arr && port_arr) {
+    if (jbyte_arr && jbyte_arr->arr_length >= (s32)sizeof(SSLC_Entry) && host_arr && port_arr &&
+        host_arr->arr_length > 1 && port_arr->arr_length > 1 &&
+        host_arr->arr_body[host_arr->arr_length - 1] == '\0' &&
+        port_arr->arr_body[port_arr->arr_length - 1] == '\0') {
         JarBoxNetScope prior = jarbox_net_scope_enter(runtime->jvm->session, 0);
         jthread_block_enter(runtime);
         ret = sslc_connect((SSLC_Entry *) jbyte_arr->arr_body, host_arr->arr_body, port_arr->arr_body);
@@ -921,7 +928,7 @@ s32 org_mini_net_SocketNative_sslc_connect(Runtime *runtime, JClass *clazz) {
 s32 org_mini_net_SocketNative_sslc_close(Runtime *runtime, JClass *clazz) {
     s32 ret = -1;
     Instance *jbyte_arr = (Instance *) localvar_getRefer(runtime->localvar, 0);
-    if (jbyte_arr) {
+    if (jbyte_arr && jbyte_arr->arr_length >= (s32)sizeof(SSLC_Entry)) {
         ret = sslc_close((SSLC_Entry *) jbyte_arr->arr_body);
     }
     push_int(runtime->stack, ret);

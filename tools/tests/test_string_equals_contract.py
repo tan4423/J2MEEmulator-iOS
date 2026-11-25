@@ -13,11 +13,11 @@ STRING_STUB = r"""
 typedef int32_t s32;
 typedef uint16_t u16;
 typedef struct { const char *name; } JClass;
-typedef struct { JClass *clazz; } Block;
+typedef struct { JClass *clazz; uint8_t arr_type_index; } Block;
 typedef struct Instance {
     Block mb;
     struct Instance *value;
-    s32 count, offset, arr_length, arr_type_index;
+    s32 count, offset, arr_length;
     void *arr_body;
 } Instance;
 typedef struct { int unused; } Runtime;
@@ -33,8 +33,8 @@ int main(void){
     Runtime rt={0};
     JClass str={"java/lang/String"}, other={"java/lang/Object"};
     u16 a[]={99,65,0,66,99}, b[]={65,0,66};
-    Instance av={.arr_length=5,.arr_type_index=5,.arr_body=a};
-    Instance bv={.arr_length=3,.arr_type_index=5,.arr_body=b};
+    Instance av={.mb={.arr_type_index=5},.arr_length=5,.arr_body=a};
+    Instance bv={.mb={.arr_type_index=5},.arr_length=3,.arr_body=b};
     Instance x={.mb={&str},.value=&av,.count=3,.offset=1};
     Instance y={.mb={&str},.value=&bv,.count=3};
     Instance z={.mb={&other}};
@@ -43,7 +43,7 @@ int main(void){
     if(!jstring_equals(&x,&x,&rt))return 3;
     b[2]=67;if(jstring_equals(&x,&y,&rt))return 4;b[2]=66;
     y.offset=1;if(jstring_equals(&x,&y,&rt))return 5;y.offset=0;
-    bv.arr_type_index=8;if(jstring_equals(&x,&y,&rt))return 6;bv.arr_type_index=5;
+    bv.mb.arr_type_index=8;if(jstring_equals(&x,&y,&rt))return 6;bv.mb.arr_type_index=5;
     y.count=-1;if(jstring_equals(&x,&y,&rt))return 7;
     y.count=0;x.count=0;if(!jstring_equals(&x,&y,&rt))return 8;
     return 0;
@@ -107,6 +107,10 @@ class StringEqualsContractTest(unittest.TestCase):
         s=(CORE/"jvm_util.c").read_text()
         a=s.index("s32 jstring_equals(");b=s.index("s32 jstring_2_utf8(",a)
         self.run_c(STRING_STUB+s[a:b]+STRING_MAIN)
+        header=(CORE/"jvm.h").read_text()
+        self.assertIn("u8 arr_type_index;",header.split("} MemoryBlock;",1)[0])
+        self.assertIn("arr1->mb.arr_type_index",s[a:b])
+        self.assertIn("a->mb.arr_type_index", (CORE/"jni_std.c").read_text())
 
     def test_version_gate_with_optional_popup_reset(self):
         s=(CORE/"interpreter.c").read_text()

@@ -111,6 +111,10 @@ int main(void) {
         (fcntl(client, F_GETFL) & O_NONBLOCK)) return 21;
     if (sock_option(&s, SOCK_OP_TYPE_TIMEOUT, -1, 0) == 0 ||
         s.rcv_time_out != 750) return 22;
+    if (sock_option(&s, SOCK_OP_TYPE_REUSEADDR, 0, 0) ||
+        sock_get_option(&s, SOCK_OP_TYPE_REUSEADDR) == 0) return 27;
+    if (sock_option(&s, SOCK_OP_TYPE_REUSEADDR, 1, 0) ||
+        sock_get_option(&s, SOCK_OP_TYPE_REUSEADDR) != 0) return 28;
     if (sock_option(&s, SOCK_OP_TYPE_NODELAY, 1, 0) ||
         sock_get_option(&s, SOCK_OP_TYPE_NODELAY) != 1) return 25;
     if (sock_option(&s, SOCK_OP_TYPE_NODELAY, 0, 0) ||
