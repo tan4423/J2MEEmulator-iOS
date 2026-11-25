@@ -117,7 +117,8 @@ static void install_audio_observers(void) {
     dispatch_once(&onceToken, ^{
         NSNotificationCenter *center=[NSNotificationCenter defaultCenter];
         [center addObserverForName:AVAudioSessionInterruptionNotification object:nil
-                           queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification *note) {
+                           queue:nil usingBlock:^(NSNotification *note) {
+            dispatch_async(dispatch_get_main_queue(), ^{
             @synchronized ([AVAudioSession class]) {
                 NSNumber *type=note.userInfo[AVAudioSessionInterruptionTypeKey];
                 if (type.unsignedIntegerValue==AVAudioSessionInterruptionTypeBegan) {
@@ -139,9 +140,11 @@ static void install_audio_observers(void) {
                     }
                 }
             }
+            });
         }];
         [center addObserverForName:AVAudioSessionRouteChangeNotification object:nil
-                           queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification *note) {
+                           queue:nil usingBlock:^(NSNotification *note) {
+            dispatch_async(dispatch_get_main_queue(), ^{
             @synchronized ([AVAudioSession class]) {
                 ++g_background_routes;
                 NSNumber *reason=note.userInfo[AVAudioSessionRouteChangeReasonKey];
@@ -150,9 +153,11 @@ static void install_audio_observers(void) {
                     reason.unsignedIntegerValue==AVAudioSessionRouteChangeReasonOldDeviceUnavailable)
                     background_stop_locked(BG_AUDIO_ROUTE_LOST);
             }
+            });
         }];
         [center addObserverForName:AVAudioSessionMediaServicesWereResetNotification object:nil
-                           queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification *note) {
+                           queue:nil usingBlock:^(NSNotification *note) {
+            dispatch_async(dispatch_get_main_queue(), ^{
             (void)note;
             @synchronized ([AVAudioSession class]) {
                 ++g_background_resets;
@@ -164,6 +169,7 @@ static void install_audio_observers(void) {
                 if (g_background_requested || g_background_player)
                     background_stop_locked(BG_AUDIO_RESET);
             }
+            });
         }];
     });
 }
