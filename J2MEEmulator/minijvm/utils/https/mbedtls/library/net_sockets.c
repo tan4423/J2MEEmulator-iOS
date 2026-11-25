@@ -101,6 +101,183 @@ static int wsa_init_done = 0;
 #include <time.h>
 
 #include <stdint.h>
+#include "../../../../jvm/jarbox_net_lifecycle.h"
+
+/* JARBOX_NET_LIFECYCLE_BEGIN: production POSIX registry; fixture compiles this block. */
+#if defined(__APPLE__) || defined(__linux__)
+#include <pthread.h>
+#include <stdlib.h>
+#include <time.h>
+typedef struct JarBoxNetFd {
+    struct JarBoxNetFd *next;
+    JarBoxSession *owner;
+    int fd;
+} JarBoxNetFd;
+static JarBoxNetFd *jarbox_net_fds;
+static pthread_mutex_t jarbox_net_lock = PTHREAD_MUTEX_INITIALIZER;
+static _Thread_local JarBoxNetScope jarbox_net_scope;
+JarBoxNetScope jarbox_net_scope_enter(JarBoxSession *owner, int timeout_ms) {
+    JarBoxNetScope prior = jarbox_net_scope;
+    jarbox_net_scope.owner = owner;
+    jarbox_net_scope.timeout_ms = timeout_ms > 0 ? timeout_ms : 0;
+    return prior;
+}
+void jarbox_net_scope_leave(JarBoxNetScope prior) { jarbox_net_scope = prior; }
+static int jarbox_net_owner_stopped(JarBoxSession *owner) {
+    return owner && (__atomic_load_n(&owner->network_stopping, __ATOMIC_ACQUIRE) ||
+                     jarbox_session_phase(owner) >= JARBOX_SESSION_STOPPING);
+}
+static int jarbox_net_register(int fd) {
+    if (fd < 0 || !jarbox_net_scope.owner) return fd;
+    JarBoxNetFd *entry = malloc(sizeof(*entry));
+    pthread_mutex_lock(&jarbox_net_lock);
+    if (!entry || jarbox_net_owner_stopped(jarbox_net_scope.owner)) {
+        pthread_mutex_unlock(&jarbox_net_lock);
+        free(entry);
+        close(fd);
+        errno = ECANCELED;
+        return -1;
+    }
+    entry->owner = jarbox_net_scope.owner;
+    entry->fd = fd;
+    entry->next = jarbox_net_fds;
+    jarbox_net_fds = entry;
+    pthread_mutex_unlock(&jarbox_net_lock);
+    return fd;
+}
+static int jarbox_net_socket(int family, int type, int protocol) {
+    if (jarbox_net_owner_stopped(jarbox_net_scope.owner)) {
+        errno = ECANCELED;
+        return -1;
+    }
+    return jarbox_net_register((int)socket(family, type, protocol));
+}
+static void jarbox_net_close_context(mbedtls_net_context *ctx, int shutdown_first) {
+    pthread_mutex_lock(&jarbox_net_lock);
+    int fd = ctx->fd;
+    ctx->fd = -1;
+    if (fd >= 0) {
+        JarBoxNetFd **p = &jarbox_net_fds;
+        while (*p && (*p)->fd != fd) p = &(*p)->next;
+        if (*p) {
+            JarBoxNetFd *entry = *p;
+            *p = entry->next;
+            free(entry);
+        }
+        if (shutdown_first) shutdown(fd, SHUT_RDWR);
+        close(fd);
+    }
+    pthread_mutex_unlock(&jarbox_net_lock);
+}
+unsigned jarbox_net_stop_owner(JarBoxSession *owner) {
+    if (!owner) return 0;
+    pthread_mutex_lock(&jarbox_net_lock);
+    __atomic_store_n(&owner->network_stopping, 1u, __ATOMIC_RELEASE);
+    unsigned count = 0;
+    for (JarBoxNetFd *p = jarbox_net_fds; p; p = p->next) {
+        if (p->owner == owner) {
+            shutdown(p->fd, SHUT_RDWR);
+            ++count;
+        }
+    }
+    pthread_mutex_unlock(&jarbox_net_lock);
+    return count;
+}
+unsigned jarbox_net_release_owner(JarBoxSession *owner) {
+    if (!owner) return 0;
+    pthread_mutex_lock(&jarbox_net_lock);
+    unsigned count = 0;
+    JarBoxNetFd **p = &jarbox_net_fds;
+    while (*p) {
+        JarBoxNetFd *entry = *p;
+        if (entry->owner != owner) { p = &entry->next; continue; }
+        *p = entry->next;
+        shutdown(entry->fd, SHUT_RDWR);
+        close(entry->fd);
+        free(entry);
+        ++count;
+    }
+    pthread_mutex_unlock(&jarbox_net_lock);
+    return count;
+}
+int jarbox_net_duplicate_for_tls(int fd) {
+    // TLS and the original Java socket must not both own the same integer
+    // descriptor; a second close could otherwise close a different tab.
+    if (fd < 0 || jarbox_net_owner_stopped(jarbox_net_scope.owner)) return -1;
+    pthread_mutex_lock(&jarbox_net_lock);
+    JarBoxNetFd *p = jarbox_net_fds;
+    while (p && p->fd != fd) p = p->next;
+    int copy = jarbox_net_scope.owner && (!p || p->owner != jarbox_net_scope.owner)
+               ? -1 : dup(fd);
+    pthread_mutex_unlock(&jarbox_net_lock);
+    return jarbox_net_register(copy);
+}
+static int64_t jarbox_net_now_ms(void) {
+    struct timespec now;
+    if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) return -1;
+    return (int64_t)now.tv_sec * 1000 + now.tv_nsec / 1000000;
+}
+static int64_t jarbox_net_connect_deadline(void) {
+    return jarbox_net_scope.timeout_ms > 0 ?
+           jarbox_net_now_ms() + jarbox_net_scope.timeout_ms : 0;
+}
+static int jarbox_net_connect_fd(int fd, const struct sockaddr *addr, socklen_t len,
+                                 int64_t deadline) {
+    if (!jarbox_net_scope.owner) return connect(fd, addr, len);
+    if (jarbox_net_owner_stopped(jarbox_net_scope.owner)) { errno = ECANCELED; return -1; }
+    int flags = fcntl(fd, F_GETFL);
+    if (flags < 0 || fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0) return -1;
+    int ret = connect(fd, addr, len);
+    if (ret < 0 && (errno == EINPROGRESS || errno == EALREADY || errno == EINTR)) {
+        for (;;) {
+            if (jarbox_net_owner_stopped(jarbox_net_scope.owner)) {
+                errno = ECANCELED;
+                break;
+            }
+            int wait = 100;
+            if (deadline) {
+                int64_t left = deadline - jarbox_net_now_ms();
+                if (left <= 0) { errno = ETIMEDOUT; break; }
+                if (left < wait) wait = (int)left;
+            }
+            struct pollfd p = { fd, POLLOUT, 0 };
+            int n = poll(&p, 1, wait);
+            if (n < 0 && errno == EINTR) continue;
+            if (n < 0) break;
+            if (!n) continue;
+            int error = 0;
+            socklen_t size = sizeof(error);
+            if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &error, &size) < 0) break;
+            if (error) { errno = error; break; }
+            ret = 0;
+            break;
+        }
+    }
+    if (jarbox_net_owner_stopped(jarbox_net_scope.owner)) { ret = -1; errno = ECANCELED; }
+    int saved = errno;
+    if (fcntl(fd, F_SETFL, flags) < 0 && ret == 0) { ret = -1; saved = errno; }
+    errno = saved;
+    return ret;
+}
+#else
+JarBoxNetScope jarbox_net_scope_enter(JarBoxSession *owner, int timeout_ms) {
+    (void)owner; (void)timeout_ms; JarBoxNetScope prior = {0}; return prior;
+}
+void jarbox_net_scope_leave(JarBoxNetScope prior) { (void)prior; }
+unsigned jarbox_net_stop_owner(JarBoxSession *owner) { (void)owner; return 0; }
+unsigned jarbox_net_release_owner(JarBoxSession *owner) { (void)owner; return 0; }
+int jarbox_net_duplicate_for_tls(int fd) { return fd; }
+#define jarbox_net_register(fd) (fd)
+#define jarbox_net_socket(family,type,protocol) ((int)socket(family,type,protocol))
+#define jarbox_net_connect_deadline() 0
+#define jarbox_net_connect_fd(fd,addr,len,deadline) connect(fd,addr,len)
+static void jarbox_net_close_context(mbedtls_net_context *ctx, int shutdown_first) {
+    if (ctx->fd < 0) return;
+    if (shutdown_first) shutdown(ctx->fd, 2);
+    close(ctx->fd); ctx->fd = -1;
+}
+#endif
+/* JARBOX_NET_LIFECYCLE_END */
 
 /*
  * Prepare for using the sockets interface
@@ -156,25 +333,28 @@ int mbedtls_net_connect( mbedtls_net_context *ctx, const char *host,
         return( MBEDTLS_ERR_NET_UNKNOWN_HOST );
 
     /* Try the sockaddrs until a connection succeeds */
+    const int64_t deadline = jarbox_net_connect_deadline();
     ret = MBEDTLS_ERR_NET_UNKNOWN_HOST;
     for( cur = addr_list; cur != NULL; cur = cur->ai_next )
     {
-        ctx->fd = (int) socket( cur->ai_family, cur->ai_socktype,
-                            cur->ai_protocol );
+        ctx->fd = jarbox_net_socket(cur->ai_family, cur->ai_socktype,
+                                    cur->ai_protocol);
         if( ctx->fd < 0 )
         {
             ret = MBEDTLS_ERR_NET_SOCKET_FAILED;
             continue;
         }
 
-        if( connect( ctx->fd, cur->ai_addr, MSVC_INT_CAST cur->ai_addrlen ) == 0 )
+        if( jarbox_net_connect_fd(ctx->fd, cur->ai_addr, MSVC_INT_CAST cur->ai_addrlen, deadline) == 0 )
         {
             ret = 0;
             break;
         }
 
-        close( ctx->fd );
-        ret = MBEDTLS_ERR_NET_CONNECT_FAILED;
+        int timed_out = errno == ETIMEDOUT;
+        jarbox_net_close_context(ctx, 0);
+        ret = timed_out ? MBEDTLS_ERR_SSL_TIMEOUT : MBEDTLS_ERR_NET_CONNECT_FAILED;
+        if (timed_out) break;
     }
 
     freeaddrinfo( addr_list );
@@ -208,8 +388,8 @@ int mbedtls_net_bind( mbedtls_net_context *ctx, const char *bind_ip, const char 
     ret = MBEDTLS_ERR_NET_UNKNOWN_HOST;
     for( cur = addr_list; cur != NULL; cur = cur->ai_next )
     {
-        ctx->fd = (int) socket( cur->ai_family, cur->ai_socktype,
-                            cur->ai_protocol );
+        ctx->fd = jarbox_net_socket(cur->ai_family, cur->ai_socktype,
+                                    cur->ai_protocol);
         if( ctx->fd < 0 )
         {
             ret = MBEDTLS_ERR_NET_SOCKET_FAILED;
@@ -220,14 +400,14 @@ int mbedtls_net_bind( mbedtls_net_context *ctx, const char *bind_ip, const char 
         if( setsockopt( ctx->fd, SOL_SOCKET, SO_REUSEADDR,
                         (const char *) &n, sizeof( n ) ) != 0 )
         {
-            close( ctx->fd );
+            jarbox_net_close_context(ctx, 0);
             ret = MBEDTLS_ERR_NET_SOCKET_FAILED;
             continue;
         }
 
         if( bind( ctx->fd, cur->ai_addr, MSVC_INT_CAST cur->ai_addrlen ) != 0 )
         {
-            close( ctx->fd );
+            jarbox_net_close_context(ctx, 0);
             ret = MBEDTLS_ERR_NET_BIND_FAILED;
             continue;
         }
@@ -237,7 +417,7 @@ int mbedtls_net_bind( mbedtls_net_context *ctx, const char *bind_ip, const char 
         {
             if( listen( ctx->fd, MBEDTLS_NET_LISTEN_BACKLOG ) != 0 )
             {
-                close( ctx->fd );
+                jarbox_net_close_context(ctx, 0);
                 ret = MBEDTLS_ERR_NET_LISTEN_FAILED;
                 continue;
             }
@@ -326,8 +506,8 @@ int mbedtls_net_accept( mbedtls_net_context *bind_ctx,
     if( type == SOCK_STREAM )
     {
         /* TCP: actual accept() */
-        ret = client_ctx->fd = (int) accept( bind_ctx->fd,
-                                             (struct sockaddr *) &client_addr, &n );
+        ret = client_ctx->fd = jarbox_net_register((int)accept(bind_ctx->fd,
+                                             (struct sockaddr *)&client_addr, &n));
     }
     else
     {
@@ -371,8 +551,8 @@ int mbedtls_net_accept( mbedtls_net_context *bind_ctx,
         n = sizeof( struct sockaddr_storage );
         if( getsockname( client_ctx->fd,
                          (struct sockaddr *) &local_addr, &n ) != 0 ||
-            ( bind_ctx->fd = (int) socket( local_addr.ss_family,
-                                           SOCK_DGRAM, IPPROTO_UDP ) ) < 0 ||
+            ( bind_ctx->fd = jarbox_net_socket(local_addr.ss_family,
+                                           SOCK_DGRAM, IPPROTO_UDP) ) < 0 ||
             setsockopt( bind_ctx->fd, SOL_SOCKET, SO_REUSEADDR,
                         (const char *) &one, sizeof( one ) ) != 0 )
         {
@@ -590,13 +770,7 @@ int mbedtls_net_send( void *ctx, const unsigned char *buf, size_t len )
  */
 void mbedtls_net_free( mbedtls_net_context *ctx )
 {
-    if( ctx->fd == -1 )
-        return;
-
-    shutdown( ctx->fd, 2 );
-    close( ctx->fd );
-
-    ctx->fd = -1;
+    jarbox_net_close_context(ctx, 1);
 }
 
 #endif /* MBEDTLS_NET_C */

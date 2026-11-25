@@ -8,6 +8,7 @@
 #include "garbage.h"
 #include "jvm_util.h"
 #include "jdwp.h"
+#include "jarbox_net_lifecycle.h"
 
 
 void thread_boundle(Runtime *runtime) {
@@ -431,6 +432,7 @@ void jvm_destroy(MiniJVM *jvm) {
     }
     set_jvm_state(jvm, JVM_STATUS_STOPED);
     jarbox_session_begin_stop(jvm->session);
+    jarbox_net_stop_owner(jvm->session);
     // Break a collector's suspension wait before taking the thread-list lock.
     gc_request_thread_status(jvm->collector, GARBAGE_THREAD_STOP);
     //waiting for daemon thread terminate
@@ -469,6 +471,10 @@ void jvm_destroy(MiniJVM *jvm) {
     arraylist_clear(jvm->shutdown_hook);
     spin_unlock(&jvm->shutdown_hook->spinlock);
     gc_destroy(jvm);
+    // All workers, callbacks and GC finalizers have drained. Close any
+    // abandoned descriptor without retaining/referencing a Java object.
+    unsigned sockets_released = jarbox_net_release_owner(jvm->session);
+    if (sockets_released) jvm_printf("[JarBoxNET] orphan_fds_released=%u\n", sockets_released);
 
     hashtable_destroy(jvm->table_jstring_const);
     //

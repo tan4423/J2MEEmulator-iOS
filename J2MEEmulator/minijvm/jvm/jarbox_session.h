@@ -32,6 +32,7 @@ typedef struct JarBoxSession {
     unsigned native_callbacks; /* pinned native visitor/async work */
     unsigned lease_gate;      /* high bit = closing; low bits = live leases */
     unsigned phase;
+    unsigned network_stopping; // one-way transport admission latch
     // Launch configuration, owned by this session rather than the process.
     int render_3d_scale;
     // GC and AFK diagnostics now live in this session, never on a shared

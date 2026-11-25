@@ -95,6 +95,29 @@ workflows:
           jar uf "$jars/minijvm_rt.jar" -C "$http_classes" "$http_entry"
           (cd "$http_original" && jar xf "$jars/minijvm_rt.jar" "$http_entry")
           cmp "$http_original/$http_entry" "$http_classes/$http_entry"
+          # Compile against packaged miniJVM (not desktop SocketImpl).
+          socket_old="$RUNNER_TEMP/socket-original"
+          socket_new="$RUNNER_TEMP/socket-classes"
+          mkdir -p "$socket_old" "$socket_new"
+          (cd "$socket_old" && jar xf "$jars/minijvm_rt.jar" java/net/Socket.class 'java/net/Socket$1.class' 'java/net/Socket$2.class')
+          javac -source 8 -target 8 -bootclasspath "$jars/minijvm_rt.jar:$jars/j2me_api.jar" -sourcepath '' \
+            -d "$socket_new" J2MEEmulator/RuntimePatches/java/net/Socket.java
+          # Existing public/protected/package ABI must remain present.
+          # Ignore new private helpers and permit additional public methods.
+          for entry in java/net/Socket.class 'java/net/Socket$1.class' 'java/net/Socket$2.class'; do
+            javap -s "$socket_old/$entry" | sed '/^Compiled from /d; /^}/d; /^$/d' | sort > "$RUNNER_TEMP/socket-old-api"
+            javap -s "$socket_new/$entry" | sed '/^Compiled from /d; /^}/d; /^$/d' | sort > "$RUNNER_TEMP/socket-new-api"
+            comm -23 "$RUNNER_TEMP/socket-old-api" "$RUNNER_TEMP/socket-new-api" > "$RUNNER_TEMP/socket-missing-api"
+            if [ -s "$RUNNER_TEMP/socket-missing-api" ]; then
+              cat "$RUNNER_TEMP/socket-missing-api"
+              exit 1
+            fi
+          done
+          jar uf "$jars/minijvm_rt.jar" -C "$socket_new" .
+          (cd "$socket_old" && jar xf "$jars/minijvm_rt.jar" java/net/Socket.class 'java/net/Socket$1.class' 'java/net/Socket$2.class')
+          for entry in java/net/Socket.class 'java/net/Socket$1.class' 'java/net/Socket$2.class'; do
+            cmp "$socket_old/$entry" "$socket_new/$entry"
+          done
           # Verify the classes that will be packaged, NOT the host JDK
           # (javap by class name otherwise resolves java.base first).
           core_verify="$RUNNER_TEMP/java8-core-verify"

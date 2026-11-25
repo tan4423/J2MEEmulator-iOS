@@ -65,6 +65,10 @@ int main(void) {
     CHECK(sock_recv(&s,b,1,&rt)==-1 && pos==1);
     reset(0,0,0,0,1);
     CHECK(sock_recv(&s,b,1,&rt)==-1 && jarbox_socket_byte_result(-1,0)==-1);
+    reset(-99,0,0,0,1);
+    CHECK(sock_recv_impl(&s,b,1,&rt,1)==-3);
+    reset(0,0,0,0,1);
+    CHECK(sock_recv_impl(&s,b,1,&rt,1)==-1);
     reset(1,0,0,0,1);
     CHECK(sock_recv(&s,b,0,&rt)==0 && pos==0);
     CHECK(sock_send(&s,b,0,&rt)==0 && pos==0);
@@ -133,7 +137,7 @@ class SocketTransportContractTest(unittest.TestCase):
 
     def test_retry_timeout_cancel_and_byte_semantics(self):
         source = IO.read_text()
-        a = source.index("static s32 sock_recv(")
+        a = source.index("static s32 sock_recv_impl(")
         b = source.index("\ns32 org_mini_net_SocketNative_readBuf(",a)
         self.compile_run(STUB+source[a:b]+MAIN)
         self.assertIn("push_int(runtime->stack, jarbox_socket_byte_result(ret, b));",source)

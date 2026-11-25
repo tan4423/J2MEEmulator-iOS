@@ -1,5 +1,6 @@
 
 #include "ssl_client.h"
+#include "../../jvm/jarbox_net_lifecycle.h"
 #include "ca_cert.h"
 #include <pthread.h>
 
@@ -3703,7 +3704,8 @@ int sslc_wrap(SSLC_Entry *entry, int netfd, char *hostname) {
 //        SSL_LOG_PRINTF(" failed\n  ! mbedtls_net_connect returned %d\n\n", ret);
 //        return -1;
 //    }
-    entry->server_fd.fd = netfd;
+    entry->server_fd.fd = jarbox_net_duplicate_for_tls(netfd);
+    if (entry->server_fd.fd < 0) return -1;
 
     SSL_LOG_PRINTF(" ok\n");
 

@@ -4,6 +4,7 @@
 #include "jarbox_2d_policy.h"
 #include "jvm.h"
 #include "jvm_util.h"
+#include "jarbox_net_lifecycle.h"
 #include "garbage.h"
 #include "j2me_render.h"
 #include "j2me_input.h"
@@ -1160,6 +1161,7 @@ static void bridge_destroy_slot(JarBoxVMContext *slot) {
         // exit_flag makes jvm_destroy's non-daemon wait loop exit immediately;
         // thread_stop_all sets is_stop/is_interrupt on each thread.
         slot->jvm->collector->exit_flag = 1;
+        jarbox_net_stop_owner(slot->jvm->session);
         gc_request_thread_status(slot->jvm->collector, GARBAGE_THREAD_STOP);
         thread_stop_all(slot->jvm);
 
@@ -1225,6 +1227,8 @@ int jvm_bridge_request_stop_for_token(uint64_t token) {
     }
     pthread_mutex_unlock(&g_bridge_lifecycle_lock);
     if (owner) {
+        unsigned sockets = jarbox_net_stop_owner(owner->session);
+        printf("[JarBoxNET] stop_network token=%llu sockets=%u\n", (unsigned long long)token, sockets);
         j2me_input_quiesce_vm(owner);
         jarbox_session_callback_done(held);
     }

@@ -17,6 +17,7 @@ PREAMBLE = r"""
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <arpa/inet.h>
 #include <unistd.h>
 #include <fcntl.h>
@@ -37,6 +38,7 @@ typedef struct {
 #define SOCK_OP_TYPE_KEEPALIVE 4
 #define SOCK_OP_TYPE_LINGER 5
 #define SOCK_OP_TYPE_TIMEOUT 6
+#define SOCK_OP_TYPE_NODELAY 7
 static int mbedtls_net_set_nonblock(NetCtx *ctx) {int f = fcntl(ctx->fd, F_GETFL); return f < 0 ? -1 : fcntl(ctx->fd, F_SETFL, f | O_NONBLOCK);}
 static int mbedtls_net_set_block(NetCtx *ctx) {int f = fcntl(ctx->fd, F_GETFL); return f < 0 ? -1 : fcntl(ctx->fd, F_SETFL, f & ~O_NONBLOCK);}
 """
@@ -109,6 +111,10 @@ int main(void) {
         (fcntl(client, F_GETFL) & O_NONBLOCK)) return 21;
     if (sock_option(&s, SOCK_OP_TYPE_TIMEOUT, -1, 0) == 0 ||
         s.rcv_time_out != 750) return 22;
+    if (sock_option(&s, SOCK_OP_TYPE_NODELAY, 1, 0) ||
+        sock_get_option(&s, SOCK_OP_TYPE_NODELAY) != 1) return 25;
+    if (sock_option(&s, SOCK_OP_TYPE_NODELAY, 0, 0) ||
+        sock_get_option(&s, SOCK_OP_TYPE_NODELAY) != 0) return 26;
     close(client);
     s.contex.fd = -1;
     if (sock_option(&s, SOCK_OP_TYPE_NON_BLOCK, 1, 0) == 0 || s.non_block)

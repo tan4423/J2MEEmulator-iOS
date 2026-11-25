@@ -10,6 +10,7 @@
 #include "garbage.h"
 #include "jvm_util.h"
 #include "socket_compat.h"
+#include "jarbox_net_lifecycle.h"
 #include "../utils/miniz_wrapper.h"
 
 #if defined(__APPLE__)
@@ -28,6 +29,7 @@ extern "C" {
 #define  SOCK_OP_TYPE_KEEPALIVE   4
 #define  SOCK_OP_TYPE_LINGER   5
 #define  SOCK_OP_TYPE_TIMEOUT   6
+#define  SOCK_OP_TYPE_NODELAY   7
 
 #define  SOCK_OP_VAL_NON_BLOCK   1
 #define  SOCK_OP_VAL_BLOCK   0
@@ -50,9 +52,7 @@ extern "C" {
 #include <sys/select.h>
 #include <unistd.h>
 #include <netinet/in.h>
-#if defined(__APPLE__)
 #include <netinet/tcp.h>
-#endif
 #include <arpa/inet.h>
 #include <netdb.h>
 #include <fcntl.h>
@@ -146,9 +146,9 @@ s32 sock_option(VmSock *vmsock, s32 opType, s32 opValue, s32 opValue2) {
             break;
         }
         case SOCK_OP_TYPE_REUSEADDR: {//
-            s32 x = 1;
+            s32 x = opValue != 0;
             ret = setsockopt(vmsock->contex.fd, SOL_SOCKET, SO_REUSEADDR, (c8 *) &x, sizeof(x));
-            vmsock->reuseaddr = 1;
+            if (ret == 0) vmsock->reuseaddr = x;
             break;
         }
         case SOCK_OP_TYPE_RCVBUF: {// buffer configuration
@@ -189,6 +189,13 @@ s32 sock_option(VmSock *vmsock, s32 opType, s32 opValue, s32 opValue2) {
                              (const c8 *)&enabled, sizeof(enabled));
             break;
         }
+        case SOCK_OP_TYPE_NODELAY: {
+            s32 enabled = opValue != 0;
+            ret = setsockopt(vmsock->contex.fd, IPPROTO_TCP, TCP_NODELAY,
+                             (const c8 *)&enabled, sizeof(enabled));
+            break;
+        }
+        default: ret = -1; break;
     }
     return ret;
 }
@@ -265,6 +272,14 @@ s32 sock_get_option(VmSock *vmsock, s32 opType) {
             }
             break;
         }
+        case SOCK_OP_TYPE_NODELAY: {
+            len = sizeof(ret);
+            if (getsockopt(vmsock->contex.fd, IPPROTO_TCP, TCP_NODELAY,
+                           (void *)&ret, &len) != 0) ret = -1;
+            else ret = ret != 0;
+            break;
+        }
+        default: ret = -1; break;
     }
     return ret;
 }
@@ -345,8 +360,11 @@ s32 org_mini_net_SocketNative_bind0(Runtime *runtime, JClass *clazz) {
         VmSock *vmsock = (VmSock *) vmarr->arr_body;
         mbedtls_net_context *ctx = &vmsock->contex;
         jthread_block_enter(runtime);
+        JarBoxNetScope prior = jarbox_net_scope_enter(runtime->jvm->session, 0);
         ret = mbedtls_net_bind(ctx, strlen(host->arr_body) == 0 ? NULL : host->arr_body, port->arr_body, proto);
-        if (ret >= 0)ret = mbedtls_net_set_nonblock(ctx);//set as non_block , for vm destroy
+        if (ret >= 0) ret = mbedtls_net_set_nonblock(ctx);
+        if (ret < 0) mbedtls_net_free(ctx);
+        jarbox_net_scope_leave(prior);
         jthread_block_exit(runtime);
 #if _JVM_DEBUG_LOG_LEVEL > 5
         invoke_deepth(runtime);
@@ -363,13 +381,17 @@ s32 org_mini_net_SocketNative_accept0(Runtime *runtime, JClass *clazz) {
         mbedtls_net_context *ctx = &((VmSock *) vmarr->arr_body)->contex;
         Instance *cltarr = jarray_create_by_type_index(runtime, sizeof(VmSock), DATATYPE_BYTE);
         VmSock *cltsock = (VmSock *) cltarr->arr_body;
+        mbedtls_net_init(&cltsock->contex);
         gc_obj_hold(runtime->jvm->collector, cltarr);
         s32 ret = 0;
         while (1) {
             jthread_block_enter(runtime);
+            JarBoxNetScope prior = jarbox_net_scope_enter(runtime->jvm->session, 0);
             ret = mbedtls_net_accept(ctx, &cltsock->contex, NULL, 0, NULL);
+            jarbox_net_scope_leave(prior);
             jthread_block_exit(runtime);
-            if (runtime->thrd_info->is_interrupt) {//vm notify thread destroy
+            if (runtime->thrd_info->is_interrupt ||
+                __atomic_load_n(&runtime->jvm->session->network_stopping, __ATOMIC_ACQUIRE)) {//vm notify thread destroy
                 ret = -1;
                 break;
             }
@@ -384,6 +406,7 @@ s32 org_mini_net_SocketNative_accept0(Runtime *runtime, JClass *clazz) {
                 break;
             }
         }
+        if (ret < 0) mbedtls_net_free(&cltsock->contex);
         gc_obj_release(runtime->jvm->collector, cltarr);
         push_ref(runtime->stack, ret < 0 ? NULL : cltarr);
     } else {
@@ -397,7 +420,7 @@ s32 org_mini_net_SocketNative_accept0(Runtime *runtime, JClass *clazz) {
 }
 
 
-s32 org_mini_net_SocketNative_connect0(Runtime *runtime, JClass *clazz) {
+static s32 jarbox_socket_connect(Runtime *runtime, s32 timeout_ms, int strict) {
     RuntimeStack *stack = runtime->stack;
     Instance *vmarr = localvar_getRefer(runtime->localvar, 0);
     Instance *host = localvar_getRefer(runtime->localvar, 1);
@@ -420,7 +443,9 @@ s32 org_mini_net_SocketNative_connect0(Runtime *runtime, JClass *clazz) {
         memcpy(&vmsock->hostname, host->arr_body, hostlen);//copy with 0
         memcpy(&vmsock->hostport, port->arr_body, port->arr_length);
         jthread_block_enter(runtime);
+        JarBoxNetScope prior = jarbox_net_scope_enter(runtime->jvm->session, timeout_ms);
         ret = mbedtls_net_connect(ctx, host->arr_body, port->arr_body, proto);
+        jarbox_net_scope_leave(prior);
 #if defined(__APPLE__)
         const int connect_errno = ret == 0 ? 0 : errno;
 #endif
@@ -453,7 +478,26 @@ s32 org_mini_net_SocketNative_connect0(Runtime *runtime, JClass *clazz) {
         jvm_printf("org_mini_net_SocketNative_open0  \n");
 #endif
     }
-    push_int(stack, ret < 0 ? -1 : 0);
+    push_int(stack, strict && ret == MBEDTLS_ERR_SSL_TIMEOUT ? -2 : ret < 0 ? -1 : 0);
+    return 0;
+}
+
+s32 org_mini_net_SocketNative_connect0(Runtime *runtime, JClass *clazz) {
+    return jarbox_socket_connect(runtime, 0, 0);
+}
+static s32 jarbox_java_socket_connect_timeout(Runtime *runtime, JClass *clazz) {
+    return jarbox_socket_connect(runtime, localvar_getInt(runtime->localvar, 4), 1);
+}
+static s32 jarbox_java_socket_shutdown(Runtime *runtime, JClass *clazz) {
+    Instance *a = localvar_getRefer(runtime->localvar, 0);
+    int direction = localvar_getInt(runtime->localvar, 1);
+    int ret = -1;
+    if (a && a->arr_length >= (s32)sizeof(VmSock) &&
+        (direction == 0 || direction == 1)) {
+        VmSock *sock = (VmSock *)a->arr_body;
+        ret = shutdown(sock->contex.fd, direction);
+    }
+    push_int(runtime->stack, ret);
     return 0;
 }
 
@@ -470,7 +514,7 @@ s32 org_mini_net_SocketNative_connect0(Runtime *runtime, JClass *clazz) {
  * @param runtime
  * @return
  */
-static s32 sock_recv(VmSock *vmsock, u8 *buf, s32 count, Runtime *runtime) {
+static s32 sock_recv_impl(VmSock *vmsock, u8 *buf, s32 count, Runtime *runtime, int strict) {
     if (count == 0) return 0;
     if (count < 0) return -1;
     const s32 timeout = vmsock->rcv_time_out;
@@ -506,9 +550,13 @@ static s32 sock_recv(VmSock *vmsock, u8 *buf, s32 count, Runtime *runtime) {
             thrd_yield();
             continue;
         }
-        return ret > 0 ? ret : -1; // positive byte count or EOF/error
+        return ret > 0 ? ret : ret == 0 ? -1 : strict ? -3 : -1; // EOF differs from I/O failure
     }
     return -1;
+}
+
+static s32 sock_recv(VmSock *vmsock, u8 *buf, s32 count, Runtime *runtime) {
+    return sock_recv_impl(vmsock, buf, count, runtime, 0);
 }
 
 static s32 sock_send(VmSock *vmsock, const u8 *buf, s32 count, Runtime *runtime) {
@@ -632,6 +680,29 @@ s32 org_mini_net_SocketNative_writeByte(Runtime *runtime, JClass *clazz) {
     return 0;
 }
 
+// Java Socket InputStream uses a strict result contract. GCF's older native
+// interface keeps its historical result codes for compatibility.
+static s32 jarbox_java_socket_read_stream(Runtime *runtime, JClass *clazz) {
+    Instance *handle = localvar_getRefer(runtime->localvar, 0);
+    Instance *data = localvar_getRefer(runtime->localvar, 1);
+    s32 off = localvar_getInt(runtime->localvar, 2);
+    s32 count = localvar_getInt(runtime->localvar, 3);
+    s32 result = -3;
+    if (handle && handle->arr_length >= (s32)sizeof(VmSock) && data &&
+        jarbox_socket_range_valid(data->arr_length, off, count)) {
+        VmSock *sock = (VmSock *)handle->arr_body;
+        jthread_block_enter(runtime);
+        result = sock_recv_impl(sock, (u8 *)data->arr_body + off, count, runtime, 1);
+        jthread_block_exit(runtime);
+#if defined(__APPLE__)
+        jarbox_socket_note_io(sock, 1, count, result, 0);
+#endif
+        if (count > 0 && result == 0) result = -2;
+    }
+    push_int(runtime->stack, result);
+    return 0;
+}
+
 s32 org_mini_net_SocketNative_available0(Runtime *runtime, JClass *clazz) {
     // java.net.SocketInputStream.available() must report bytes already queued
     // by the OS. Returning 0 unconditionally hides server replies from
@@ -723,44 +794,37 @@ s32 org_mini_net_SocketNative_getOption0(Runtime *runtime, JClass *clazz) {
 s32 org_mini_net_SocketNative_getSockAddr(Runtime *runtime, JClass *clazz) {
     Instance *vmarr = localvar_getRefer(runtime->localvar, 0);
     s32 mode = localvar_getInt(runtime->localvar, 1);
-    if (vmarr) {
-        VmSock *vmsock = (VmSock *) vmarr->arr_body;
-        struct sockaddr_storage sock;
-        socklen_t slen = sizeof(sock);
-        if (mode == 0) {
-            getpeername(vmsock->contex.fd, (struct sockaddr *) &sock, &slen);
-        } else if (mode == 1) {
-            getsockname(vmsock->contex.fd, (struct sockaddr *) &sock, &slen);
+    Instance *result = NULL;
+    if (vmarr && vmarr->arr_length >= (s32)sizeof(VmSock) && (mode == 0 || mode == 1)) {
+        VmSock *sock = (VmSock *)vmarr->arr_body;
+        struct sockaddr_storage addr = {0};
+        socklen_t size = sizeof(addr);
+        int status = mode == 0 ? getpeername(sock->contex.fd, (struct sockaddr *)&addr, &size)
+                               : getsockname(sock->contex.fd, (struct sockaddr *)&addr, &size);
+        if (status == 0) {
+            char ip[INET6_ADDRSTRLEN];
+            int port = 0;
+            const char *name = NULL;
+            if (addr.ss_family == AF_INET && size >= sizeof(struct sockaddr_in)) {
+                const struct sockaddr_in *a = (const struct sockaddr_in *)&addr;
+                port = ntohs(a->sin_port);
+                name = inet_ntop(AF_INET, &a->sin_addr, ip, sizeof(ip));
+            } else if (addr.ss_family == AF_INET6 && size >= sizeof(struct sockaddr_in6)) {
+                const struct sockaddr_in6 *a = (const struct sockaddr_in6 *)&addr;
+                port = ntohs(a->sin6_port);
+                name = inet_ntop(AF_INET6, &a->sin6_addr, ip, sizeof(ip));
+            }
+            if (name) {
+                Utf8String *str = utf8_create();
+                utf8_append_c(str, ip);
+                utf8_append_c(str, ":");
+                utf8_append_s64(str, port, 10);
+                result = jstring_create(str, runtime);
+                utf8_destroy(str);
+            }
         }
-
-        struct sockaddr_in *ipv4 = NULL;
-        struct sockaddr_in6 *ipv6 = NULL;
-        c8 ipAddr[INET6_ADDRSTRLEN];// save the address in dotted decimal format
-        s32 port = -1;
-        if (sock.ss_family == AF_INET) {// IPv4 address
-            ipv4 = ((struct sockaddr_in *) &sock);
-            port = ipv4->sin_port;
-            inet_ntop(AF_INET, &ipv4->sin_addr, ipAddr, sizeof(ipAddr));
-        } else {//IPv6 address
-            ipv6 = ((struct sockaddr_in6 *) &sock);
-            port = ipv6->sin6_port;
-            inet_ntop(AF_INET6, &ipv6->sin6_addr, ipAddr, sizeof(ipAddr));
-        }
-
-        Utf8String *ustr = utf8_create();
-        utf8_append_c(ustr, ipAddr);
-        utf8_append_c(ustr, ":");
-        utf8_append_s64(ustr, port, 10);
-        Instance *jstr = jstring_create(ustr, runtime);
-        utf8_destroy(ustr);
-        push_ref(runtime->stack, jstr);
-    } else {
-        push_ref(runtime->stack, NULL);
     }
-#if _JVM_DEBUG_LOG_LEVEL > 5
-    invoke_deepth(runtime);
-    jvm_printf("org_mini_net_SocketNative_getSockAddr  \n");
-#endif
+    push_ref(runtime->stack, result);
     return 0;
 }
 
@@ -818,7 +882,12 @@ s32 org_mini_net_SocketNative_sslc_wrap(Runtime *runtime, JClass *clazz) {
     if (jbyte_arr && conn_arr && host_arr) {
         VmSock *vmsock = (VmSock *) conn_arr->arr_body;
         mbedtls_net_context *ctx = &vmsock->contex;
+        JarBoxNetScope prior = jarbox_net_scope_enter(runtime->jvm->session, 0);
+        jthread_block_enter(runtime);
         ret = sslc_wrap((SSLC_Entry *) jbyte_arr->arr_body, ctx->fd, host_arr->arr_body);
+        if (ret < 0) mbedtls_net_free(&((SSLC_Entry *)jbyte_arr->arr_body)->server_fd);
+        jthread_block_exit(runtime);
+        jarbox_net_scope_leave(prior);
     }
     push_int(runtime->stack, ret);
 #if _JVM_DEBUG_LOG_LEVEL > 5
@@ -834,7 +903,12 @@ s32 org_mini_net_SocketNative_sslc_connect(Runtime *runtime, JClass *clazz) {
     Instance *host_arr = (Instance *) localvar_getRefer(runtime->localvar, 1);
     Instance *port_arr = (Instance *) localvar_getRefer(runtime->localvar, 2);
     if (jbyte_arr && host_arr && port_arr) {
+        JarBoxNetScope prior = jarbox_net_scope_enter(runtime->jvm->session, 0);
+        jthread_block_enter(runtime);
         ret = sslc_connect((SSLC_Entry *) jbyte_arr->arr_body, host_arr->arr_body, port_arr->arr_body);
+        if (ret < 0) mbedtls_net_free(&((SSLC_Entry *)jbyte_arr->arr_body)->server_fd);
+        jthread_block_exit(runtime);
+        jarbox_net_scope_leave(prior);
     }
     push_int(runtime->stack, ret);
 #if _JVM_DEBUG_LOG_LEVEL > 5
@@ -864,7 +938,9 @@ s32 org_mini_net_SocketNative_sslc_read(Runtime *runtime, JClass *clazz) {
     Instance *data_arr = (Instance *) localvar_getRefer(runtime->localvar, 1);
     s32 offset = localvar_getInt(runtime->localvar, 2);
     s32 len = localvar_getInt(runtime->localvar, 3);
-    if (jbyte_arr && data_arr) {
+    if (jbyte_arr && jbyte_arr->arr_length >= (s32)sizeof(SSLC_Entry) && data_arr &&
+        jarbox_socket_range_valid(data_arr->arr_length, offset, len)) {
+        if (len == 0) { push_int(runtime->stack, 0); return 0; }
         jthread_block_enter(runtime);
         ret = sslc_read((SSLC_Entry *) jbyte_arr->arr_body, data_arr->arr_body + offset, len);
         jthread_block_exit(runtime);
@@ -883,7 +959,9 @@ s32 org_mini_net_SocketNative_sslc_write(Runtime *runtime, JClass *clazz) {
     Instance *data_arr = (Instance *) localvar_getRefer(runtime->localvar, 1);
     s32 offset = localvar_getInt(runtime->localvar, 2);
     s32 len = localvar_getInt(runtime->localvar, 3);
-    if (jbyte_arr && data_arr) {
+    if (jbyte_arr && jbyte_arr->arr_length >= (s32)sizeof(SSLC_Entry) && data_arr &&
+        jarbox_socket_range_valid(data_arr->arr_length, offset, len)) {
+        if (len == 0) { push_int(runtime->stack, 0); return 0; }
         jthread_block_enter(runtime);
         ret = sslc_write((SSLC_Entry *) jbyte_arr->arr_body, data_arr->arr_body + offset, len);
         jthread_block_exit(runtime);
@@ -1789,6 +1867,9 @@ s32 org_mini_crypt_XorCrypt_decrypt(Runtime *runtime, JClass *clazz) {
 }
 
 static java_native_method METHODS_IO_TABLE[] = {
+        {"java/net/Socket", "jarboxConnect0", "([B[B[BII)I", jarbox_java_socket_connect_timeout},
+        {"java/net/Socket", "jarboxShutdown0", "([BI)I", jarbox_java_socket_shutdown},
+        {"java/net/Socket", "jarboxRead0", "([B[BII)I", jarbox_java_socket_read_stream},
         {"org/mini/net/SocketNative", "open0",                "()[B",                             org_mini_net_SocketNative_open0},
         {"org/mini/net/SocketNative", "bind0",                "([B[B[BI)I",                       org_mini_net_SocketNative_bind0},
         {"org/mini/net/SocketNative", "connect0",             "([B[B[BI)I",                       org_mini_net_SocketNative_connect0},
