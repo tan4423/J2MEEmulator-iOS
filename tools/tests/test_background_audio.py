@@ -83,6 +83,19 @@ class BackgroundAudioTest(unittest.TestCase):
         a=bridge.index("int jvm_bridge_background_audio_policy(void) {")
         b=bridge.index("\n}",a)+2
         self.compile_run(POLICY_PRELUDE+bridge[a:b]+POLICY_MAIN)
+    def test_volume_clamp(self):
+        audio=(NATIVE/"j2me_audio.m").read_text()
+        a=audio.index("static int background_clamp_volume(int percent) {")
+        b=audio.index("\n}",a)+2
+        self.compile_run("#include <assert.h>\n#include <limits.h>\n"+audio[a:b]+r"""
+int main(void) {
+    assert(background_clamp_volume(INT_MIN)==0);
+    assert(background_clamp_volume(INT_MAX)==100);
+    for (int i=-1000;i<=1000;++i)
+        assert(background_clamp_volume(i)==(i<0?0:i>100?100:i));
+    return 0;
+}
+""")
     def test_audio_wiring(self):
         audio=(NATIVE/"j2me_audio.m").read_text()
         self.assertIn("jvm_bridge_background_audio_policy()!=2",audio)
@@ -92,13 +105,24 @@ class BackgroundAudioTest(unittest.TestCase):
         self.assertIn("AVAudioSessionInterruptionOptionShouldResume",audio)
         self.assertIn("AVAudioSessionRouteChangeReasonOldDeviceUnavailable",audio)
         self.assertIn("AVAudioSessionMediaServicesWereResetNotification",audio)
-        self.assertNotIn("g_background_player.volume=0;",audio)
+        self.assertIn("g_background_player.volume=(float)g_background_volume_percent/100.0f;",audio)
+        setter=audio.split("void j2me_audio_background_set_volume(int percent) {",1)[1].split("\n}",1)[0]
+        self.assertIn("g_background_player.volume=(float)percent/100.0f;",setter)
+        self.assertIn("setInteger:percent forKey:kBackgroundVolumeKey",setter)
+        self.assertNotIn("background_play_locked(",setter)
+        self.assertNotIn("background_stop_locked(",setter)
+        self.assertNotIn("setActive:",setter)
+        self.assertIn("objectForKey:kBackgroundVolumeKey",audio)
+        self.assertIn("out.player_volume_percent=",audio)
         self.assertIn("j2me_audio_background_revalidate();",audio)
         plist=plistlib.loads((ROOT/"J2MEEmulator/SupportingFiles/Info.plist").read_bytes())
         self.assertEqual(plist["UIBackgroundModes"],["audio"])
         scene=(ROOT/"J2MEEmulator/SceneDelegate.swift").read_text()
         self.assertIn('audioLine("begin", audioStart)',scene)
         self.assertIn('audioLine("end", j2me_audio_background_snapshot())',scene)
+        self.assertIn("j2me_audio_background_set_volume(percent)",scene)
+        self.assertIn("volume_percent=",scene)
+        self.assertIn("player_volume_percent=",scene)
         for name in ("GameViewController.swift","AppsListViewController.swift"):
             self.assertIn("JarBoxBackgroundDiagnostics.showAudio(from: self)",(ROOT/"J2MEEmulator/UI"/name).read_text())
 if __name__=="__main__":unittest.main()

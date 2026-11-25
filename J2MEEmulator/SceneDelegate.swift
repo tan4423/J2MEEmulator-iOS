@@ -39,7 +39,8 @@ private final class JarBoxActivityWindow: UIWindow {
     private static func audioLine(_ name: String, _ a: JarBoxBackgroundAudioSnapshot) -> String {
         let state = "requested=\(a.requested),playing=\(a.playing),interrupted=\(a.interrupted),policy=\(a.policy),reason=\(a.reason)"
         let counts = "starts=\(a.starts),stops=\(a.stops),interruptions=\(a.interruptions),route_changes=\(a.route_changes),media_resets=\(a.media_resets),failures=\(a.failures)"
-        return "audio_\(name):" + state + "," + counts
+        let volume = "volume_percent=\(a.volume_percent),player_volume_percent=\(a.player_volume_percent),volume_changes=\(a.volume_changes)"
+        return "audio_\(name):" + state + "," + counts + "," + volume
     }
     static func showAudio(from controller: UIViewController) {
         guard controller.presentedViewController == nil else { return }
@@ -50,7 +51,7 @@ private final class JarBoxActivityWindow: UIWindow {
                        "Không phát được audio", "iOS không cho tự phát lại"]
         let reasonIndex = Int(a.reason)
         let reason = reasons.indices.contains(reasonIndex) ? reasons[reasonIndex] : "Không rõ"
-        let message = "Trạng thái: \(state) · \(reason)\n\nPhát một âm nền nhỏ thật sự, cả khi màn hình mở. Chỉ thử với phiên 2D đang chạy. iOS vẫn có thể suspend app. Không tự bật lại sau khi tắt app."
+        let message = "Trạng thái: \(state) · \(reason)\nÂm lượng riêng: \(a.volume_percent)%\n\n0% là tắt tiếng âm nền, không phải dừng player. Khả năng Treo ở 0% chưa được kiểm chứng trên thiết bị. Không ảnh hưởng âm lượng game hoặc ứng dụng khác."
         let alert = UIAlertController(title: "Âm nền Treo (thử nghiệm)", message: message, preferredStyle: .alert)
         if a.requested != 0 {
             alert.addAction(UIAlertAction(title: "Tắt âm nền", style: .destructive) { _ in j2me_audio_background_stop() })
@@ -58,6 +59,14 @@ private final class JarBoxActivityWindow: UIWindow {
             alert.addAction(UIAlertAction(title: "Bật âm nền", style: .default) { _ in
                 let ok = j2me_audio_background_start()
                 NSLog("[JarBoxAudio] user_start=%d", ok)
+            })
+        }
+        // Direct actions avoid presenting another alert while dismissing this one.
+        for percent: Int32 in [0, 1, 5, 15, 35, 70, 100] {
+            let name = percent == 0 ? "0% · Im lặng" : "Âm lượng \(percent)%"
+            let title = percent == a.volume_percent ? name + " ✓" : name
+            alert.addAction(UIAlertAction(title: title, style: .default) { _ in
+                j2me_audio_background_set_volume(percent)
             })
         }
         alert.addAction(UIAlertAction(title: "Đóng", style: .cancel))

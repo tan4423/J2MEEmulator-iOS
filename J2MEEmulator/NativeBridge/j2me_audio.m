@@ -29,6 +29,37 @@ static BOOL g_background_requested, g_audio_interrupted, g_audio_session_ready;
 static int g_audio_session_category=-1, g_background_reason;
 static uint64_t g_background_starts, g_background_stops, g_background_interruptions;
 static uint64_t g_background_routes, g_background_resets, g_background_failures;
+static uint64_t g_background_volume_changes;
+static int g_background_volume_percent=35;
+static BOOL g_background_volume_loaded;
+static NSString * const kBackgroundVolumeKey=@"jarbox.background.audio.volume.percent.v1";
+
+static int background_clamp_volume(int percent) {
+    return percent<0?0:percent>100?100:percent;
+}
+// Caller holds the audio monitor. A stored zero is distinct from no setting.
+static void background_load_volume_locked(void) {
+    if (g_background_volume_loaded) return;
+    NSUserDefaults *defaults=[NSUserDefaults standardUserDefaults];
+    if ([defaults objectForKey:kBackgroundVolumeKey])
+        g_background_volume_percent=background_clamp_volume((int)[defaults integerForKey:kBackgroundVolumeKey]);
+    g_background_volume_loaded=YES;
+}
+void j2me_audio_background_set_volume(int percent) {
+    if (![NSThread isMainThread]) return;
+    @synchronized ([AVAudioSession class]) {
+        background_load_volume_locked();
+        percent=background_clamp_volume(percent);
+        if (percent!=g_background_volume_percent) {
+            g_background_volume_percent=percent;
+            ++g_background_volume_changes;
+            [[NSUserDefaults standardUserDefaults] setInteger:percent forKey:kBackgroundVolumeKey];
+        }
+        // This is solely the optional ambient player, not the system mixer
+        // or the Java media players. No play/stop or session reactivation.
+        g_background_player.volume=(float)percent/100.0f;
+    }
+}
 
 static void background_stop_locked(int reason) {
     if (g_background_requested || g_background_player) ++g_background_stops;
@@ -93,8 +124,9 @@ static BOOL background_play_locked(void) {
             return NO;
         }
         g_background_player.numberOfLoops=-1;
-        // Quiet, real audible media; never alter system volume or mute other apps.
-        g_background_player.volume=0.35f;
+        background_load_volume_locked();
+        // Retain the same source PCM and playback path at every volume.
+        g_background_player.volume=(float)g_background_volume_percent/100.0f;
         if (![g_background_player prepareToPlay]) {
             ++g_background_failures;
             background_stop_locked(BG_AUDIO_FAILED);
@@ -210,6 +242,10 @@ JarBoxBackgroundAudioSnapshot j2me_audio_background_snapshot(void) {
     @synchronized ([AVAudioSession class]) {
         out.requested=g_background_requested; out.playing=g_background_player.isPlaying;
         out.interrupted=g_audio_interrupted; out.policy=jvm_bridge_background_audio_policy();
+        background_load_volume_locked();
+        out.volume_percent=g_background_volume_percent;
+        out.player_volume_percent=g_background_player?(int)lroundf(g_background_player.volume*100.0f):-1;
+        out.volume_changes=g_background_volume_changes;
         out.reason=g_background_reason; out.starts=g_background_starts; out.stops=g_background_stops;
         out.interruptions=g_background_interruptions; out.route_changes=g_background_routes;
         out.media_resets=g_background_resets; out.failures=g_background_failures;

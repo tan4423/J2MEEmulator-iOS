@@ -18,9 +18,13 @@ void j2me_audio_stop_for_vm(MiniJVM *vm);
 // These control/snapshot entry points are main-thread only.
 typedef struct {
     int requested, playing, interrupted, policy, reason;
+    int volume_percent, player_volume_percent; // player=-1 if absent
+    uint64_t volume_changes;
     uint64_t starts, stops, interruptions, route_changes, media_resets, failures;
 } JarBoxBackgroundAudioSnapshot;
 int j2me_audio_background_start(void);
+// 0..100, clamped and persisted; does not start or stop playback.
+void j2me_audio_background_set_volume(int percent);
 void j2me_audio_background_stop(void);
 void j2me_audio_background_revalidate(void);
 JarBoxBackgroundAudioSnapshot j2me_audio_background_snapshot(void);
