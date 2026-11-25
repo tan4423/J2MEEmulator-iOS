@@ -55,7 +55,15 @@ class GameViewController {
     func gameTabStateDidChange() {}
 }
 class Collection { func reloadData() {} }
+// Stateful diagnostic doubles: verify the action targets the exact library
+// that owns the menu, rather than relying on global visible-game state.
+enum JarBoxBackgroundDiagnostics {
+    static func showAudio(from controller: Library) { controller.audioMenuCalls += 1 }
+    static func show(from controller: Library) { controller.logMenuCalls += 1 }
+}
 class Library {
+    var audioMenuCalls = 0
+    var logMenuCalls = 0
     let navigationItem = NavigationItem()
     let springboardCollectionView = Collection()
     var activeCount = 0
@@ -91,6 +99,16 @@ MAIN = r'''
         precondition(menuAction("Thông tin chung") == nil)
         precondition((menuAction("Xử lý phiên kẹt") != nil) == recovery)
         precondition(menuAction("Bảo vệ màn hình") != nil)
+        guard let audio = menuAction("Âm nền Treo (thử nghiệm)"),
+              let log = menuAction("Log Treo tắt màn hình") else {
+            preconditionFailure("Missing background controls")
+        }
+        let previousAudio = audioMenuCalls
+        let previousLog = logMenuCalls
+        audio.handler(audio)
+        precondition(audioMenuCalls == previousAudio + 1 && logMenuCalls == previousLog)
+        log.handler(log)
+        precondition(logMenuCalls == previousLog + 1 && audioMenuCalls == previousAudio + 1)
     }
 }
 let lib = Library()
@@ -132,6 +150,7 @@ for _ in 0..<1000 {
     lib.setLegacy(nil)
     lib.expect(false)
 }
+precondition(lib.audioMenuCalls == 9000 && lib.logMenuCalls == 9000)
 print("Library ownership and menu: 1000 cycles OK")
 '''
 
