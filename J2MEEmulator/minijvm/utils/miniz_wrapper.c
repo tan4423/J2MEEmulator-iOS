@@ -105,6 +105,17 @@ s32 zip_get_file_index(char const *jarpath, char const *filename) {
 #define JARBOX_CLASSPATH_DATA_MAX_ENTRY (256u * 1024u)
 #define JARBOX_CLASSPATH_DATA_MAX_COUNT 2048u
 #define JARBOX_CLASSPATH_DATA_BUCKETS 256u
+// Keep misses separate from useful byte entries: one bad resource probe
+// cannot evict or consume the existing 6 MiB positive cache budget.
+#define JARBOX_CLASSPATH_MISS_BUDGET (128u * 1024u)
+#define JARBOX_CLASSPATH_MISS_MAX_COUNT 2048u
+typedef struct JarBoxClasspathMiss {
+    struct JarBoxClasspathMiss *next;
+    size_t cost;
+    char name[];
+} JarBoxClasspathMiss;
+static size_t jarbox_classpath_miss_bytes;
+static unsigned jarbox_classpath_miss_count;
 typedef struct JarBoxClasspathData {
     struct JarBoxClasspathData *next;
     size_t name_bytes;
@@ -118,6 +129,7 @@ typedef struct {
     struct stat identity;
     mz_zip_archive archive;
     JarBoxClasspathData *data[JARBOX_CLASSPATH_DATA_BUCKETS];
+    JarBoxClasspathMiss *misses[JARBOX_CLASSPATH_DATA_BUCKETS];
 } JarBoxClasspathReader;
 static JarBoxClasspathReader jarbox_classpath_cache[JARBOX_CLASSPATH_CACHE_SLOTS];
 static unsigned jarbox_classpath_next;
@@ -143,6 +155,46 @@ static unsigned jarbox_classpath_data_bucket(const char *entry) {
     for (const unsigned char *p = (const unsigned char *)entry; *p; ++p)
         hash = (hash ^ *p) * 16777619u;
     return hash % JARBOX_CLASSPATH_DATA_BUCKETS;
+}
+// Exact-case negative entries belong to a single validated archive identity.
+// Only miniz's definitive FILE_NOT_FOUND result is eligible.
+static int jarbox_classpath_miss_find(const JarBoxClasspathReader *reader,
+                                      const char *entry) {
+    for (JarBoxClasspathMiss *item = reader->misses[jarbox_classpath_data_bucket(entry)];
+         item; item = item->next) {
+        if (strcmp(item->name, entry) == 0) return 1;
+    }
+    return 0;
+}
+static void jarbox_classpath_miss_add(JarBoxClasspathReader *reader, const char *entry) {
+    size_t len = strlen(entry) + 1;
+    if (len > 1024 || jarbox_classpath_miss_count >= JARBOX_CLASSPATH_MISS_MAX_COUNT)
+        return;
+    size_t cost = sizeof(JarBoxClasspathMiss) + len;
+    if (cost > JARBOX_CLASSPATH_MISS_BUDGET - jarbox_classpath_miss_bytes)
+        return;
+    JarBoxClasspathMiss *item = malloc(cost);
+    if (!item) return;
+    item->cost = cost;
+    memcpy(item->name, entry, len);
+    unsigned bucket = jarbox_classpath_data_bucket(entry);
+    item->next = reader->misses[bucket];
+    reader->misses[bucket] = item;
+    jarbox_classpath_miss_bytes += cost;
+    ++jarbox_classpath_miss_count;
+}
+static void jarbox_classpath_miss_clear(JarBoxClasspathReader *reader) {
+    for (unsigned n = 0; n < JARBOX_CLASSPATH_DATA_BUCKETS; ++n) {
+        JarBoxClasspathMiss *item = reader->misses[n];
+        while (item) {
+            JarBoxClasspathMiss *next = item->next;
+            jarbox_classpath_miss_bytes -= item->cost;
+            --jarbox_classpath_miss_count;
+            free(item);
+            item = next;
+        }
+        reader->misses[n] = NULL;
+    }
 }
 static JarBoxClasspathData *jarbox_classpath_data_find(JarBoxClasspathReader *reader,
                                                       const char *entry) {
@@ -197,6 +249,7 @@ static void jarbox_classpath_data_clear(JarBoxClasspathReader *reader) {
 }
 static void jarbox_classpath_close(JarBoxClasspathReader *reader) {
     jarbox_classpath_data_clear(reader);
+    jarbox_classpath_miss_clear(reader);
     if (reader->path) {
         mz_zip_reader_end(&reader->archive);
         free(reader->path);
@@ -277,11 +330,14 @@ s32 zip_classpath_loadfile(const char *jarpath, const char *filename, ByteBuf *b
     // private caller buffer is required because class parsing may mutate it.
     const char *entry = filename[0] == '/' ? filename + 1 : filename;
     JarBoxClasspathData *cached = jarbox_classpath_data_find(reader, entry);
+    int definitive_miss = 0;
     if (cached) {
         ret = jarbox_classpath_data_copy(cached, buf);
-    } else {
+    } else if (!jarbox_classpath_miss_find(reader, entry)) {
         int index = mz_zip_reader_locate_file(&reader->archive, entry, NULL,
                                              MZ_ZIP_FLAG_CASE_SENSITIVE);
+        if (index < 0)
+            definitive_miss = mz_zip_get_last_error(&reader->archive) == MZ_ZIP_FILE_NOT_FOUND;
         mz_zip_archive_file_stat info = {0};
         if (index >= 0 && mz_zip_reader_file_stat(&reader->archive, (mz_uint)index, &info) &&
             info.m_uncomp_size <= INT32_MAX) {
@@ -303,6 +359,7 @@ s32 zip_classpath_loadfile(const char *jarpath, const char *filename, ByteBuf *b
     // Publish only after rechecking the archive identity. Cache allocation
     // failure or budget exhaustion must not affect the caller's result.
     if (!cached && ret == 0) jarbox_classpath_data_add(reader, entry, buf);
+    if (definitive_miss) jarbox_classpath_miss_add(reader, entry);
     fallback = 0;
 done:
     jarbox_classpath_trim_locked();
