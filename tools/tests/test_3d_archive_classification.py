@@ -16,6 +16,7 @@ PRE = r'''
 #include <string.h>
 #include <strings.h>
 #include <sys/stat.h>
+#include <pthread.h>
 #include "miniz.h"
 #include "jarbox_2d_policy.h"
 '''
@@ -66,6 +67,40 @@ class ArchiveClassificationTest(unittest.TestCase):
             result = subprocess.run([str(exe), str(root / "missing.jar")],
                                     check=True, text=True, capture_output=True, timeout=10)
             self.assertEqual(result.stdout.strip(), "1")
+
+    def test_shared_scan_cache_invalidates_replaced_archive(self):
+        cc = shutil.which(os.environ.get("CC", "cc"))
+        if not cc:
+            self.skipTest("host C compiler unavailable")
+        bridge = (NATIVE / "jvm_bridge.c").read_text()
+        a = bridge.index("static int bridge_jar_requires_exclusive(")
+        b = bridge.index("static atomic_int treo_exact_ninja_verified;", a)
+        program = r'''
+int main(int argc, char **argv) {
+    if (argc != 3) return 1;
+    if (bridge_jar_requires_exclusive_cached(argv[1]) != 0) return 2;
+    if (!bridge_2d_class_cache[0].path[0]) return 3;
+    for (int i = 0; i < 100; ++i)
+        if (bridge_jar_requires_exclusive_cached(argv[1]) != 0) return 4;
+    if (rename(argv[2], argv[1]) != 0) return 5;
+    if (bridge_jar_requires_exclusive_cached(argv[1]) != 1) return 6;
+    if (bridge_2d_class_cache[0].path[0]) return 7;
+    return 0;
+}
+'''
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            source, exe = root / "cache.c", root / "cache"
+            source.write_text(PRE + bridge[a:b] + program)
+            subprocess.run([cc, "-std=gnu11", "-O1", "-pthread",
+                            "-I", str(NATIVE), "-I", str(MINIZ),
+                            str(source), str(MINIZ / "miniz.c"), "-o", str(exe)],
+                           check=True, timeout=60)
+            original, replacement = root / "same.jar", root / "3d.jar"
+            for jar, content in ((original, b"Canvas"), (replacement, b"javax/microedition/m3g/Graphics3D")):
+                with zipfile.ZipFile(jar, "w") as z:
+                    z.writestr("A.class", bytes.fromhex("cafebabe") + content)
+            subprocess.run([str(exe), str(original), str(replacement)], check=True, timeout=10)
 
     def test_library_checks_conflict_before_presentation(self):
         source = (ROOT / "J2MEEmulator/UI/AppsListViewController.swift").read_text()

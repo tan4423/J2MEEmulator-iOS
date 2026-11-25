@@ -660,6 +660,19 @@ s32 exception_handle(RuntimeStack *stack, Runtime *runtime) {
     ExceptionTable *et = NULL;// _find_exception_handler(runtime, ins, ca, (s32) (runtime->pc - ca->code), &index);
     s32 offset = (s32) (runtime->pc - ca->code);
 #if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__
+    // NST bu.e catches the original HTTP failure (PC17..105), then
+    // calls disconnect at PC143. Report the original type before cleanup.
+    if (ins && ins->mb.clazz && runtime->clazz && runtime->method &&
+        utf8_equals_c(runtime->clazz->name, "bu") &&
+        utf8_equals_c(runtime->method->name, "e") &&
+        utf8_equals_c(runtime->method->descriptor, "(Ljava/lang/String;)Ljava/lang/String;") &&
+        offset >= 17 && offset < 106 &&
+        jvm_bridge_mod_loop_exception_log_slot()) {
+        char event[160];
+        snprintf(event, sizeof(event), "nst_http_original:pc=%d,type=%.100s",
+                 offset, utf8_cstr(ins->mb.clazz->name));
+        jvm_bridge_note_net_trace(event);
+    }
     // a.run PC409 is an invokevirtual, not necessarily the origin of
     // the NPE. Capture the deepest interpreted frame while it still exists.
     // No heap inspection, argument values or game data are recorded.

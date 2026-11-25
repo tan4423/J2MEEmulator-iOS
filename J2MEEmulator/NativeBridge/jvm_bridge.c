@@ -70,6 +70,73 @@ done:
     return exclusive;
 }
 
+// Share only a successful conservative 2D classification. No session,
+// bytecode, renderer or Java objects are retained. A miss, change or
+// unavailable identity goes through the original fail-closed scanner.
+#define JARBOX_2D_CLASS_CACHE_SLOTS 16
+#define JARBOX_2D_CLASS_CACHE_PATH 1024
+typedef struct {
+    char path[JARBOX_2D_CLASS_CACHE_PATH];
+    struct stat identity;
+} JarBox2DClassification;
+static JarBox2DClassification bridge_2d_class_cache[JARBOX_2D_CLASS_CACHE_SLOTS];
+static unsigned bridge_2d_class_next;
+static pthread_mutex_t bridge_2d_class_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static int bridge_2d_identity_equal(const struct stat *a, const struct stat *b) {
+    if (a->st_dev != b->st_dev || a->st_ino != b->st_ino ||
+        a->st_size != b->st_size || a->st_mtime != b->st_mtime ||
+        a->st_ctime != b->st_ctime) return 0;
+#if defined(__APPLE__)
+    return a->st_mtimespec.tv_nsec == b->st_mtimespec.tv_nsec &&
+           a->st_ctimespec.tv_nsec == b->st_ctimespec.tv_nsec;
+#else
+    return a->st_mtim.tv_nsec == b->st_mtim.tv_nsec &&
+           a->st_ctim.tv_nsec == b->st_ctim.tv_nsec;
+#endif
+}
+
+static int bridge_jar_requires_exclusive_cached(const char *path) {
+    struct stat before, after;
+    if (!path || stat(path, &before) != 0 || !S_ISREG(before.st_mode)) return 1;
+    if (strlen(path) >= JARBOX_2D_CLASS_CACHE_PATH)
+        return bridge_jar_requires_exclusive(path);
+    int hit = 0;
+    pthread_mutex_lock(&bridge_2d_class_lock);
+    for (unsigned i = 0; i < JARBOX_2D_CLASS_CACHE_SLOTS; ++i) {
+        JarBox2DClassification *entry = &bridge_2d_class_cache[i];
+        if (entry->path[0] && strcmp(entry->path, path) == 0) {
+            hit = bridge_2d_identity_equal(&entry->identity, &before);
+            if (!hit) entry->path[0] = 0;
+            break;
+        }
+    }
+    pthread_mutex_unlock(&bridge_2d_class_lock);
+    if (hit) {
+        // Re-check identity outside the lock; do not trust a stale safe result.
+        return stat(path, &after) != 0 || !bridge_2d_identity_equal(&before, &after);
+    }
+
+    // Do not hold a global lock while decompressing classes.
+    int exclusive = bridge_jar_requires_exclusive(path);
+    if (exclusive || stat(path, &after) != 0 ||
+        !bridge_2d_identity_equal(&before, &after)) return 1;
+
+    pthread_mutex_lock(&bridge_2d_class_lock);
+    unsigned slot = JARBOX_2D_CLASS_CACHE_SLOTS;
+    for (unsigned i = 0; i < JARBOX_2D_CLASS_CACHE_SLOTS; ++i) {
+        if (strcmp(bridge_2d_class_cache[i].path, path) == 0) { slot = i; break; }
+        if (slot == JARBOX_2D_CLASS_CACHE_SLOTS && !bridge_2d_class_cache[i].path[0]) slot = i;
+    }
+    if (slot == JARBOX_2D_CLASS_CACHE_SLOTS)
+        slot = bridge_2d_class_next++ % JARBOX_2D_CLASS_CACHE_SLOTS;
+    JarBox2DClassification *entry = &bridge_2d_class_cache[slot];
+    memcpy(entry->path, path, strlen(path) + 1);
+    entry->identity = before;
+    pthread_mutex_unlock(&bridge_2d_class_lock);
+    return 0;
+}
+
 static atomic_int treo_exact_ninja_verified;
 // Per-JAR launch diagnostic gate (NOT a Deep Treo optimization flag).
 // Check exact Java class paths once in the archive; avoid name probing on
@@ -488,7 +555,7 @@ int jvm_bridge_3d_conflict_for_jar(const char *path) {
     const int existing = bridge_3d_conflict_locked(0);
     pthread_mutex_unlock(&g_bridge_lifecycle_lock);
     if (existing) return 1;
-    const int exclusive = bridge_jar_requires_exclusive(path);
+    const int exclusive = bridge_jar_requires_exclusive_cached(path);
     pthread_mutex_lock(&g_bridge_lifecycle_lock);
     const int conflict = bridge_3d_conflict_locked(exclusive);
     pthread_mutex_unlock(&g_bridge_lifecycle_lock);
@@ -605,7 +672,7 @@ denied:
 }
 
 int jvm_bridge_try_begin_session_for_jar(const char *path, uint64_t *out_token) {
-    return bridge_try_begin_session(bridge_jar_requires_exclusive(path), out_token);
+    return bridge_try_begin_session(bridge_jar_requires_exclusive_cached(path), out_token);
 }
 
 int jvm_bridge_try_begin_session_with_token(uint64_t *out_token) {
