@@ -1071,6 +1071,7 @@ struct _MethodInfo {
     u8 treo_utf16_kind; // 0 unknown, 1 ordinary, 2 bootstrap high-surrogate predicate
     u8 treo_array_lookup_kind; // 0 unknown, 1 ordinary, 2 exact safe int[] lookup pattern
     u16 treo_mod_diag_roles; // immutable diagnostic classification, zero = unknown
+    u8 treo_int_leaf_kind; // exact primitive expression classified before bytecode conversion
 };
 //============================================
 
@@ -1334,6 +1335,7 @@ struct _JavaThreadInfo {
     // A stale Java thread never inherits a newer JVM's recycled address.
     uint64_t jarbox_native_generation;
     u8 jarbox_headless_scope; // only written/read by the owning Java thread
+    u8 jarbox_int_leaf_pending; // batched successful calls; owning thread only
     Instance *jthread;
     Instance *context_classloader;
     Runtime *top_runtime;

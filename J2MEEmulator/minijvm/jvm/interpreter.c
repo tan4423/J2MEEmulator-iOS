@@ -2,6 +2,7 @@
 #include "jvm_util.h"
 #include "jit.h"
 #include "garbage.h"
+#include "jarbox_int_leaf.h"
 #include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -1541,6 +1542,41 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
             game_stage = 4;
         if (game_stage) jvm_bridge_mod_loop_note_stage(game_stage);
     }
+#if !defined(TREO_VM_INT_LEAF_DISABLED) && !_JVM_DEBUG_PROFILE && _JVM_DEBUG_LOG_LEVEL == 0 && !TREO_VM_PAINT_SAMPLE
+    // No JIT, allocation, locking or repeated descriptor matching here.
+    // Only the exact static, exception-free leaf patterns classified at load.
+    // All Java arguments are already evaluated; preserve normal class-init,
+    // debugger, safepoint/stop, stack capacity and JIT fallback semantics.
+    const u8 int_leaf = method->treo_int_leaf_kind;
+    if (int_leaf && method->_this_class->status >= CLASS_STATUS_CLINITED &&
+        !pruntime->jvm->jdwp_enable && !method->breakpoint &&
+        !pruntime->thrd_info->is_stop && !pruntime->thrd_info->suspend_count &&
+        !treo_game_jit_is_enabled()) {
+        RuntimeStack *caller = pruntime->stack;
+        CodeAttribute *leaf_code = method->converted_code;
+        const s32 slots = method->para_slots;
+        const s32 used = (s32)(caller->sp - caller->store);
+        if (leaf_code && slots >= 0 && slots <= 2 && used >= slots &&
+            used <= caller->max_size &&
+            leaf_code->max_stack <= caller->max_size - used) {
+            StackEntry *args = caller->sp - slots;
+            const s32 a = slots ? args[0].ivalue : 0;
+            const s32 b = slots == 2 ? args[1].ivalue : 0;
+            const s32 result = jarbox_int_leaf_eval(int_leaf, a, b);
+            caller->sp = args;
+            push_int(caller, result);
+            // No timer or per-call global counter. Approximate cumulative
+            // successful calls; up to 63 unreported per Java thread.
+            if (++pruntime->thrd_info->jarbox_int_leaf_pending == 64) {
+                pruntime->thrd_info->jarbox_int_leaf_pending = 0;
+                if (pruntime->jvm->session)
+                    __atomic_fetch_add(&pruntime->jvm->session->treo_state.int_leaf_fast_calls,
+                                       64, __ATOMIC_RELAXED);
+            }
+            return RUNTIME_STATUS_NORMAL;
+        }
+    }
+#endif
     // Retain game logic inside paint(). For a headless *Canvas* Graphics,
     // certain bundled draw wrappers are already a no-op. Skip only those
     // resolved void calls at the VM boundary, preserving evaluation of args.
