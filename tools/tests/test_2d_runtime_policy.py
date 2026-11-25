@@ -77,7 +77,16 @@ class Runtime2DPolicyTest(unittest.TestCase):
         self.assertIn("empty->legacy_3d_registered = 0", src)
         self.assertIn("slot->exclusive_3d = exclusive != 0;", src)
         self.assertIn("if (bridge_3d_conflict_locked(exclusive))", src)
-        self.assertIn("bridge_try_begin_session(bridge_jar_requires_exclusive(path), out_token)", src)
+        admission = src.split("int jvm_bridge_try_begin_session_for_jar(", 1)[1].split("\n}", 1)[0]
+        self.assertIn("return bridge_try_begin_session(bridge_jar_requires_exclusive_cached(path), out_token);", admission)
+        preflight = src.split("int jvm_bridge_3d_conflict_for_jar(", 1)[1].split("\n}", 1)[0]
+        self.assertIn("const int exclusive = bridge_jar_requires_exclusive_cached(path);", preflight)
+        cached = src.split("static int bridge_jar_requires_exclusive_cached(", 1)[1].split("\n}", 1)[0]
+        self.assertIn("int exclusive = bridge_jar_requires_exclusive(path);", cached)
+        self.assertIn("if (exclusive || stat(path, &after) != 0 ||", cached)
+        self.assertIn("!bridge_2d_identity_equal(&before, &after)) return 1;", cached)
+        self.assertLess(cached.index("int exclusive = bridge_jar_requires_exclusive(path);"),
+                        cached.index("entry->identity = before;"))
         report = audit(ROOT)
         self.assertTrue(report["2d_only_legacy_3d_exclusion_guard_present"])
         self.assertFalse(report["2d_only_runtime_validated"])
