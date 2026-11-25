@@ -776,6 +776,24 @@ int jvm_bridge_is_2d_running_for_token(uint64_t token) {
     return ready;
 }
 
+int jvm_bridge_background_audio_policy(void) {
+    int occupied=0, running=0, starting=0, exclusive=0;
+    pthread_mutex_lock(&g_bridge_lifecycle_lock);
+    for (unsigned i=0;i<JARBOX_REGISTRY_MAX_SLOTS;++i) {
+        JarBoxVMContext *slot=&g_bridge_slots[i];
+        if (!atomic_load_explicit(&slot->active,memory_order_acquire)) continue;
+        occupied=1;
+        exclusive |= slot->exclusive_3d;
+        int phase=atomic_load_explicit(&slot->phase,memory_order_acquire);
+        starting |= phase==BRIDGE_STARTING;
+        running |= phase==BRIDGE_RUNNING &&
+            !atomic_load_explicit(&slot->stop_requested,memory_order_acquire);
+    }
+    pthread_mutex_unlock(&g_bridge_lifecycle_lock);
+    if (!occupied || exclusive) return 0;
+    return running && !starting ? 2 : 1;
+}
+
 int jvm_bridge_session_is_parked(uint64_t token) {
     return jarbox_focus_is_parked(&g_bridge_focus, token);
 }

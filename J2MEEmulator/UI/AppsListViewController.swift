@@ -1624,6 +1624,9 @@ class AppsListViewController: UIViewController,
                      image: UIImage(systemName: "chart.bar.xaxis")) { [weak self] _ in
                 self?.showJarBoxOverview()
             },
+            UIAction(title: "Âm nền Treo (thử nghiệm)", image: UIImage(systemName: "speaker.wave.2")) { [weak self] _ in
+                if let self { JarBoxBackgroundDiagnostics.showAudio(from: self) }
+            },
             UIAction(title: "Log Treo tắt màn hình", image: UIImage(systemName: "doc.text")) { [weak self] _ in
                 if let self { JarBoxBackgroundDiagnostics.show(from: self) }
             },

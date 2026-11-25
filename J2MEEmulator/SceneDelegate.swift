@@ -35,6 +35,34 @@ private final class JarBoxActivityWindow: UIWindow {
     private static var entered: Date?
     private static var visible: UInt64 = 0
     private static var starts: [(UInt64, JarBoxBackgroundSample?)] = []
+    private static var audioStart = JarBoxBackgroundAudioSnapshot()
+    private static func audioLine(_ name: String, _ a: JarBoxBackgroundAudioSnapshot) -> String {
+        let state = "requested=\(a.requested),playing=\(a.playing),interrupted=\(a.interrupted),policy=\(a.policy),reason=\(a.reason)"
+        let counts = "starts=\(a.starts),stops=\(a.stops),interruptions=\(a.interruptions),route_changes=\(a.route_changes),media_resets=\(a.media_resets),failures=\(a.failures)"
+        return "audio_\(name):" + state + "," + counts
+    }
+    static func showAudio(from controller: UIViewController) {
+        guard controller.presentedViewController == nil else { return }
+        let a = j2me_audio_background_snapshot()
+        let state = a.playing != 0 ? "Đang phát" : a.requested != 0 ? "Tạm gián đoạn" : "Đang tắt"
+        let reasons = ["Tắt", "Đang phát", "Phiên chưa sẵn sàng hoặc không phải 2D",
+                       "Audio bị gián đoạn", "Thiết bị nghe bị ngắt", "Media services reset",
+                       "Không phát được audio", "iOS không cho tự phát lại"]
+        let reasonIndex = Int(a.reason)
+        let reason = reasons.indices.contains(reasonIndex) ? reasons[reasonIndex] : "Không rõ"
+        let message = "Trạng thái: \(state) · \(reason)\n\nPhát một âm nền nhỏ thật sự, cả khi màn hình mở. Chỉ thử với phiên 2D đang chạy. iOS vẫn có thể suspend app. Không tự bật lại sau khi tắt app."
+        let alert = UIAlertController(title: "Âm nền Treo (thử nghiệm)", message: message, preferredStyle: .alert)
+        if a.requested != 0 {
+            alert.addAction(UIAlertAction(title: "Tắt âm nền", style: .destructive) { _ in j2me_audio_background_stop() })
+        } else if a.policy == 2 {
+            alert.addAction(UIAlertAction(title: "Bật âm nền", style: .default) { _ in
+                let ok = j2me_audio_background_start()
+                NSLog("[JarBoxAudio] user_start=%d", ok)
+            })
+        }
+        alert.addAction(UIAlertAction(title: "Đóng", style: .cancel))
+        controller.present(alert, animated: true)
+    }
     private static var build: String {
         Bundle.main.object(forInfoDictionaryKey: "JarBoxBuildCommit") as? String ?? "unknown"
     }
@@ -45,6 +73,7 @@ private final class JarBoxActivityWindow: UIWindow {
     static func begin() {
         guard entered == nil else { return }
         entered = Date()
+        audioStart = j2me_audio_background_snapshot()
         visible = jvm_bridge_visible_session_token()
         var tokens = [UInt64](repeating: 0, count: 64)
         let capacity = Int32(tokens.count)
@@ -57,7 +86,7 @@ private final class JarBoxActivityWindow: UIWindow {
             return (token, ok ? point : nil)
         }
         let ids = starts.map { String($0.0) }.joined(separator: ",")
-        save("JarBox Background v1\nbuild=\(build)\nstatus=INCOMPLETE_NO_RESUME_RECORDED\nentered=\(entered!)\nvisible_token=\(visible)\ntokens=\(ids)")
+        save("JarBox Background v1\nbuild=\(build)\nstatus=INCOMPLETE_NO_RESUME_RECORDED\nentered=\(entered!)\nvisible_token=\(visible)\ntokens=\(ids)\n\(audioLine("begin", audioStart))")
     }
     private static func delta(_ a: UInt64, _ b: UInt64) -> String {
         b >= a ? String(b - a) : "unavailable"
@@ -68,7 +97,9 @@ private final class JarBoxActivityWindow: UIWindow {
         let seconds = Date().timeIntervalSince(startDate)
         var lines = ["JarBox Background v1", "build=\(build)", "status=RETURNED",
                      "source=\(visible == 0 ? "library" : "game")", "visible_token=\(visible)",
-                     "wall_seconds=\(seconds)", "sessions=\(starts.count)"]
+                     "wall_seconds=\(seconds)", "sessions=\(starts.count)",
+                     audioLine("begin", audioStart),
+                     audioLine("end", j2me_audio_background_snapshot())]
         for (token, before) in starts {
             var after = JarBoxBackgroundSample()
             let ok = jvm_bridge_background_sample(token, 0, &after) != 0
@@ -153,12 +184,14 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
 
     func sceneDidBecomeActive(_ scene: UIScene) {
         JarBoxBackgroundDiagnostics.end()
+        j2me_audio_background_revalidate()
         j2me_render_set_2d_scene_active(1)
         activeGameViewController?.endSceneBackgroundTreo()
         updateSpringboardSceneActivity(true)
     }
 
     func sceneWillResignActive(_ scene: UIScene) {
+        j2me_audio_background_revalidate()
         j2me_render_set_2d_scene_active(0)
         activeGameViewController?.sceneSuspendGameInput()
         updateSpringboardSceneActivity(false)
@@ -176,6 +209,7 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         j2me_render_set_2d_scene_active(0)
         activeGameViewController?.sceneSuspendGameInput()
         activeGameViewController?.beginSceneBackgroundTreo()
+        j2me_audio_background_revalidate()
         JarBoxBackgroundDiagnostics.begin()
         updateSpringboardSceneActivity(false)
     }

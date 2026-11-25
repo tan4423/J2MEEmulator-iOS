@@ -1336,6 +1336,9 @@ class GameViewController: UIViewController {
                 self?.showLastMeasurement()
             },
             UIAction(title: "Chẩn đoán kết nối") { [weak self] _ in self?.showNetworkDiagnostics() },
+            UIAction(title: "Âm nền Treo (thử nghiệm)") { [weak self] _ in
+                if let self { JarBoxBackgroundDiagnostics.showAudio(from: self) }
+            },
             UIAction(title: "Log Treo tắt màn hình") { [weak self] _ in
                 if let self { JarBoxBackgroundDiagnostics.show(from: self) }
             }

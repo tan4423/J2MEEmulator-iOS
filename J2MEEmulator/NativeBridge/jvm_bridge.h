@@ -110,6 +110,10 @@ int jvm_bridge_focus_session(uint64_t token);
 int jvm_bridge_session_is_parked(uint64_t token);
 // Existing admission classification, never authorize unknown/exclusive 3D.
 int jvm_bridge_is_2d_running_for_token(uint64_t token);
+// 0: no owner or exclusive/unknown 3D, 1: known 2D but not ready,
+// 2: at least one running 2D, no STARTING owner, no exclusive owner.
+// STOPPING/CLEANUP 2D peers do not revoke a different running 2D owner.
+int jvm_bridge_background_audio_policy(void);
 uint64_t jvm_bridge_visible_session_token(void);
 int jvm_bridge_request_stop_for_token(uint64_t token);
 /// Stop state as seen by one concrete native JVM. Foreign/stale JVMs must

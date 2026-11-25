@@ -7,6 +7,8 @@
 
 #import <AVFoundation/AVFoundation.h>
 #include "j2me_audio.h"
+#include "jvm_bridge.h"
+#include "jarbox_ambient_pcm.h"
 #include "j2me_input.h"
 #include "jvm.h"
 #include "jvm_util.h"
@@ -16,19 +18,197 @@
 // Audio session setup
 // ============================================================
 
-static void ensureAudioSession(void) {
-    // AVAudioSession is an iOS process resource; configure it exactly once
-    // even if multiple independent Java workers request audio concurrently.
+// AVAudioSession is shared by the process; optional playback is not a
+// Java handle and never emits a Java audio completion event. All session
+// activation/cache state is serialized with the existing audio lock.
+enum { BG_AUDIO_OFF=0, BG_AUDIO_PLAYING=1, BG_AUDIO_INELIGIBLE=2,
+       BG_AUDIO_INTERRUPTED=3, BG_AUDIO_ROUTE_LOST=4, BG_AUDIO_RESET=5,
+       BG_AUDIO_FAILED=6, BG_AUDIO_RESUME_DENIED=7 };
+static AVAudioPlayer *g_background_player;
+static BOOL g_background_requested, g_audio_interrupted, g_audio_session_ready;
+static int g_audio_session_category=-1, g_background_reason;
+static uint64_t g_background_starts, g_background_stops, g_background_interruptions;
+static uint64_t g_background_routes, g_background_resets, g_background_failures;
+
+static void background_stop_locked(int reason) {
+    if (g_background_requested || g_background_player) ++g_background_stops;
+    g_background_requested=NO;
+    [g_background_player stop];
+    g_background_player=nil;
+    g_background_reason=reason;
+    // Do not deactivate the process audio session out from under Java audio.
+    // An active session without playing media is not a background grant.
+}
+static BOOL ensure_audio_locked(void) {
+    if (g_audio_interrupted) return NO;
+    // Exclusive/unknown 3D must not gain a background audio grant just
+    // because the bundle now declares audio. Ambient respects screen lock
+    // and the silent switch; known 2D retains playback and may mix.
+    int category=jvm_bridge_background_audio_policy()!=0;
+    AVAudioSession *session=[AVAudioSession sharedInstance];
+    NSError *error=nil;
+    if (g_audio_session_category!=category) {
+        g_audio_session_ready=NO;
+        NSString *name=category?AVAudioSessionCategoryPlayback:AVAudioSessionCategorySoloAmbient;
+        AVAudioSessionCategoryOptions options=category?AVAudioSessionCategoryOptionMixWithOthers:0;
+        if (![session setCategory:name mode:AVAudioSessionModeDefault options:options error:&error]) {
+            NSLog(@"[JarBoxAudio] category failed: %@",error);
+            g_audio_session_category=-1;
+            return NO;
+        }
+        g_audio_session_category=category;
+    }
+    if (!g_audio_session_ready) {
+        if (![session setActive:YES error:&error]) {
+            NSLog(@"[JarBoxAudio] activation failed: %@",error);
+            return NO;
+        }
+        g_audio_session_ready=YES;
+    }
+    return YES;
+}
+static BOOL background_play_locked(void) {
+    if (jvm_bridge_background_audio_policy()!=2) {
+        background_stop_locked(BG_AUDIO_INELIGIBLE);
+        return NO;
+    }
+    if (g_audio_interrupted) {
+        g_background_reason=BG_AUDIO_INTERRUPTED;
+        return NO;
+    }
+    if (!ensure_audio_locked()) {
+        ++g_background_failures;
+        background_stop_locked(BG_AUDIO_FAILED);
+        return NO;
+    }
+    if (!g_background_player) {
+        NSMutableData *data=[NSMutableData dataWithLength:JARBOX_AMBIENT_BYTES];
+        NSError *error=nil;
+        if (jarbox_ambient_wav(data.mutableBytes,data.length))
+            g_background_player=[[AVAudioPlayer alloc] initWithData:data error:&error];
+        if (!g_background_player) {
+            NSLog(@"[JarBoxAudio] ambient creation failed: %@",error);
+            ++g_background_failures;
+            background_stop_locked(BG_AUDIO_FAILED);
+            return NO;
+        }
+        g_background_player.numberOfLoops=-1;
+        // Quiet, real audible media; never alter system volume or mute other apps.
+        g_background_player.volume=0.35f;
+        if (![g_background_player prepareToPlay]) {
+            ++g_background_failures;
+            background_stop_locked(BG_AUDIO_FAILED);
+            return NO;
+        }
+    }
+    if (!g_background_player.isPlaying) {
+        if (![g_background_player play]) {
+            ++g_background_failures;
+            background_stop_locked(BG_AUDIO_FAILED);
+            return NO;
+        }
+        ++g_background_starts;
+    }
+    g_background_reason=BG_AUDIO_PLAYING;
+    return YES;
+}
+static void install_audio_observers(void) {
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        NSError *error = nil;
-        [[AVAudioSession sharedInstance] setCategory:AVAudioSessionCategoryPlayback error:&error];
-        [[AVAudioSession sharedInstance] setActive:YES error:&error];
-        if (error) {
-            printf("[J2ME Audio] Audio session error: %s\n",
-                   [[error localizedDescription] UTF8String]);
-        }
+        NSNotificationCenter *center=[NSNotificationCenter defaultCenter];
+        [center addObserverForName:AVAudioSessionInterruptionNotification object:nil
+                           queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification *note) {
+            @synchronized ([AVAudioSession class]) {
+                NSNumber *type=note.userInfo[AVAudioSessionInterruptionTypeKey];
+                if (type.unsignedIntegerValue==AVAudioSessionInterruptionTypeBegan) {
+                    g_audio_interrupted=YES;
+                    g_audio_session_ready=NO;
+                    ++g_background_interruptions;
+                    if (g_background_requested) {
+                        [g_background_player pause];
+                        g_background_reason=BG_AUDIO_INTERRUPTED;
+                    }
+                } else if (type.unsignedIntegerValue==AVAudioSessionInterruptionTypeEnded) {
+                    g_audio_interrupted=NO;
+                    g_audio_session_ready=NO;
+                    NSNumber *options=note.userInfo[AVAudioSessionInterruptionOptionKey];
+                    if (g_background_requested) {
+                        if (options.unsignedIntegerValue & AVAudioSessionInterruptionOptionShouldResume)
+                            (void)background_play_locked();
+                        else background_stop_locked(BG_AUDIO_RESUME_DENIED);
+                    }
+                }
+            }
+        }];
+        [center addObserverForName:AVAudioSessionRouteChangeNotification object:nil
+                           queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification *note) {
+            @synchronized ([AVAudioSession class]) {
+                ++g_background_routes;
+                NSNumber *reason=note.userInfo[AVAudioSessionRouteChangeReasonKey];
+                // Do not surprise the user by restarting on speakers after unplug.
+                if (g_background_requested &&
+                    reason.unsignedIntegerValue==AVAudioSessionRouteChangeReasonOldDeviceUnavailable)
+                    background_stop_locked(BG_AUDIO_ROUTE_LOST);
+            }
+        }];
+        [center addObserverForName:AVAudioSessionMediaServicesWereResetNotification object:nil
+                           queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification *note) {
+            (void)note;
+            @synchronized ([AVAudioSession class]) {
+                ++g_background_resets;
+                g_audio_session_ready=NO;
+                g_audio_session_category=-1;
+                g_audio_interrupted=NO;
+                // Media services invalidated the old player. User re-arms
+                // playback explicitly; do not silently restart Java players.
+                if (g_background_requested || g_background_player)
+                    background_stop_locked(BG_AUDIO_RESET);
+            }
+        }];
     });
+}
+static BOOL ensureAudioSession(void) {
+    install_audio_observers();
+    @synchronized ([AVAudioSession class]) { return ensure_audio_locked(); }
+}
+int j2me_audio_background_start(void) {
+    if (![NSThread isMainThread]) return 0;
+    install_audio_observers();
+    @synchronized ([AVAudioSession class]) {
+        if (g_audio_interrupted) {
+            g_background_reason=BG_AUDIO_INTERRUPTED;
+            return 0;
+        }
+        g_background_requested=YES;
+        return background_play_locked();
+    }
+}
+void j2me_audio_background_stop(void) {
+    if (![NSThread isMainThread]) return;
+    @synchronized ([AVAudioSession class]) { background_stop_locked(BG_AUDIO_OFF); }
+}
+void j2me_audio_background_revalidate(void) {
+    if (![NSThread isMainThread]) return;
+    @synchronized ([AVAudioSession class]) {
+        if ((g_background_requested || g_background_player) &&
+            jvm_bridge_background_audio_policy()!=2)
+            background_stop_locked(BG_AUDIO_INELIGIBLE);
+        else if (g_background_requested && !g_audio_interrupted && !g_background_player.isPlaying) {
+            ++g_background_failures;
+            background_stop_locked(BG_AUDIO_FAILED);
+        }
+    }
+}
+JarBoxBackgroundAudioSnapshot j2me_audio_background_snapshot(void) {
+    JarBoxBackgroundAudioSnapshot out={0};
+    @synchronized ([AVAudioSession class]) {
+        out.requested=g_background_requested; out.playing=g_background_player.isPlaying;
+        out.interrupted=g_audio_interrupted; out.policy=jvm_bridge_background_audio_policy();
+        out.reason=g_background_reason; out.starts=g_background_starts; out.stops=g_background_stops;
+        out.interruptions=g_background_interruptions; out.route_changes=g_background_routes;
+        out.media_resets=g_background_resets; out.failures=g_background_failures;
+    }
+    return out;
 }
 
 // ============================================================
@@ -197,13 +377,19 @@ static void stop_owned_audio_players(MiniJVM *vm) {
 }
 
 void j2me_audio_stop_for_vm(MiniJVM *vm) {
-    if (vm) stop_owned_audio_players(vm);
+    if (vm) {
+        stop_owned_audio_players(vm);
+        // No raw owner escapes. Cleanup already published CLEANUP; recheck
+        // current slots on main, preserving ambient if another 2D is running.
+        dispatch_async(dispatch_get_main_queue(), ^{ j2me_audio_background_revalidate(); });
+    }
 }
 
 void j2me_audio_stop_all(void) {
     // Explicit global emergency teardown only; ordinary JVM cleanup must
     // call j2me_audio_stop_for_vm, never touch other games' sound.
     stop_owned_audio_players(NULL);
+    dispatch_async(dispatch_get_main_queue(), ^{ j2me_audio_background_stop(); });
 }
 
 // ============================================================
@@ -243,7 +429,7 @@ static s32 n_audioStart(Runtime *runtime, JClass *clazz) {
     s64 handle = env->localvar_getLong_2slot(runtime->localvar, 0);
     if (handle && audio_owned_by_vm(runtime->jvm, (void *)(intptr_t)handle, NO)) {
         AVAudioPlayer *player = (__bridge AVAudioPlayer *)(void *)(intptr_t)handle;
-        [player play];
+        if (ensureAudioSession()) [player play];
     }
     return RUNTIME_STATUS_NORMAL;
 }
@@ -359,7 +545,7 @@ static s32 n_audioMidiStart(Runtime *runtime, JClass *clazz) {
     s64 handle = env->localvar_getLong_2slot(runtime->localvar, 0);
     if (handle && audio_owned_by_vm(runtime->jvm, (void *)(intptr_t)handle, YES)) {
         AVMIDIPlayer *player = (__bridge AVMIDIPlayer *)(void *)(intptr_t)handle;
-        [player play:nil];
+        if (ensureAudioSession()) [player play:nil];
     }
     return RUNTIME_STATUS_NORMAL;
 }
