@@ -1110,12 +1110,13 @@ static inline void _gc_instance_mark(GcCollector *collector, Instance *ins, u8 f
                 __refer ref = getFieldRefer(ptr);
                 if (ref)_gc_mark_object(collector, ref, flag_cnt);
             }
-            // This class is marked once below; retain an unusual field
-            // owner's edge if it is different from the class being scanned.
-            if (fi->_this_class != clazz)
+            // Preserve the original first-visit order (and recursion depth
+            // behavior); avoid repeated calls once this owner is marked.
+            if (fi->_this_class != clazz || clazz->mb.garbage_mark != flag_cnt)
                 _gc_mark_object(collector, fi->_this_class, flag_cnt);
         }
-        _gc_mark_object(collector, clazz, flag_cnt);//keep class and classloader alive
+        if (clazz->mb.garbage_mark != flag_cnt)
+            _gc_mark_object(collector, clazz, flag_cnt);//keep class and classloader alive
         clazz = getSuperClass(clazz);
     }
 

@@ -123,6 +123,15 @@ int main(void){
     for(int i=0;i<15;i++)all[i]->garbage_mark=0;
     memset(slots,0,sizeof(slots));slots[1][1]=&o[11];
     _gc_mark_object(&g,&o[1],1);CHECK(o[11].mb.garbage_mark==0);
+    // Exercise a static reference that is not in the instance graph.
+    for(int i=0;i<15;i++)all[i]->garbage_mark=0;
+    void *static_slot=&o[10];FieldInfo fs={&foreign,0,0};
+    void *sf[]={&fs};ArrayList statics={sf,1};
+    foreign.field_static=(char*)&static_slot;foreign.staticFieldPtrIndex=&statics;
+    _gc_mark_object(&g,&foreign,1);CHECK(o[10].mb.garbage_mark==1);
+    // Primitive arrays must not retain apparent pointer bits.
+    for(int i=0;i<15;i++)all[i]->garbage_mark=0;
+    refs[0]=&o[11];_gc_mark_object(&g,&o[3],1);CHECK(o[11].mb.garbage_mark==0);
     puts("GC mark reachability: 10000 graphs PASS");return 0;
 }
 """
@@ -151,7 +160,7 @@ class GCMarkScanTest(unittest.TestCase):
         arr=s.split("static inline void _gc_jarray_mark(",1)[1].split("static inline void _gc_class_mark(",1)[0]
         self.assertIn("isDataReferByIndex(arr->mb.arr_type_index)",arr)
         self.assertNotIn("jarray_get_field(",arr)
-        self.assertIn("if (fi->_this_class != clazz)",s)
+        self.assertIn("if (fi->_this_class != clazz || clazz->mb.garbage_mark != flag_cnt)",s)
         self.assertIn("GCFLAG_WEAKREFERENCE_GET(ins->mb.gcflag)",s)
         worker=s.split("s32 _gc_thread_run(void *para) {",1)[1].split("static void gc_process_deferred_objects",1)[0]
         self.assertIn("gc_worker_cpu_ns",worker)
