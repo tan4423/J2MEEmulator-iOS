@@ -107,13 +107,13 @@ s64 gc_sum_heap(GcCollector *collector);
 // Register only after jvm_init; unregister after native render cleanup.
 int jarbox_native_heap_register_vm(MiniJVM *jvm);
 uint64_t jarbox_native_heap_key_for_vm(MiniJVM *jvm);
+uint64_t jarbox_native_heap_validate_key(MiniJVM *jvm, uint64_t key);
 // The original key belongs to the JavaThreadInfo, not to a recycled JVM
 // pointer or whichever session happens to occupy an input/UI slot now.
 static inline uint64_t jarbox_native_heap_key_for_runtime(const Runtime *runtime) {
     if (!runtime || !runtime->jvm || !runtime->thrd_info) return 0;
     const uint64_t original = runtime->thrd_info->jarbox_native_generation;
-    const uint64_t live = jarbox_native_heap_key_for_vm(runtime->jvm);
-    return jarbox_runtime_generation_if_current(original, live);
+    return jarbox_native_heap_validate_key(runtime->jvm, original);
 }
 void jarbox_native_heap_account(uint64_t key, s64 delta_bytes);
 s64 jarbox_native_heap_for_vm(MiniJVM *jvm);

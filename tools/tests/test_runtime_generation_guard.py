@@ -59,7 +59,14 @@ class RuntimeGenerationGuardTest(unittest.TestCase):
         self.assertIn("runtime->thrd_info->jarbox_native_generation =", runtime)
         self.assertIn("jarbox_native_heap_key_for_vm(jvm);", runtime)
         self.assertIn("runtime->thrd_info = parent->thrd_info;", util)
-        self.assertIn("jarbox_runtime_generation_if_current(original, live)", garbage)
+        self.assertIn("jarbox_native_heap_validate_key(runtime->jvm, original)", garbage)
+        hot = garbage.split("static inline uint64_t jarbox_native_heap_key_for_runtime(", 1)[1].split("\n}", 1)[0]
+        self.assertNotIn("jarbox_native_heap_key_for_vm(", hot)
+        source = (JVM / "garbage.c").read_text()
+        validate = source.split("uint64_t jarbox_native_heap_validate_key(", 1)[1].split("\n}", 1)[0]
+        self.assertIn("slot->owner == jvm && slot->key == key", validate)
+        self.assertIn("spin_lock(&g_native_heap_lock)", validate)
+        self.assertIn("spin_unlock(&g_native_heap_lock)", validate)
 
     def test_stale_runtime_denied_in_2d_ui_and_input(self):
         render = (NATIVE / "j2me_render.m").read_text()

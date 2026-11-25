@@ -39,6 +39,7 @@ typedef struct { MiniJVM *vm; uint64_t key; int iterations; int failures; } W;
 static void *worker(void *p) {
     W *w = p;
     for (int i = 0; i < w->iterations; ++i) {
+        if (jarbox_native_heap_validate_key(w->vm, w->key) != w->key) ++w->failures;
         jarbox_native_heap_account(w->key, 5);
         jarbox_native_heap_account(w->key, -2);
     }
@@ -51,12 +52,21 @@ int main(void) {
     uint64_t k1 = jarbox_native_heap_key_for_vm(&a);
     uint64_t k2 = jarbox_native_heap_key_for_vm(&b);
     if (!k1 || !k2 || k1 == k2) return 2;
+    if (jarbox_native_heap_validate_key(&a, k1) != k1 ||
+        jarbox_native_heap_validate_key(&b, k2) != k2 ||
+        jarbox_native_heap_validate_key(&a, k2) ||
+        jarbox_native_heap_validate_key(&b, k1) ||
+        jarbox_native_heap_validate_key(NULL, k1) ||
+        jarbox_native_heap_validate_key(&a, 0) ||
+        jarbox_native_heap_validate_key(&a, 256) ||
+        jarbox_native_heap_validate_key(&a, 255)) return 24;
     W wa = {&a,k1,20000,0}, wb = {&b,k2,20000,0};
     pthread_t t1,t2;
     if (pthread_create(&t1,NULL,worker,&wa) ||
         pthread_create(&t2,NULL,worker,&wb)) return 3;
     pthread_join(t1,NULL);
     pthread_join(t2,NULL);
+    if (wa.failures || wb.failures) return 28;
     if (jarbox_native_heap_for_vm(&a) != 60000 ||
         jarbox_native_heap_for_vm(&b) != 60000) return 4;
     if (jarbox_native_heap_register_vm(&a)) return 11;
@@ -69,6 +79,8 @@ int main(void) {
     if (!jarbox_native_heap_register_vm(&a)) return 6;
     uint64_t k3 = jarbox_native_heap_key_for_vm(&a);
     if (k3 == k1 || !k3) return 7;
+    if (jarbox_native_heap_validate_key(&a, k1) ||
+        jarbox_native_heap_validate_key(&a, k3) != k3) return 25;
     jarbox_native_heap_unregister_key(k1);
     if (jarbox_native_heap_key_for_vm(&a) != k3) return 12;
     jarbox_native_heap_account(k1, 2000);
@@ -98,12 +110,14 @@ int main(void) {
         if (!jarbox_native_heap_register_vm(&many[i])) return 20;
         keys[i]=jarbox_native_heap_key_for_vm(&many[i]);
         if (!keys[i]) return 21;
+        if (jarbox_native_heap_validate_key(&many[i], keys[i]) != keys[i]) return 26;
         jarbox_native_heap_account(keys[i], i+1);
     }
     if (jarbox_native_heap_register_vm(&many[JARBOX_NATIVE_HEAP_SLOTS])) return 22;
     for (unsigned i=0;i<JARBOX_NATIVE_HEAP_SLOTS;i++) {
         if (jarbox_native_heap_for_vm(&many[i]) != (s64)(i+1)) return 23;
         jarbox_native_heap_unregister_key(keys[i]);
+        if (jarbox_native_heap_validate_key(&many[i], keys[i])) return 27;
     }
     return 0;
 }

@@ -458,6 +458,19 @@ uint64_t jarbox_native_heap_key_for_vm(MiniJVM *jvm) {
     spin_unlock(&g_native_heap_lock);
     return result;
 }
+// A Java thread already carries the immutable generation. Decode its
+// slot index, then validate BOTH owner and full key under the ledger lock.
+// This avoids a 64-slot scan on every graphics/input/UI native call.
+uint64_t jarbox_native_heap_validate_key(MiniJVM *jvm, uint64_t key) {
+    unsigned index = (unsigned)(key & 0xffU);
+    if (!jvm || !key || !index || index > JARBOX_NATIVE_HEAP_SLOTS) return 0;
+    spin_lock(&g_native_heap_lock);
+    JarBoxNativeHeapSlot *slot = &g_native_heaps[index - 1];
+    uint64_t result = slot->owner == jvm && slot->key == key ? key : 0;
+    spin_unlock(&g_native_heap_lock);
+    return result;
+}
+
 void jarbox_native_heap_account(uint64_t key, s64 delta_bytes) {
     if (!key || !delta_bytes) return;
     unsigned index = (unsigned)(key & 0xffU);
