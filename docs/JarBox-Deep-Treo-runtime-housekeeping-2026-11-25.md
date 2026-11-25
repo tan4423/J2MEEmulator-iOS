@@ -1,0 +1,5 @@
+# Deep Treo: general runtime housekeeping
+
+Baseline d513028. Preserve all game and render policies. Native String equality still validates class, type, length and offset; compare UTF-16 slices with memcmp, with same backing/same slice shortcut. This permits platform-optimized comparison and preserves embedded NULs. Version-comparison trace checks bytecode PC before name checks; exact same trace conditions, no removal of diagnostics or alteration of network behavior.
+
+GC takes one native-ledger sample for each total heap measurement; both threshold logic and printed Java/native split use that same sample. Previously the collector took a redundant ledger lock/scan before and after collection. Public gc_sum_heap remains unchanged in signature and total. No change to GC thresholds, scheduling, thread wake cadence, memory protection, allocation or Java clocks. No HUD changes. New tests cover UTF-16 slice comparisons and changing native ledger samples. Actual CPU reduction needs device benchmarks.

@@ -1800,15 +1800,12 @@ s32 jstring_equals(Instance *jstr1, Instance *jstr2, Runtime *runtime) {
         return 1;
     }
     if (arr1 && arr2 && arr1->arr_body && arr2->arr_body) {
-        u16 *jchar_arr1 = (u16 *) arr1->arr_body;
-        u16 *jchar_arr2 = (u16 *) arr2->arr_body;
-        s32 i;
-        for (i = 0; i < count1; i++) {
-            if (jchar_arr1[i + offset1] != jchar_arr2[i + offset2]) {
-                return 0;
-            }
-        }
-        return 1;
+        // Equality of UTF-16 code units is equality of their native bytes.
+        // Keep all type/slice validation above, including embedded NULs.
+        if (arr1 == arr2 && offset1 == offset2) return 1;
+        const u16 *jchar_arr1 = (const u16 *) arr1->arr_body + offset1;
+        const u16 *jchar_arr2 = (const u16 *) arr2->arr_body + offset2;
+        return memcmp(jchar_arr1, jchar_arr2, (size_t)count1 * sizeof(u16)) == 0;
     }
     return 0;
 }

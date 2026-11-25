@@ -131,7 +131,7 @@ class MultiVMNativeHeapLedgerTest(unittest.TestCase):
             self.skipTest("C compiler unavailable")
         source = GC.read_text(encoding="utf-8")
         start = source.index("#define JARBOX_NATIVE_HEAP_SLOTS")
-        end = source.index("\ns64 gc_sum_heap(", start)
+        end = source.index("\nstatic s64 gc_sum_heap_sample(", start)
         production = source[start:end]
         self.assertIn("slot->key == key", production)
         with tempfile.TemporaryDirectory(prefix="jarbox-native-heap-") as temp:
@@ -154,7 +154,12 @@ class MultiVMNativeHeapLedgerTest(unittest.TestCase):
         self.assertNotIn("g_native_extra_heap", gc)
         self.assertNotIn("g_native_extra_heap", render)
         self.assertIn("jarbox_native_heap_for_vm(collector->jvm)", gc)
-        self.assertIn("jarbox_native_heap_for_vm(jvm)", gc)
+        # The collector now takes a single coherent native/total sample.
+        worker = gc.split("s32 _gc_thread_run(void *para) {", 1)[1].split("static void gc_process_deferred_objects(", 1)[0]
+        self.assertNotIn("jarbox_native_heap_for_vm(jvm)", worker)
+        self.assertIn("gc_sum_heap_sample(collector, &native_extra)", worker)
+        self.assertIn("gc_sum_heap_sample(collector, &native_after)", worker)
+        self.assertIn("return gc_sum_heap_sample(collector, NULL);", gc)
         self.assertIn("uint64_t heap_key;", render)
         self.assertIn("jarbox_native_heap_key_for_vm(owner)", render)
         self.assertIn("native_heap_sub(rc->heap_key, pixels)", render)

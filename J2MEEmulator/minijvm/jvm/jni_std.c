@@ -946,13 +946,15 @@ static unsigned jarbox_version_string_shape(Instance *s, Runtime *runtime, s32 *
 }
 static void jarbox_note_version_equals(Runtime *runtime, Instance *left, Instance *right, s32 equal) {
     Runtime *p = runtime->parent;
-    if (!p || !p->clazz || !p->method ||
-        !utf8_equals_c(p->clazz->name, "Class_bz") ||
-        !utf8_equals_c(p->method->name, "c") ||
-        !utf8_equals_c(p->method->descriptor, "()V")) return;
+    if (!p || !p->clazz || !p->method) return;
     const CodeAttribute *ca = p->method->converted_code;
+    // Almost all String.equals calls are unrelated to this diagnostic.
+    // Reject the wrong bytecode position before any class/name comparison.
     if (!ca || !ca->code || ca->code_length <= 142 ||
-        (uintptr_t)p->pc != (uintptr_t)ca->code + 142 ||
+        (uintptr_t)p->pc != (uintptr_t)ca->code + 142) return;
+    if (!utf8_equals_c(p->clazz->name, "Class_bz") ||
+        !utf8_equals_c(p->method->name, "c") ||
+        !utf8_equals_c(p->method->descriptor, "()V") ||
         !jvm_bridge_mod_protocol_note_slot()) return;
     s32 left_len, right_len;
     unsigned left_flags = jarbox_version_string_shape(left, runtime, &left_len);

@@ -46,6 +46,25 @@ int main(void){
     bv.mb.arr_type_index=8;if(jstring_equals(&x,&y,&rt))return 6;bv.mb.arr_type_index=5;
     y.count=-1;if(jstring_equals(&x,&y,&rt))return 7;
     y.count=0;x.count=0;if(!jstring_equals(&x,&y,&rt))return 8;
+    // Same backing array: identical slice, different slice, and overlapping.
+    x.count=3; y.count=3; y.value=&av; y.offset=1;
+    if(!jstring_equals(&x,&y,&rt))return 9;
+    y.offset=0;if(jstring_equals(&x,&y,&rt))return 10;
+    u16 long_a[1025], long_b[1025];
+    uint32_t seed=1;
+    for(int i=0;i<1025;i++){seed=seed*1664525u+1013904223u;long_a[i]=long_b[i]=(u16)(seed>>16);}
+    av.arr_body=long_a;bv.arr_body=long_b;av.arr_length=bv.arr_length=1025;
+    x.value=&av;y.value=&bv;x.offset=y.offset=1;
+    for(int len=1;len<=1024;len++){
+        x.count=y.count=len;
+        if(!jstring_equals(&x,&y,&rt))return 11;
+        for(int k=0;k<3;k++){
+            int pos=1+(k==0?0:k==1?len/2:len-1);
+            long_b[pos]^=0x8000;
+            if(jstring_equals(&x,&y,&rt))return 12;
+            long_b[pos]^=0x8000;
+        }
+    }
     return 0;
 }
 """
@@ -112,6 +131,13 @@ class StringEqualsContractTest(unittest.TestCase):
         self.assertIn("u8 arr_type_index;",header.split("} MemoryBlock;",1)[0])
         self.assertIn("arr1->mb.arr_type_index",s[a:b])
         self.assertIn("a->mb.arr_type_index", (CORE/"jni_std.c").read_text())
+
+    def test_version_trace_rejects_unrelated_pc_before_string_checks(self):
+        s=(CORE/"jni_std.c").read_text()
+        body=s.split("static void jarbox_note_version_equals(",1)[1].split("\n}\n",1)[0]
+        self.assertLess(body.index("(uintptr_t)p->pc"),body.index("utf8_equals_c(p->clazz->name"))
+        self.assertLess(body.index("utf8_equals_c(p->method->descriptor"),body.index("jvm_bridge_mod_protocol_note_slot()"))
+        self.assertIn("memcmp(jchar_arr1, jchar_arr2", (CORE/"jvm_util.c").read_text())
 
     def test_version_gate_with_optional_popup_reset(self):
         s=(CORE/"interpreter.c").read_text()
