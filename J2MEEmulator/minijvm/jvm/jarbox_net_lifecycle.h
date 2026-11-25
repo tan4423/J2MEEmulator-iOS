@@ -16,4 +16,6 @@ void jarbox_net_scope_leave(JarBoxNetScope prior);
 unsigned jarbox_net_stop_owner(JarBoxSession *owner);
 unsigned jarbox_net_release_owner(JarBoxSession *owner);
 int jarbox_net_duplicate_for_tls(int fd);
+// Serialize half-shutdown with context close. No descriptor reuse window.
+int jarbox_net_shutdown_fd(int *fd, int direction);
 #endif

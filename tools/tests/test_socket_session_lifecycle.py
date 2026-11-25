@@ -67,6 +67,33 @@ int main(void){
     jarbox_net_close_context(&cb,1);
     CHECK(jarbox_net_release_owner(b)==0);
     close(sa[1]);close(sb[1]);close(sc[1]);
+    // Real TCP loopback: a connect deadline is enforced, blocking flags
+    // restored on success, and stopping wakes the connected peer.
+    int listener=socket(AF_INET,SOCK_STREAM,0);
+    CHECK(listener>=0);
+    struct sockaddr_in addr={0};
+    addr.sin_family=AF_INET;addr.sin_addr.s_addr=htonl(INADDR_LOOPBACK);
+    CHECK(bind(listener,(struct sockaddr*)&addr,sizeof(addr))==0);
+    CHECK(listen(listener,2)==0);
+    socklen_t sz=sizeof(addr);
+    CHECK(getsockname(listener,(struct sockaddr*)&addr,&sz)==0);
+    prior=jarbox_net_scope_enter(b,500);
+    int fd=jarbox_net_socket(AF_INET,SOCK_STREAM,0);
+    CHECK(fd>=0);
+    CHECK(jarbox_net_connect_fd(fd,(struct sockaddr*)&addr,sz,jarbox_net_connect_deadline())==0);
+    CHECK(!(fcntl(fd,F_GETFL)&O_NONBLOCK));
+    int peer=accept(listener,NULL,NULL);
+    CHECK(peer>=0);
+    int fd2=jarbox_net_socket(AF_INET,SOCK_STREAM,0);
+    CHECK(fd2>=0);
+    CHECK(jarbox_net_connect_fd(fd2,(struct sockaddr*)&addr,sz,jarbox_net_now_ms()-1)<0 && errno==ETIMEDOUT);
+    jarbox_net_scope_leave(prior);
+    CHECK(jarbox_net_shutdown_fd(&fd,SHUT_WR)==0);
+    CHECK(recv(peer,&c,1,0)==0);
+    CHECK(send(peer,"d",1,0)==1&&recv(fd,&c,1,0)==1&&c=='d');
+    CHECK(jarbox_net_stop_owner(b)==2);
+    CHECK(jarbox_net_release_owner(b)==2);
+    close(peer);close(listener);
     jarbox_session_release(a);jarbox_session_release(b);
     return 0;
 }

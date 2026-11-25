@@ -496,7 +496,7 @@ static s32 jarbox_java_socket_shutdown(Runtime *runtime, JClass *clazz) {
     if (a && a->arr_length >= (s32)sizeof(VmSock) &&
         (direction == 0 || direction == 1)) {
         VmSock *sock = (VmSock *)a->arr_body;
-        ret = shutdown(sock->contex.fd, direction);
+        ret = jarbox_net_shutdown_fd(&sock->contex.fd, direction);
     }
     push_int(runtime->stack, ret);
     return 0;

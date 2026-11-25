@@ -171,6 +171,12 @@ static void jarbox_net_close_context(mbedtls_net_context *ctx, int shutdown_firs
     // across close; the fd remains allocated until this call releases it.
     if (fd >= 0) close(fd);
 }
+int jarbox_net_shutdown_fd(int *fd, int direction) {
+    pthread_mutex_lock(&jarbox_net_lock);
+    int ret = fd && *fd >= 0 ? shutdown(*fd, direction) : -1;
+    pthread_mutex_unlock(&jarbox_net_lock);
+    return ret;
+}
 unsigned jarbox_net_stop_owner(JarBoxSession *owner) {
     if (!owner) return 0;
     pthread_mutex_lock(&jarbox_net_lock);
@@ -277,6 +283,9 @@ void jarbox_net_scope_leave(JarBoxNetScope prior) { (void)prior; }
 unsigned jarbox_net_stop_owner(JarBoxSession *owner) { (void)owner; return 0; }
 unsigned jarbox_net_release_owner(JarBoxSession *owner) { (void)owner; return 0; }
 int jarbox_net_duplicate_for_tls(int fd) { return fd; }
+int jarbox_net_shutdown_fd(int *fd, int direction) {
+    return fd && *fd >= 0 ? shutdown(*fd, direction) : -1;
+}
 #define jarbox_net_register(fd) (fd)
 #define jarbox_net_socket(family,type,protocol) ((int)socket(family,type,protocol))
 #define jarbox_net_connect_deadline() 0
