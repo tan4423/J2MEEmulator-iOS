@@ -218,6 +218,7 @@ static void treo_render_owner_mode_set(uint64_t owner_key, int mode);
 static pthread_mutex_t g_treo_transition_lock = PTHREAD_MUTEX_INITIALIZER;
 static void treo_apply_mode_locked(MiniJVM *vm, int mode, uint64_t now_ns) {
     jarbox_treo_render_mode_set(&vm->session->treo_state, mode, now_ns);
+    jvm_bridge_cpu_mode_changed(vm->session);
     const uint64_t key = jarbox_native_heap_key_for_vm(vm);
     treo_render_owner_mode_set(key, mode);
     if (jvm_bridge_supported_concurrent_sessions() == 1)

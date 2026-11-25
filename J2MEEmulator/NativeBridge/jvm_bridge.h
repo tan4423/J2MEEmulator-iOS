@@ -1,6 +1,7 @@
 #ifndef JVM_BRIDGE_H
 #define JVM_BRIDGE_H
 #include <stdint.h>
+#include "../minijvm/jvm/jarbox_cpu_window.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -68,6 +69,12 @@ typedef struct {
     int mode, family, canvas, smart_period_ms, smart_fallback;
 } JarBoxTreoSnapshot;
 int jvm_bridge_treo_snapshot_for_token(uint64_t token, JarBoxTreoSnapshot *out);
+// Separate on-demand CPU snapshot; never called by periodic HUD polling.
+struct JarBoxSession;
+void jvm_bridge_cpu_worker_begin(struct JarBoxSession *session,int kind);
+void jvm_bridge_cpu_worker_end(struct JarBoxSession *session);
+void jvm_bridge_cpu_mode_changed(struct JarBoxSession *session);
+int jvm_bridge_cpu_snapshot_for_token(uint64_t token,JarBoxCpuSnapshot *out);
 /// Check the actual ownership flag (phase may briefly be idle during start).
 int jvm_bridge_session_is_active(void);
 /// Truthful number of reserved live native VM slots.

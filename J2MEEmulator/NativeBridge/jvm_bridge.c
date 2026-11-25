@@ -23,6 +23,8 @@
 #if defined(__APPLE__) && __JVM_OS_IOS__
 #include <os/proc.h>
 #include <time.h>
+#include <mach/mach.h>
+#include <sys/resource.h>
 #endif
 
 void jvm_bridge_trim_classpath_cache(void) {
@@ -785,6 +787,123 @@ int jvm_bridge_visit_running_vm_for_token(
     jarbox_session_callback_done(held_session);
     return 1;
 }
+// TLS records are linked only during the existing worker/runner lifetime.
+// Each owns a Mach send right. No VM heap/thread-list/lifecycle lock is
+// acquired here. Sampling is at mode boundaries or on demand, never a timer.
+#if defined(__APPLE__) && __JVM_OS_IOS__
+typedef struct JarBoxCpuThread {
+    struct JarBoxCpuThread *next;
+    JarBoxSession *owner;
+    thread_t port;
+    uint64_t baseline_ns, latest_ns;
+    int kind, ready;
+} JarBoxCpuThread;
+static pthread_mutex_t bridge_cpu_lock=PTHREAD_MUTEX_INITIALIZER;
+static _Thread_local JarBoxCpuThread bridge_cpu_thread;
+static int bridge_cpu_read_thread(thread_t port,uint64_t *out) {
+    thread_basic_info_data_t info;
+    mach_msg_type_number_t count=THREAD_BASIC_INFO_COUNT;
+    if (!MACH_PORT_VALID(port) ||
+        thread_info(port,THREAD_BASIC_INFO,(thread_info_t)&info,&count)!=KERN_SUCCESS ||
+        count<THREAD_BASIC_INFO_COUNT) return 0;
+    *out=((uint64_t)info.user_time.seconds+(uint64_t)info.system_time.seconds)*UINT64_C(1000000000)
+        +((uint64_t)info.user_time.microseconds+(uint64_t)info.system_time.microseconds)*1000;
+    return 1;
+}
+static void bridge_cpu_refresh_thread(JarBoxCpuThread *t) {
+    uint64_t now;
+    if (!t->ready) return;
+    if (!bridge_cpu_read_thread(t->port,&now) || now<t->latest_ns) {
+        ++t->owner->cpu_sample_errors;
+        return;
+    }
+    t->latest_ns=now;
+}
+void jvm_bridge_cpu_worker_begin(JarBoxSession *s,int kind) {
+    if (!s || kind<0 || kind>=JARBOX_CPU_KINDS) return;
+    JarBoxCpuThread *t=&bridge_cpu_thread;
+    pthread_mutex_lock(&bridge_cpu_lock);
+    if (t->owner) {
+        ++s->cpu_sample_errors;
+        pthread_mutex_unlock(&bridge_cpu_lock);
+        return;
+    }
+    t->owner=s; t->kind=kind; t->port=mach_thread_self();
+    t->ready=bridge_cpu_read_thread(t->port,&t->baseline_ns);
+    t->latest_ns=t->baseline_ns;
+    if (!t->ready) ++s->cpu_sample_errors;
+    t->next=s->cpu_threads; s->cpu_threads=t;
+    pthread_mutex_unlock(&bridge_cpu_lock);
+}
+void jvm_bridge_cpu_worker_end(JarBoxSession *s) {
+    JarBoxCpuThread *t=&bridge_cpu_thread;
+    pthread_mutex_lock(&bridge_cpu_lock);
+    if (s && t->owner==s) {
+        bridge_cpu_refresh_thread(t);
+        if (t->ready) s->cpu_retired_ns[t->kind]+=t->latest_ns-t->baseline_ns;
+        JarBoxCpuThread **p=&s->cpu_threads;
+        while (*p && *p!=t) p=&(*p)->next;
+        if (*p==t) *p=t->next;
+        if (MACH_PORT_VALID(t->port)) mach_port_deallocate(mach_task_self(),t->port);
+        memset(t,0,sizeof(*t));
+    }
+    pthread_mutex_unlock(&bridge_cpu_lock);
+}
+static JarBoxCpuPoint bridge_cpu_point(JarBoxSession *s) {
+    JarBoxCpuPoint p={0};
+    uint64_t totals[JARBOX_CPU_KINDS];
+    memcpy(totals,s->cpu_retired_ns,sizeof(totals));
+    for (JarBoxCpuThread *t=s->cpu_threads;t;t=t->next) {
+        bridge_cpu_refresh_thread(t);
+        if (t->ready) totals[t->kind]+=t->latest_ns-t->baseline_ns;
+    }
+    p.runner_ns=totals[JARBOX_CPU_RUNNER]; p.java_ns=totals[JARBOX_CPU_JAVA];
+    p.gc_ns=totals[JARBOX_CPU_GC]; p.errors=s->cpu_sample_errors;
+    struct rusage ru;
+    if (getrusage(RUSAGE_SELF,&ru)==0) {
+        p.process_ok=1;
+        p.process_ns=((uint64_t)ru.ru_utime.tv_sec+(uint64_t)ru.ru_stime.tv_sec)*UINT64_C(1000000000)
+            +((uint64_t)ru.ru_utime.tv_usec+(uint64_t)ru.ru_stime.tv_usec)*1000;
+    }
+    p.gc_cycles=__atomic_load_n(&s->treo_state.gc_worker_cycles,__ATOMIC_RELAXED);
+    p.requests=__atomic_load_n(&s->treo_state.nso_repaint_requests,__ATOMIC_RELAXED);
+    p.skips=jarbox_treo_nso_skip_count(&s->treo_state,0);
+    p.wall_ns=bridge_memory_clock();
+    return p;
+}
+void jvm_bridge_cpu_mode_changed(JarBoxSession *s) {
+    if (!s) return;
+    pthread_mutex_lock(&bridge_cpu_lock);
+    int mode=jarbox_treo_mode_get(&s->treo_state);
+    if (!s->cpu_history.initialized || s->cpu_history.mode!=mode)
+        jarbox_cpu_history_transition(&s->cpu_history,mode,bridge_cpu_point(s));
+    pthread_mutex_unlock(&bridge_cpu_lock);
+}
+static void bridge_cpu_snapshot(MiniJVM *vm,void *arg) {
+    JarBoxSession *s=vm->session;
+    pthread_mutex_lock(&bridge_cpu_lock);
+    JarBoxCpuPoint point=bridge_cpu_point(s);
+    *(JarBoxCpuSnapshot *)arg=jarbox_cpu_history_snapshot(&s->cpu_history,point);
+    if (s->cpu_history.mode!=jarbox_treo_mode_get(&s->treo_state))
+        ((JarBoxCpuSnapshot *)arg)->current.valid=0;
+    pthread_mutex_unlock(&bridge_cpu_lock);
+}
+#else
+void jvm_bridge_cpu_worker_begin(JarBoxSession *s,int kind) {(void)s;(void)kind;}
+void jvm_bridge_cpu_worker_end(JarBoxSession *s) {(void)s;}
+void jvm_bridge_cpu_mode_changed(JarBoxSession *s) {(void)s;}
+#endif
+int jvm_bridge_cpu_snapshot_for_token(uint64_t token,JarBoxCpuSnapshot *out) {
+    if (!out) return 0;
+    memset(out,0,sizeof(*out));
+#if defined(__APPLE__) && __JVM_OS_IOS__
+    return jvm_bridge_visit_running_vm_for_token(token,bridge_cpu_snapshot,out);
+#else
+    (void)token;
+    return 0;
+#endif
+}
+
 static void bridge_treo_snapshot(MiniJVM *vm, void *arg) {
     JarBoxTreoSnapshot *out = arg;
     JarBoxTreoState *s = &vm->session->treo_state;
@@ -1143,7 +1262,10 @@ static int bridge_run_slot(JarBoxVMContext *slot, const char *midlet_jar_path) {
     ArrayList *java_para = arraylist_create(0);
     arraylist_push_back(java_para, (void *)midlet_jar_path);
 
+    jvm_bridge_cpu_worker_begin(slot->jvm->session,JARBOX_CPU_RUNNER);
+    jvm_bridge_cpu_mode_changed(slot->jvm->session);
     s32 ret = call_main(slot->jvm, (c8 *)"javax/microedition/shell/MIDletRunner", java_para);
+    jvm_bridge_cpu_worker_end(slot->jvm->session);
 
     arraylist_destroy(java_para);
 

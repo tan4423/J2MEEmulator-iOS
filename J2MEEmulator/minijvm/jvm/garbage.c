@@ -564,6 +564,9 @@ s32 _gc_thread_run(void *para) {
 #endif
     GcCollector *collector = (GcCollector *) para;
     MiniJVM *jvm = collector->jvm;
+#if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__
+    jvm_bridge_cpu_worker_begin(jvm->session,JARBOX_CPU_GC);
+#endif
 
     while (1) {
 #if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__
@@ -673,6 +676,9 @@ s32 _gc_thread_run(void *para) {
             threadSleep(jvm->garbage_collect_period_ms / 2);
         }
     }
+#if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__
+    jvm_bridge_cpu_worker_end(jvm->session);
+#endif
     __atomic_store_n(&collector->_garbage_thread_status, GARBAGE_THREAD_DEAD, __ATOMIC_RELEASE);
     thrd_exit(0);
     return 0;

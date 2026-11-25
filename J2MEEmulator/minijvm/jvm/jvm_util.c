@@ -820,6 +820,9 @@ s32 jthread_run(void *para) {
         return 0;
     }
 
+#if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__
+    jvm_bridge_cpu_worker_begin(held_session,JARBOX_CPU_JAVA);
+#endif
     Utf8String *methodName = utf8_create_c("run");
     Utf8String *methodType = utf8_create_c("()V");
     MethodInfo *method = NULL;
@@ -874,6 +877,9 @@ s32 jthread_run(void *para) {
 #if _JVM_DEBUG_LOG_LEVEL > 1
     s64 spent = currentTimeMillis() - startAt;
     jvm_printf("[INFO]thread over %llx , return %d , spent : %lld\n", (s64) (intptr_t) jthread, ret, spent);
+#endif
+#if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__
+    jvm_bridge_cpu_worker_end(held_session);
 #endif
     // No Runtime or JavaThreadInfo dereference after this status store.
     // The native worker lease is the independent teardown barrier, not

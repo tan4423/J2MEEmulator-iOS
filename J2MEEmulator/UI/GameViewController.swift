@@ -1449,6 +1449,25 @@ class GameViewController: UIViewController {
             "ref_leaf_fast_calls_approx=\(treo.ref_leaf_fast_calls)"
         ]
         let treoLine = "treo_session:" + (treoAvailable ? treoFields.joined(separator: ",") : "unavailable")
+        var cpu = JarBoxCpuSnapshot()
+        let cpuAvailable = jvm_bridge_cpu_snapshot_for_token(gameSessionToken, &cpu) != 0
+        func cpuWindow(_ name: String, _ w: JarBoxCpuWindow) -> String {
+            guard cpuAvailable, w.valid != 0 else { return "cpu_\(name):unavailable" }
+            let fields: [String] = [
+                "mode=\(w.mode)", "start_ns=\(w.start_ns)", "end_ns=\(w.end_ns)",
+                "elapsed_ns=\(w.elapsed_ns)", "process_ok=\(w.process_ok)",
+                "process_cpu_ns=\(w.process_ns)", "threads_ok=\(w.threads_ok)",
+                "runner_cpu_ns=\(w.runner_ns)", "java_workers_cpu_ns=\(w.java_ns)",
+                "gc_thread_cpu_ns=\(w.gc_ns)", "gc_cycles=\(w.gc_cycles)",
+                "requests=\(w.requests)", "skips=\(w.skips)", "sample_errors=\(w.sample_errors)"
+            ]
+            return "cpu_\(name):" + fields.joined(separator: ",")
+        }
+        let cpuLines = [
+            cpuWindow("last_visible", cpu.last_visible),
+            cpuWindow("last_treo", cpu.last_treo),
+            cpuWindow("current", cpu.current)
+        ].joined(separator: "\n")
         // Keep these cumulative diagnostics cheap: only construct on demand.
         // Separate fields also avoid a long overloaded '+' expression for
         // Swift's type checker.
@@ -1469,6 +1488,7 @@ class GameViewController: UIViewController {
             "startup_admission_ms=" + startupAdmissionMs,
             "vm_start_probe=" + (hasStartupProbe ? "seen" : "missing"),
             treoLine,
+            cpuLines,
             "display_poll_count=" + String(treo_display_poll_calls()),
             "popup_update_count=" + String(jvm_bridge_mod_popup_tick_count()),
             "game_loop_last_call=" + String(jvm_bridge_mod_loop_last_stage()),

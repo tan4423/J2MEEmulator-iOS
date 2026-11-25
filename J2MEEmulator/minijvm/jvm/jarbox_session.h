@@ -3,6 +3,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include "jarbox_treo_state.h"
+#include "jarbox_cpu_window.h"
 
 /*
  * One Java heap, one JarBoxSession. The owner JVM holds the initial ref;
@@ -44,6 +45,10 @@ typedef struct JarBoxSession {
     // process-global scheduler. Guarded Canvas/NSO/JAR worker migration
     // remains a separate prerequisite for parallel JVM startup.
     JarBoxTreoState treo_state;
+    // Diagnostic-only, protected by bridge_cpu_lock; no Java heap references.
+    struct JarBoxCpuThread *cpu_threads;
+    uint64_t cpu_retired_ns[JARBOX_CPU_KINDS], cpu_sample_errors;
+    JarBoxCpuHistory cpu_history;
 } JarBoxSession;
 
 static inline JarBoxSession *jarbox_session_create(void *vm) {
