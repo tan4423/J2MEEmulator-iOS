@@ -1773,6 +1773,11 @@ s32 jstring_equals(Instance *jstr1, Instance *jstr2, Runtime *runtime) {
     } else if (!jstr2) {
         return 0;
     }
+    // String.equals(Object) may receive a non-String. Never interpret its
+    // unrelated instance layout as String.value/count/offset.
+    if (!jstr1->mb.clazz || jstr1->mb.clazz != jstr2->mb.clazz ||
+        !utf8_equals_c(jstr1->mb.clazz->name, STR_CLASS_JAVA_LANG_STRING)) return 0;
+    if (jstr1 == jstr2) return 1;
     Instance *arr1 = jstring_get_value_array(jstr1, runtime);//取得 c8[] value
     Instance *arr2 = jstring_get_value_array(jstr2, runtime);//取得 c8[] value
     s32 count1 = 0, offset1 = 0, count2 = 0, offset2 = 0;
@@ -1785,7 +1790,11 @@ s32 jstring_equals(Instance *jstr1, Instance *jstr2, Runtime *runtime) {
         count2 = jstring_get_count(jstr2, runtime);
         offset2 = jstring_get_offset(jstr2, runtime);
     }
-    if (count1 != count2) {
+    if (count1 < 0 || count2 < 0 || count1 != count2 ||
+        (arr1 && (arr1->arr_type_index != DATATYPE_JCHAR || offset1 < 0 ||
+                  offset1 > arr1->arr_length || count1 > arr1->arr_length - offset1)) ||
+        (arr2 && (arr2->arr_type_index != DATATYPE_JCHAR || offset2 < 0 ||
+                  offset2 > arr2->arr_length || count2 > arr2->arr_length - offset2))) {
         return 0;
     } else if (count1 == 0 && count2 == 0) {
         return 1;

@@ -669,9 +669,18 @@ static int treo_diag_version_gate(Runtime *runtime, CodeAttribute *ca) {
         pc[-2] != pc[-5] || pc[-1] != pc[-4]) return 0;
     s16 branch;
     memcpy(&branch, pc + 1, sizeof(branch));
-    const s64 target = (s64)(at - base) + branch;
+    s64 target = (s64)(at - base) + branch;
     if (target < 0 || target + 8 > ca->code_length) return 0;
+    // Class_bz.c PC151 jumps to PC542: aconst_null; putstatic
+    // Class_cu.an; aload 8; readLine; popup. Other copies omit the
+    // initial popup reset. Accept either form, including quickened fields.
     const u8 *reject = ca->code + target;
+    if (reject[0] == op_aconst_null &&
+        (reject[1] == op_putstatic || reject[1] == op_putstatic_ref)) {
+        target += 4;
+        if (target + 8 > ca->code_length) return 0;
+        reject = ca->code + target;
+    }
     if (reject[0] != op_aload ||
         (reject[2] != op_invokevirtual && reject[2] != op_invokevirtual_fast) ||
         (reject[5] != op_invokestatic && reject[5] != op_invokestatic_fast))

@@ -916,11 +916,63 @@ s32 java_lang_String_charAt0(Runtime *runtime, JClass *clazz) {
     return 0;
 }
 
+#if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__
+// Only record shape of the two operands of the observed version comparison.
+// No characters, hashes, credentials, endpoints or response text are logged.
+static unsigned jarbox_version_string_shape(Instance *s, Runtime *runtime, s32 *length) {
+    *length = -1;
+    if (!s || !s->mb.clazz ||
+        !utf8_equals_c(s->mb.clazz->name, STR_CLASS_JAVA_LANG_STRING)) return 0;
+    const s32 count = jstring_get_count(s, runtime);
+    const s32 offset = jstring_get_offset(s, runtime);
+    Instance *a = jstring_get_value_array(s, runtime);
+    if (count < 0 || offset < 0 || (!a && count) ||
+        (a && (a->arr_type_index != DATATYPE_JCHAR || offset > a->arr_length ||
+               count > a->arr_length - offset || (count && !a->arr_body)))) return 0;
+    *length = count;
+    // Bit 0: non-ASCII, bit 1: control, bit 2: replacement character,
+    // bit 3: embedded NUL. Cap inspection to avoid a long-input hot path.
+    unsigned flags = 0;
+    if (count > 256) return 16;
+    const u16 *chars = a ? (const u16 *)a->arr_body : NULL;
+    for (s32 i = 0; i < count; ++i) {
+        u16 c = chars[offset + i];
+        if (c > 127) flags |= 1;
+        if (c < 32 || c == 127) flags |= 2;
+        if (c == 0xfffd) flags |= 4;
+        if (!c) flags |= 8;
+    }
+    return flags;
+}
+static void jarbox_note_version_equals(Runtime *runtime, Instance *left, Instance *right, s32 equal) {
+    Runtime *p = runtime->parent;
+    if (!p || !p->clazz || !p->method ||
+        !utf8_equals_c(p->clazz->name, "Class_bz") ||
+        !utf8_equals_c(p->method->name, "c") ||
+        !utf8_equals_c(p->method->descriptor, "()V")) return;
+    const CodeAttribute *ca = p->method->converted_code;
+    if (!ca || !ca->code || ca->code_length <= 142 ||
+        (uintptr_t)p->pc != (uintptr_t)ca->code + 142 ||
+        !jvm_bridge_mod_protocol_note_slot()) return;
+    s32 left_len, right_len;
+    unsigned left_flags = jarbox_version_string_shape(left, runtime, &left_len);
+    unsigned right_flags = jarbox_version_string_shape(right, runtime, &right_len);
+    char event[160];
+    snprintf(event, sizeof(event),
+             "mod_version_equals:pc=142,equal=%d,reply_len=%d,expected_len=%d,reply_flags=%u,expected_flags=%u",
+             equal, left_len, right_len, left_flags, right_flags);
+    jvm_bridge_note_net_trace(event);
+}
+#endif
+
 s32 java_lang_String_equals(Runtime *runtime, JClass *clazz) {
     RuntimeStack *stack = runtime->stack;
     Instance *jstr1 = (Instance *) localvar_getRefer(runtime->localvar, 0);
     Instance *jstr2 = (Instance *) localvar_getRefer(runtime->localvar, 1);
     s32 r = jstring_equals(jstr1, jstr2, runtime);
+#if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__
+    jarbox_note_version_equals(runtime, jstr1, jstr2, r);
+#endif
 #if _JVM_DEBUG_LOG_LEVEL > 5
     invoke_deepth(runtime);
     jvm_printf("java_lang_String_equals r = %f\n", r);

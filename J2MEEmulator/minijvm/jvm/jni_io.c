@@ -104,6 +104,7 @@ typedef struct _VmSock {
     u8 net_send_error_once;
     u8 net_read_error_once;
     u8 net_available_once;
+    uint64_t net_tx_bytes, net_rx_bytes, net_short_writes;
 #endif
 } VmSock;
 
@@ -111,6 +112,15 @@ typedef struct _VmSock {
 static void jarbox_socket_note_io(VmSock *sock, int reading, int wanted, int result, int byte_mode) {
     u8 *success = reading ? &sock->net_read_once : &sock->net_sent_once;
     u8 *failure = reading ? &sock->net_read_error_once : &sock->net_send_error_once;
+    // Counts describe transport I/O, never the payload. Only the prelude
+    // port needs these extra counters; retain old diagnostics everywhere.
+    if (sock->hostport[0] == '2' && strcmp(sock->hostport, "2024") == 0) {
+        if (result > 0)
+            __atomic_fetch_add(reading ? &sock->net_rx_bytes : &sock->net_tx_bytes,
+                               (uint64_t)result, __ATOMIC_RELAXED);
+        if (!reading && result >= 0 && result < wanted)
+            __atomic_fetch_add(&sock->net_short_writes, 1, __ATOMIC_RELAXED);
+    }
     if (result > 0 && !__atomic_exchange_n(success, 1, __ATOMIC_RELAXED)) {
         char event[128];
         snprintf(event, sizeof(event), "tcp_first_%s:kind=%s,wanted=%d,actual=%d",
@@ -659,6 +669,13 @@ s32 org_mini_net_SocketNative_close0(Runtime *runtime, JClass *clazz) {
              (unsigned)vmsock->net_sent_once, (unsigned)vmsock->net_read_once,
              (unsigned)vmsock->net_send_error_once, (unsigned)vmsock->net_read_error_once);
     jvm_bridge_note_net_trace(event);
+    if (vmsock->hostport[0] == '2' && strcmp(vmsock->hostport, "2024") == 0) {
+        snprintf(event, sizeof(event), "tcp_prelude_totals:tx=%llu,rx=%llu,short_writes=%llu",
+                 (unsigned long long)__atomic_load_n(&vmsock->net_tx_bytes, __ATOMIC_RELAXED),
+                 (unsigned long long)__atomic_load_n(&vmsock->net_rx_bytes, __ATOMIC_RELAXED),
+                 (unsigned long long)__atomic_load_n(&vmsock->net_short_writes, __ATOMIC_RELAXED));
+        jvm_bridge_note_net_trace(event);
+    }
 #endif
     mbedtls_net_free(ctx);
 #if _JVM_DEBUG_LOG_LEVEL > 5
