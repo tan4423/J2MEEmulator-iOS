@@ -39,7 +39,7 @@ static void bytebuf_expand(ByteBuf *buf, u32 size) {
 PROGRAM = r"""
 #define CHECK(x) do { if (!(x)) return __LINE__; } while (0)
 int main(int argc, char **argv) {
-    CHECK(argc == 3);
+    CHECK(argc == 7);
     const char *jar = argv[1];
     ByteBuf b = {1, 0, 0, malloc(1)};
     CHECK(b.buf != NULL);
@@ -163,6 +163,18 @@ int main(int argc, char **argv) {
 #endif
     CHECK(zip_classpath_loadfile(jar, "a.class", &b) == 0);
     CHECK(b.wp == 7 && memcmp(b.buf, "new-low", 7) == 0);
+#if defined(__APPLE__) || defined(__linux__)
+    // Four readers are occupied. Retouch the oldest, then admit a fifth.
+    for (int i = 3; i < 6; ++i)
+        CHECK(zip_classpath_loadfile(argv[i], "a.class", &b) == 0);
+    CHECK(zip_classpath_loadfile(jar, "a.class", &b) == 0);
+    CHECK(jarbox_classpath_cache[0].path && strcmp(jarbox_classpath_cache[0].path, jar) == 0);
+    CHECK(jarbox_classpath_victim() == &jarbox_classpath_cache[1]);
+    CHECK(zip_classpath_loadfile(argv[6], "a.class", &b) == 0);
+    CHECK(jarbox_classpath_cache[0].path && strcmp(jarbox_classpath_cache[0].path, jar) == 0);
+    CHECK(jarbox_classpath_cache[1].path && strcmp(jarbox_classpath_cache[1].path, argv[6]) == 0);
+    CHECK(jarbox_classpath_data_count == 4);
+#endif
     zip_classpath_cache_trim();
     free(b.buf);
     return 0;
@@ -192,6 +204,11 @@ class ZipCaseSensitiveTest(unittest.TestCase):
             with zipfile.ZipFile(replacement, "w", zipfile.ZIP_DEFLATED) as archive:
                 archive.writestr("a.class", b"new-low")
                 archive.writestr("A.CLASS", b"fresh")
+            extras = []
+            for i in range(4):
+                extra = path / f"extra-{i}.jar"
+                shutil.copyfile(replacement, extra)
+                extras.append(str(extra))
             c = path / "test.c"
             c.write_text(PREAMBLE + source[start:end] + PROGRAM, encoding="utf-8")
             exe = path / "test"
@@ -199,7 +216,7 @@ class ZipCaseSensitiveTest(unittest.TestCase):
                                     str(c), str(UTILS / "miniz.c"), "-o", str(exe)],
                                    capture_output=True, text=True, timeout=60)
             self.assertEqual(build.returncode, 0, build.stdout + build.stderr)
-            run = subprocess.run([str(exe), str(jar), str(replacement)], capture_output=True, text=True, timeout=10)
+            run = subprocess.run([str(exe), str(jar), str(replacement), *extras], capture_output=True, text=True, timeout=10)
             self.assertEqual(run.returncode, 0, run.stdout + run.stderr +
                              f" C check line (mod 256): {run.returncode}")
 

@@ -127,12 +127,13 @@ static unsigned jarbox_classpath_data_count;
 typedef struct {
     char *path;
     struct stat identity;
+    uint64_t last_used;
     mz_zip_archive archive;
     JarBoxClasspathData *data[JARBOX_CLASSPATH_DATA_BUCKETS];
     JarBoxClasspathMiss *misses[JARBOX_CLASSPATH_DATA_BUCKETS];
 } JarBoxClasspathReader;
 static JarBoxClasspathReader jarbox_classpath_cache[JARBOX_CLASSPATH_CACHE_SLOTS];
-static unsigned jarbox_classpath_next;
+static uint64_t jarbox_classpath_clock;
 static pthread_mutex_t jarbox_classpath_lock = PTHREAD_MUTEX_INITIALIZER;
 static _Atomic int jarbox_classpath_trim_pending;
 
@@ -256,11 +257,33 @@ static void jarbox_classpath_close(JarBoxClasspathReader *reader) {
     }
     memset(reader, 0, sizeof(*reader));
 }
+/* All reader recency updates happen under jarbox_classpath_lock. On an
+ * empty slot prefer admission; otherwise evict the least recently used
+ * archive, not a hot boot/API reader just because its turn came around. */
+static JarBoxClasspathReader *jarbox_classpath_victim(void) {
+    JarBoxClasspathReader *victim = &jarbox_classpath_cache[0];
+    for (unsigned n = 0; n < JARBOX_CLASSPATH_CACHE_SLOTS; ++n) {
+        JarBoxClasspathReader *candidate = &jarbox_classpath_cache[n];
+        if (!candidate->path) return candidate;
+        if (candidate->last_used < victim->last_used) victim = candidate;
+    }
+    return victim;
+}
+static void jarbox_classpath_touch(JarBoxClasspathReader *reader) {
+    if (++jarbox_classpath_clock == 0) {
+        // Counter wrap affects only eviction preference, never identity.
+        for (unsigned n = 0; n < JARBOX_CLASSPATH_CACHE_SLOTS; ++n)
+            jarbox_classpath_cache[n].last_used = 0;
+        jarbox_classpath_clock = 1;
+    }
+    reader->last_used = jarbox_classpath_clock;
+}
+
 static void jarbox_classpath_trim_locked(void) {
     if (atomic_exchange(&jarbox_classpath_trim_pending, 0)) {
         for (unsigned i = 0; i < JARBOX_CLASSPATH_CACHE_SLOTS; ++i)
             jarbox_classpath_close(&jarbox_classpath_cache[i]);
-        jarbox_classpath_next = 0;
+        jarbox_classpath_clock = 0;
     }
 }
 void zip_classpath_cache_trim(void) {
@@ -297,15 +320,7 @@ s32 zip_classpath_loadfile(const char *jarpath, const char *filename, ByteBuf *b
         }
     }
     if (!reader) {
-        // Prefer an empty slot; otherwise evict one bounded reader.
-        for (unsigned n = 0; n < JARBOX_CLASSPATH_CACHE_SLOTS; ++n) {
-            if (!jarbox_classpath_cache[n].path) {
-                reader = &jarbox_classpath_cache[n];
-                break;
-            }
-        }
-        if (!reader)
-            reader = &jarbox_classpath_cache[jarbox_classpath_next++ % JARBOX_CLASSPATH_CACHE_SLOTS];
+        reader = jarbox_classpath_victim();
         jarbox_classpath_close(reader);
         size_t len = strlen(jarpath) + 1;
         char *copy = malloc(len);
@@ -360,6 +375,7 @@ s32 zip_classpath_loadfile(const char *jarpath, const char *filename, ByteBuf *b
     // failure or budget exhaustion must not affect the caller's result.
     if (!cached && ret == 0) jarbox_classpath_data_add(reader, entry, buf);
     if (definitive_miss) jarbox_classpath_miss_add(reader, entry);
+    jarbox_classpath_touch(reader);
     fallback = 0;
 done:
     jarbox_classpath_trim_locked();
