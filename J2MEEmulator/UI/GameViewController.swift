@@ -2111,17 +2111,18 @@ class GameViewController: UIViewController {
         let elidedDraws = treo_afk_elided_calls()
         let utf16Fast = treo_vm_utf16_fast_calls()
         let arrayLookupFast = treo_vm_array_lookup_fast_calls()
-        let ninjaMatched = treo_ninja_deep_verified()
-        let ninjaRepaints = treo_ninja_deep_skipped(0)
-        let ninjaServices = treo_ninja_deep_skipped(1)
-        let ninjaPaints = treo_ninja_deep_skipped(2)
+        let ninjaMatched: Int32
+        let ninjaRepaints: UInt64
+        let ninjaServices: UInt64
+        let ninjaPaints: UInt64
+        let treoSessionAvailable: Bool
         let displayPolls = treo_display_poll_calls()
         let displayWaits = treo_display_wait_calls()
         let displayTimeouts = treo_display_wait_timeouts()
         let displayWakeSignals = treo_display_wake_signals()
         let displayGCSafeWaits = treo_display_gc_safe_wait_calls()
-        let nsoRequests = treo_nso_repaint_requests()
-        let nsoCanvasSeen = treo_nso_canvas_recognized()
+        let nsoRequests: UInt64
+        let nsoCanvasSeen: Int32
         let imageHits = treo_image_cache_hits()
         let imageStores = treo_image_cache_stores()
         let imageStoredBytes = treo_image_cache_stored_bytes()
@@ -2132,6 +2133,17 @@ class GameViewController: UIViewController {
         let springboardMotion = AnimatedBackgroundView.springboardAnimating
         let springboardPauseLayers = AnimatedBackgroundView.springboardPauseLayers
         let springboardLoops = AnimatedBackgroundView.springboardAnimationLoops
+
+        init(token: UInt64) {
+            var snapshot = JarBoxTreoSnapshot()
+            treoSessionAvailable = jvm_bridge_treo_snapshot_for_token(token, &snapshot) != 0
+            ninjaMatched = snapshot.family
+            ninjaRepaints = snapshot.repaint_skips
+            ninjaServices = snapshot.service_skips
+            ninjaPaints = snapshot.paint_skips
+            nsoRequests = snapshot.repaint_requests
+            nsoCanvasSeen = snapshot.canvas
+        }
     }
 
     private func showBlackout(mode: Int32 = 1, smartGC: Bool = false,
@@ -2244,7 +2256,7 @@ class GameViewController: UIViewController {
             Task { @MainActor [weak self] in self?.recordTreoThermalChange() }
         }
         NotificationCenter.default.addObserver(self, selector: #selector(hideBlackout), name: UIApplication.willResignActiveNotification, object: nil)
-        vmTreoProbeStart = VMTreoProbe()
+        vmTreoProbeStart = VMTreoProbe(token: gameSessionToken)
     }
 
     @objc private func hideBlackout() {
@@ -2265,7 +2277,7 @@ class GameViewController: UIViewController {
         blackoutThermalEvents = 0
 
         let vmLog: String? = vmTreoProbeStart.map { start in
-            let end = VMTreoProbe()
+            let end = VMTreoProbe(token: gameSessionToken)
             let dt = max(0.001, end.time - start.time)
             func percent(_ a: Double, _ b: Double) -> String {
                 guard a >= 0, b >= a else { return "?" }
@@ -2287,9 +2299,9 @@ class GameViewController: UIViewController {
             let arrayLookupFast = end.arrayLookupFast &- start.arrayLookupFast
             let arrayLookupBuild = treo_vm_array_lookup_build() != 0 ? "on" : "off"
             let ninjaProfile = end.ninjaMatched != 0 ? "matched" : "generic"
-            let ninjaRepaints = end.ninjaRepaints &- start.ninjaRepaints
-            let ninjaServices = end.ninjaServices &- start.ninjaServices
-            let ninjaPaints = end.ninjaPaints &- start.ninjaPaints
+            let ninjaRepaints = end.ninjaRepaints >= start.ninjaRepaints && end.treoSessionAvailable && start.treoSessionAvailable ? end.ninjaRepaints - start.ninjaRepaints : 0
+            let ninjaServices = end.ninjaServices >= start.ninjaServices && end.treoSessionAvailable && start.treoSessionAvailable ? end.ninjaServices - start.ninjaServices : 0
+            let ninjaPaints = end.ninjaPaints >= start.ninjaPaints && end.treoSessionAvailable && start.treoSessionAvailable ? end.ninjaPaints - start.ninjaPaints : 0
             let utf16Build = treo_vm_utf16_fast_build() != 0 ? "on" : "off"
             let imageCacheBuild = treo_image_cache_build() != 0 ? "on" : "off"
             let imageCacheHits = end.imageHits &- start.imageHits
@@ -2313,19 +2325,28 @@ class GameViewController: UIViewController {
                 thermalEvents, hudUpdates)
         }
         let pulseLog: String? = vmTreoProbeStart.map { start in
-            let end = VMTreoProbe()
+            let end = VMTreoProbe(token: gameSessionToken)
             let dt = max(0.001, end.time - start.time)
-            let requests = end.nsoRequests &- start.nsoRequests
-            let skips = (end.ninjaRepaints &- start.ninjaRepaints) +
-                        (end.ninjaServices &- start.ninjaServices) +
-                        (end.ninjaPaints &- start.ninjaPaints)
+            guard start.treoSessionAvailable, end.treoSessionAvailable,
+                  end.nsoRequests >= start.nsoRequests,
+                  end.ninjaRepaints >= start.ninjaRepaints,
+                  end.ninjaServices >= start.ninjaServices,
+                  end.ninjaPaints >= start.ninjaPaints else {
+                return "[JarBoxVM][GamePulse] session_snapshot=unavailable"
+            }
+            let requests = end.nsoRequests - start.nsoRequests
+            let skips = (end.ninjaRepaints - start.ninjaRepaints) +
+                        (end.ninjaServices - start.ninjaServices) +
+                        (end.ninjaPaints - start.ninjaPaints)
             let specialized = blackoutRequestedMode == 8 &&
                               end.ninjaMatched != 0 && end.nsoCanvasSeen != 0 &&
                               skips > 0
             let mode = specialized ? "chuyen_biet_NSO" : "chuan"
             let pulseHz = Double(requests) / dt
-            let baseline = blackoutNSOLiveHz
-            let gapMs = treo_nso_last_repaint_gap_ms()
+            // The old rolling-baseline and gap probes only run in single-VM mode.
+            let singleVMProbe = jvm_bridge_supported_concurrent_sessions() == 1
+            let baseline = singleVMProbe ? blackoutNSOLiveHz : -1
+            let gapMs = singleVMProbe ? treo_nso_last_repaint_gap_ms() : -1
             func rateText(_ rate: Double) -> String {
                 return rate >= 0 && rate.isFinite
                     ? String(format: "%.2f", rate) : "?"
@@ -2394,7 +2415,7 @@ class GameViewController: UIViewController {
                 " Fixed-work proxy only; not P/E core ID, CPU MHz, watts or proof of game/server progress."
         }
         let displayIdleLog: String? = vmTreoProbeStart.map { start in
-            let end = VMTreoProbe()
+            let end = VMTreoProbe(token: gameSessionToken)
             let dt = max(0.001, end.time - start.time)
             let polls = end.displayPolls &- start.displayPolls
             let waits = end.displayWaits &- start.displayWaits
