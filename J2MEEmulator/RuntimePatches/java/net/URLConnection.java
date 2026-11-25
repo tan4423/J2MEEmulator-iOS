@@ -13,15 +13,16 @@ package java.net;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.io.File;
 import java.util.*;
 
 public abstract class URLConnection {
     protected final URL url;
     protected boolean doInput = true;
     protected boolean doOutput = false;
-    protected boolean useCaches = true;
-    private int connectTimeout;
-    private int readTimeout;
+    protected boolean useCaches = false;
+    protected int connectTimeout;
+    protected int readTimeout;
 
     public void setConnectTimeout(int timeout) {
         if (timeout < 0) throw new IllegalArgumentException("negative connect timeout");
@@ -33,7 +34,30 @@ public abstract class URLConnection {
         readTimeout = timeout;
     }
     public int getReadTimeout() { return readTimeout; }
-    protected static final Map<String, CachedFile> caches = Collections.synchronizedMap(new HashMap());
+    protected static final long CACHE_EXPIRE_TIME = 1000 * 60 * 60 * 24;
+    protected static final int MAX_CACHE_SIZE = 200;
+    protected static final String CACHE_FILE_PREFIX = "http_cache_";
+    protected static final Map<String, CachedFile> caches = Collections.synchronizedMap(new LinkedHashMap() {
+        @Override
+        protected boolean removeEldestEntry(Map.Entry eldest) {
+            if (size() > MAX_CACHE_SIZE) {
+                // Clean up the file when removing cache entry
+                CachedFile cachedFile = (CachedFile) eldest.getValue();
+                if (cachedFile != null && cachedFile.resource instanceof String) {
+                    try {
+                        File file = new File((String) cachedFile.resource);
+                        if (file.exists()) {
+                            file.delete();
+                        }
+                    } catch (Exception e) {
+                        // Ignore cleanup errors
+                    }
+                }
+                return true;
+            }
+            return false;
+        }
+    });
 
     protected URLConnection(URL url) {
         this.url = url;
@@ -83,6 +107,9 @@ public abstract class URLConnection {
 
     public void setUseCaches(boolean v) {
         useCaches = v;
+        if (!v) {
+            cleanExpiredCaches();
+        }
     }
 
     public boolean getUseCaches() {
@@ -138,6 +165,36 @@ public abstract class URLConnection {
         return getHeaderFieldDate("expires", 0);
     }
 
+    /**
+     * Clean up expired cache files
+     */
+    static void cleanExpiredCaches() {
+        synchronized (caches) {
+            Iterator<Map.Entry<String, CachedFile>> iterator = caches.entrySet().iterator();
+            while (iterator.hasNext()) {
+                Map.Entry<String, CachedFile> entry = iterator.next();
+                CachedFile cachedFile = entry.getValue();
+                if (cachedFile.isExpired()) {
+                    // Delete the cache file
+                    if (cachedFile.resource instanceof String) {
+                        try {
+                            File file = new File((String) cachedFile.resource);
+                            if (file.exists()) {
+                                file.delete();
+                            }
+                        } catch (Exception e) {
+                            // Ignore cleanup errors
+                        }
+                    }
+                    iterator.remove();
+                }
+            }
+        }
+    }
+
+    protected String getCacheFileName() {
+        return CACHE_FILE_PREFIX + System.currentTimeMillis() + "_" + Math.random();
+    }
 
     protected static class CachedFile {
         public final Object resource;

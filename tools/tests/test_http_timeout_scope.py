@@ -22,6 +22,8 @@ interface HttpConnection extends Connection {
  void setRequestMethod(String method) throws IOException;
  void setRequestProperty(String key,String value) throws IOException;
  int getResponseCode() throws IOException;
+ String getResponseMessage() throws IOException;
+ String getHeaderField(int i) throws IOException;
  String getHeaderFieldKey(int i) throws IOException;
  String getHeaderField(String key) throws IOException;
  long getExpiration() throws IOException;
@@ -60,7 +62,9 @@ public class HttpTest {
   public int getResponseCode()throws IOException{
    if(mode==1){Scope.failure=1;throw new IOException("connect");}return responseCode;
   }
-  public String getHeaderFieldKey(int i){return null;}
+  public String getResponseMessage(){return "OK";}
+  public String getHeaderFieldKey(int i){return i==1?"Content-Type":null;}
+  public String getHeaderField(int i){return i==0?"HTTP/1.1 200 OK":i==1?"text/plain":null;}
   public String getHeaderField(String k){return null;}
   public long getExpiration(){return System.currentTimeMillis()+60000;}
   public DataOutputStream openDataOutputStream(){return new DataOutputStream(written);}
@@ -82,16 +86,18 @@ public class HttpTest {
  }
  static class H extends HttpURLConnection {
   H(String path)throws Exception{super(new URL("http://localhost/"+path));}
-  public void disconnect(){}
-  boolean clean(){return connection==null&&rcvData==null&&rcvHeader.isEmpty();}
+  public void disconnect(){releaseResponseFile();}
+  boolean clean(){return connection==null&&cacheFilePath==null&&rcvHeader.isEmpty();}
+  String path(){return cacheFilePath;}
  }
  static String body(H h)throws Exception{
   ByteArrayOutputStream b=new ByteArrayOutputStream();InputStream in=h.getInputStream();int n;
-  while((n=in.read())!=-1)b.write(n);
+  try{while((n=in.read())!=-1)b.write(n);}finally{in.close();}
   return b.toString("UTF-8");
  }
  public static void main(String[] args)throws Exception{
   H h=new H("fail");
+  check(!h.getUseCaches()); h.setUseCaches(true);
   check(h.getConnectTimeout()==0&&h.getReadTimeout()==0);
   h.setConnectTimeout(50);h.setReadTimeout(70);h.setDoOutput(true);
   check(h.getDoOutput()&&h.getDoInput());
@@ -104,15 +110,24 @@ public class HttpTest {
   try{body(h);throw new AssertionError();}catch(SocketTimeoutException expected){}
   check(h.clean()&&Scope.depth==0&&c.closes==1&&c.streamCloses==1&&c.timeoutCloseWasScoped);
   c=new Conn(0,"complete");Connector.next=c;check(body(h).equals("complete")&&Scope.depth==0);
-  int count=Connector.opens;check(body(new H("fail")).equals("complete")&&Connector.opens==count);
-  Connector.next=new Conn(0,"one");check(body(new H("q?a=1")).equals("one"));
-  Connector.next=new Conn(0,"two");check(body(new H("q?a=2")).equals("two"));
-  H header=new H("q?a=1");header.setRequestProperty("X-Test","old");header.setRequestProperty("X-Test","new");
+  int count=Connector.opens;H hit=new H("fail");hit.setUseCaches(true);
+  check(body(hit).equals("complete")&&Connector.opens==count);
+  check(hit.getResponseCode()==200&&hit.getResponseMessage().equals("OK"));
+  check(hit.getHeaderField(0).equals("HTTP/1.1 200 OK")&&hit.getHeaderFieldKey(1).equals("Content-Type"));
+  check(!hit.path().equals(h.path()));
+  String first=h.path();h.disconnect();check(!new File(first).exists()&&body(hit).equals("complete"));
+  hit.disconnect();
+  Connector.next=new Conn(0,"one");H q1=new H("q?a=1");q1.setUseCaches(true);check(body(q1).equals("one"));q1.disconnect();
+  Connector.next=new Conn(0,"two");H q2=new H("q?a=2");q2.setUseCaches(true);check(body(q2).equals("two"));q2.disconnect();
+  H header=new H("q?a=1");header.setUseCaches(true);header.setRequestProperty("X-Test","old");header.setRequestProperty("X-Test","new");
   c=new Conn(0,"private");Connector.next=c;
   check(body(header).equals("private")&&c.headers.get("x-test").equals("new"));
-  H post=new H("q?a=1");post.setRequestMethod("POST");c=new Conn(0,"post");Connector.next=c;
+  H post=new H("q?a=1");post.setUseCaches(true);post.setRequestMethod("POST");c=new Conn(0,"post");Connector.next=c;
   check(body(post).equals("post")&&c.written.size()==0);
-  check(body(new H("q?a=1")).equals("one"));
+  header.disconnect();post.disconnect();
+  H cached=new H("q?a=1");cached.setUseCaches(true);check(body(cached).equals("one"));cached.disconnect();
+  Connector.next=new Conn(0,"uncached");H fresh=new H("q?a=1");check(body(fresh).equals("uncached"));fresh.disconnect();
+  synchronized(URLConnection.caches){for(URLConnection.CachedFile entry:URLConnection.caches.values())new File((String)entry.resource).delete();URLConnection.caches.clear();}
  }
 }
 """
@@ -136,8 +151,11 @@ class HttpTimeoutScopeTest(unittest.TestCase):
                 (root/name).write_text(s)
             (root/"GCF.java").write_text(GCF)
             (root/"HttpTest.java").write_text(MAIN)
-            subprocess.run([javac,"-source","8","-target","8","-d",td,*map(str,root.glob("*.java"))],check=True,timeout=30)
-            subprocess.run([java,"-cp",td,"fixture.HttpTest"],check=True,timeout=10)
+            subprocess.run([javac,"--release","8","-d",td,*map(str,root.glob("*.java"))],check=True,timeout=30)
+            temp = root/"responses"
+            temp.mkdir()
+            subprocess.run([java,"-Djava.io.tmpdir="+str(temp),"-cp",td,"fixture.HttpTest"],check=True,timeout=10)
+            self.assertEqual(list(temp.iterdir()), [], "HTTP temporary files leaked")
 
     def test_native_abi_and_packaging(self):
         c=(CORE/"jni_io.c").read_text()
@@ -145,6 +163,9 @@ class HttpTimeoutScopeTest(unittest.TestCase):
             self.assertIn('{"java/net/HttpURLConnection", "'+name+'", "'+desc+'"',c)
         ci=(ROOT/"codemagic.yaml").read_text()
         self.assertIn('comm -23 "$RUNNER_TEMP/http-base-old-api"',ci)
+        self.assertIn("'java/net/URLConnection$1.class'",ci)
+        self.assertLess(ci.index('jar uf "$jars/minijvm_rt.jar" -C "$http_base_new" .'),
+                        ci.index('javac -source 8 -target 8 -bootclasspath "$jars/minijvm_rt.jar:$jars/j2me_api.jar" -sourcepath \'\' \\\n            -d "$http_classes"'))
         self.assertIn('cmp "$http_base_old/$entry" "$http_base_new/$entry"',ci)
 
 if __name__=="__main__":

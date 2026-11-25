@@ -32,7 +32,11 @@ public abstract class HttpURLConnection extends URLConnection {
 
     protected int status;
     protected Map<String, List<String>> rcvHeader = new HashMap<>();
-    protected byte[] rcvData;
+    protected String cacheFilePath;
+    protected String responseMessage;
+    protected List<String> headerKeys = new ArrayList<>();
+    protected List<String> headerValues = new ArrayList<>();
+    private static final long MAX_REUSABLE_BODY = 256 * 1024L;
 
     String method = HTTP_GET;
 
@@ -48,7 +52,7 @@ public abstract class HttpURLConnection extends URLConnection {
 
     @Override
     public synchronized void connect() throws IOException {
-        if (rcvData != null) return;
+        if (cacheFilePath != null) return;
         if (jarboxHttpBegin(getConnectTimeout(), getReadTimeout()) != 0)
             throw new IOException("HTTP timeout scope unavailable");
         boolean complete = false;
@@ -59,8 +63,12 @@ public abstract class HttpURLConnection extends URLConnection {
             int timeout;
             try {
                 if (!complete || jarboxHttpTimedOut() != 0) {
-                    rcvData = null;
+                    releaseResponseFile();
                     rcvHeader.clear();
+                    headerKeys.clear();
+                    headerValues.clear();
+                    status = 0;
+                    responseMessage = null;
                     HttpConnection failed = connection;
                     connection = null;
                     if (failed != null) {
@@ -77,109 +85,241 @@ public abstract class HttpURLConnection extends URLConnection {
         }
     }
 
-    private void connectInternal() throws IOException {
-        if (rcvData != null) return;
-
-        String urlStr = url.toString();
-        // Full URL including query identifies the resource. Do not cache
-        // POST or requests with caller-supplied headers.
-        boolean cacheable = useCaches && method.equals(HTTP_GET) && outHeader.isEmpty();
-        CachedFile ba = cacheable ? caches.get(urlStr) : null;
-        if (ba != null && !ba.isExpired()) {
-            if (useCaches) {  //cache hit
-                rcvData = (byte[]) ba.resource;
-                return;
-            }
-        } else if (cacheable) {
-            caches.remove(urlStr);
+    // Copy only completed, small, explicitly cacheable GETs. The cache's
+    // eviction/expiry must never delete a file owned by a live connection.
+    private static final class HttpCachedFile extends CachedFile {
+        final int status;
+        final String message;
+        final List<String> keys, values;
+        HttpCachedFile(String path, long expires, HttpURLConnection response) {
+            super(path, expires);
+            status = response.status;
+            message = response.responseMessage;
+            keys = new ArrayList<String>(response.headerKeys);
+            values = new ArrayList<String>(response.headerValues);
         }
-        //request
-        if (connection == null) {
-            Connection con = Connector.open(url.toString());
-            if (!(con instanceof HttpConnection)) {
-                if (con != null) con.close();
-                throw new IOException("not an HTTP connection");
-            }
-            if (con instanceof HttpConnection) {
-                connection = (HttpConnection) con;
-                if (method.equals(HTTP_POST)) {
-                    connection.setRequestMethod(HttpConnection.POST);
-                    byte[] data = outData == null ? new byte[0] : outData.toByteArray();
-                    for (String k : outHeader.keySet()) {
-                        List<String> vals = outHeader.get(k);
-                        StringBuilder sb = new StringBuilder();
-                        for (String v : vals) {
-                            sb.append(v).append(',');
-                        }
-                        if (sb.length() > 0) {
-                            sb.deleteCharAt(sb.length() - 1);
-                        }
-                        connection.setRequestProperty(k, sb.toString());
-                    }
-                    connection.setRequestProperty("Content-Length", String.valueOf(data.length));
-                    DataOutputStream output = connection.openDataOutputStream();
-                    try { output.write(data); output.flush(); }
-                    finally { output.close(); }
-                } else {
-                    connection.setRequestMethod(HttpConnection.GET);
-                    for (String k : outHeader.keySet()) {
-                        List<String> vals = outHeader.get(k);
-                        StringBuilder sb = new StringBuilder();
-                        for (String v : vals) {
-                            if (sb.length() > 0) sb.append(',');
-                            sb.append(v);
-                        }
-                        connection.setRequestProperty(k, sb.toString());
-                    }
-                }
-                status = connection.getResponseCode();
-                if (status != HttpConnection.HTTP_OK) {
-                    throw new IOException("Http status: " + status);
-                }
-                for (int i = 0; true; i++) {
-                    String k = connection.getHeaderFieldKey(i);
-                    if (k == null) break;
-                    String v = connection.getHeaderField(k);
-                    List<String> list = new ArrayList<>();
-                    list.add(v);
-                    rcvHeader.put(k.toLowerCase(), list);
-                }
-                ByteArrayOutputStream baos = new ByteArrayOutputStream();
-                InputStream is = connection.openDataInputStream();
-                byte[] buf = new byte[1024];
+    }
+
+    private static void deleteFile(String path) {
+        if (path != null) {
+            try { new File(path).delete(); } catch (Exception ignored) {}
+        }
+    }
+
+    protected synchronized void releaseResponseFile() {
+        String path = cacheFilePath;
+        cacheFilePath = null;
+        deleteFile(path);
+    }
+
+    @Override
+    protected void finalize() throws Throwable {
+        try { releaseResponseFile(); }
+        finally { super.finalize(); }
+    }
+
+    private File copyFile(String path) throws IOException {
+        File result = File.createTempFile(getCacheFileName(), ".tmp");
+        boolean complete = false;
+        try {
+            InputStream in = new FileInputStream(path);
+            try {
+                OutputStream out = new FileOutputStream(result);
                 try {
-                    while (true) {
-                        int len = is.read(buf);
-                        if (jarboxHttpTimedOut() != 0)
-                            throw new SocketTimeoutException("HTTP read timeout");
-                        if (len < 0) break;
-                        if (len == 0) {
-                            int one = is.read();
+                    byte[] buf = new byte[1024];
+                    int count;
+                    while ((count = in.read(buf)) != -1) {
+                        if (count == 0) {
+                            int one = in.read();
                             if (one < 0) break;
-                            baos.write(one);
-                        } else baos.write(buf, 0, len);
+                            out.write(one);
+                        } else out.write(buf, 0, count);
                     }
-                } finally {
-                    is.close();
-                }
-                if (jarboxHttpTimedOut() != 0)
-                    throw new SocketTimeoutException("HTTP read timeout");
-                rcvData = baos.toByteArray();
-                long exp = connection.getExpiration();
-                long cur = System.currentTimeMillis();
-                if (cacheable && cur < exp && jarboxHttpTimedOut() == 0) {
-                    CachedFile res = new CachedFile(rcvData, connection.getExpiration());
-                    caches.put(urlStr, res);
-                }
+                } finally { out.close(); }
+            } finally { in.close(); }
+            complete = true;
+            return result;
+        } finally {
+            if (!complete) deleteFile(result.getAbsolutePath());
+        }
+    }
+
+    private void addResponseHeader(String key, String value) {
+        headerKeys.add(key);
+        headerValues.add(value);
+        if (key != null) {
+            String lower = key.toLowerCase();
+            List<String> values = rcvHeader.get(lower);
+            if (values == null) {
+                values = new ArrayList<String>();
+                rcvHeader.put(lower, values);
+            }
+            values.add(value);
+        }
+    }
+
+    private boolean restoreCachedResponse(String urlStr) {
+        synchronized (caches) {
+            CachedFile cached = caches.get(urlStr);
+            if (cached == null) return false;
+            if (cached.isExpired() || !(cached instanceof HttpCachedFile) ||
+                    !(cached.resource instanceof String)) {
+                if (cached.resource instanceof String) deleteFile((String) cached.resource);
+                caches.remove(urlStr);
+                return false;
+            }
+            HttpCachedFile entry = (HttpCachedFile) cached;
+            try {
+                File copy = copyFile((String) entry.resource);
+                cacheFilePath = copy.getAbsolutePath();
+                status = entry.status;
+                responseMessage = entry.message;
+                for (int i = 0; i < entry.keys.size(); i++)
+                    addResponseHeader(entry.keys.get(i), entry.values.get(i));
+                return true;
+            } catch (IOException ignored) {
+                deleteFile((String) entry.resource);
+                caches.remove(urlStr);
+                return false;
             }
         }
     }
 
+    private void cacheCompletedResponse(String urlStr, long expires) {
+        if (expires <= System.currentTimeMillis() || cacheFilePath == null ||
+                new File(cacheFilePath).length() > MAX_REUSABLE_BODY) return;
+        File copy = null;
+        try {
+            copy = copyFile(cacheFilePath);
+            synchronized (caches) {
+                cleanExpiredCaches();
+                CachedFile previous = caches.put(urlStr,
+                        new HttpCachedFile(copy.getAbsolutePath(), expires, this));
+                if (previous != null && previous.resource instanceof String)
+                    deleteFile((String) previous.resource);
+                copy = null; // the cache now owns this file
+            }
+        } catch (IOException ignored) {
+            // Caching is optional, not a failure of the completed request.
+        } finally {
+            if (copy != null) deleteFile(copy.getAbsolutePath());
+        }
+    }
+
+    private void applyRequestHeaders() throws IOException {
+        for (String key : outHeader.keySet()) {
+            List<String> values = outHeader.get(key);
+            if (values == null || values.isEmpty()) continue;
+            StringBuilder joined = new StringBuilder();
+            for (int i = 0; i < values.size(); i++) {
+                if (i > 0) joined.append(',');
+                joined.append(values.get(i));
+            }
+            connection.setRequestProperty(key, joined.toString());
+        }
+    }
+
+    private void connectInternal() throws IOException {
+        if (cacheFilePath != null) return;
+        String urlStr = url.toString();
+        boolean cacheable = useCaches && method.equals(HTTP_GET) && outHeader.isEmpty();
+        if (cacheable && restoreCachedResponse(urlStr)) return;
+
+        if (connection == null) {
+            Connection con = Connector.open(urlStr);
+            if (!(con instanceof HttpConnection)) {
+                if (con != null) con.close();
+                throw new IOException("not an HTTP connection");
+            }
+            connection = (HttpConnection) con;
+        }
+        if (method.equals(HTTP_POST)) {
+            connection.setRequestMethod(HttpConnection.POST);
+            applyRequestHeaders();
+            byte[] data = outData == null ? new byte[0] : outData.toByteArray();
+            connection.setRequestProperty("Content-Length", String.valueOf(data.length));
+            DataOutputStream output = connection.openDataOutputStream();
+            try { output.write(data); output.flush(); }
+            finally { output.close(); }
+        } else {
+            connection.setRequestMethod(HttpConnection.GET);
+            applyRequestHeaders();
+        }
+        status = connection.getResponseCode();
+        responseMessage = connection.getResponseMessage();
+        if (status != HttpConnection.HTTP_OK)
+            throw new IOException("Http status: " + status);
+
+        headerKeys.clear();
+        headerValues.clear();
+        rcvHeader.clear();
+        for (int i = 0; ; i++) {
+            String key = connection.getHeaderFieldKey(i);
+            String value = connection.getHeaderField(i);
+            if (key == null && value == null) break;
+            addResponseHeader(key, value);
+        }
+
+        // Match the bundled 2025 MiniJVM's disk-backed response, not an
+        // unbounded Java byte[] which multiplies memory across parked tabs.
+        File tmp = File.createTempFile(getCacheFileName(), ".tmp");
+        boolean complete = false;
+        try {
+            InputStream in = connection.openDataInputStream();
+            try {
+                OutputStream out = new FileOutputStream(tmp);
+                try {
+                    byte[] buf = new byte[1024];
+                    for (;;) {
+                        int len = in.read(buf);
+                        if (jarboxHttpTimedOut() != 0)
+                            throw new SocketTimeoutException("HTTP read timeout");
+                        if (len < 0) break;
+                        if (len == 0) {
+                            int one = in.read();
+                            if (jarboxHttpTimedOut() != 0)
+                                throw new SocketTimeoutException("HTTP read timeout");
+                            if (one < 0) break;
+                            out.write(one);
+                        } else out.write(buf, 0, len);
+                    }
+                } finally { out.close(); }
+            } finally { in.close(); }
+            if (jarboxHttpTimedOut() != 0)
+                throw new SocketTimeoutException("HTTP read timeout");
+            cacheFilePath = tmp.getAbsolutePath();
+            complete = true;
+        } finally {
+            if (!complete) deleteFile(tmp.getAbsolutePath());
+        }
+        if (cacheable && jarboxHttpTimedOut() == 0)
+            cacheCompletedResponse(urlStr, connection.getExpiration());
+    }
 
     @Override
     public InputStream getInputStream() throws IOException {
         connect();
-        return new ByteArrayInputStream(rcvData);
+        return new FileInputStream(cacheFilePath);
+    }
+
+    public int getResponseCode() throws IOException {
+        connect();
+        return status;
+    }
+
+    public String getResponseMessage() throws IOException {
+        connect();
+        return responseMessage;
+    }
+
+    public String getHeaderField(int index) {
+        try { connect(); } catch (IOException e) { return null; }
+        return index >= 0 && index < headerValues.size() ? headerValues.get(index) : null;
+    }
+
+    public String getHeaderFieldKey(int index) {
+        try { connect(); } catch (IOException e) { return null; }
+        return index >= 0 && index < headerKeys.size() ? headerKeys.get(index) : null;
     }
 
     @Override

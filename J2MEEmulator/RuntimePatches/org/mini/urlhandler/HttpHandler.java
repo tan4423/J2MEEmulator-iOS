@@ -22,13 +22,16 @@ public class HttpHandler extends URLStreamHandler {
         }
 
         @Override
-        public void disconnect() {
+        public synchronized void disconnect() {
             try {
                 if (connection != null) {
                     connection.close();
                 }
             } catch (IOException e) {
                 throw new RuntimeException(e);
+            } finally {
+                connection = null;
+                releaseResponseFile();
             }
         }
     }

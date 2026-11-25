@@ -18,6 +18,8 @@ import java.io.*;
 import java.net.*;
 abstract class TestHttpURLConnection extends java.net.HttpURLConnection {
     protected Closeable connection;
+    protected int releases;
+    protected void releaseResponseFile() { releases++; }
     protected TestHttpURLConnection(URL url) { super(url); }
     public void connect() throws IOException {}
     public boolean usingProxy() { return false; }
@@ -39,7 +41,9 @@ public class DisconnectTest {
             public void close() { closed[0]++; }
         };
         h.disconnect();
-        if (closed[0] != 1) throw new AssertionError("close was skipped");
+        h.disconnect();
+        if (closed[0] != 1 || h.connection != null || h.releases != 4)
+            throw new AssertionError("close or file release failed");
         h.connection = new Closeable() {
             public void close() throws IOException { throw new IOException("fixture"); }
         };
@@ -48,6 +52,7 @@ public class DisconnectTest {
             throw new AssertionError("IOException swallowed");
         } catch (RuntimeException expected) {
             if (!(expected.getCause() instanceof IOException)) throw expected;
+            if (h.connection != null || h.releases != 5) throw new AssertionError("failed close cleanup");
         }
     }
 }
