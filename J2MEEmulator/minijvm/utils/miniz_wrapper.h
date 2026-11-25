@@ -11,6 +11,10 @@ extern "C" {
 
 s32 zip_loadfile(char const *jarpath, char const *filename, ByteBuf *buf);
 
+// Bounded read-only classpath cache, never used by mutable ZIP APIs.
+s32 zip_classpath_loadfile(const char *jarpath, const char *filename, ByteBuf *buf);
+void zip_classpath_cache_trim(void);
+
 s32 zip_loadfile_to_mem(char const *jarpath, char const *filename, c8 *buf, s64 bufsize);
 
 s64 zip_get_file_unzip_size(char const *jarpath, char const *filename);

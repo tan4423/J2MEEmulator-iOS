@@ -18,10 +18,13 @@
 #include <sys/stat.h>
 #include <strings.h>
 #include "miniz.h"
+#include "miniz_wrapper.h"
 #if defined(__APPLE__) && __JVM_OS_IOS__
 #include <os/proc.h>
 #include <time.h>
 #endif
+
+void jvm_bridge_trim_classpath_cache(void) { zip_classpath_cache_trim(); }
 
 // Conservative launch classification, not an authorization to execute 3D.
 // Bound the scan; unreadable, oversized, nested or unknown archives run alone.

@@ -3070,6 +3070,7 @@ class AppsListViewController: UIViewController,
     }
 
     private func launchGameTab(_ app: AppInfo, cloneID: UUID?, tabTitle: String) {
+        let launchRequestedAt = ProcessInfo.processInfo.systemUptime
         guard canPresentGame else { return }
         // The same JAR may have several independent clone roots. Resume
         // exactly the selected instance; never start another worker for it.
@@ -3127,6 +3128,7 @@ class AppsListViewController: UIViewController,
             render3dScale: render3dScale, fpsLimit: fps, cloneID: cloneID)
         gameVC.modalPresentationStyle = .fullScreen
         gameVC.sessionLibrary = self
+        gameVC.startupRequestedAt = launchRequestedAt
         managedGames.append(gameVC)
         presentGame(gameVC, reason: "game launching")
     }

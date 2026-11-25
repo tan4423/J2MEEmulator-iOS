@@ -2203,7 +2203,7 @@ ByteBuf *load_file_from_classpath(PeerClassLoader *cloader, Utf8String *path) {
             }
         } else { //from jar
             bytebuf = bytebuf_create(16);
-            iret = zip_loadfile(utf8_cstr(pClassPath), utf8_cstr(path), bytebuf);
+            iret = zip_classpath_loadfile(utf8_cstr(pClassPath), utf8_cstr(path), bytebuf);
             //回收
             if (iret != 0) {
                 bytebuf_destroy(bytebuf);

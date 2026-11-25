@@ -676,6 +676,9 @@ class GameViewController: UIViewController {
     private var startupWatchdog: DispatchWorkItem?
     private var startupBeganAt: TimeInterval?
     private var startupFirstSurface = "pending"
+    var startupRequestedAt: TimeInterval?
+    private var startupRequestToSurface = "pending"
+    private var startupAdmissionMs = "pending"
     private var stopEscalationWork: DispatchWorkItem?
     private var stopRescueWork: DispatchWorkItem?
     private var ownsJVMSession = false
@@ -1439,6 +1442,8 @@ class GameViewController: UIViewController {
             "build_commit=" + buildID + "\n" +
             "boot_patch=" + bootPatch + "\n" +
             "first_surface=" + startupFirstSurface + "\n" +
+            "request_to_surface=" + startupRequestToSurface + "\n" +
+            "startup_admission_ms=" + startupAdmissionMs + "\n" +
             "vm_start_probe=" + (hasStartupProbe ? "seen" : "missing") + "\n" +
             "display_poll_count=" + String(treo_display_poll_calls()) + "\n" +
             "popup_update_count=" + String(jvm_bridge_mod_popup_tick_count()) + "\n" +
@@ -3889,9 +3894,11 @@ class GameViewController: UIViewController {
         // Reserve this worker's token together with its native slot. The
         // background launcher never reads a token that might belong to B.
         var acquiredToken: UInt64 = 0
+        let admissionStarted = ProcessInfo.processInfo.systemUptime
         let admission = jarPath.withCString {
             jvm_bridge_try_begin_session_for_jar($0, &acquiredToken)
         }
+        startupAdmissionMs = String(format: "%.1f", (ProcessInfo.processInfo.systemUptime - admissionStarted) * 1000)
         guard admission == 1, acquiredToken != 0 else {
             if admission == -2 {
                 showLaunchFailure("RAM khả dụng quá thấp hoặc iOS vừa cảnh báo thiếu bộ nhớ. Hãy thử lại sau khi RAM phục hồi.")
@@ -4062,6 +4069,9 @@ class GameViewController: UIViewController {
         if let began = startupBeganAt, let readySurface {
             let elapsedMs = (ProcessInfo.processInfo.systemUptime - began) * 1000
             startupFirstSurface = String(format: "%@ %.1fms", readySurface, elapsedMs)
+            if let requested = startupRequestedAt {
+                startupRequestToSurface = String(format: "%.1fms", (ProcessInfo.processInfo.systemUptime - requested) * 1000)
+            }
             NSLog("[JarBoxVM][Startup] first_surface=%@", startupFirstSurface)
         }
         startupBeganAt = nil
@@ -4127,6 +4137,13 @@ class GameViewController: UIViewController {
         }
     }
 
+    nonisolated private static func noteStartupPhase(_ phase: String, since started: TimeInterval, token: UInt64) {
+        let ms = (ProcessInfo.processInfo.systemUptime - started) * 1000
+        let prior = jvm_bridge_push_java_thread_token(token)
+        defer { jvm_bridge_pop_java_thread_token(prior) }
+        String(format: "startup_%@_ms=%.1f", phase, ms).withCString { jvm_bridge_note_net_trace($0) }
+    }
+
     nonisolated private static func runMIDlet(resRoot: String, jarPath: String,
                                               width: Int32, height: Int32,
                                               scale: Int32, fps: Int32,
@@ -4138,6 +4155,7 @@ class GameViewController: UIViewController {
         guard jvm_bridge_is_stop_requested_for_token(token) == 0 else { return "Game startup cancelled." }
         let docs = NSSearchPathForDirectoriesInDomains(
             .documentDirectory, .userDomainMask, true).first ?? NSTemporaryDirectory()
+        let storageStarted = ProcessInfo.processInfo.systemUptime
         let saveRoot: String
         do {
             saveRoot = try JarBoxGameStorage.prepareRoot(jarPath: jarPath,
@@ -4151,9 +4169,12 @@ class GameViewController: UIViewController {
                                             event: "SESSION_START", cloneID: cloneID)
 
         guard jvm_bridge_is_stop_requested_for_token(token) == 0 else { return "Game startup cancelled." }
+        noteStartupPhase("storage", since: storageStarted, token: token)
         NSLog("[J2ME Treo] Entering JVM initialization")
+        let initStarted = ProcessInfo.processInfo.systemUptime
         let initResult = jvm_bridge_init_for_token(token, resRoot, saveRoot,
                                                     jarPath, width, height, scale, fps)
+        noteStartupPhase("vm_init", since: initStarted, token: token)
         NSLog("[J2ME Treo] JVM initialization returned %d", initResult)
         if initResult == -12 {
             return "RAM khả dụng đã giảm trong lúc khởi động. JVM mới chưa được cấp phát."

@@ -20,6 +20,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     func applicationDidReceiveMemoryWarning(_ application: UIApplication) {
         // Record exactly one process-wide warning even if all games are hidden.
         jvm_bridge_memory_note_warning()
+        jvm_bridge_trim_classpath_cache()
         _ = j2me_render_trim_memory_cache()
         for scene in application.connectedScenes {
             guard let windowScene = scene as? UIWindowScene else { continue }

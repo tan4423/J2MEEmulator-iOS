@@ -1,6 +1,13 @@
 #include "miniz.h"
 #include "miniz_wrapper.h"
 #include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
+#if defined(__APPLE__) || defined(__linux__)
+#include <pthread.h>
+#include <sys/stat.h>
+#include <stdatomic.h>
+#endif
 
 /*
  * Java archive entry names are case-sensitive. Obfuscated MIDlets commonly
@@ -82,6 +89,148 @@ s32 zip_get_file_index(char const *jarpath, char const *filename) {
     return index;
 }
 
+
+/* Classpath-only reader reuse. These slots contain archive metadata and a
+ * read-only file handle, never Java objects, decompressed classes or RMS.
+ * Four process-wide slots bound file descriptors and retained memory even
+ * with 64 VMs. Try-lock fallback avoids blocking another VM's class load.
+ * Keep the ordinary ZIP APIs and writer path uncached.
+ */
+#if defined(__APPLE__) || defined(__linux__)
+#define JARBOX_CLASSPATH_CACHE_SLOTS 4
+#define JARBOX_CLASSPATH_CACHE_MAX_BYTES (8 * 1024 * 1024)
+typedef struct {
+    char *path;
+    struct stat identity;
+    mz_zip_archive archive;
+} JarBoxClasspathReader;
+static JarBoxClasspathReader jarbox_classpath_cache[JARBOX_CLASSPATH_CACHE_SLOTS];
+static unsigned jarbox_classpath_next;
+static pthread_mutex_t jarbox_classpath_lock = PTHREAD_MUTEX_INITIALIZER;
+static _Atomic int jarbox_classpath_trim_pending;
+
+static int jarbox_classpath_same_file(const struct stat *a, const struct stat *b) {
+    if (a->st_dev != b->st_dev || a->st_ino != b->st_ino ||
+        a->st_size != b->st_size || a->st_mtime != b->st_mtime ||
+        a->st_ctime != b->st_ctime) return 0;
+#if defined(__APPLE__)
+    return a->st_mtimespec.tv_nsec == b->st_mtimespec.tv_nsec &&
+           a->st_ctimespec.tv_nsec == b->st_ctimespec.tv_nsec;
+#else
+    return a->st_mtim.tv_nsec == b->st_mtim.tv_nsec &&
+           a->st_ctim.tv_nsec == b->st_ctim.tv_nsec;
+#endif
+}
+static void jarbox_classpath_close(JarBoxClasspathReader *reader) {
+    if (reader->path) {
+        mz_zip_reader_end(&reader->archive);
+        free(reader->path);
+    }
+    memset(reader, 0, sizeof(*reader));
+}
+static void jarbox_classpath_trim_locked(void) {
+    if (atomic_exchange(&jarbox_classpath_trim_pending, 0)) {
+        for (unsigned i = 0; i < JARBOX_CLASSPATH_CACHE_SLOTS; ++i)
+            jarbox_classpath_close(&jarbox_classpath_cache[i]);
+        jarbox_classpath_next = 0;
+    }
+}
+void zip_classpath_cache_trim(void) {
+    atomic_store(&jarbox_classpath_trim_pending, 1);
+    if (pthread_mutex_trylock(&jarbox_classpath_lock) == 0) {
+        jarbox_classpath_trim_locked();
+        pthread_mutex_unlock(&jarbox_classpath_lock);
+    }
+}
+
+s32 zip_classpath_loadfile(const char *jarpath, const char *filename, ByteBuf *buf) {
+    if (!jarpath || !filename || !buf) return -1;
+    if (pthread_mutex_trylock(&jarbox_classpath_lock) != 0)
+        return zip_loadfile(jarpath, filename, buf);
+    jarbox_classpath_trim_locked();
+
+    struct stat before, after;
+    JarBoxClasspathReader *reader = NULL;
+    int fallback = 1;
+    s32 ret = -1;
+    if (stat(jarpath, &before) != 0 || !S_ISREG(before.st_mode) ||
+        before.st_size <= 0 || before.st_size > JARBOX_CLASSPATH_CACHE_MAX_BYTES)
+        goto done;
+
+    for (unsigned n = 0; n < JARBOX_CLASSPATH_CACHE_SLOTS; ++n) {
+        JarBoxClasspathReader *candidate = &jarbox_classpath_cache[n];
+        if (candidate->path && strcmp(candidate->path, jarpath) == 0) {
+            if (jarbox_classpath_same_file(&candidate->identity, &before)) {
+                reader = candidate;
+            } else {
+                jarbox_classpath_close(candidate);
+            }
+            break;
+        }
+    }
+    if (!reader) {
+        // Prefer an empty slot; otherwise evict one bounded reader.
+        for (unsigned n = 0; n < JARBOX_CLASSPATH_CACHE_SLOTS; ++n) {
+            if (!jarbox_classpath_cache[n].path) {
+                reader = &jarbox_classpath_cache[n];
+                break;
+            }
+        }
+        if (!reader)
+            reader = &jarbox_classpath_cache[jarbox_classpath_next++ % JARBOX_CLASSPATH_CACHE_SLOTS];
+        jarbox_classpath_close(reader);
+        size_t len = strlen(jarpath) + 1;
+        char *copy = malloc(len);
+        if (!copy) goto done;
+        memcpy(copy, jarpath, len);
+        if (!mz_zip_reader_init_file(&reader->archive, jarpath,
+                                    MZ_ZIP_FLAG_DO_NOT_SORT_CENTRAL_DIRECTORY)) {
+            free(copy);
+            memset(reader, 0, sizeof(*reader));
+            goto done;
+        }
+        reader->path = copy;
+        reader->identity = before;
+        if (mz_zip_reader_get_num_files(&reader->archive) > 20000 ||
+            stat(jarpath, &after) != 0 || !jarbox_classpath_same_file(&before, &after)) {
+            jarbox_classpath_close(reader);
+            goto done;
+        }
+    }
+
+    // The same exact-case lookup and size checks as zip_loadfile.
+    const char *entry = filename[0] == '/' ? filename + 1 : filename;
+    int index = mz_zip_reader_locate_file(&reader->archive, entry, NULL,
+                                         MZ_ZIP_FLAG_CASE_SENSITIVE);
+    mz_zip_archive_file_stat info = {0};
+    if (index >= 0 && mz_zip_reader_file_stat(&reader->archive, (mz_uint)index, &info) &&
+        info.m_uncomp_size <= INT32_MAX) {
+        u32 size = (u32)info.m_uncomp_size;
+        if (size > buf->_alloc_size) bytebuf_expand(buf, size);
+        if (buf->buf && size <= buf->_alloc_size &&
+            mz_zip_reader_extract_to_mem(&reader->archive, (mz_uint)index, buf->buf, size, 0)) {
+            buf->rp = 0;
+            buf->wp = size;
+            ret = 0;
+        }
+    }
+    // A rename or rewrite during the read must not return stale class bytes.
+    if (stat(jarpath, &after) != 0 || !jarbox_classpath_same_file(&before, &after)) {
+        jarbox_classpath_close(reader);
+        goto done;
+    }
+    fallback = 0;
+done:
+    jarbox_classpath_trim_locked();
+    pthread_mutex_unlock(&jarbox_classpath_lock);
+    return fallback ? zip_loadfile(jarpath, filename, buf) : ret;
+}
+#else
+void zip_classpath_cache_trim(void) {}
+s32 zip_classpath_loadfile(const char *jarpath, const char *filename, ByteBuf *buf) {
+    return zip_loadfile(jarpath, filename, buf);
+}
+#endif
 
 s32 zip_savefile_mem(char const *jarpath, char const *filename, char const *buf, int size) {
     int file_index = 0;

@@ -20,6 +20,10 @@ PREAMBLE = r"""
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <pthread.h>
+#include <sys/stat.h>
+#include <stdatomic.h>
+#include <stdio.h>
 typedef int32_t s32;
 typedef int64_t s64;
 typedef uint32_t u32;
@@ -35,7 +39,7 @@ static void bytebuf_expand(ByteBuf *buf, u32 size) {
 PROGRAM = r"""
 #define CHECK(x) do { if (!(x)) return __LINE__; } while (0)
 int main(int argc, char **argv) {
-    CHECK(argc == 2);
+    CHECK(argc == 3);
     const char *jar = argv[1];
     ByteBuf b = {1, 0, 0, malloc(1)};
     CHECK(b.buf != NULL);
@@ -70,6 +74,34 @@ int main(int argc, char **argv) {
     fail_expand = 0;
     CHECK(zip_loadfile(jar, "large", &b) == 0 && b.wp == 1024);
     CHECK(b.buf[0] == 'x' && b.buf[1023] == 'x');
+    // Cache hit/miss and exact-case collision, then replacement at same path.
+    for (int n = 0; n < 1000; ++n) {
+        CHECK(zip_classpath_loadfile(jar, "a.class", &b) == 0);
+        CHECK(b.wp == 3 && memcmp(b.buf, "low", 3) == 0);
+        CHECK(zip_classpath_loadfile(jar, "/A.class", &b) == 0);
+        CHECK(b.wp == 5 && memcmp(b.buf, "UPPER", 5) == 0);
+        CHECK(zip_classpath_loadfile(jar, "A.CLASS", &b) == -1);
+    }
+#if defined(__APPLE__) || defined(__linux__)
+    CHECK(jarbox_classpath_cache[0].path != NULL);
+    CHECK(jarbox_classpath_cache[1].path == NULL);
+    // Contention must use the uncached reader, never wait for another owner.
+    CHECK(pthread_mutex_lock(&jarbox_classpath_lock) == 0);
+    CHECK(zip_classpath_loadfile(jar, "a.class", &b) == 0);
+    CHECK(pthread_mutex_unlock(&jarbox_classpath_lock) == 0);
+#endif
+    CHECK(rename(argv[2], jar) == 0);
+    CHECK(zip_classpath_loadfile(jar, "a.class", &b) == 0);
+    CHECK(b.wp == 7 && memcmp(b.buf, "new-low", 7) == 0);
+    CHECK(zip_classpath_loadfile(jar, "A.class", &b) == -1);
+    zip_classpath_cache_trim();
+#if defined(__APPLE__) || defined(__linux__)
+    for (unsigned n = 0; n < JARBOX_CLASSPATH_CACHE_SLOTS; ++n)
+        CHECK(jarbox_classpath_cache[n].path == NULL);
+#endif
+    CHECK(zip_classpath_loadfile(jar, "a.class", &b) == 0);
+    CHECK(b.wp == 7 && memcmp(b.buf, "new-low", 7) == 0);
+    zip_classpath_cache_trim();
     free(b.buf);
     return 0;
 }
@@ -91,14 +123,17 @@ class ZipCaseSensitiveTest(unittest.TestCase):
                                    ("img/Title.png", b"img"), ("empty", b""),
                                    ("large", b"x" * 1024)):
                     archive.writestr(name, data)
+            replacement = path / "replacement.jar"
+            with zipfile.ZipFile(replacement, "w", zipfile.ZIP_DEFLATED) as archive:
+                archive.writestr("a.class", b"new-low")
             c = path / "test.c"
             c.write_text(PREAMBLE + source[start:end] + PROGRAM, encoding="utf-8")
             exe = path / "test"
-            build = subprocess.run([cc, "-std=gnu11", "-O2", "-I", str(UTILS),
+            build = subprocess.run([cc, "-std=gnu11", "-O2", "-pthread", "-I", str(UTILS),
                                     str(c), str(UTILS / "miniz.c"), "-o", str(exe)],
                                    capture_output=True, text=True, timeout=60)
             self.assertEqual(build.returncode, 0, build.stdout + build.stderr)
-            run = subprocess.run([str(exe), str(jar)], capture_output=True, text=True, timeout=10)
+            run = subprocess.run([str(exe), str(jar), str(replacement)], capture_output=True, text=True, timeout=10)
             self.assertEqual(run.returncode, 0, run.stdout + run.stderr +
                              f" C check line (mod 256): {run.returncode}")
 

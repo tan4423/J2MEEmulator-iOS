@@ -25,6 +25,8 @@ int jvm_bridge_memory_state(uint64_t *out_available);
 int jvm_bridge_memory_state_cached(void);
 /// Record a process-wide memory warning; admissions re-evaluate after 15s.
 void jvm_bridge_memory_note_warning(void);
+/// Drop only regenerable read-only classpath readers; never touch JVM heaps.
+void jvm_bridge_trim_classpath_cache(void);
 /// Advisory UI check only; admission rechecks under the lifecycle lock.
 int jvm_bridge_3d_conflict_for_jar(const char *path);
 /// Per-worker execution/cleanup entry points claim one native executor slot

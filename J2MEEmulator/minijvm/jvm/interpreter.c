@@ -660,6 +660,27 @@ s32 exception_handle(RuntimeStack *stack, Runtime *runtime) {
     ExceptionTable *et = NULL;// _find_exception_handler(runtime, ins, ca, (s32) (runtime->pc - ca->code), &index);
     s32 offset = (s32) (runtime->pc - ca->code);
 #if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__
+    // NST_X1's a.run catches Exception (PC37..554), sleeps a second,
+    // prints it and retries. An uncaught-worker probe cannot see that failure.
+    // Restrict this diagnostic to exception paths; never log credentials.
+    if (ins && ins->mb.clazz && runtime->clazz && runtime->method &&
+        ((utf8_equals_c(runtime->clazz->name, "a") &&
+          utf8_equals_c(runtime->method->name, "run") &&
+          utf8_equals_c(runtime->method->descriptor, "()V") &&
+          offset >= 37 && offset < 554) ||
+         (utf8_equals_c(runtime->clazz->name, "ci") &&
+          utf8_equals_c(runtime->method->name, "paint") &&
+          utf8_equals_c(runtime->method->descriptor, "(Ljavax/microedition/lcdui/Graphics;)V")))) {
+        if (jvm_bridge_mod_loop_exception_log_slot()) {
+            char event[192];
+            snprintf(event, sizeof(event),
+                     "nst_ui_exception:class=%s,method=%s,pc=%d,type=%.100s",
+                     utf8_cstr(runtime->clazz->name),
+                     utf8_cstr(runtime->method->name), offset,
+                     utf8_cstr(ins->mb.clazz->name));
+            jvm_bridge_note_net_trace(event);
+        }
+    }
     // The uploaded TrungDucTV Class_bn.run bytecode catches Exception over
     // PCs 49..497. Capture the original exception class BEFORE game code
     // swallows it and displays a generic "cannot connect" dialog.
