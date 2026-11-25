@@ -34,6 +34,17 @@ int main(void){
     int va=1,vb=2;
     JarBoxSession *a=jarbox_session_create(&va), *b=jarbox_session_create(&vb);
     CHECK(a&&b);
+    CHECK(jarbox_net_http_begin(a, 120, 75)==0);
+    CHECK(jarbox_net_http_read_ms()==75);
+    JarBoxNetScope http_prior=jarbox_net_scope_enter(a,0);
+    CHECK(jarbox_net_scope.timeout_ms==120);
+    jarbox_net_scope_leave(http_prior);
+    CHECK(jarbox_net_http_begin(b,40,30)==0);
+    CHECK(jarbox_net_http_read_ms()==30);
+    CHECK(jarbox_net_http_fail(2,NULL)==1 && jarbox_net_http_status()==2);
+    CHECK(jarbox_net_http_end(b)==2);
+    CHECK(jarbox_net_http_read_ms()==75 && jarbox_net_http_status()==0);
+    CHECK(jarbox_net_http_end(a)==0 && jarbox_net_http_read_ms()==0);
     int sa[2],sb[2],sc[2];
     CHECK(socketpair(AF_UNIX,SOCK_STREAM,0,sa)==0);
     CHECK(socketpair(AF_UNIX,SOCK_STREAM,0,sb)==0);
@@ -46,6 +57,17 @@ int main(void){
     CHECK(jarbox_net_register(sb[0])==sb[0]);
     CHECK(jarbox_net_duplicate_for_tls(sa[0])<0);
     jarbox_net_scope_leave(prior);
+    // A timeout may shut down only a descriptor owned by that scope.
+    CHECK(jarbox_net_http_begin(a,30,20)==0);
+    CHECK(jarbox_net_http_fail(2,&sb[0])==1);
+    char test=0;
+    CHECK(send(sb[1],"x",1,0)==1 && recv(sb[0],&test,1,0)==1 && test=='x');
+    CHECK(jarbox_net_http_fail(1,&sa[0])==1);
+    CHECK(recv(sa[1],&test,1,0)==0);
+    prior=jarbox_net_scope_enter(a,0);
+    CHECK(jarbox_net_socket(AF_INET,SOCK_STREAM,0)<0);
+    jarbox_net_scope_leave(prior);
+    CHECK(jarbox_net_http_end(a)==2);
     CHECK(jarbox_net_stop_owner(a)==2);
     char c=0;
     CHECK(recv(sa[1],&c,1,0)==0);

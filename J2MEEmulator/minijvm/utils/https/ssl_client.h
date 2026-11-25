@@ -41,6 +41,7 @@
 
 struct _SSLC_Entry {
     mbedtls_net_context server_fd;
+    int initialized, connected;
     char pers[32];
 
     mbedtls_entropy_context entropy;

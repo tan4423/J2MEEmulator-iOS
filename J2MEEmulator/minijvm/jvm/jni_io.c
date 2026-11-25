@@ -537,7 +537,9 @@ static s32 jarbox_java_socket_shutdown(Runtime *runtime, JClass *clazz) {
 static s32 sock_recv_impl(VmSock *vmsock, u8 *buf, s32 count, Runtime *runtime, int strict) {
     if (count == 0) return 0;
     if (count < 0) return -1;
-    const s32 timeout = vmsock->rcv_time_out;
+    const s32 scoped_timeout = jarbox_net_http_read_ms();
+    const s32 timeout = scoped_timeout > 0 ? scoped_timeout : vmsock->rcv_time_out;
+    if (jarbox_net_http_status()) return -1;
     const s64 started = timeout > 0 ? nanoTime() : 0;
     // Poll in bounded slices so cancellation remains responsive even with
     // a long Java receive timeout. EINTR/WANT_READ never means a NUL byte.
@@ -576,12 +578,17 @@ static s32 sock_recv_impl(VmSock *vmsock, u8 *buf, s32 count, Runtime *runtime, 
 }
 
 static s32 sock_recv(VmSock *vmsock, u8 *buf, s32 count, Runtime *runtime) {
-    return sock_recv_impl(vmsock, buf, count, runtime, 0);
+    s32 result = sock_recv_impl(vmsock, buf, count, runtime, 0);
+    // Legacy GCF bulk-read loops subtract -2 from their progress counter.
+    // Stop that transport with EOF; the enclosing HTTP Java scope raises
+    // the actual timeout and discards partial data, never a successful body.
+    if (result == -2 && jarbox_net_http_fail(2, &vmsock->contex.fd)) return -1;
+    return result;
 }
 
 static s32 sock_send(VmSock *vmsock, const u8 *buf, s32 count, Runtime *runtime) {
     if (count == 0) return 0;
-    if (count < 0) return -1;
+    if (count < 0 || jarbox_net_http_status()) return -1;
     while (!runtime->thrd_info->is_interrupt) {
         s32 ret = mbedtls_net_send(&vmsock->contex, buf, count);
         if (ret == MBEDTLS_ERR_SSL_WANT_WRITE) {
@@ -910,7 +917,7 @@ s32 org_mini_net_SocketNative_sslc_wrap(Runtime *runtime, JClass *clazz) {
         JarBoxNetScope prior = jarbox_net_scope_enter(runtime->jvm->session, 0);
         jthread_block_enter(runtime);
         ret = sslc_wrap((SSLC_Entry *) jbyte_arr->arr_body, ctx->fd, host_arr->arr_body);
-        if (ret < 0) mbedtls_net_free(&((SSLC_Entry *)jbyte_arr->arr_body)->server_fd);
+        if (ret < 0) sslc_close((SSLC_Entry *)jbyte_arr->arr_body);
         jthread_block_exit(runtime);
         jarbox_net_scope_leave(prior);
     }
@@ -934,7 +941,7 @@ s32 org_mini_net_SocketNative_sslc_connect(Runtime *runtime, JClass *clazz) {
         JarBoxNetScope prior = jarbox_net_scope_enter(runtime->jvm->session, 0);
         jthread_block_enter(runtime);
         ret = sslc_connect((SSLC_Entry *) jbyte_arr->arr_body, host_arr->arr_body, port_arr->arr_body);
-        if (ret < 0) mbedtls_net_free(&((SSLC_Entry *)jbyte_arr->arr_body)->server_fd);
+        if (ret < 0) sslc_close((SSLC_Entry *)jbyte_arr->arr_body);
         jthread_block_exit(runtime);
         jarbox_net_scope_leave(prior);
     }
@@ -950,7 +957,9 @@ s32 org_mini_net_SocketNative_sslc_close(Runtime *runtime, JClass *clazz) {
     s32 ret = -1;
     Instance *jbyte_arr = (Instance *) localvar_getRefer(runtime->localvar, 0);
     if (jbyte_arr && jbyte_arr->arr_length >= (s32)sizeof(SSLC_Entry)) {
+        jthread_block_enter(runtime);
         ret = sslc_close((SSLC_Entry *) jbyte_arr->arr_body);
+        jthread_block_exit(runtime);
     }
     push_int(runtime->stack, ret);
 #if _JVM_DEBUG_LOG_LEVEL > 5
@@ -1894,7 +1903,26 @@ s32 org_mini_crypt_XorCrypt_decrypt(Runtime *runtime, JClass *clazz) {
     return 0;
 }
 
+static s32 jarbox_http_begin_native(Runtime *runtime, JClass *clazz) {
+    (void)clazz;
+    push_int(runtime->stack, jarbox_net_http_begin(runtime->jvm->session,
+            localvar_getInt(runtime->localvar, 0), localvar_getInt(runtime->localvar, 1)));
+    return 0;
+}
+static s32 jarbox_http_end_native(Runtime *runtime, JClass *clazz) {
+    (void)clazz;
+    push_int(runtime->stack, jarbox_net_http_end(runtime->jvm->session));
+    return 0;
+}
+static s32 jarbox_http_status_native(Runtime *runtime, JClass *clazz) {
+    (void)clazz;
+    push_int(runtime->stack, jarbox_net_http_status());
+    return 0;
+}
 static java_native_method METHODS_IO_TABLE[] = {
+        {"java/net/HttpURLConnection", "jarboxHttpBegin", "(II)I", jarbox_http_begin_native},
+        {"java/net/HttpURLConnection", "jarboxHttpEnd", "()I", jarbox_http_end_native},
+        {"java/net/HttpURLConnection", "jarboxHttpTimedOut", "()I", jarbox_http_status_native},
         {"java/net/Socket", "jarboxConnect0", "([B[B[BII)I", jarbox_java_socket_connect_timeout},
         {"java/net/Socket", "jarboxShutdown0", "([BI)I", jarbox_java_socket_shutdown},
         {"java/net/Socket", "jarboxRead0", "([B[BII)I", jarbox_java_socket_read_stream},

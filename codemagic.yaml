@@ -95,6 +95,28 @@ workflows:
           jar uf "$jars/minijvm_rt.jar" -C "$http_classes" "$http_entry"
           (cd "$http_original" && jar xf "$jars/minijvm_rt.jar" "$http_entry")
           cmp "$http_original/$http_entry" "$http_classes/$http_entry"
+          # URLConnection and HttpURLConnection retain the miniJVM-specific
+          # GCF ABI; compile against the real packaged boot classes.
+          http_base_old="$RUNNER_TEMP/http-base-original"
+          http_base_new="$RUNNER_TEMP/http-base-classes"
+          mkdir -p "$http_base_old" "$http_base_new"
+          (cd "$http_base_old" && jar xf "$jars/minijvm_rt.jar" java/net/URLConnection.class 'java/net/URLConnection$CachedFile.class' java/net/HttpURLConnection.class)
+          javac -source 8 -target 8 -bootclasspath "$jars/minijvm_rt.jar:$jars/j2me_api.jar" -sourcepath '' \
+            -d "$http_base_new" J2MEEmulator/RuntimePatches/java/net/URLConnection.java J2MEEmulator/RuntimePatches/java/net/HttpURLConnection.java
+          for entry in java/net/URLConnection.class 'java/net/URLConnection$CachedFile.class' java/net/HttpURLConnection.class; do
+            javap -p -s "$http_base_old/$entry" | sed '/^Compiled from /d; /^}/d; /^$/d; s/ synchronized / /g' | sort > "$RUNNER_TEMP/http-base-old-api"
+            javap -p -s "$http_base_new/$entry" | sed '/^Compiled from /d; /^}/d; /^$/d; s/ synchronized / /g' | sort > "$RUNNER_TEMP/http-base-new-api"
+            comm -23 "$RUNNER_TEMP/http-base-old-api" "$RUNNER_TEMP/http-base-new-api" > "$RUNNER_TEMP/http-base-missing-api"
+            if [ -s "$RUNNER_TEMP/http-base-missing-api" ]; then
+              cat "$RUNNER_TEMP/http-base-missing-api"
+              exit 1
+            fi
+          done
+          jar uf "$jars/minijvm_rt.jar" -C "$http_base_new" .
+          (cd "$http_base_old" && jar xf "$jars/minijvm_rt.jar" java/net/URLConnection.class 'java/net/URLConnection$CachedFile.class' java/net/HttpURLConnection.class)
+          for entry in java/net/URLConnection.class 'java/net/URLConnection$CachedFile.class' java/net/HttpURLConnection.class; do
+            cmp "$http_base_old/$entry" "$http_base_new/$entry"
+          done
           # Compile against packaged miniJVM (not desktop SocketImpl).
           socket_old="$RUNNER_TEMP/socket-original"
           socket_new="$RUNNER_TEMP/socket-classes"

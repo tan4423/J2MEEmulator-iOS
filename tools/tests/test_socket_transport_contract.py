@@ -28,6 +28,15 @@ typedef struct { Thread *thrd_info; } Runtime;
 #define MBEDTLS_ERR_SSL_WANT_WRITE -12
 static int steps[16], n, pos, maxwait, now, interrupt_after;
 static Thread th;
+static int http_read_ms, http_failure;
+static int jarbox_net_http_read_ms(void) {return http_read_ms;}
+static int jarbox_net_http_status(void) {return http_failure;}
+static int jarbox_net_http_fail(int kind,int *fd) {
+    (void)fd;
+    if (!http_read_ms) return 0;
+    http_failure=kind;
+    return 1;
+}
 static s64 nanoTime(void) { return (s64)now * 1000000; }
 static void thrd_yield(void) { now++; }
 static int next(u8 *p, int wait) {
@@ -78,6 +87,12 @@ int main(void) {
     CHECK(sock_send(&s,b,1,&rt)==0 && pos==1);
     s.non_block=0;reset(2,0,0,0,1);
     CHECK(sock_send(&s,b,8,&rt)==2 && pos==1);
+    http_read_ms=25;
+    reset(MBEDTLS_ERR_SSL_TIMEOUT,0,0,0,1);
+    CHECK(sock_recv(&s,b,1,&rt)==-1 && now==25 && http_failure==2);
+    CHECK(sock_recv(&s,b,1,&rt)==-1 && pos==1);
+    CHECK(sock_send(&s,b,1,&rt)==-1 && pos==1);
+    http_read_ms=http_failure=0;
     CHECK(jarbox_socket_range_valid(8,8,0));
     CHECK(jarbox_socket_range_valid(8,3,5));
     CHECK(!jarbox_socket_range_valid(8,3,6));

@@ -116,10 +116,66 @@ typedef struct JarBoxNetFd {
 static JarBoxNetFd *jarbox_net_fds;
 static pthread_mutex_t jarbox_net_lock = PTHREAD_MUTEX_INITIALIZER;
 static _Thread_local JarBoxNetScope jarbox_net_scope;
+typedef struct {
+    JarBoxSession *owner;
+    int connect_ms, read_ms, failure;
+} JarBoxHttpScope;
+static _Thread_local JarBoxHttpScope jarbox_http_scopes[8];
+static _Thread_local unsigned jarbox_http_depth;
+static JarBoxHttpScope *jarbox_http_current(void) {
+    return jarbox_http_depth ? &jarbox_http_scopes[jarbox_http_depth - 1] : NULL;
+}
+int jarbox_net_http_begin(JarBoxSession *owner, int connect_ms, int read_ms) {
+    if (!owner || connect_ms < 0 || read_ms < 0 || jarbox_http_depth >= 8) return -1;
+    jarbox_http_scopes[jarbox_http_depth++] = (JarBoxHttpScope){owner, connect_ms, read_ms, 0};
+    return 0;
+}
+int jarbox_net_http_end(JarBoxSession *owner) {
+    JarBoxHttpScope *s = jarbox_http_current();
+    if (!s || s->owner != owner) return 0;
+    int result = s->failure;
+    *s = (JarBoxHttpScope){0};
+    --jarbox_http_depth;
+    return result;
+}
+int jarbox_net_http_status(void) {
+    JarBoxHttpScope *s = jarbox_http_current();
+    return s ? s->failure : 0;
+}
+int jarbox_net_http_read_ms(void) {
+    JarBoxHttpScope *s = jarbox_http_current();
+    if (!s) return 0;
+    int limit = s->read_ms;
+    // During TLS handshake, also honor the connect wait limit.
+    if (jarbox_net_scope.owner == s->owner && jarbox_net_scope.timeout_ms > 0 &&
+        (!limit || jarbox_net_scope.timeout_ms < limit))
+        limit = jarbox_net_scope.timeout_ms;
+    return limit;
+}
+int jarbox_net_http_fail(int kind, int *fd) {
+    JarBoxHttpScope *s = jarbox_http_current();
+    if (!s) return 0;
+    if (!s->failure) s->failure = kind;
+    // Do not reuse a connection with a truncated response. Verify its
+    // registry owner while holding the same lock as descriptor close.
+    if (fd) {
+        pthread_mutex_lock(&jarbox_net_lock);
+        for (JarBoxNetFd *p = jarbox_net_fds; p; p = p->next) {
+            if (p->fd == *fd && p->owner == s->owner) {
+                shutdown(p->fd, SHUT_RDWR);
+                break;
+            }
+        }
+        pthread_mutex_unlock(&jarbox_net_lock);
+    }
+    return 1;
+}
 JarBoxNetScope jarbox_net_scope_enter(JarBoxSession *owner, int timeout_ms) {
     JarBoxNetScope prior = jarbox_net_scope;
     jarbox_net_scope.owner = owner;
-    jarbox_net_scope.timeout_ms = timeout_ms > 0 ? timeout_ms : 0;
+    JarBoxHttpScope *s = jarbox_http_current();
+    jarbox_net_scope.timeout_ms = timeout_ms > 0 ? timeout_ms :
+        s && s->owner == owner ? s->connect_ms : 0;
     return prior;
 }
 void jarbox_net_scope_leave(JarBoxNetScope prior) { jarbox_net_scope = prior; }
@@ -146,7 +202,7 @@ static int jarbox_net_register(int fd) {
     return fd;
 }
 static int jarbox_net_socket(int family, int type, int protocol) {
-    if (jarbox_net_owner_stopped(jarbox_net_scope.owner)) {
+    if (jarbox_net_owner_stopped(jarbox_net_scope.owner) || jarbox_net_http_status()) {
         errno = ECANCELED;
         return -1;
     }
@@ -276,6 +332,11 @@ static int jarbox_net_connect_fd(int fd, const struct sockaddr *addr, socklen_t 
     return ret;
 }
 #else
+int jarbox_net_http_begin(JarBoxSession *owner, int c, int r) { (void)owner; return c || r ? -1 : 0; }
+int jarbox_net_http_end(JarBoxSession *owner) { (void)owner; return 0; }
+int jarbox_net_http_status(void) { return 0; }
+int jarbox_net_http_read_ms(void) { return 0; }
+int jarbox_net_http_fail(int kind, int *fd) { (void)kind; (void)fd; return 0; }
 JarBoxNetScope jarbox_net_scope_enter(JarBoxSession *owner, int timeout_ms) {
     (void)owner; (void)timeout_ms; JarBoxNetScope prior = {0}; return prior;
 }
@@ -375,7 +436,10 @@ int mbedtls_net_connect( mbedtls_net_context *ctx, const char *host,
         jarbox_net_close_context(ctx, 0);
         errno = saved_errno;
         ret = timed_out ? MBEDTLS_ERR_SSL_TIMEOUT : MBEDTLS_ERR_NET_CONNECT_FAILED;
-        if (timed_out) break;
+        if (timed_out) {
+            jarbox_net_http_fail(1, NULL);
+            break;
+        }
     }
 
     freeaddrinfo( addr_list );

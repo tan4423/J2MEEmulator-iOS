@@ -3628,6 +3628,7 @@ static void sslc_init_ca_bundle(void) {
 }
 
 int sslc_init(SSLC_Entry *entry) {
+    if (!entry || entry->initialized) return -1;
     int ret;
 
 
@@ -3653,10 +3654,13 @@ int sslc_init(SSLC_Entry *entry) {
     //fflush(stdout);
 
     mbedtls_entropy_init(&entry->entropy);
+    entry->initialized = 1;
+    entry->connected = 0;
     if ((ret = mbedtls_ctr_drbg_seed(&entry->ctr_drbg, mbedtls_entropy_func, &entry->entropy,
                                      (const unsigned char *) entry->pers,
                                      strlen(entry->pers))) != 0) {
         SSL_LOG_PRINTF(" failed\n  ! mbedtls_ctr_drbg_seed returned %d\n", ret);
+        sslc_close(entry);
         return -1;
     }
 
@@ -3673,7 +3677,21 @@ int sslc_init(SSLC_Entry *entry) {
  *
  * @return
  */
+/* Read inactivity timeout applies to TLS transport too. A timeout is
+ * sticky in the HTTP scope, so the old HTTPS adapter cannot turn a
+ * partial encrypted response into successful EOF. */
+static int sslc_scoped_recv(void *ctx, unsigned char *buf, size_t len) {
+    if (jarbox_net_http_status()) return MBEDTLS_ERR_SSL_TIMEOUT;
+    int timeout = jarbox_net_http_read_ms();
+    int ret = timeout > 0 ? mbedtls_net_recv_timeout(ctx, buf, len, (uint32_t)timeout)
+                          : mbedtls_net_recv(ctx, buf, len);
+    if (ret == MBEDTLS_ERR_SSL_TIMEOUT)
+        jarbox_net_http_fail(2, &((mbedtls_net_context *)ctx)->fd);
+    return ret;
+}
+
 int sslc_wrap(SSLC_Entry *entry, int netfd, char *hostname) {
+    if (!entry || !entry->initialized || entry->server_fd.fd >= 0) return -1;
 
     uint32_t flags;
     /*
@@ -3742,7 +3760,7 @@ int sslc_wrap(SSLC_Entry *entry, int netfd, char *hostname) {
         return -1;
     }
 
-    mbedtls_ssl_set_bio(&entry->ssl, &entry->server_fd, mbedtls_net_send, mbedtls_net_recv, NULL);
+    mbedtls_ssl_set_bio(&entry->ssl, &entry->server_fd, mbedtls_net_send, sslc_scoped_recv, NULL);
 
     /*
      * 4. Handshake
@@ -3765,6 +3783,7 @@ int sslc_wrap(SSLC_Entry *entry, int netfd, char *hostname) {
     SSL_LOG_PRINTF("  . Verifying peer X.509 certificate... ");
 
     /* In real life, we probably want to bail out when ret != 0 */
+    entry->connected = 1;
     if ((flags = mbedtls_ssl_get_verify_result(&entry->ssl)) != 0) {
         char vrfy_buf[512];
 
@@ -3781,6 +3800,7 @@ int sslc_wrap(SSLC_Entry *entry, int netfd, char *hostname) {
 }
 
 int sslc_connect(SSLC_Entry *entry, char *hostname, char *port) {
+    if (!entry || !entry->initialized || entry->server_fd.fd >= 0) return -1;
 
     uint32_t flags;
     /*
@@ -3853,7 +3873,7 @@ int sslc_connect(SSLC_Entry *entry, char *hostname, char *port) {
         return -1;
     }
 
-    mbedtls_ssl_set_bio(&entry->ssl, &entry->server_fd, mbedtls_net_send, mbedtls_net_recv, NULL);
+    mbedtls_ssl_set_bio(&entry->ssl, &entry->server_fd, mbedtls_net_send, sslc_scoped_recv, NULL);
 
     /*
      * 4. Handshake
@@ -3876,6 +3896,7 @@ int sslc_connect(SSLC_Entry *entry, char *hostname, char *port) {
     SSL_LOG_PRINTF("  . Verifying peer X.509 certificate... ");
 
     /* In real life, we probably want to bail out when ret != 0 */
+    entry->connected = 1;
     if ((flags = mbedtls_ssl_get_verify_result(&entry->ssl)) != 0) {
         char vrfy_buf[512];
 
@@ -3891,67 +3912,41 @@ int sslc_connect(SSLC_Entry *entry, char *hostname, char *port) {
 }
 
 int sslc_write(SSLC_Entry *entry, char *buf, int len) {
-    /*
-     * 3. Write the GET request
-     */
-    //SSL_LOG_PRINTF("  > Write to server:");
-    //fflush(stdout);
-
-    int ret;
-
-    while ((ret = mbedtls_ssl_write(&entry->ssl, (const unsigned char *) buf, len)) <= 0) {
-        if (ret != MBEDTLS_ERR_SSL_WANT_READ && ret != MBEDTLS_ERR_SSL_WANT_WRITE) {
-            SSL_LOG_PRINTF(" failed\n  ! mbedtls_ssl_write returned %d\n\n", ret);
-            return -1;
+    if (!entry || !entry->connected || len < 0 || jarbox_net_http_status()) return -1;
+    int sent = 0;
+    while (sent < len) {
+        int ret = mbedtls_ssl_write(&entry->ssl, (const unsigned char *)buf + sent, len - sent);
+        if (ret == MBEDTLS_ERR_SSL_WANT_READ || ret == MBEDTLS_ERR_SSL_WANT_WRITE) {
+            if (jarbox_net_http_status()) return -1;
+            continue;
         }
+        if (ret <= 0 || ret > len - sent) return -1;
+        sent += ret;
     }
-
-    len = ret;
-    //SSL_LOG_PRINTF(" %d bytes written\n\n%s", len, (char *) buf);
-
-    return ret;
+    return sent;
 }
 
 int sslc_read(SSLC_Entry *entry, char *buf, int len) {
-    /*
-     * 7. Read the HTTP response
-     */
-    //SSL_LOG_PRINTF("  < Read from server:");
-    //fflush(stdout);
-
-    int ret;
-    do { ;
-        memset(buf, 0, len);
-        ret = mbedtls_ssl_read(&entry->ssl, (unsigned char *) buf, len);
-
-        if (ret == MBEDTLS_ERR_SSL_WANT_READ || ret == MBEDTLS_ERR_SSL_WANT_WRITE)
+    if (!entry || !entry->connected || len < 0 || jarbox_net_http_status()) return -1;
+    if (!len) return 0;
+    for (;;) {
+        int ret = mbedtls_ssl_read(&entry->ssl, (unsigned char *)buf, len);
+        if (ret == MBEDTLS_ERR_SSL_WANT_READ || ret == MBEDTLS_ERR_SSL_WANT_WRITE) {
+            if (jarbox_net_http_status()) return -1;
             continue;
-
-        if (ret == MBEDTLS_ERR_SSL_PEER_CLOSE_NOTIFY) {
-            ret = -1;
-            break;
         }
-        if (ret < 0) {
-            SSL_LOG_PRINTF("failed\n  ! mbedtls_ssl_read returned %d\n\n", ret);
-            ret = -1;
-            break;
-        }
-
-        if (ret == 0) {
-            SSL_LOG_PRINTF("\n\nEOF\n\n");
-            break;
-        }
-
-        break;
-    } while (1);
-
-    return ret;
+        // Old HTTPS single-byte adapter interpreted zero as a NUL byte.
+        return ret > 0 ? ret : -1;
+    }
 }
 
-
 int sslc_close(SSLC_Entry *entry) {
+    if (!entry || !entry->initialized) return 0;
     int ret = 0;
-    mbedtls_ssl_close_notify(&entry->ssl);
+    entry->initialized = 0;
+    if (entry->connected && entry->server_fd.fd >= 0 && !jarbox_net_http_status())
+        mbedtls_ssl_close_notify(&entry->ssl);
+    entry->connected = 0;
     mbedtls_net_free(&entry->server_fd);
 
     mbedtls_x509_crt_free(&entry->cacert);

@@ -18,4 +18,11 @@ unsigned jarbox_net_release_owner(JarBoxSession *owner);
 int jarbox_net_duplicate_for_tls(int fd);
 // Serialize half-shutdown with context close. No descriptor reuse window.
 int jarbox_net_shutdown_fd(int *fd, int direction);
+/* Thread-local, nested request scope; nonzero failure stays sticky until end.
+ * No Java references or payloads retained. 1=connect timeout, 2=read timeout. */
+int jarbox_net_http_begin(JarBoxSession *owner, int connect_ms, int read_ms);
+int jarbox_net_http_end(JarBoxSession *owner);
+int jarbox_net_http_status(void);
+int jarbox_net_http_read_ms(void);
+int jarbox_net_http_fail(int kind, int *fd);
 #endif
