@@ -1,0 +1,9 @@
+# Bounded decoded images / startup attribution
+
+Only encoded images created through createImageFromData are eligible. The key is the exact copied encoded content (hash selects candidates; CFEqual verifies). Each VM retains its own tracked RenderImage and generation key. Cached backing is a CGImage snapshot plus immutable CFData software pixels; no CGContext, Java Image, Graphics, mutable surface, RMS or game state is shared. Release private context on cache admission and retain per-wrapper refs independently. Cache eviction/trim cannot invalidate live handles. Native accounting remains conservative per-owner nominal pixels; actual physical RAM must be measured.
+
+128 slots, maximum encoded 256 KiB, maximum decoded 512 KiB, global nominal budget 6 MiB counting snapshot + software copy + key/header. LRU eviction, nonblocking lock lookup/publish, normal decode fallback on contention/allocation failure, epoch rejects stale in-flight publication after memory warning. Cache only successful decodes. Can add RAM on cold first start; repeated images can skip ImageIO and bitmap conversion. Per-session constructor/startApp cumulative image decode count, cache hits and decode wall ms help measure the constructor bottleneck; summed decode times across workers are not necessarily serial wall time. Java and native image buffer/region checks cover negative stride and overflow. Preserve premultiplied pixel behavior and existing mutable-image semantics.
+
+Host fixture compiles cache policy against mock refcounted CF objects, not actual CoreGraphics. iPhone visual parity, memory and timing require real tests. No guarantee of speedup yet.
+
+Software pixel copy must satisfy uint32_t alignment; otherwise normal private decode is retained. Fixture also covers byte-budget eviction and lock contention fallback.

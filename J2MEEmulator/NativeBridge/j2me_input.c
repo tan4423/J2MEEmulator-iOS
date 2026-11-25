@@ -372,6 +372,17 @@ static s32 n_startupPhase(Runtime *runtime, JClass *clazz) {
         snprintf(event, sizeof(event), "startup_java_%s_ms=%.1f", name,
                  (double)elapsed / 1000000.0);
         jvm_bridge_note_net_trace(event);
+        if ((phase == 3 || phase == 4) && runtime->jvm && runtime->jvm->session) {
+            JarBoxSession *session = runtime->jvm->session;
+            char image_event[160];
+            snprintf(image_event, sizeof(image_event),
+                     "startup_images:phase=%s,decoded=%llu,hits=%llu,decode_ms=%.1f",
+                     name,
+                     (unsigned long long)__atomic_load_n(&session->startup_image_decodes, __ATOMIC_RELAXED),
+                     (unsigned long long)__atomic_load_n(&session->startup_image_hits, __ATOMIC_RELAXED),
+                     (double)__atomic_load_n(&session->startup_image_decode_ns, __ATOMIC_RELAXED) / 1000000.0);
+            jvm_bridge_note_net_trace(image_event);
+        }
     }
     return RUNTIME_STATUS_NORMAL;
 }

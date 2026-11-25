@@ -142,6 +142,7 @@ typedef struct RenderContext {
 typedef struct RenderImage {
     CGContextRef ctx;
     CGImageRef immutableSnapshot;
+    CFDataRef immutablePixels; // retained read-only pixel copy; no shared CGContext
     int width;
     int height;
     int isMutable;
@@ -2060,6 +2061,7 @@ static inline void img_release(RenderImage *img) {
         CGContextRef ctx = img->ctx;
         img->ctx = NULL;
         if (img->immutableSnapshot) CGImageRelease(img->immutableSnapshot);
+        if (img->immutablePixels) CFRelease(img->immutablePixels);
         if (ctx) CGContextRelease(ctx);
         if (pixels > 0) native_heap_sub(img->heap_key, pixels);
         enqueue_dead_img(img);
@@ -2196,71 +2198,237 @@ static RenderImage *createMutableImage(MiniJVM *owner, int width, int height) {
     return img;
 }
 
+/* JARBOX_DECODED_CACHE_BEGIN: portable core exercised with retain/release fixtures.
+ * Exact encoded contents, immutable snapshot and immutable pixel bytes only.
+ * Each VM owns a separate tracked RenderImage; no Java or CGContext shared.
+ */
+#define JARBOX_DECODED_SLOTS 128u
+#define JARBOX_DECODED_BUDGET (6u * 1024u * 1024u)
+#define JARBOX_DECODED_MAX_ENCODED (256u * 1024u)
+#define JARBOX_DECODED_MAX_PIXELS (512u * 1024u)
+typedef struct {
+    CFDataRef encoded;
+    CFDataRef pixels;
+    CGImageRef snapshot;
+    uint64_t hash, stamp;
+    size_t stride, cost;
+    int width, height;
+} JarBoxDecodedEntry;
+static JarBoxDecodedEntry jarbox_decoded_cache[JARBOX_DECODED_SLOTS];
+static pthread_mutex_t jarbox_decoded_lock = PTHREAD_MUTEX_INITIALIZER;
+static size_t jarbox_decoded_used;
+static uint64_t jarbox_decoded_stamp;
+static atomic_uint jarbox_decoded_epoch;
+
+static uint64_t jarbox_decoded_hash(CFDataRef data) {
+    uint64_t hash = UINT64_C(14695981039346656037);
+    const uint8_t *p = CFDataGetBytePtr(data);
+    for (CFIndex i = 0, n = CFDataGetLength(data); i < n; ++i)
+        hash = (hash ^ p[i]) * UINT64_C(1099511628211);
+    return hash;
+}
+static JarBoxDecodedEntry *jarbox_decoded_find_locked(CFDataRef data, uint64_t hash) {
+    for (unsigned i = 0; i < JARBOX_DECODED_SLOTS; ++i) {
+        JarBoxDecodedEntry *entry = &jarbox_decoded_cache[i];
+        if (entry->encoded && entry->hash == hash &&
+            CFDataGetLength(entry->encoded) == CFDataGetLength(data) &&
+            CFEqual(entry->encoded, data)) return entry;
+    }
+    return NULL;
+}
+static void jarbox_decoded_attach(RenderImage *img, JarBoxDecodedEntry *entry) {
+    img->ctx = NULL;
+    img->immutablePixels = (CFDataRef)CFRetain(entry->pixels);
+    img->immutableSnapshot = CGImageRetain(entry->snapshot);
+    img->width = entry->width;
+    img->height = entry->height;
+    img->softwareSource = (const uint32_t *)CFDataGetBytePtr(img->immutablePixels);
+    img->softwareStride = entry->stride;
+    entry->stamp = ++jarbox_decoded_stamp;
+}
+static void jarbox_decoded_drop_locked(JarBoxDecodedEntry *entry) {
+    if (!entry->encoded) return;
+    jarbox_decoded_used -= entry->cost;
+    CFRelease(entry->encoded);
+    CFRelease(entry->pixels);
+    CGImageRelease(entry->snapshot);
+    memset(entry, 0, sizeof(*entry));
+}
+static void jarbox_decoded_clear_locked(void) {
+    for (unsigned i = 0; i < JARBOX_DECODED_SLOTS; ++i)
+        jarbox_decoded_drop_locked(&jarbox_decoded_cache[i]);
+}
+static JarBoxDecodedEntry *jarbox_decoded_oldest_locked(void) {
+    JarBoxDecodedEntry *oldest = NULL;
+    for (unsigned i = 0; i < JARBOX_DECODED_SLOTS; ++i) {
+        JarBoxDecodedEntry *entry = &jarbox_decoded_cache[i];
+        if (entry->encoded && (!oldest || entry->stamp < oldest->stamp))
+            oldest = entry;
+    }
+    return oldest;
+}
+static int jarbox_decoded_lookup(RenderImage *img, CFDataRef data, uint64_t hash) {
+    if (pthread_mutex_trylock(&jarbox_decoded_lock) != 0) return 0;
+    JarBoxDecodedEntry *entry = jarbox_decoded_find_locked(data, hash);
+    if (entry) jarbox_decoded_attach(img, entry);
+    pthread_mutex_unlock(&jarbox_decoded_lock);
+    return entry != NULL;
+}
+static void jarbox_decoded_publish(RenderImage *img, CFDataRef data, uint64_t hash,
+                                   unsigned epoch) {
+    if (img->isMutable || !img->ctx || !img->immutableSnapshot ||
+        !img->softwareSource || img->width <= 0 || img->height <= 0 ||
+        img->softwareStride < (size_t)img->width ||
+        img->softwareStride > JARBOX_DECODED_MAX_PIXELS / 4u / (size_t)img->height)
+        return;
+    const size_t encoded = (size_t)CFDataGetLength(data);
+    if (!encoded || encoded > JARBOX_DECODED_MAX_ENCODED) return;
+    const size_t pixels = img->softwareStride * 4u * (size_t)img->height;
+    // Conservatively charge both the CGImage snapshot and the software
+    // pixel copy, even if CoreGraphics internally shares storage.
+    const size_t cost = encoded + pixels * 2u + sizeof(JarBoxDecodedEntry);
+    if (cost > JARBOX_DECODED_BUDGET ||
+        epoch != atomic_load_explicit(&jarbox_decoded_epoch, memory_order_acquire)) return;
+    CFDataRef pixelCopy = CFDataCreate(NULL, (const UInt8 *)img->softwareSource, (CFIndex)pixels);
+    if (!pixelCopy) return;
+    // Software raster uses uint32_t/NEON loads. Do not assume that every
+    // CFData allocator supplies suitably aligned inline byte storage.
+    if ((uintptr_t)CFDataGetBytePtr(pixelCopy) % _Alignof(uint32_t)) {
+        CFRelease(pixelCopy);
+        return;
+    }
+    if (pthread_mutex_trylock(&jarbox_decoded_lock) != 0) {
+        CFRelease(pixelCopy);
+        return;
+    }
+    if (epoch != atomic_load_explicit(&jarbox_decoded_epoch, memory_order_acquire)) {
+        pthread_mutex_unlock(&jarbox_decoded_lock);
+        CFRelease(pixelCopy);
+        return;
+    }
+    JarBoxDecodedEntry *entry = jarbox_decoded_find_locked(data, hash);
+    if (!entry) {
+        while (jarbox_decoded_used > JARBOX_DECODED_BUDGET - cost) {
+            JarBoxDecodedEntry *oldest = jarbox_decoded_oldest_locked();
+            if (!oldest) break;
+            jarbox_decoded_drop_locked(oldest);
+        }
+        for (unsigned i = 0; i < JARBOX_DECODED_SLOTS; ++i)
+            if (!jarbox_decoded_cache[i].encoded) { entry = &jarbox_decoded_cache[i]; break; }
+        if (!entry) {
+            entry = jarbox_decoded_oldest_locked();
+            if (entry) jarbox_decoded_drop_locked(entry);
+        }
+        if (entry) {
+            *entry = (JarBoxDecodedEntry){
+                .encoded = (CFDataRef)CFRetain(data), .pixels = (CFDataRef)CFRetain(pixelCopy),
+                .snapshot = CGImageRetain(img->immutableSnapshot), .hash = hash,
+                .stride = img->softwareStride, .cost = cost, .width = img->width, .height = img->height
+            };
+            jarbox_decoded_used += cost;
+        }
+    }
+    CGContextRef privateContext = img->ctx;
+    CGImageRef privateSnapshot = img->immutableSnapshot;
+    if (entry) jarbox_decoded_attach(img, entry);
+    pthread_mutex_unlock(&jarbox_decoded_lock);
+    if (entry) {
+        CGImageRelease(privateSnapshot);
+        CGContextRelease(privateContext);
+    }
+    CFRelease(pixelCopy);
+}
+/* JARBOX_DECODED_CACHE_END */
+static atomic_int jarbox_decoded_trim_queued;
+static void jarbox_decoded_trim(void) {
+    atomic_fetch_add_explicit(&jarbox_decoded_epoch, 1u, memory_order_acq_rel);
+    if (pthread_mutex_trylock(&jarbox_decoded_lock) == 0) {
+        jarbox_decoded_clear_locked();
+        pthread_mutex_unlock(&jarbox_decoded_lock);
+        return;
+    }
+    if (!atomic_exchange_explicit(&jarbox_decoded_trim_queued, 1, memory_order_acq_rel)) {
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+            pthread_mutex_lock(&jarbox_decoded_lock);
+            jarbox_decoded_clear_locked();
+            atomic_store_explicit(&jarbox_decoded_trim_queued, 0, memory_order_release);
+            pthread_mutex_unlock(&jarbox_decoded_lock);
+        });
+    }
+}
+
 static RenderImage *createImageFromData(MiniJVM *owner, const uint8_t *data, int length) {
     const uint64_t owner_key = jarbox_native_heap_key_for_vm(owner);
     if (!owner_key || !data || length <= 0) return NULL;
+    const uint64_t started = treo_afk_now_ns();
     RenderImage *img = (RenderImage *)calloc(1, sizeof(RenderImage));
     if (!img) return NULL;
     atomic_init(&img->refcount, 1);
     atomic_init(&img->java_owned, 1);
+    atomic_init(&img->softwareVerified, 0);
+    atomic_init(&img->softwareRejected, 0);
     img->heap_key = owner_key;
     img->isMutable = 0;
 
+    // Stable copied key: the source Java byte[] may be reused or modified.
     CFDataRef cfData = CFDataCreate(NULL, data, length);
     if (!cfData) { free(img); return NULL; }
-    CGImageSourceRef source = CGImageSourceCreateWithData(cfData, NULL);
+    const int eligible = (size_t)length <= JARBOX_DECODED_MAX_ENCODED;
+    const unsigned epoch = atomic_load_explicit(&jarbox_decoded_epoch, memory_order_acquire);
+    const uint64_t hash = eligible ? jarbox_decoded_hash(cfData) : 0;
+    int hit = eligible && jarbox_decoded_lookup(img, cfData, hash);
+
+    if (!hit) {
+        CGImageSourceRef source = CGImageSourceCreateWithData(cfData, NULL);
+        CGImageRef cgImage = NULL;
+        if (source) {
+            cgImage = CGImageSourceCreateImageAtIndex(source, 0, NULL);
+            CFRelease(source);
+        }
+        if (!cgImage) { CFRelease(cfData); free(img); return NULL; }
+
+        const size_t imageWidth = CGImageGetWidth(cgImage);
+        const size_t imageHeight = CGImageGetHeight(cgImage);
+        if (!imageWidth || !imageHeight ||
+            imageWidth > INT32_MAX || imageHeight > INT32_MAX ||
+            (uint64_t)imageWidth * (uint64_t)imageHeight > INT32_MAX / 4) {
+            CGImageRelease(cgImage); CFRelease(cfData); free(img); return NULL;
+        }
+        img->width = (int)imageWidth;
+        img->height = (int)imageHeight;
+        CGColorSpaceRef cs = getColorSpace();
+        img->ctx = CGBitmapContextCreate(NULL, img->width, img->height, 8, img->width * 4,
+                                         cs, kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Little);
+        if (!img->ctx) { CGImageRelease(cgImage); CFRelease(cfData); free(img); return NULL; }
+        CGContextClearRect(img->ctx, CGRectMake(0, 0, img->width, img->height));
+        CGContextDrawImage(img->ctx, CGRectMake(0, 0, img->width, img->height), cgImage);
+        CGImageRelease(cgImage);
+        img->immutableSnapshot = CGBitmapContextCreateImage(img->ctx);
+        img->softwareSource = CGBitmapContextGetData(img->ctx);
+        img->softwareStride = CGBitmapContextGetBytesPerRow(img->ctx) / 4;
+        if (eligible) jarbox_decoded_publish(img, cfData, hash, epoch);
+    }
     CFRelease(cfData);
-
-    CGImageRef cgImage = NULL;
-    if (source) {
-        cgImage = CGImageSourceCreateImageAtIndex(source, 0, NULL);
-        CFRelease(source);
-    }
-
-    if (!cgImage) {
-        free(img);
-        return NULL;
-    }
-
-    const size_t imageWidth = CGImageGetWidth(cgImage);
-    const size_t imageHeight = CGImageGetHeight(cgImage);
-    if (!imageWidth || !imageHeight ||
-        imageWidth > INT32_MAX || imageHeight > INT32_MAX ||
-        (uint64_t)imageWidth * (uint64_t)imageHeight > INT32_MAX / 4) {
-        CGImageRelease(cgImage);
-        free(img);
-        return NULL;
-    }
-    img->width = (int)imageWidth;
-    img->height = (int)imageHeight;
-
-    CGColorSpaceRef cs = getColorSpace();
-    img->ctx = CGBitmapContextCreate(NULL, img->width, img->height, 8, img->width * 4,
-                                      cs, kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Little);
-    if (!img->ctx) {
-        CGImageRelease(cgImage);
-        free(img);
-        return NULL;
-    }
-    CGContextClearRect(img->ctx, CGRectMake(0, 0, img->width, img->height));
-    CGContextDrawImage(img->ctx, CGRectMake(0, 0, img->width, img->height), cgImage);
-    CGImageRelease(cgImage);
-
-    // Decoded images cannot be drawing targets. Reuse the same normalized
-    // bitmap snapshot for every draw; publish it before handing out the handle.
-    img->immutableSnapshot = CGBitmapContextCreateImage(img->ctx);
-    img->softwareSource = CGBitmapContextGetData(img->ctx);
-    img->softwareStride = CGBitmapContextGetBytesPerRow(img->ctx) / 4;
-    atomic_init(&img->softwareVerified, 0);
-    atomic_init(&img->softwareRejected, 0);
 
     if (!track_img(img)) {
         if (img->immutableSnapshot) CGImageRelease(img->immutableSnapshot);
+        if (img->immutablePixels) CFRelease(img->immutablePixels);
         if (img->ctx) CGContextRelease(img->ctx);
         free(img);
         return NULL;
     }
+    // Retain conservative per-owner logical pixel accounting. Shared
+    // backing can be released by another owner or by cache trim independently.
     native_heap_add(img->heap_key, img->width * img->height * 4);
+    if (owner->session) {
+        if (hit) __atomic_fetch_add(&owner->session->startup_image_hits, 1, __ATOMIC_RELAXED);
+        else {
+            __atomic_fetch_add(&owner->session->startup_image_decodes, 1, __ATOMIC_RELAXED);
+            uint64_t done = treo_afk_now_ns();
+            if (started && done >= started)
+                __atomic_fetch_add(&owner->session->startup_image_decode_ns, done - started, __ATOMIC_RELAXED);
+        }
+    }
     return img;
 }
 
@@ -2941,7 +3109,12 @@ static s32 n_createImageFromData(Runtime *runtime, JClass *clazz) {
     Instance *arr = env->localvar_getRefer(runtime->localvar, 0);
     s32 offset = env->localvar_getInt(runtime->localvar, 1);
     s32 length = env->localvar_getInt(runtime->localvar, 2);
-    if (!arr) { env->push_long(runtime->stack, 0); return RUNTIME_STATUS_NORMAL; }
+    if (!arr || arr->mb.type != MEM_TYPE_ARR || arr->mb.arr_type_index != DATATYPE_BYTE ||
+        !arr->arr_body || offset < 0 || length <= 0 ||
+        offset > arr->arr_length || length > arr->arr_length - offset) {
+        env->push_long(runtime->stack, 0);
+        return RUNTIME_STATUS_NORMAL;
+    }
     c8 *arrBody = arr->arr_body;
     // Refuse new B-owned objects from a stale A Java thread.
     if (!jarbox_native_heap_key_for_runtime(runtime)) {
@@ -3536,6 +3709,7 @@ static void treo_live_trim_textures_locked(void) {
 // Do not block UIKit on a GPU command. A single coalesced recovery task
 // waits for the workspace if it is busy, without retaining any JVM pointer.
 int j2me_render_trim_memory_cache(void) {
+    jarbox_decoded_trim();
     if (os_unfair_lock_trylock(&treo_live_gpu_lock)) {
         treo_live_trim_textures_locked();
         os_unfair_lock_unlock(&treo_live_gpu_lock);
@@ -4496,6 +4670,18 @@ static s32 n_drawRGB(Runtime *runtime, JClass *clazz) {
 
 // --- getImageRGB ---
 
+static int jarbox_image_rgb_range(int iw, int ih, int capacity, int offset,
+                                  int scan, int x, int y, int w, int h) {
+    if (iw < 0 || ih < 0 || capacity < 0 || x < 0 || y < 0 || w < 0 || h < 0 ||
+        x > iw || y > ih || w > iw - x || h > ih - y) return 0;
+    if (!w || !h) return 1;
+    if ((int64_t)scan < w && -(int64_t)scan < w) return 0;
+    int64_t last = (int64_t)offset + (int64_t)(h - 1) * scan;
+    int64_t low = last < offset ? last : offset;
+    int64_t high = last > offset ? last : offset;
+    return low >= 0 && high + w <= capacity;
+}
+
 static s32 n_getImageRGB(Runtime *runtime, JClass *clazz) {
     JniEnv *env = runtime->jnienv;
     s64 imgHandle = env->localvar_getLong_2slot(runtime->localvar, 0);
@@ -4508,21 +4694,26 @@ static s32 n_getImageRGB(Runtime *runtime, JClass *clazz) {
     s32 h = env->localvar_getInt(runtime->localvar, 8);
 
     RenderImage *img = img_acquire(imgHandle, jarbox_native_heap_key_for_runtime(runtime));
-    if (!img || !arr) { img_release(img); return RUNTIME_STATUS_NORMAL; }
+    if (!img || !arr || arr->mb.type != MEM_TYPE_ARR || arr->mb.arr_type_index != DATATYPE_INT ||
+        !jarbox_image_rgb_range(img->width, img->height, arr->arr_length, offset, scanlength, x, y, w, h) ||
+        !w || !h || !arr->arr_body) { img_release(img); return RUNTIME_STATUS_NORMAL; }
 
     s32 *dstData = (s32 *)arr->arr_body;
-    uint8_t *srcData = (uint8_t *)CGBitmapContextGetData(img->ctx);
-    int imgW = img->width;
+    const uint8_t *srcData = img->softwareSource ? (const uint8_t *)img->softwareSource :
+                             img->ctx ? (const uint8_t *)CGBitmapContextGetData(img->ctx) : NULL;
+    size_t stride = img->softwareSource ? img->softwareStride * 4u :
+                    img->ctx ? CGBitmapContextGetBytesPerRow(img->ctx) : 0;
+    if (!srcData || stride < (size_t)img->width * 4u) { img_release(img); return RUNTIME_STATUS_NORMAL; }
 
     for (int row = 0; row < h; row++) {
         for (int col = 0; col < w; col++) {
-            int srcIdx = ((y + row) * imgW + (x + col)) * 4;
+            size_t srcIdx = (size_t)(y + row) * stride + (size_t)(x + col) * 4u;
             uint8_t b = srcData[srcIdx + 0];
             uint8_t g = srcData[srcIdx + 1];
             uint8_t r = srcData[srcIdx + 2];
             uint8_t a = srcData[srcIdx + 3];
-            s32 argb = (a << 24) | (r << 16) | (g << 8) | b;
-            dstData[offset + row * scanlength + col] = argb;
+            s32 argb = (s32)(((uint32_t)a << 24) | ((uint32_t)r << 16) | ((uint32_t)g << 8) | b);
+            dstData[(int64_t)offset + (int64_t)row * scanlength + col] = argb;
         }
     }
     img_release(img);
@@ -4937,6 +5128,7 @@ void j2me_render_cleanup_for_owner(uint64_t owner_key) {
     while ((img = take_img_for_owner(owner_key)) != NULL) {
         ++img_count;
         if (img->immutableSnapshot) CGImageRelease(img->immutableSnapshot);
+        if (img->immutablePixels) CFRelease(img->immutablePixels);
         if (img->ctx) { CGContextRelease(img->ctx); img->ctx = NULL; }
         if (img->width > 0 && img->height > 0)
             native_heap_sub(owner_key, img->width * img->height * 4);

@@ -33,6 +33,9 @@ typedef struct JarBoxSession {
     unsigned lease_gate;      /* high bit = closing; low bits = live leases */
     unsigned phase;
     unsigned network_stopping; // one-way transport admission latch
+    uint64_t startup_image_decodes;
+    uint64_t startup_image_hits;
+    uint64_t startup_image_decode_ns;
     // Launch configuration, owned by this session rather than the process.
     int render_3d_scale;
     // GC and AFK diagnostics now live in this session, never on a shared

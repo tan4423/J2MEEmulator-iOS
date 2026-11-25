@@ -57,8 +57,8 @@ public class Image {
     }
 
     public static Image createImage(String name) throws IOException {
-        // No cache in normal play or compatibility Treo. Each call creates
-        // an independent Image/CGImage, never a shared mutable handle.
+        // The Java image and native handle are always owner-local. The
+        // native decoder may reuse immutable pixel backing by exact bytes.
         final boolean useCache = name != null && NativeBridge.afkImageCacheEnabled();
         final ClassLoader loader = useCache ?
                 Thread.currentThread().getContextClassLoader() : null;
@@ -209,6 +209,10 @@ public class Image {
     }
 
     public static Image createImage(byte[] imageData, int imageOffset, int imageLength) {
+        if (imageData == null) throw new NullPointerException();
+        if (imageOffset < 0 || imageLength < 0 || imageOffset > imageData.length ||
+                imageLength > imageData.length - imageOffset)
+            throw new ArrayIndexOutOfBoundsException();
         long handle = NativeBridge.createImageFromData(imageData, imageOffset, imageLength);
         if (handle == 0) {
             throw new IllegalArgumentException("Failed to decode image data");
@@ -266,6 +270,16 @@ public class Image {
 
     public void getRGB(int[] rgbData, int offset, int scanlength,
                        int x, int y, int w, int h) {
+        if (rgbData == null) throw new NullPointerException();
+        if (x < 0 || y < 0 || w < 0 || h < 0 || x > width || y > height ||
+                w > width - x || h > height - y) throw new IllegalArgumentException("image region");
+        if (w == 0 || h == 0) return;
+        if ((long)scanlength < w && -(long)scanlength < w)
+            throw new IllegalArgumentException("scanlength");
+        long last = (long)offset + (long)(h - 1) * scanlength;
+        long low = last < offset ? last : offset;
+        long high = last > offset ? last : offset;
+        if (low < 0 || high + w > rgbData.length) throw new ArrayIndexOutOfBoundsException();
         NativeBridge.getImageRGB(nativeHandle, rgbData, offset, scanlength, x, y, w, h);
     }
 
