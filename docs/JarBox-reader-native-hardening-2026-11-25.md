@@ -1,0 +1,7 @@
+# UTF-8 resume and native socket input hardening
+
+Baseline 81af2cc; device bcb381a disconnect appears OK; TrungDucTV byte buffering fix awaits device validation. Preserve all version checks and real responses. No game modifications.
+
+The decoder now retains partial multibyte state across IOException, delivers already decoded characters before deferred error, reports pending surrogate/ASCII readiness, rejects reads after close, resets state on open, does not support mark/reset, and avoids allocating a one-char array per scalar read. sizeOf and read use the same codepoint validation; malformed grouping remains the existing replacement policy, not a claim of full Java SE equivalence. Host Java fixture with CLDC-shaped StreamReader tests timeout, reopen, surrogate, malformed data and 3000 deterministic size cases. CI exercises production source.
+
+Native option getters no longer silently return zero on syscall failure; Windows nonblocking getter no longer changes the socket. Validate handle type and C strings at connect/bind/accept/option/DNS entry points, prevent connect/bind overwriting a live fd, check allocation results, and mark DNS resolution as a blocking VM operation. DNS itself is still synchronous and not deadline-controlled. Preserve existing native option codes. Added regression for closed descriptor errors; use portable inet_pton in fixture. No shared image cache or HTTP deadline implementation in this change. Full macOS/iOS and game tests still required.

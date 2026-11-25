@@ -52,7 +52,7 @@ int main(void) {
     if (listener < 0) return 1;
     struct sockaddr_in addr = {0};
     addr.sin_family = AF_INET;
-    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    if (inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr) != 1) return 29;
     addr.sin_port = htons(0);
     if (bind(listener, (const struct sockaddr *)&addr, sizeof(addr)) != 0)
         return 14;
@@ -125,6 +125,12 @@ int main(void) {
         return 23;
     if (sock_option(&s, SOCK_OP_TYPE_TIMEOUT, 100, 0) == 0 ||
         s.rcv_time_out != 750) return 24;
+    if (sock_get_option(&s, SOCK_OP_TYPE_RCVBUF) != -1 ||
+        sock_get_option(&s, SOCK_OP_TYPE_SNDBUF) != -1 ||
+        sock_get_option(&s, SOCK_OP_TYPE_TIMEOUT) != -1 ||
+        sock_get_option(&s, SOCK_OP_TYPE_REUSEADDR) != -1 ||
+        sock_get_option(&s, SOCK_OP_TYPE_NON_BLOCK) != -1 ||
+        sock_get_option(NULL, SOCK_OP_TYPE_KEEPALIVE) != -1) return 30;
     close(accepted); close(listener); return 0;
 }
 """
@@ -155,6 +161,44 @@ class SocketOptionsTest(unittest.TestCase):
                              compile_result.stdout + compile_result.stderr)
             run = subprocess.run([str(exe)], capture_output=True, text=True, timeout=15)
             self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+
+    def test_native_handle_and_c_string_validation(self):
+        cc = shutil.which("cc")
+        if not cc:
+            self.skipTest("C compiler unavailable")
+        source = NATIVE.read_text()
+        start = source.index("static int jarbox_net_byte_array(")
+        end = source.index("extern s32 os_mkdir", start)
+        fixture = r"""
+#include <stdint.h>
+#include <string.h>
+#include <assert.h>
+typedef int32_t s32;
+typedef struct {struct {int type;int arr_type_index;} mb; s32 arr_length; char *arr_body;} Instance;
+#define MEM_TYPE_ARR 4
+#define DATATYPE_BYTE 8
+"""
+        main = r"""
+int main(void) {
+ char valid[]="localhost", invalid[]={'x','y'}, embedded[]={'x',0,'y',0};
+ Instance a={{4,8},sizeof valid,valid};
+ assert(jarbox_net_c_string(&a,2,1024));
+ assert(!jarbox_net_c_string(&a,2,4));
+ a.mb.type=2;assert(!jarbox_net_byte_array(&a,1));a.mb.type=4;
+ a.mb.arr_type_index=5;assert(!jarbox_net_c_string(&a,2,1024));a.mb.arr_type_index=8;
+ a.arr_length=2;a.arr_body=invalid;assert(!jarbox_net_c_string(&a,2,1024));
+ a.arr_length=4;a.arr_body=embedded;assert(!jarbox_net_c_string(&a,2,1024));
+ a.arr_length=4;a.arr_body=NULL;assert(!jarbox_net_byte_array(&a,1));
+ a.arr_length=0;assert(jarbox_net_byte_array(&a,0));assert(!jarbox_net_c_string(&a,1,1024));
+ assert(!jarbox_net_byte_array(NULL,1));a.arr_length=-1;assert(!jarbox_net_byte_array(&a,0));
+ return 0;
+}
+"""
+        with tempfile.TemporaryDirectory() as td:
+            src, exe = Path(td)/"input.c", Path(td)/"input"
+            src.write_text(fixture+source[start:end]+main)
+            subprocess.run([cc,"-std=c11","-Wall","-Wextra","-Werror",str(src),"-o",str(exe)],check=True,timeout=30)
+            subprocess.run([str(exe)],check=True,timeout=10)
 
 if __name__ == "__main__":
     unittest.main()
