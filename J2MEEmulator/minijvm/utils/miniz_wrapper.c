@@ -294,7 +294,8 @@ void zip_classpath_cache_trim(void) {
     }
 }
 
-s32 zip_classpath_loadfile(const char *jarpath, const char *filename, ByteBuf *buf) {
+s32 zip_classpath_loadfile_profiled(const char *jarpath, const char *filename, ByteBuf *buf, int *hit_kind) {
+    if (hit_kind) *hit_kind = 0;
     if (!jarpath || !filename || !buf) return -1;
     if (pthread_mutex_trylock(&jarbox_classpath_lock) != 0)
         return zip_loadfile(jarpath, filename, buf);
@@ -346,9 +347,10 @@ s32 zip_classpath_loadfile(const char *jarpath, const char *filename, ByteBuf *b
     const char *entry = filename[0] == '/' ? filename + 1 : filename;
     JarBoxClasspathData *cached = jarbox_classpath_data_find(reader, entry);
     int definitive_miss = 0;
+    int cached_miss = 0;
     if (cached) {
         ret = jarbox_classpath_data_copy(cached, buf);
-    } else if (!jarbox_classpath_miss_find(reader, entry)) {
+    } else if ((cached_miss = jarbox_classpath_miss_find(reader, entry)) == 0) {
         int index = mz_zip_reader_locate_file(&reader->archive, entry, NULL,
                                              MZ_ZIP_FLAG_CASE_SENSITIVE);
         if (index < 0)
@@ -376,6 +378,12 @@ s32 zip_classpath_loadfile(const char *jarpath, const char *filename, ByteBuf *b
     if (!cached && ret == 0) jarbox_classpath_data_add(reader, entry, buf);
     if (definitive_miss) jarbox_classpath_miss_add(reader, entry);
     jarbox_classpath_touch(reader);
+    // Only count validated cache results, not an unsuccessful copy or a
+    // stale archive that needs the uncached fallback.
+    if (hit_kind) {
+        if (cached && ret == 0) *hit_kind = 1;
+        else if (cached_miss) *hit_kind = 2;
+    }
     fallback = 0;
 done:
     jarbox_classpath_trim_locked();
@@ -384,10 +392,15 @@ done:
 }
 #else
 void zip_classpath_cache_trim(void) {}
-s32 zip_classpath_loadfile(const char *jarpath, const char *filename, ByteBuf *buf) {
+s32 zip_classpath_loadfile_profiled(const char *jarpath, const char *filename, ByteBuf *buf, int *hit_kind) {
+    if (hit_kind) *hit_kind = 0;
     return zip_loadfile(jarpath, filename, buf);
 }
 #endif
+
+s32 zip_classpath_loadfile(const char *jarpath, const char *filename, ByteBuf *buf) {
+    return zip_classpath_loadfile_profiled(jarpath, filename, buf, NULL);
+}
 
 s32 zip_savefile_mem(char const *jarpath, char const *filename, char const *buf, int size) {
     int file_index = 0;

@@ -2195,6 +2195,8 @@ s32 _loadFileContents(c8 const *file, ByteBuf *buf) {
 ByteBuf *load_file_from_classpath(PeerClassLoader *cloader, Utf8String *path) {
     ByteBuf *bytebuf = NULL;
     s32 i, iret;
+    JarBoxSession *session = cloader->jvm ? cloader->jvm->session : NULL;
+    uint64_t probes = 0, hits = 0, negative_hits = 0, hit_bytes = 0;
     for (i = 0; i < cloader->classpath->length; i++) {
         Utf8String *pClassPath = arraylist_get_value(cloader->classpath, i);
         if (isDir(pClassPath)) { //form file
@@ -2212,7 +2214,11 @@ ByteBuf *load_file_from_classpath(PeerClassLoader *cloader, Utf8String *path) {
             }
         } else { //from jar
             bytebuf = bytebuf_create(16);
-            iret = zip_classpath_loadfile(utf8_cstr(pClassPath), utf8_cstr(path), bytebuf);
+            int hit_kind = 0;
+            iret = zip_classpath_loadfile_profiled(utf8_cstr(pClassPath), utf8_cstr(path), bytebuf, &hit_kind);
+            ++probes;
+            if (hit_kind == 1) { ++hits; hit_bytes += bytebuf->wp; }
+            else if (hit_kind == 2) ++negative_hits;
             //回收
             if (iret != 0) {
                 bytebuf_destroy(bytebuf);
@@ -2221,6 +2227,14 @@ ByteBuf *load_file_from_classpath(PeerClassLoader *cloader, Utf8String *path) {
                 break;
             }
         }
+    }
+    if (session && probes) {
+        __atomic_fetch_add(&session->shared_zip_probes, probes, __ATOMIC_RELAXED);
+        if (hits) {
+            __atomic_fetch_add(&session->shared_zip_hits, hits, __ATOMIC_RELAXED);
+            __atomic_fetch_add(&session->shared_zip_hit_bytes, hit_bytes, __ATOMIC_RELAXED);
+        }
+        if (negative_hits) __atomic_fetch_add(&session->shared_zip_negative_hits, negative_hits, __ATOMIC_RELAXED);
     }
     return bytebuf;
 }

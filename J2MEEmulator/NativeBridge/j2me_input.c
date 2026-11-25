@@ -382,6 +382,19 @@ static s32 n_startupPhase(Runtime *runtime, JClass *clazz) {
                      (unsigned long long)__atomic_load_n(&session->startup_image_hits, __ATOMIC_RELAXED),
                      (double)__atomic_load_n(&session->startup_image_decode_ns, __ATOMIC_RELAXED) / 1000000.0);
             jvm_bridge_note_net_trace(image_event);
+            // Cumulative per-session snapshots, no per-resource log lines.
+            char shared_event[384];
+            snprintf(shared_event, sizeof(shared_event),
+                     "startup_shared:phase=%s,zip_probes=%llu,zip_hits=%llu,zip_negative_hits=%llu,zip_hit_bytes=%llu,prepared_candidates=%llu,prepared_hits=%llu,prepared_hit_bytes=%llu",
+                     name,
+                     (unsigned long long)__atomic_load_n(&session->shared_zip_probes, __ATOMIC_RELAXED),
+                     (unsigned long long)__atomic_load_n(&session->shared_zip_hits, __ATOMIC_RELAXED),
+                     (unsigned long long)__atomic_load_n(&session->shared_zip_negative_hits, __ATOMIC_RELAXED),
+                     (unsigned long long)__atomic_load_n(&session->shared_zip_hit_bytes, __ATOMIC_RELAXED),
+                     (unsigned long long)__atomic_load_n(&session->shared_prepared_candidates, __ATOMIC_RELAXED),
+                     (unsigned long long)__atomic_load_n(&session->shared_prepared_hits, __ATOMIC_RELAXED),
+                     (unsigned long long)__atomic_load_n(&session->shared_prepared_hit_bytes, __ATOMIC_RELAXED));
+            jvm_bridge_note_net_trace(shared_event);
         }
     }
     return RUNTIME_STATUS_NORMAL;

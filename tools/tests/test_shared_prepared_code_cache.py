@@ -75,5 +75,19 @@ class PreparedCodeCacheTest(unittest.TestCase):
         bridge = (ROOT/"J2MEEmulator/NativeBridge/jvm_bridge.c").read_text()
         self.assertIn("jarbox_prepared_code_cache_trim();", bridge.split("void jvm_bridge_trim_classpath_cache(void)", 1)[1].split("}", 1)[0])
 
+    def test_shared_profile_scope_and_logging(self):
+        s = (JVM/"class_load.c").read_text()
+        parse = s.split("JClass *class_parse(", 1)[1].split("JClass *load_class(", 1)[0]
+        self.assertIn("static _Thread_local JarBoxPreparedProfile *jarbox_prepared_profile;", s)
+        self.assertLess(parse.index("jarbox_prepared_profile = jvm->session ? &profile : NULL"), parse.index("->_load_class_from_bytes("))
+        self.assertLess(parse.index("->_load_class_from_bytes("), parse.index("jarbox_prepared_profile = previous_profile"))
+        self.assertIn("&jvm->session->shared_prepared_hits, profile.hits", parse)
+        bridge = (ROOT/"J2MEEmulator/NativeBridge/j2me_input.c").read_text()
+        for field in ("zip_probes", "zip_hits", "zip_negative_hits", "zip_hit_bytes",
+                      "prepared_candidates", "prepared_hits", "prepared_hit_bytes"):
+            self.assertIn("shared_" + field, (JVM/"jarbox_session.h").read_text())
+            self.assertIn("&session->shared_" + field, bridge)
+        self.assertEqual(bridge.count("startup_shared:phase="), 1)
+
 if __name__ == "__main__":
     unittest.main()

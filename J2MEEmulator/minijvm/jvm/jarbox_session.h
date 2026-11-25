@@ -36,6 +36,8 @@ typedef struct JarBoxSession {
     uint64_t startup_image_decodes;
     uint64_t startup_image_hits;
     uint64_t startup_image_decode_ns;
+    uint64_t shared_zip_probes, shared_zip_hits, shared_zip_negative_hits, shared_zip_hit_bytes;
+    uint64_t shared_prepared_candidates, shared_prepared_hits, shared_prepared_hit_bytes;
     // Launch configuration, owned by this session rather than the process.
     int render_3d_scale;
     // GC and AFK diagnostics now live in this session, never on a shared

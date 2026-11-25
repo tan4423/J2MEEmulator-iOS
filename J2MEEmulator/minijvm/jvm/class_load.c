@@ -14,6 +14,12 @@
 #include "jit.h"
 #if defined(__APPLE__) || defined(__linux__)
 #include "jarbox_prepared_code_cache.h"
+// Each parse accumulates locally; concurrent JVMs never share counters.
+// The previous scope is restored even if the parser reports an error.
+typedef struct {
+    uint64_t candidates, hits, hit_bytes;
+} JarBoxPreparedProfile;
+static _Thread_local JarBoxPreparedProfile *jarbox_prepared_profile;
 #endif
 
 void jarbox_prepared_code_cache_trim(void) {
@@ -753,8 +759,14 @@ void _changeBytesOrder(MethodInfo *method) {
     const unsigned prepared_epoch = atomic_load(&jarbox_prepared_epoch);
     const uint64_t prepared_hash = ca->bytecode_for_jit ?
         jarbox_prepared_hash(ca->code, ca->code_length) : 0;
-    if (jarbox_prepared_lookup(method, prepared_hash, prepared_epoch))
+    if (prepared_hash && jarbox_prepared_profile) ++jarbox_prepared_profile->candidates;
+    if (jarbox_prepared_lookup(method, prepared_hash, prepared_epoch)) {
+        if (jarbox_prepared_profile) {
+            ++jarbox_prepared_profile->hits;
+            jarbox_prepared_profile->hit_bytes += (uint64_t)ca->code_length;
+        }
         goto prepared_finish;
+    }
     // Reuse the already allocated second buffer as the raw cache key on a
     // miss. The final copy below restores its original converted contents.
     if (prepared_hash) memcpy(ca->bytecode_for_jit, ca->code, (size_t)ca->code_length);
@@ -2111,7 +2123,22 @@ JClass *class_parse(Instance *loader, ByteBuf *bytebuf, Runtime *runtime) {
         tmp_for_del->jloader = loader;
         MiniJVM *jvm = runtime->jvm;
 
+#if defined(__APPLE__) || defined(__linux__)
+        JarBoxPreparedProfile profile = {0};
+        JarBoxPreparedProfile *previous_profile = jarbox_prepared_profile;
+        jarbox_prepared_profile = jvm->session ? &profile : NULL;
+#endif
         s32 iret = tmp_for_del->_load_class_from_bytes(tmp_for_del, bytebuf);//load file
+#if defined(__APPLE__) || defined(__linux__)
+        jarbox_prepared_profile = previous_profile;
+        if (jvm->session && profile.candidates) {
+            __atomic_fetch_add(&jvm->session->shared_prepared_candidates, profile.candidates, __ATOMIC_RELAXED);
+            if (profile.hits) {
+                __atomic_fetch_add(&jvm->session->shared_prepared_hits, profile.hits, __ATOMIC_RELAXED);
+                __atomic_fetch_add(&jvm->session->shared_prepared_hit_bytes, profile.hit_bytes, __ATOMIC_RELAXED);
+            }
+        }
+#endif
 
         if (iret == 0) {
             tmpclazz = classes_get(jvm, loader, tmp_for_del->name);// if class already loaded

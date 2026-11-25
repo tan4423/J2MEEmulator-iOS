@@ -74,6 +74,10 @@ int main(int argc, char **argv) {
     fail_expand = 0;
     CHECK(zip_loadfile(jar, "large", &b) == 0 && b.wp == 1024);
     CHECK(b.buf[0] == 'x' && b.buf[1023] == 'x');
+    int hit_kind = 99;
+    // Cold byte read and cold absence are not reported as cache hits.
+    CHECK(zip_classpath_loadfile_profiled(jar, "a.class", &b, &hit_kind) == 0 && hit_kind == 0);
+    CHECK(zip_classpath_loadfile_profiled(jar, "A.CLASS", &b, &hit_kind) == -1 && hit_kind == 0);
     // Cache hit/miss and exact-case collision, then replacement at same path.
     for (int n = 0; n < 1000; ++n) {
         CHECK(zip_classpath_loadfile(jar, "a.class", &b) == 0);
@@ -91,6 +95,8 @@ int main(int argc, char **argv) {
     CHECK(!jarbox_classpath_miss_find(&jarbox_classpath_cache[0], "A.class"));
     CHECK(zip_classpath_loadfile(jar, "/A.CLASS", &b) == -1);
     CHECK(jarbox_classpath_miss_count == 1);
+    CHECK(zip_classpath_loadfile_profiled(jar, "/a.class", &b, &hit_kind) == 0 && hit_kind == 1);
+    CHECK(zip_classpath_loadfile_profiled(jar, "/A.CLASS", &b, &hit_kind) == -1 && hit_kind == 2);
     // A failed allocation/extraction is not proof of absence.
     ByteBuf small = {1, 0, 0, malloc(1)};
     CHECK(small.buf != NULL);
@@ -117,7 +123,7 @@ int main(int argc, char **argv) {
     ByteBuf other = {1, 0, 0, malloc(1)};
     CHECK(other.buf != NULL);
     fail_expand = 1;
-    CHECK(zip_classpath_loadfile(jar, "a.class", &other) == -1);
+    CHECK(zip_classpath_loadfile_profiled(jar, "a.class", &other, &hit_kind) == -1 && hit_kind == 0);
     fail_expand = 0;
     CHECK(zip_classpath_loadfile(jar, "a.class", &other) == 0);
     CHECK(other.wp == 3 && memcmp(other.buf, "low", 3) == 0);
@@ -140,11 +146,11 @@ int main(int argc, char **argv) {
     CHECK(jarbox_classpath_data_count < 32);
     // Contention must use the uncached reader, never wait for another owner.
     CHECK(pthread_mutex_lock(&jarbox_classpath_lock) == 0);
-    CHECK(zip_classpath_loadfile(jar, "a.class", &b) == 0);
+    CHECK(zip_classpath_loadfile_profiled(jar, "a.class", &b, &hit_kind) == 0 && hit_kind == 0);
     CHECK(pthread_mutex_unlock(&jarbox_classpath_lock) == 0);
 #endif
     CHECK(rename(argv[2], jar) == 0);
-    CHECK(zip_classpath_loadfile(jar, "a.class", &b) == 0);
+    CHECK(zip_classpath_loadfile_profiled(jar, "a.class", &b, &hit_kind) == 0 && hit_kind == 0);
     CHECK(b.wp == 7 && memcmp(b.buf, "new-low", 7) == 0);
     CHECK(zip_classpath_loadfile(jar, "A.class", &b) == -1);
 #if defined(__APPLE__) || defined(__linux__)
