@@ -28,6 +28,7 @@ typedef struct JarBoxTreoState {
     int nso_canvas_seen;
     uint64_t nso_repaint_requests, nso_skips[3];
     uint64_t int_leaf_fast_calls; // batched count, all modes, per JVM
+    uint64_t ref_leaf_fast_calls;
     uint64_t smart_heap_peak;
     uint64_t smart_cycles;
     uint64_t smart_cpu_ns;

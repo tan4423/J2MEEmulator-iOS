@@ -1485,6 +1485,42 @@ static inline void treo_nso_trace_cu_invokespecial(Runtime *rt, int probe,
     jvm_bridge_note_nso_init_trace(msg);
 }
 #endif
+#if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__ && !defined(TREO_VM_REF_LEAF_DISABLED) && !_JVM_DEBUG_PROFILE && _JVM_DEBUG_LOG_LEVEL == 0 && !TREO_VM_PAINT_SAMPLE
+// Only already-linked, same-class, nonvolatile reference fields. Do not
+// resolve a field or trigger initialization on the fast path. The object
+// value is never cached: read the current JVM's static slot on every call.
+static inline int jarbox_try_ref_leaf(MethodInfo *method, Runtime *caller) {
+    const u32 shape = method->treo_ref_leaf;
+    JClass *cl = method->_this_class;
+    const u16 cp = (u16)shape;
+    if (!cp || cp >= cl->constant_item_count || !cl->constant_item_ptr) return 0;
+    ConstantItem *item = class_get_constant_item(cl, cp);
+    if (!item || item->tag != CONSTANT_FIELD_REF) return 0;
+    FieldInfo *fi = ((ConstantFieldRef *)item)->fieldInfo;
+    if (!fi || fi->_this_class != cl || !(fi->access_flags & ACC_STATIC) ||
+        !fi->isrefer || fi->isvolatile || (fi->access_flags & ACC_VOLATILE) ||
+        !cl->field_static || cl->field_static_len < (s32)sizeof(__refer) ||
+        fi->offset > cl->field_static_len - (s32)sizeof(__refer)) return 0;
+    c8 *address = getStaticFieldPtr(fi);
+    // Packed or unusual field layouts stay on the ordinary interpreter.
+    if ((uintptr_t)address % _Alignof(__refer)) return 0;
+    RuntimeStack *stack = caller->stack;
+    CodeAttribute *ca = method->converted_code;
+    const s32 used = (s32)(stack->sp - stack->store);
+    if (!ca || used < 0 || used >= stack->max_size ||
+        ca->max_stack > stack->max_size - used) return 0;
+    // Preserve BOTH getstatic operations of the nonnull lazy branch.
+    // No intervening Java call or safepoint; no reference retained in cache.
+    __refer value = __atomic_load_n((__refer *)address, __ATOMIC_RELAXED);
+    if (shape & UINT32_C(0x10000)) {
+        if (!value) return 0;
+        value = __atomic_load_n((__refer *)address, __ATOMIC_RELAXED);
+    }
+    push_ref(stack, value);
+    return 1;
+}
+#endif
+
 s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
 #if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__
     // These server/mod notices are drawn by Class_cu.d(String), from
@@ -1575,6 +1611,20 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
             }
             return RUNTIME_STATUS_NORMAL;
         }
+    }
+#endif
+#if !defined(TREO_VM_REF_LEAF_DISABLED) && !_JVM_DEBUG_PROFILE && _JVM_DEBUG_LOG_LEVEL == 0 && !TREO_VM_PAINT_SAMPLE
+    if (method->treo_ref_leaf && method->_this_class->status >= CLASS_STATUS_CLINITED &&
+        !pruntime->jvm->jdwp_enable && !method->breakpoint &&
+        !pruntime->thrd_info->is_stop && !pruntime->thrd_info->suspend_count &&
+        !treo_game_jit_is_enabled() && jarbox_try_ref_leaf(method, pruntime)) {
+        if (++pruntime->thrd_info->jarbox_ref_leaf_pending == 64) {
+            pruntime->thrd_info->jarbox_ref_leaf_pending = 0;
+            if (pruntime->jvm->session)
+                __atomic_fetch_add(&pruntime->jvm->session->treo_state.ref_leaf_fast_calls,
+                                   64, __ATOMIC_RELAXED);
+        }
+        return RUNTIME_STATUS_NORMAL;
     }
 #endif
     // Retain game logic inside paint(). For a headless *Canvas* Graphics,

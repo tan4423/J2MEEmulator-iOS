@@ -1443,7 +1443,8 @@ class GameViewController: UIViewController {
             "service_skips=\(treo.service_skips)", "paint_skips=\(treo.paint_skips)",
             "smart_gc_cycles=\(treo.smart_gc_cycles)", "smart_gc_cpu_ns=\(treo.smart_gc_cpu_ns)",
             "smart_period_ms=\(treo.smart_period_ms)", "smart_fallback=\(treo.smart_fallback)",
-            "int_leaf_fast_calls_approx=\(treo.int_leaf_fast_calls)"
+            "int_leaf_fast_calls_approx=\(treo.int_leaf_fast_calls)",
+            "ref_leaf_fast_calls_approx=\(treo.ref_leaf_fast_calls)"
         ]
         let treoLine = "treo_session:" + (treoAvailable ? treoFields.joined(separator: ",") : "unavailable")
         // Keep these cumulative diagnostics cheap: only construct on demand.

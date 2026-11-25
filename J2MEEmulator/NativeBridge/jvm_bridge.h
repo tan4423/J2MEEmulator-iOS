@@ -63,7 +63,7 @@ int jvm_bridge_status_heap_bytes_for_token(uint64_t token, uint64_t *out_bytes);
 typedef struct {
     uint64_t repaint_requests, repaint_skips, service_skips, paint_skips;
     uint64_t smart_gc_cycles, smart_gc_cpu_ns;
-    uint64_t int_leaf_fast_calls;
+    uint64_t int_leaf_fast_calls, ref_leaf_fast_calls;
     int mode, family, canvas, smart_period_ms, smart_fallback;
 } JarBoxTreoSnapshot;
 int jvm_bridge_treo_snapshot_for_token(uint64_t token, JarBoxTreoSnapshot *out);

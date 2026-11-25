@@ -1,0 +1,5 @@
+# Deep Treo: reference leaf experiment and compatibility corpus
+
+Baseline 68ee8ae. Match raw class-file code for static reference getters and three exact lazy singleton forward-branch shapes (20, 22, 24 bytes). The cold branch is always interpreted normally. The warm branch preserves both static field reads, checks live resolved same-class nonvolatile static reference field, valid storage and alignment, initialized class, capacity, no debugger/breakpoint/stop/suspend/JIT. No allocation or shared Java reference, no JAR modification, no timing changes. Batched per-session ref_leaf_fast_calls_approx on demand; opt out TREO_VM_REF_LEAF_DISABLED. Static shape fixture tested on host; integration and device CPU gain pending.
+
+Compatibility corpus: NinjaSchool_251.jar original baseline; Nicknsonet_t5 (1).jar, 217_TrungDucTV_51026.jar, NST_X1.jar, V9_X1_NOKEY.jar existing mods. Add V9 NSOTIEN as distinct mod when its JAR is received (not present in active files at this checkpoint). MicroEmulator.jar.jar is reference, not a game baseline. No game binaries committed. Do not broaden recognition by mod name or asset count.
