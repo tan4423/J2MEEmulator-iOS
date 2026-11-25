@@ -785,6 +785,27 @@ int jvm_bridge_visit_running_vm_for_token(
     jarbox_session_callback_done(held_session);
     return 1;
 }
+static void bridge_treo_snapshot(MiniJVM *vm, void *arg) {
+    JarBoxTreoSnapshot *out = arg;
+    JarBoxTreoState *s = &vm->session->treo_state;
+    out->repaint_requests = __atomic_load_n(&s->nso_repaint_requests, __ATOMIC_RELAXED);
+    out->repaint_skips = jarbox_treo_nso_skip_count(s, 0);
+    out->service_skips = jarbox_treo_nso_skip_count(s, 1);
+    out->paint_skips = jarbox_treo_nso_skip_count(s, 2);
+    out->mode = jarbox_treo_mode_get(s);
+    out->family = jarbox_treo_nso_family_verified(s);
+    out->canvas = jarbox_treo_nso_canvas_recognized(s);
+    out->smart_gc_cycles = __atomic_load_n(&s->smart_cycles, __ATOMIC_RELAXED);
+    out->smart_gc_cpu_ns = __atomic_load_n(&s->smart_cpu_ns, __ATOMIC_RELAXED);
+    out->smart_period_ms = jarbox_treo_smart_period(s);
+    out->smart_fallback = __atomic_load_n(&s->smart_fallback, __ATOMIC_RELAXED);
+}
+int jvm_bridge_treo_snapshot_for_token(uint64_t token, JarBoxTreoSnapshot *out) {
+    if (!out) return 0;
+    memset(out, 0, sizeof(*out));
+    return jvm_bridge_visit_running_vm_for_token(token, bridge_treo_snapshot, out);
+}
+
 static void bridge_status_heap_snapshot(MiniJVM *vm, void *arg) {
     if (!vm || !vm->collector) return;
     *(uint64_t *)arg = __atomic_load_n(

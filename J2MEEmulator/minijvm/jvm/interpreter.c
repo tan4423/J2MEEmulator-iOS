@@ -633,6 +633,64 @@ static inline int treo_nso_init_for_runtime(const Runtime *rt) {
     return rt && rt->jvm && rt->jvm->session &&
         jarbox_treo_nso_init_target_active(&rt->jvm->session->treo_state);
 }
+// These tags classify the existing debugging probes, not game behavior.
+// Cache only immutable class/name/descriptor properties, never a VM
+// decision or a resolved receiver. No probe is removed by this fast path.
+enum {
+    TREO_DIAG_KNOWN = 1, TREO_DIAG_RUN_CALLER = 2,
+    TREO_DIAG_NOTICE = 4, TREO_DIAG_NOTICE_CALLER = 8,
+    TREO_DIAG_POPUP_TICK = 16, TREO_DIAG_POPUP_KEY = 32,
+    TREO_DIAG_RUN_ENTRY = 64, TREO_DIAG_GAME_KEY = 128,
+    TREO_DIAG_POPUP_CONFIG = 256, TREO_DIAG_POPUP_CONTENT = 512,
+    TREO_DIAG_CU_CTOR = 1024, TREO_DIAG_MIDLET_CTOR = 2048,
+    TREO_DIAG_PAINT = 4096, TREO_DIAG_SETTER = 8192
+};
+static u16 treo_mod_diag_roles(MethodInfo *m) {
+    if (!m || !m->_this_class || !m->_this_class->name ||
+        !m->name || !m->descriptor) return 0;
+    u16 roles = __atomic_load_n(&m->treo_mod_diag_roles, __ATOMIC_RELAXED);
+    if (roles) return roles;
+    roles = TREO_DIAG_KNOWN;
+    Utf8String *cl = m->_this_class->name, *name = m->name, *desc = m->descriptor;
+    if (utf8_equals_c(cl, "Class_cc")) {
+        if (utf8_equals_c(name, "a")) {
+            if (utf8_equals_c(desc, "()V")) roles |= TREO_DIAG_POPUP_TICK;
+            else if (utf8_equals_c(desc, "(I)V")) roles |= TREO_DIAG_POPUP_KEY;
+        }
+    } else if (utf8_equals_c(cl, "Class_cu")) {
+        if (utf8_equals_c(name, "run")) {
+            roles |= TREO_DIAG_RUN_CALLER;
+            if (utf8_equals_c(desc, "()V")) roles |= TREO_DIAG_RUN_ENTRY;
+        } else if (utf8_equals_c(name, "a") && utf8_equals_c(desc, "(I)V")) {
+            roles |= TREO_DIAG_GAME_KEY;
+        } else if ((utf8_equals_c(name, "a") || utf8_equals_c(name, "b") ||
+                    utf8_equals_c(name, "c") || utf8_equals_c(name, "d") ||
+                    utf8_equals_c(name, "e")) &&
+                   utf8_equals_c(desc, "(Ljava/lang/String;)V")) {
+            roles |= TREO_DIAG_POPUP_CONFIG;
+            if (utf8_equals_c(name, "d")) roles |= TREO_DIAG_NOTICE;
+        }
+        if (utf8_equals_c(name, "<init>")) roles |= TREO_DIAG_CU_CTOR;
+    } else if (utf8_equals_c(cl, "Class_em")) {
+        if (utf8_equals_c(name, "a") && utf8_equals_c(desc,
+            "(Ljava/lang/String;LClass_by;LClass_by;LClass_by;)V"))
+            roles |= TREO_DIAG_POPUP_CONTENT;
+    } else if (utf8_equals_c(cl, "Class_ek")) {
+        if (utf8_equals_c(name, "paint") &&
+            utf8_equals_c(desc, "(Ljavax/microedition/lcdui/Graphics;)V"))
+            roles |= TREO_DIAG_PAINT;
+        else if (utf8_equals_c(name, "a") && utf8_equals_c(desc, "(LClass_bv;)V"))
+            roles |= TREO_DIAG_SETTER;
+    } else if (utf8_equals_c(cl, "GameMidlet") && utf8_equals_c(name, "<init>")) {
+        roles |= TREO_DIAG_MIDLET_CTOR;
+    } else if ((utf8_equals_c(cl, "Class_fq") && utf8_equals_c(name, "d")) ||
+               (utf8_equals_c(cl, "Class_gv") && utf8_equals_c(name, "g"))) {
+        roles |= TREO_DIAG_NOTICE_CALLER;
+    }
+    __atomic_store_n(&m->treo_mod_diag_roles, roles, __ATOMIC_RELAXED);
+    return roles;
+}
+
 extern void jvm_bridge_note_net_trace(const char *detail);
 extern void jvm_bridge_mod_popup_tick(void);
 extern void jvm_bridge_mod_loop_note_stage(int stage);
@@ -1432,16 +1490,11 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
     // Class_fq.d or Class_gv.g. A popup can be a server-supplied message
     // or a local failure fallback. The caller PC disambiguates them,
     // without observing or logging text, request bytes, host or identity.
-    if (treo_nso_init_for_runtime(pruntime) &&
-        method && method->_this_class &&
-        pruntime && pruntime->clazz && pruntime->method &&
-        utf8_equals_c(method->_this_class->name, "Class_cu") &&
-        utf8_equals_c(method->name, "d") &&
-        utf8_equals_c(method->descriptor, "(Ljava/lang/String;)V") &&
-        ((utf8_equals_c(pruntime->clazz->name, "Class_fq") &&
-          utf8_equals_c(pruntime->method->name, "d")) ||
-         (utf8_equals_c(pruntime->clazz->name, "Class_gv") &&
-          utf8_equals_c(pruntime->method->name, "g"))) &&
+    const int mod_diag = treo_nso_init_for_runtime(pruntime);
+    const u16 caller_roles = mod_diag && pruntime->clazz && pruntime->method ?
+        treo_mod_diag_roles(pruntime->method) : 0;
+    if ((caller_roles & TREO_DIAG_NOTICE_CALLER) &&
+        (treo_mod_diag_roles(method) & TREO_DIAG_NOTICE) &&
         jvm_bridge_mod_protocol_note_slot()) {
         CodeAttribute *caller_code = pruntime->method->converted_code;
         const long caller_pc = caller_code && caller_code->code &&
@@ -1469,10 +1522,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
     // counters let one frozen-screen snapshot distinguish being stuck
     // inside popup update, repaint, serviceRepaints or game-thread sleep.
     // No Java state or packet is read and there is no per-frame text log.
-    if (treo_nso_init_for_runtime(pruntime) &&
-        pruntime && pruntime->clazz && pruntime->method &&
-        utf8_equals_c(pruntime->clazz->name, "Class_cu") &&
-        utf8_equals_c(pruntime->method->name, "run")) {
+    if (caller_roles & TREO_DIAG_RUN_CALLER) {
         int game_stage = 0;
         if (utf8_equals_c(method->name, "a") &&
             utf8_equals_c(method->descriptor, "()V") &&
@@ -1499,9 +1549,14 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
     // native, unfamiliar ABIs and other methods always run normally.
     // The interpreter must use the invoking VM's mode. A global AFK flag
     // would suppress B's bytecode when only A is parked.
-    const int treo_paint_mode = pruntime->jvm && pruntime->jvm->session ?
+    // Deep Treo usually never enters paint at all. Avoid a session-mode
+    // load and method classification on every ordinary simulation call.
+    // The experimental array fast path still needs the actual mode.
+    const int headless_scope = pruntime->thrd_info->jarbox_headless_scope;
+    const int treo_paint_mode = (headless_scope || TREO_VM_ARRAY_LOOKUP) &&
+        pruntime->jvm && pruntime->jvm->session ?
         jarbox_treo_mode_get(&pruntime->jvm->session->treo_state) : 0;
-    if ((treo_paint_mode == 4 ||
+    if (headless_scope && (treo_paint_mode == 4 ||
          (TREO_VM_PAINT_BRIDGE && treo_paint_mode == 8)) &&
         method->para_slots >= 4 && method->return_slots == 0 &&
         !method->is_static && !method->is_sync && !method->is_native &&
@@ -1676,52 +1731,19 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
     Instance *nso_init_receiver = NULL;
     Instance *nso_init_argument = NULL;
     if (treo_nso_init_for_runtime(runtime)) {
-        // The private-server dialog is painted inside Class_em/Class_cc,
-        // not native J2ME Alert. Count its per-frame update method to detect
-        // a stalled game loop without a timer, Java stack walk or log spam.
-        // Record only method-entry transitions (never dialog strings).
-        if (utf8_equals_c(clazz->name, "Class_cc")) {
-            if (utf8_equals_c(method->name, "a")) {
-                if (utf8_equals_c(method->descriptor, "()V"))
-                    jvm_bridge_mod_popup_tick();
-                else if (utf8_equals_c(method->descriptor, "(I)V"))
-                    jvm_bridge_note_net_trace("popup_key_handler:enter");
-            }
-        } else if (utf8_equals_c(clazz->name, "Class_cu")) {
-            if (utf8_equals_c(method->name, "run") &&
-                utf8_equals_c(method->descriptor, "()V"))
-                jvm_bridge_note_net_trace("game_loop:entered");
-            else if (utf8_equals_c(method->name, "a") &&
-                     utf8_equals_c(method->descriptor, "(I)V"))
-                jvm_bridge_note_net_trace("game_key_handler:enter");
-            else if ((utf8_equals_c(method->name, "a") ||
-                      utf8_equals_c(method->name, "b") ||
-                      utf8_equals_c(method->name, "c") ||
-                      utf8_equals_c(method->name, "d") ||
-                      utf8_equals_c(method->name, "e")) &&
-                     utf8_equals_c(method->descriptor,
-                                   "(Ljava/lang/String;)V")) {
-                jvm_bridge_note_net_trace("game_popup:configured");
-                treo_diag_popup_origin(pruntime, method);
-            }
-        } else if (utf8_equals_c(clazz->name, "Class_em") &&
-                   utf8_equals_c(method->name, "a") &&
-                   utf8_equals_c(method->descriptor,
-                       "(Ljava/lang/String;LClass_by;LClass_by;LClass_by;)V")) {
-            jvm_bridge_note_net_trace("game_popup:content_ready");
-        }
-        if (utf8_equals_c(method->name, "<init>")) {
-            if (utf8_equals_c(clazz->name, "Class_cu")) nso_init_probe = 1;
-            else if (utf8_equals_c(clazz->name, "GameMidlet")) nso_init_probe = 2;
-        } else if (utf8_equals_c(clazz->name, "Class_ek")) {
-            if (utf8_equals_c(method->name, "paint") &&
-                utf8_equals_c(method->descriptor,
-                              "(Ljavax/microedition/lcdui/Graphics;)V"))
-                nso_init_probe = 3;
-            else if (utf8_equals_c(method->name, "a") &&
-                     utf8_equals_c(method->descriptor, "(LClass_bv;)V"))
-                nso_init_probe = 4; // non-inlined setter path
-        }
+        const u16 roles = treo_mod_diag_roles(method);
+        if (roles & TREO_DIAG_POPUP_TICK) jvm_bridge_mod_popup_tick();
+        else if (roles & TREO_DIAG_POPUP_KEY) jvm_bridge_note_net_trace("popup_key_handler:enter");
+        else if (roles & TREO_DIAG_RUN_ENTRY) jvm_bridge_note_net_trace("game_loop:entered");
+        else if (roles & TREO_DIAG_GAME_KEY) jvm_bridge_note_net_trace("game_key_handler:enter");
+        else if (roles & TREO_DIAG_POPUP_CONFIG) {
+            jvm_bridge_note_net_trace("game_popup:configured");
+            treo_diag_popup_origin(pruntime, method);
+        } else if (roles & TREO_DIAG_POPUP_CONTENT) jvm_bridge_note_net_trace("game_popup:content_ready");
+        if (roles & TREO_DIAG_CU_CTOR) nso_init_probe = 1;
+        else if (roles & TREO_DIAG_MIDLET_CTOR) nso_init_probe = 2;
+        else if (roles & TREO_DIAG_PAINT) nso_init_probe = 3;
+        else if (roles & TREO_DIAG_SETTER) nso_init_probe = 4;
     }
 #endif
     // CLINITING is not CLINITED: a foreign Java thread must not execute
@@ -4546,9 +4568,8 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                                 // the missing-method error comes from this call.
                                 // Emit at most twice, never per frame.
                                 if (treo_nso_init_for_runtime(runtime) &&
-                                    utf8_equals_c(clazz->name, "Class_cu") &&
-                                    utf8_equals_c(method->name, "run") &&
                                     (s32)(runtime->pc - ca->code) == 306 &&
+                                    (treo_mod_diag_roles(method) & TREO_DIAG_RUN_CALLER) &&
                                     jvm_bridge_mod_dispatch_probe_slot()) {
                                     char event[272];
                                     snprintf(event, sizeof(event),

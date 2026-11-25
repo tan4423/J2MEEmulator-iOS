@@ -58,6 +58,14 @@ int jvm_bridge_session_is_active_for_token(uint64_t token);
 /// Last GC-measured Java heap + accounted native bytes (not physical footprint).
 /// Returns 1 with a sample, 0 if unavailable. Does not walk or collect the heap.
 int jvm_bridge_status_heap_bytes_for_token(uint64_t token, uint64_t *out_bytes);
+// Cumulative owner-specific counters. Smart GC totals cover its latest enabled
+// interval, while qualified requests/skips cover the lifetime of the session.
+typedef struct {
+    uint64_t repaint_requests, repaint_skips, service_skips, paint_skips;
+    uint64_t smart_gc_cycles, smart_gc_cpu_ns;
+    int mode, family, canvas, smart_period_ms, smart_fallback;
+} JarBoxTreoSnapshot;
+int jvm_bridge_treo_snapshot_for_token(uint64_t token, JarBoxTreoSnapshot *out);
 /// Check the actual ownership flag (phase may briefly be idle during start).
 int jvm_bridge_session_is_active(void);
 /// Truthful number of reserved live native VM slots.

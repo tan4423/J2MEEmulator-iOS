@@ -26,6 +26,7 @@ typedef struct JarBoxTreoState {
     int nso_family_verified;
     int nso_init_target_active;
     int nso_canvas_seen;
+    uint64_t nso_repaint_requests, nso_skips[3];
     uint64_t smart_heap_peak;
     uint64_t smart_cycles;
     uint64_t smart_cpu_ns;
@@ -92,12 +93,25 @@ static inline int jarbox_treo_nso_init_target_active(const JarBoxTreoState *stat
 /* A different tab of the same JAR must independently prove its Canvas.
  * Archive recognition is necessary but not sufficient for NSO deep idle. */
 static inline void jarbox_treo_nso_canvas_note(JarBoxTreoState *state) {
-    if (jarbox_treo_nso_family_verified(state))
+    if (jarbox_treo_nso_family_verified(state) &&
+        !__atomic_load_n(&state->nso_canvas_seen, __ATOMIC_RELAXED))
         __atomic_store_n(&state->nso_canvas_seen, 1, __ATOMIC_RELEASE);
 }
 static inline int jarbox_treo_nso_canvas_recognized(const JarBoxTreoState *state) {
     return jarbox_treo_nso_family_verified(state) &&
            __atomic_load_n(&state->nso_canvas_seen, __ATOMIC_ACQUIRE);
+}
+// Cumulative per-session metrics, independent of the foreground tab.
+static inline void jarbox_treo_nso_note_request(JarBoxTreoState *s) {
+    if (s) __atomic_fetch_add(&s->nso_repaint_requests, 1, __ATOMIC_RELAXED);
+}
+static inline void jarbox_treo_nso_note_skip(JarBoxTreoState *s, int stage) {
+    if (s && stage >= 0 && stage <= 2)
+        __atomic_fetch_add(&s->nso_skips[stage], 1, __ATOMIC_RELAXED);
+}
+static inline uint64_t jarbox_treo_nso_skip_count(const JarBoxTreoState *s, int stage) {
+    return s && stage >= 0 && stage <= 2 ?
+        __atomic_load_n(&s->nso_skips[stage], __ATOMIC_RELAXED) : 0;
 }
 /* Configuration is shared by game identity on the UIKit side; the actual
  * mode is selected using this JVM's own proof. Unknown games fail safe. */

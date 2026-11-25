@@ -443,10 +443,12 @@ static s32 n_imageCacheNote(Runtime *runtime, JClass *clazz) {
 
 // 0 = repaint, 1 = serviceRepaints, 2 = doPaint.
 // Suppress only for recognized NSO JAR + structurally verified Canvas in mode 8.
-static _Atomic uint64_t treo_ninja_skips[3];
 uint64_t treo_ninja_deep_skipped(int stage) {
-    if (stage < 0 || stage > 2) return 0;
-    return atomic_load_explicit(&treo_ninja_skips[stage], memory_order_relaxed);
+    JarBoxTreoSnapshot snapshot = {0};
+    if (stage < 0 || stage > 2 ||
+        !jvm_bridge_treo_snapshot_for_token(jvm_bridge_session_token(), &snapshot)) return 0;
+    return stage == 0 ? snapshot.repaint_skips :
+        stage == 1 ? snapshot.service_skips : snapshot.paint_skips;
 }
 
 /*
@@ -567,8 +569,6 @@ void treo_nso_probe_reset(void) {
     atomic_store_explicit(&treo_nso_last_request_ns, 0, memory_order_relaxed);
     for (unsigned i = 0; i < TREO_NSO_BINS; ++i)
         atomic_store_explicit(&treo_nso_request_bins[i], 0, memory_order_relaxed);
-    for (unsigned i = 0; i < 3; ++i)
-        atomic_store_explicit(&treo_ninja_skips[i], 0, memory_order_relaxed);
 }
 int treo_nso_canvas_recognized(void) {
     return treo_ninja_deep_verified() &&
@@ -706,6 +706,7 @@ static s32 n_ninjaDeepSkip(Runtime *runtime, JClass *clazz) {
         treo_nso_simple_canvas_paint(canvas->mb.clazz);
     if (qualified) {
         jarbox_treo_nso_canvas_note(treo_runtime_state(runtime));
+        if (stage == 0) jarbox_treo_nso_note_request(treo_runtime_state(runtime));
         // Legacy heartbeat/work probes are process-wide diagnostics. Do
         // not mix samples from two tabs or run the extra benchmark in multi.
         if (jvm_bridge_supported_concurrent_sessions() == 1) {
@@ -713,10 +714,8 @@ static s32 n_ninjaDeepSkip(Runtime *runtime, JClass *clazz) {
             if (stage == 0) treo_nso_note_request(runtime);
         }
     }
-    const int skip = qualified && ninja_deep_active(runtime);
-    if (skip)
-        atomic_fetch_add_explicit(&treo_ninja_skips[stage], 1,
-                                  memory_order_relaxed);
+    const int skip = qualified && treo_runtime_mode(runtime) == 8;
+    if (skip) jarbox_treo_nso_note_skip(treo_runtime_state(runtime), stage);
     push_int(runtime->stack, skip);
     return RUNTIME_STATUS_NORMAL;
 }
@@ -807,6 +806,7 @@ static s32 n_beginAfkPaint(Runtime *runtime, JClass *clazz) {
             atomic_fetch_add_explicit(&g_afk_skipped_paints, 1, memory_order_relaxed);
         }
     }
+    runtime->thrd_info->jarbox_headless_scope = g_afk_canvas != 0;
     runtime->jnienv->push_long(runtime->stack, previous);
     return RUNTIME_STATUS_NORMAL;
 }
@@ -815,6 +815,7 @@ static s32 n_endAfkPaint(Runtime *runtime, JClass *clazz) {
     g_afk_canvas = key && key == g_afk_canvas_owner_key ?
         runtime->jnienv->localvar_getLong_2slot(runtime->localvar, 0) : 0;
     if (!g_afk_canvas) g_afk_canvas_owner_key = 0;
+    runtime->thrd_info->jarbox_headless_scope = g_afk_canvas != 0;
     if (!g_afk_canvas && g_afk_elided_local) {
         atomic_fetch_add_explicit(&g_afk_elided, g_afk_elided_local, memory_order_relaxed);
         g_afk_elided_local = 0;

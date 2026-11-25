@@ -1435,6 +1435,11 @@ class GameViewController: UIViewController {
         let buildID = packagedCommit ?? "không có (IPA cũ/chưa gắn phiên bản)"
         let bootPatch = packagedPatch ?? "không có"
         let hasStartupProbe = trace.contains("probe:java8_utf8_boot_patch=v1")
+        var treo = JarBoxTreoSnapshot()
+        let treoAvailable = jvm_bridge_treo_snapshot_for_token(gameSessionToken, &treo) != 0
+        let treoLine = treoAvailable
+            ? "treo_session:mode=\(treo.mode),family=\(treo.family),canvas=\(treo.canvas),requests=\(treo.repaint_requests),repaint_skips=\(treo.repaint_skips),service_skips=\(treo.service_skips),paint_skips=\(treo.paint_skips),smart_gc_cycles=\(treo.smart_gc_cycles),smart_gc_cpu_ns=\(treo.smart_gc_cpu_ns),smart_period_ms=\(treo.smart_period_ms),smart_fallback=\(treo.smart_fallback)"
+            : "treo_session:unavailable"
         // The cumulative counters can be compared across two copied
         // snapshots to distinguish a frozen Java Display or game loop
         // from a working loop that simply awaits a modal acknowledgement.
@@ -1447,6 +1452,7 @@ class GameViewController: UIViewController {
             "request_to_surface=" + startupRequestToSurface + "\n" +
             "startup_admission_ms=" + startupAdmissionMs + "\n" +
             "vm_start_probe=" + (hasStartupProbe ? "seen" : "missing") + "\n" +
+            treoLine + "\n" +
             "display_poll_count=" + String(treo_display_poll_calls()) + "\n" +
             "popup_update_count=" + String(jvm_bridge_mod_popup_tick_count()) + "\n" +
             "game_loop_last_call=" + String(jvm_bridge_mod_loop_last_stage()) + "\n" +
