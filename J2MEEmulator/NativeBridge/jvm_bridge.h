@@ -98,6 +98,8 @@ int jvm_bridge_park_session(uint64_t token);
 int jvm_bridge_focus_session(uint64_t token);
 /// -1 = stale/unknown token, 0 = focused, 1 = parked.
 int jvm_bridge_session_is_parked(uint64_t token);
+// Existing admission classification, never authorize unknown/exclusive 3D.
+int jvm_bridge_is_2d_running_for_token(uint64_t token);
 uint64_t jvm_bridge_visible_session_token(void);
 int jvm_bridge_request_stop_for_token(uint64_t token);
 /// Stop state as seen by one concrete native JVM. Foreign/stale JVMs must

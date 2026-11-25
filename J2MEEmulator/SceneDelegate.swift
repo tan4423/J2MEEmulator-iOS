@@ -63,22 +63,28 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         // This occurs shortly after the scene enters the background, or when its session is discarded.
         // Release the foreground protection display lease even if the
         // inactive callback was skipped before this scene was disconnected.
+        j2me_render_set_2d_scene_active(0)
+        activeGameViewController?.sceneSuspendGameInput()
         updateSpringboardSceneActivity(false)
     }
 
     private func updateSpringboardSceneActivity(_ active: Bool) {
         // Only the visible springboard has decorative work to resume.
-        // GameViewController and Java execution are intentionally untouched.
+        // Game lifecycle is handled independently by the scene callbacks.
         guard let nav = window?.rootViewController as? UINavigationController,
               let springboard = nav.viewControllers.first as? AppsListViewController else { return }
         springboard.sceneActivityChanged(active)
     }
 
     func sceneDidBecomeActive(_ scene: UIScene) {
+        j2me_render_set_2d_scene_active(1)
+        activeGameViewController?.endSceneBackgroundTreo()
         updateSpringboardSceneActivity(true)
     }
 
     func sceneWillResignActive(_ scene: UIScene) {
+        j2me_render_set_2d_scene_active(0)
+        activeGameViewController?.sceneSuspendGameInput()
         updateSpringboardSceneActivity(false)
     }
 
@@ -90,6 +96,9 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     func sceneDidEnterBackground(_ scene: UIScene) {
         // Called as the scene transitions from the foreground to the background.
         // Idempotent fallback if the inactive notification was missed.
+        j2me_render_set_2d_scene_active(0)
+        activeGameViewController?.sceneSuspendGameInput()
+        activeGameViewController?.beginSceneBackgroundTreo()
         updateSpringboardSceneActivity(false)
     }
 

@@ -26,6 +26,8 @@ typedef void (*j2me_flush_callback_owned)(void *cgImage, int width, int height,
                                           uint64_t owner_key, uint64_t session_token);
 void j2me_render_set_owned_flush_callback(j2me_flush_callback_owned callback);
 uint64_t j2me_render_visible_owner_key(void);
+// Main-thread lifecycle gate for the 2D Metal renderer and frame publication.
+void j2me_render_set_2d_scene_active(int active);
 
 // Select which *owned JVM generation* may publish Canvas frames to UIKit.
 // Both original and clone tabs run the same JAR, so identity is by VM.

@@ -694,6 +694,7 @@ class GameViewController: UIViewController {
     weak var sessionLibrary: AppsListViewController?
     // Automatic Treo belongs to the parked JVM, not a black-screen UI.
     // Explicitly undone on resume, Stop and JVM termination.
+    private var sceneBackgroundTreoToken: UInt64 = 0
     private var parkedTreoActive = false
     private var parkedNSODeepIdle = false
     // Event-based measurements only: no library timer or CPU poller.
@@ -4374,6 +4375,35 @@ class GameViewController: UIViewController {
     // Canvas proof, fallback and GC. Verified NSO uses guarded mode 8;
     // unverified/compatible games use mode 1 with normal GC and Display.
     // No per-tab timer or artificial game-loop slowdown.
+    func sceneSuspendGameInput() {
+        if ownsVisibleGameSession() { cancelGameInput() }
+    }
+
+    // Keep the current controller and native focus identity. Background
+    // is not a library presentation or a reason to restart the JVM.
+    func beginSceneBackgroundTreo() {
+        guard sceneBackgroundTreoToken == 0, ownsVisibleGameSession(),
+              startupWatchdog == nil, !parkedTreoActive,
+              jvm_bridge_is_2d_running_for_token(gameSessionToken) != 0,
+              treo_mode_for_token(gameSessionToken) == 0 else { return }
+        let token = gameSessionToken
+        let compatibleOnly = JarBoxGameStorage.treoCompatibleOnly(for: jarPath)
+        let mode = treo_park_begin_for_token(token, compatibleOnly ? 1 : 0)
+        guard mode != 0 else { return }
+        sceneBackgroundTreoToken = token
+        NSLog("[JarBoxVM][BackgroundTreo] enter token=%llu mode=%d", token, mode)
+    }
+
+    func endSceneBackgroundTreo() {
+        let token = sceneBackgroundTreoToken
+        sceneBackgroundTreoToken = 0
+        // Restore only a live, still-visible owner whose Treo we enabled.
+        guard token != 0, token == gameSessionToken, ownsVisibleGameSession(),
+              !parkedTreoActive else { return }
+        _ = treo_park_end_for_token(token)
+        NSLog("[JarBoxVM][BackgroundTreo] exit token=%llu", token)
+    }
+
     private func startParkedTreo() {
         guard ownsLiveGameSession(), !parkedTreoActive else { return }
         // A library is not a visible JVM: all running games must stay

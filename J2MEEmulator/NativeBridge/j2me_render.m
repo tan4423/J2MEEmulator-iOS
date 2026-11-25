@@ -20,6 +20,7 @@
 #import <CoreHaptics/CoreHaptics.h>
 #include "j2me_render.h"
 #include "jarbox_flush_routes.h"
+#include "jarbox_scene_gpu_gate.h"
 #include "jvm_bridge.h"
 #include "j2me_input.h"
 #include "jvm.h"
@@ -179,6 +180,12 @@ static JarBoxFlushRoutes g_flush_routes = JARBOX_FLUSH_ROUTES_INITIALIZER;
 // Java rendering into offscreen buffers may continue, but only the VM
 // currently owning the visible screen can publish its pixels to UIKit.
 static _Atomic uint64_t g_visible_render_owner_key;
+static JarBoxSceneGpuGate g_scene_gpu_gate = JARBOX_SCENE_GPU_GATE_INITIALIZER;
+
+// Main-thread scene boundary; does not change VM ownership or game state.
+void j2me_render_set_2d_scene_active(int active) {
+    jarbox_scene_gpu_set_active(&g_scene_gpu_gate, active);
+}
 // A queued UIKit haptic request must still belong to the visible VM when
 // it runs on the main thread. Process-wide engine remains shared.
 static _Atomic uint64_t g_haptic_player_owner_key;
@@ -233,6 +240,7 @@ static inline int treo_rc_afk(const RenderContext *rc) { return treo_rc_mode(rc)
 // its asynchronous Treo mode transition has not yet completed.
 static inline int treo_rc_may_submit(const RenderContext *rc) {
     return rc && rc->heap_key && !treo_rc_afk(rc) &&
+        jarbox_scene_gpu_is_active(&g_scene_gpu_gate) &&
         rc->heap_key == atomic_load_explicit(&g_visible_render_owner_key, memory_order_acquire);
 }
 static void process_dead_shells(void);
@@ -2086,6 +2094,7 @@ void j2me_render_set_owned_flush_callback(j2me_flush_callback_owned callback) {
     jarbox_flush_default_owned(&g_flush_routes, callback);
 }
 uint64_t j2me_render_visible_owner_key(void) {
+    if (!jarbox_scene_gpu_is_active(&g_scene_gpu_gate)) return 0;
     return atomic_load_explicit(&g_visible_render_owner_key, memory_order_acquire);
 }
 
@@ -3401,6 +3410,7 @@ static id<MTLRenderPipelineState> treo_sprite_pipeline(id<MTLDevice> device, NSE
 }
 
 static NSString *treo_run_metal_replay(void) {
+    if (!jarbox_scene_gpu_is_active(&g_scene_gpu_gate)) return @"Dừng replay: app không hiển thị.";
     const size_t w = treo_replay_width, h = treo_replay_height;
     id<MTLDevice> device = MTLCreateSystemDefaultDevice();
     id<MTLCommandQueue> queue = [device newCommandQueue];
@@ -3459,6 +3469,10 @@ static NSString *treo_run_metal_replay(void) {
     unsigned gpuSamples = 0, batches = 0;
     for (unsigned run = 0; run <= TreoReplayRepeats; run++) {
         @autoreleasepool {
+            if (!jarbox_scene_gpu_is_active(&g_scene_gpu_gate)) {
+                CGContextRelease(cg);
+                return @"Dừng replay: app không hiển thị.";
+            }
             uint64_t start = treo_thread_cpu_ns();
             CGContextClearRect(cg, CGRectMake(0, 0, w, h));
             CGRect clip = CGRectMake(0, 0, w, h);
@@ -3505,11 +3519,16 @@ static NSString *treo_run_metal_replay(void) {
                 batches++;
             }
             [enc endEncoding];
+            if (!jarbox_scene_gpu_try_begin(&g_scene_gpu_gate)) {
+                CGContextRelease(cg);
+                return @"Dừng replay: Metal đang bận hoặc app không hiển thị.";
+            }
             [command commit];
             end = treo_thread_cpu_ns();
             if (run && start && end >= start) metalNS += end - start;
-            // Diagnostic only: no wait or pixel readback on the live paint path.
+            // Drain this submitted command before allowing scene deactivation.
             [command waitUntilCompleted];
+            jarbox_scene_gpu_end(&g_scene_gpu_gate);
             if (command.status != MTLCommandBufferStatusCompleted) {
                 CGContextRelease(cg);
                 return [NSString stringWithFormat:@"GPU lỗi: %@", command.error.localizedDescription];
@@ -3560,6 +3579,7 @@ static void treo_replay_complete(NSString *report) {
 }
 
 int treo_metal_replay_start(void) {
+    if (!jarbox_scene_gpu_is_active(&g_scene_gpu_gate)) return 0;
     os_unfair_lock_lock(&treo_replay_lock);
     if (atomic_load_explicit(&treo_replay_state, memory_order_relaxed)) {
         os_unfair_lock_unlock(&treo_replay_lock);
@@ -3597,7 +3617,7 @@ char *treo_metal_replay_copy_report(void) {
 static void treo_replay_capture(RenderContext *rc, CGImageRef image, int64_t x, int64_t y,
                                 int sx, int sy, int w, int h, int transform) {
     if (atomic_load_explicit(&treo_replay_state, memory_order_relaxed) != 1 ||
-        !rc->ownsPixels || treo_rc_afk(rc)) return;
+        !rc->ownsPixels || treo_rc_afk(rc) || !jarbox_scene_gpu_is_active(&g_scene_gpu_gate)) return;
     size_t tw = CGImageGetWidth(image), th = CGImageGetHeight(image);
     if (rc->width <= 0 || rc->height <= 0 || rc->width > 2048 || rc->height > 2048 ||
         tw > 4096 || th > 4096 || sx < 0 || sy < 0 || w <= 0 || h <= 0 ||
@@ -3896,8 +3916,14 @@ static int treo_live_render(RenderContext *rc, TreoLiveRun *run) {
     // Focus may move while preparing textures/vertices. The command has
     // not been submitted yet; preserve the recorded run via CG fallback.
     if (!treo_rc_may_submit(rc)) return 0;
+    if (!jarbox_scene_gpu_try_begin(&g_scene_gpu_gate)) return 0;
+    if (!treo_rc_may_submit(rc)) {
+        jarbox_scene_gpu_end(&g_scene_gpu_gate);
+        return 0;
+    }
     [command commit];
     [command waitUntilCompleted];
+    jarbox_scene_gpu_end(&g_scene_gpu_gate);
     if (command.status != MTLCommandBufferStatusCompleted) return 0;
 
     // Only at frame boundary. Keep the CG backing authoritative for later

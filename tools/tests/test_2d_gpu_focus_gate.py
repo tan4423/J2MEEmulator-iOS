@@ -16,6 +16,8 @@ PRELUDE = r'''
 #include <stdatomic.h>
 #include <pthread.h>
 #include <stdio.h>
+#include "jarbox_scene_gpu_gate.h"
+static JarBoxSceneGpuGate g_scene_gpu_gate = JARBOX_SCENE_GPU_GATE_INITIALIZER;
 typedef struct { uint64_t heap_key; _Atomic int afk_mode; } RenderContext;
 static _Atomic uint64_t g_visible_render_owner_key;
 static inline int treo_rc_afk(const RenderContext *rc) {
@@ -31,6 +33,9 @@ static void *stress(void *unused) {
 }
 int main(void) {
     RenderContext a={.heap_key=1}, b={.heap_key=2}, stale={.heap_key=3}, missing={0};
+    atomic_store(&g_visible_render_owner_key,1);
+    assert(!treo_rc_may_submit(&a));
+    jarbox_scene_gpu_set_active(&g_scene_gpu_gate,1);
     for(int i=0;i<10000;i++) {
         atomic_store(&g_visible_render_owner_key,1);
         assert(treo_rc_may_submit(&a)&&!treo_rc_may_submit(&b));
@@ -43,6 +48,9 @@ int main(void) {
         assert(!treo_rc_may_submit(&a)&&!treo_rc_may_submit(&b));
         atomic_store(&a.afk_mode,0);
         assert(treo_rc_may_submit(&a));
+        jarbox_scene_gpu_set_active(&g_scene_gpu_gate,0);
+        assert(!treo_rc_may_submit(&a));
+        jarbox_scene_gpu_set_active(&g_scene_gpu_gate,1);
         assert(!treo_rc_may_submit(&missing)&&!treo_rc_may_submit(NULL)&&!treo_rc_may_submit(&stale));
     }
     pthread_t t; assert(!pthread_create(&t,NULL,stress,NULL));
@@ -71,7 +79,7 @@ class GPUFocusGateTest(unittest.TestCase):
             path = Path(td) / "focus.c"
             exe = Path(td) / "focus"
             path.write_text(PRELUDE + src[a:b] + MAIN)
-            subprocess.run([cc, *flags, str(path), "-o", str(exe)], check=True, timeout=30)
+            subprocess.run([cc, *flags, "-I", str(RENDER.parent), str(path), "-o", str(exe)], check=True, timeout=30)
             r = subprocess.run([str(exe)], capture_output=True, text=True, timeout=10)
             self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
             self.assertIn("10000 sequential cycles + 100000 concurrent checks PASS", r.stdout)
