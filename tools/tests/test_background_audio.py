@@ -114,6 +114,12 @@ int main(void) {
         self.assertNotIn("setActive:",setter)
         self.assertIn("objectForKey:kBackgroundVolumeKey",audio)
         self.assertIn("out.player_volume_percent=",audio)
+        self.assertIn("background_stop_locked(BG_AUDIO_THERMAL_CRITICAL)",audio)
+        for name in ("static BOOL background_play_locked(void) {",
+                     "void j2me_audio_background_revalidate(void) {"):
+            body=audio.split(name,1)[1].split("\n}",1)[0]
+            self.assertIn("NSProcessInfoThermalStateCritical",body)
+            self.assertIn("background_stop_locked(BG_AUDIO_THERMAL_CRITICAL)",body)
         self.assertIn("j2me_audio_background_revalidate();",audio)
         plist=plistlib.loads((ROOT/"J2MEEmulator/SupportingFiles/Info.plist").read_bytes())
         self.assertEqual(plist["UIBackgroundModes"],["audio"])

@@ -6,6 +6,7 @@
 //
 
 import UIKit
+import Darwin
 
 /// Forwards orientation queries to the top view controller
 private class OrientationNavigationController: UINavigationController {
@@ -28,6 +29,30 @@ private final class JarBoxActivityWindow: UIWindow {
     }
 }
 
+// Bounded, event-driven evidence; a notification not delivered while the
+// process is suspended is not an observation. No timers or wake requests.
+struct JarBoxPowerEvidence {
+    private(set) var worstThermal = -1
+    private(set) var lowPowerSeen = false
+    private(set) var powerChanges = 0
+    private(set) var thermalChanges = 0
+    private var previousLowPower: Bool?
+    private var previousThermal: Int?
+    mutating func observe(thermal: Int, lowPower: Bool) {
+        if thermal >= 0 {
+            worstThermal = max(worstThermal, thermal)
+            if let previousThermal, previousThermal != thermal { thermalChanges += 1 }
+            previousThermal = thermal
+        }
+        if let previousLowPower, previousLowPower != lowPower { powerChanges += 1 }
+        previousLowPower = lowPower
+        lowPowerSeen = lowPowerSeen || lowPower
+    }
+    var log: String {
+        "worst_thermal_observed=\(worstThermal),low_power_seen=\(lowPowerSeen ? 1 : 0),power_changes_observed=\(powerChanges),thermal_changes_observed=\(thermalChanges)"
+    }
+}
+
 // Main-actor, process-wide diagnostic. No timer, background task or audio
 // is started here. Retained values contain tokens and counters, not VM pointers.
 @MainActor enum JarBoxBackgroundDiagnostics {
@@ -36,6 +61,63 @@ private final class JarBoxActivityWindow: UIWindow {
     private static var visible: UInt64 = 0
     private static var starts: [(UInt64, JarBoxBackgroundSample?)] = []
     private static var audioStart = JarBoxBackgroundAudioSnapshot()
+    private static var environmentStart = ""
+    private static var powerEvidence = JarBoxPowerEvidence()
+    private static var observers: [NSObjectProtocol] = []
+    private static func thermalCode() -> Int {
+        switch ProcessInfo.processInfo.thermalState {
+        case .nominal: return 0
+        case .fair: return 1
+        case .serious: return 2
+        case .critical: return 3
+        @unknown default: return -1
+        }
+    }
+    private static func machineIdentifier() -> String {
+        var info = utsname()
+        guard uname(&info) == 0 else { return "unknown" }
+        let capacity = MemoryLayout.size(ofValue: info.machine)
+        return withUnsafePointer(to: &info.machine) {
+            $0.withMemoryRebound(to: CChar.self, capacity: capacity) { String(cString: $0) }
+        }
+    }
+    private static func environmentLine(_ label: String) -> String {
+        // Battery monitoring is a shared UIKit setting used by existing
+        // dashboards/audits. Borrow synchronously and restore immediately;
+        // never hold a competing lease across background transitions.
+        let device = UIDevice.current
+        let previous = device.isBatteryMonitoringEnabled
+        if !previous { device.isBatteryMonitoringEnabled = true }
+        defer { if !previous { device.isBatteryMonitoringEnabled = false } }
+        let level = device.batteryLevel
+        let battery = level >= 0 && level <= 1 ? String(Int((level * 100).rounded())) : "unknown"
+        let state: String
+        switch device.batteryState {
+        case .unplugged: state = "unplugged"
+        case .charging: state = "charging"
+        case .full: state = "full"
+        default: state = "unknown"
+        }
+        let info = ProcessInfo.processInfo
+        return "environment_\(label):battery_percent=\(battery),battery_state=\(state),low_power=\(info.isLowPowerModeEnabled ? 1 : 0),thermal=\(thermalCode())"
+    }
+    static func installEnvironmentObservers() {
+        guard observers.isEmpty else { return }
+        let center = NotificationCenter.default
+        for name in [ProcessInfo.thermalStateDidChangeNotification, Notification.Name.NSProcessInfoPowerStateDidChange] {
+            observers.append(center.addObserver(forName: name, object: nil, queue: nil) { _ in
+                DispatchQueue.main.async { JarBoxBackgroundDiagnostics.environmentChanged() }
+            })
+        }
+    }
+    private static func environmentChanged() {
+        if entered != nil {
+            powerEvidence.observe(thermal: thermalCode(), lowPower: ProcessInfo.processInfo.isLowPowerModeEnabled)
+        }
+        // No restart on power/thermal changes. Native revalidation stops
+        // optional playback at critical heat, without touching any JVM.
+        if thermalCode() == 3 { j2me_audio_background_revalidate() }
+    }
     private static func audioLine(_ name: String, _ a: JarBoxBackgroundAudioSnapshot) -> String {
         let state = "requested=\(a.requested),playing=\(a.playing),interrupted=\(a.interrupted),policy=\(a.policy),reason=\(a.reason)"
         let counts = "starts=\(a.starts),stops=\(a.stops),interruptions=\(a.interruptions),route_changes=\(a.route_changes),media_resets=\(a.media_resets),failures=\(a.failures)"
@@ -48,14 +130,15 @@ private final class JarBoxActivityWindow: UIWindow {
         let state = a.playing != 0 ? "Đang phát" : a.requested != 0 ? "Tạm gián đoạn" : "Đang tắt"
         let reasons = ["Tắt", "Đang phát", "Phiên chưa sẵn sàng hoặc không phải 2D",
                        "Audio bị gián đoạn", "Thiết bị nghe bị ngắt", "Media services reset",
-                       "Không phát được audio", "iOS không cho tự phát lại"]
+                       "Không phát được audio", "iOS không cho tự phát lại", "Đã dừng âm nền vì nhiệt độ critical"]
         let reasonIndex = Int(a.reason)
         let reason = reasons.indices.contains(reasonIndex) ? reasons[reasonIndex] : "Không rõ"
-        let message = "Trạng thái: \(state) · \(reason)\nÂm lượng riêng: \(a.volume_percent)%\n\n0% là tắt tiếng âm nền, không phải dừng player. Khả năng Treo ở 0% chưa được kiểm chứng trên thiết bị. Không ảnh hưởng âm lượng game hoặc ứng dụng khác."
+        let warning = thermalCode() >= 2 ? "\nMáy đang nóng: giảm số tab, không tiếp tục thử dài hạn khi nhiệt độ cao." : ProcessInfo.processInfo.isLowPowerModeEnabled ? "\nĐang bật tiết kiệm pin: iOS có thể hạn chế chạy nền." : ""
+        let message = "Trạng thái: \(state) · \(reason)\nÂm lượng riêng: \(a.volume_percent)%\n\n0% chỉ tắt tiếng, không dừng player. Mức 0% cần kiểm thử trên thiết bị. Không ảnh hưởng âm lượng game hoặc ứng dụng khác." + warning
         let alert = UIAlertController(title: "Âm nền Treo (thử nghiệm)", message: message, preferredStyle: .alert)
         if a.requested != 0 {
             alert.addAction(UIAlertAction(title: "Tắt âm nền", style: .destructive) { _ in j2me_audio_background_stop() })
-        } else if a.policy == 2 {
+        } else if a.policy == 2 && thermalCode() != 3 {
             alert.addAction(UIAlertAction(title: "Bật âm nền", style: .default) { _ in
                 let ok = j2me_audio_background_start()
                 NSLog("[JarBoxAudio] user_start=%d", ok)
@@ -81,21 +164,27 @@ private final class JarBoxActivityWindow: UIWindow {
     }
     static func begin() {
         guard entered == nil else { return }
-        entered = Date()
-        audioStart = j2me_audio_background_snapshot()
         visible = jvm_bridge_visible_session_token()
         var tokens = [UInt64](repeating: 0, count: 64)
         let capacity = Int32(tokens.count)
         let count = tokens.withUnsafeMutableBufferPointer {
             jvm_bridge_background_tokens($0.baseAddress, capacity)
         }
+        // Do not overwrite the previous game report when an empty library
+        // is backgrounded (including after an interrupted/relaunched app).
+        guard count > 0 else { return }
+        entered = Date()
+        audioStart = j2me_audio_background_snapshot()
+        environmentStart = environmentLine("begin")
+        powerEvidence = JarBoxPowerEvidence()
+        powerEvidence.observe(thermal: thermalCode(), lowPower: ProcessInfo.processInfo.isLowPowerModeEnabled)
         starts = tokens.prefix(max(0, min(Int(count), tokens.count))).filter { $0 != 0 }.map { token in
             var point = JarBoxBackgroundSample()
             let ok = jvm_bridge_background_sample(token, 1, &point) != 0
             return (token, ok ? point : nil)
         }
         let ids = starts.map { String($0.0) }.joined(separator: ",")
-        save("JarBox Background v1\nbuild=\(build)\nstatus=INCOMPLETE_NO_RESUME_RECORDED\nentered=\(entered!)\nvisible_token=\(visible)\ntokens=\(ids)\n\(audioLine("begin", audioStart))")
+        save("JarBox Background v1\nbuild=\(build)\nstatus=INCOMPLETE_NO_RESUME_RECORDED\nentered=\(entered!)\nvisible_token=\(visible)\ntokens=\(ids)\n\(audioLine("begin", audioStart))\n\(environmentStart)")
     }
     private static func delta(_ a: UInt64, _ b: UInt64) -> String {
         b >= a ? String(b - a) : "unavailable"
@@ -104,7 +193,10 @@ private final class JarBoxActivityWindow: UIWindow {
         guard let startDate = entered else { return }
         entered = nil
         let seconds = Date().timeIntervalSince(startDate)
+        powerEvidence.observe(thermal: thermalCode(), lowPower: ProcessInfo.processInfo.isLowPowerModeEnabled)
         var lines = ["JarBox Background v1", "build=\(build)", "status=RETURNED",
+                     "device_model=\(machineIdentifier()),ios=\(UIDevice.current.systemVersion),physical_ram_bytes=\(ProcessInfo.processInfo.physicalMemory)",
+                     environmentStart, environmentLine("end"), "power_observations:" + powerEvidence.log,
                      "source=\(visible == 0 ? "library" : "game")", "visible_token=\(visible)",
                      "wall_seconds=\(seconds)", "sessions=\(starts.count)",
                      audioLine("begin", audioStart),
@@ -150,6 +242,7 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
 
     func scene(_ scene: UIScene, willConnectTo session: UISceneSession, options connectionOptions: UIScene.ConnectionOptions) {
         guard let windowScene = (scene as? UIWindowScene) else { return }
+        JarBoxBackgroundDiagnostics.installEnvironmentObservers()
 
         let vc = AppsListViewController()
         let nav = OrientationNavigationController(rootViewController: vc)

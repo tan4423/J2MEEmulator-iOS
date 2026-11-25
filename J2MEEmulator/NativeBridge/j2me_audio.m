@@ -23,7 +23,7 @@
 // activation/cache state is serialized with the existing audio lock.
 enum { BG_AUDIO_OFF=0, BG_AUDIO_PLAYING=1, BG_AUDIO_INELIGIBLE=2,
        BG_AUDIO_INTERRUPTED=3, BG_AUDIO_ROUTE_LOST=4, BG_AUDIO_RESET=5,
-       BG_AUDIO_FAILED=6, BG_AUDIO_RESUME_DENIED=7 };
+       BG_AUDIO_FAILED=6, BG_AUDIO_RESUME_DENIED=7, BG_AUDIO_THERMAL_CRITICAL=8 };
 static AVAudioPlayer *g_background_player;
 static BOOL g_background_requested, g_audio_interrupted, g_audio_session_ready;
 static int g_audio_session_category=-1, g_background_reason;
@@ -99,6 +99,10 @@ static BOOL ensure_audio_locked(void) {
     return YES;
 }
 static BOOL background_play_locked(void) {
+    if ([NSProcessInfo processInfo].thermalState==NSProcessInfoThermalStateCritical) {
+        background_stop_locked(BG_AUDIO_THERMAL_CRITICAL);
+        return NO;
+    }
     if (jvm_bridge_background_audio_policy()!=2) {
         background_stop_locked(BG_AUDIO_INELIGIBLE);
         return NO;
@@ -229,6 +233,9 @@ void j2me_audio_background_revalidate(void) {
     if (![NSThread isMainThread]) return;
     @synchronized ([AVAudioSession class]) {
         if ((g_background_requested || g_background_player) &&
+            [NSProcessInfo processInfo].thermalState==NSProcessInfoThermalStateCritical)
+            background_stop_locked(BG_AUDIO_THERMAL_CRITICAL);
+        else if ((g_background_requested || g_background_player) &&
             jvm_bridge_background_audio_policy()!=2)
             background_stop_locked(BG_AUDIO_INELIGIBLE);
         else if (g_background_requested && !g_audio_interrupted && !g_background_player.isPlaying) {
