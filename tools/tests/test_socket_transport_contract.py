@@ -158,6 +158,55 @@ class SocketTransportContractTest(unittest.TestCase):
         self.assertIn("push_int(runtime->stack, jarbox_socket_byte_result(ret, b));",source)
         self.assertEqual(source.count("jarbox_socket_range_valid(jbyte_arr->arr_length, offset, count)"),2)
 
+    def test_first_read_attempt_and_native_return_are_separate(self):
+        source = IO.read_text()
+        a = source.index("static int jarbox_socket_note_read_begin(")
+        b = source.index("static void jarbox_socket_note_io(", a)
+        stub = r"""
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+typedef int32_t s32;
+typedef struct { unsigned char net_read_started_once, non_block; s32 rcv_time_out; } VmSock;
+static int scoped, notes;
+static char last[160];
+static s32 jarbox_net_http_read_ms(void) { return scoped; }
+static void jvm_bridge_note_net_trace(const char *event) {
+    ++notes;
+    snprintf(last, sizeof(last), "%s", event);
+}
+"""
+        main = r"""
+int main(void) {
+    VmSock a = {0}, b = {0};
+    a.rcv_time_out = 500;
+    if (jarbox_socket_note_read_begin(&a, 0, 0) || notes) return 1;
+    int first = jarbox_socket_note_read_begin(&a, 1, 1);
+    if (!first || notes != 1 || !strstr(last, "timeout_ms=500")) return 2;
+    if (jarbox_socket_note_read_begin(&a, 4, 0) || notes != 1) return 3;
+    jarbox_socket_note_read_return(0, 7);
+    if (notes != 1) return 4;
+    jarbox_socket_note_read_return(first, -1);
+    if (notes != 2 || !strstr(last, "native_return:result=-1")) return 5;
+    scoped = 25;
+    if (!jarbox_socket_note_read_begin(&b, 9, 0) || notes != 3 ||
+        !strstr(last, "timeout_ms=25")) return 6;
+    return 0;
+}
+"""
+        self.compile_run(stub + source[a:b] + main)
+        for function in ("org_mini_net_SocketNative_readBuf",
+                         "org_mini_net_SocketNative_readByte",
+                         "jarbox_java_socket_read_stream"):
+            body = source.split(function + "(Runtime *runtime, JClass *clazz) {", 1)[1]
+            body = body.split("\n}", 1)[0]
+            self.assertLess(body.index("jarbox_socket_note_read_begin"),
+                            body.index("jthread_block_enter"))
+            self.assertLess(body.index("jthread_block_enter"),
+                            body.index("jarbox_socket_note_read_return"))
+            self.assertLess(body.index("jarbox_socket_note_read_return"),
+                            body.index("jthread_block_exit"))
+
     def test_poll_timeout_eof_and_high_descriptor_when_available(self):
         source = NET.read_text()
         a = source.index("int mbedtls_net_recv_timeout(")

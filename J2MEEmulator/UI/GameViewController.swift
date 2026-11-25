@@ -1441,6 +1441,8 @@ class GameViewController: UIViewController {
         let report = "JarBoxNET\n" +
             "build_commit=" + buildID + "\n" +
             "boot_patch=" + bootPatch + "\n" +
+            "session_token=" + String(gameSessionToken) + "\n" +
+            "visible_session_token=" + String(jvm_bridge_visible_session_token()) + "\n" +
             "first_surface=" + startupFirstSurface + "\n" +
             "request_to_surface=" + startupRequestToSurface + "\n" +
             "startup_admission_ms=" + startupAdmissionMs + "\n" +

@@ -101,6 +101,7 @@ typedef struct _VmSock {
     // One-shot diagnostics stored per TCP socket rather than per VM.
     u8 net_sent_once;
     u8 net_read_once;
+    u8 net_read_started_once;
     u8 net_send_error_once;
     u8 net_read_error_once;
     u8 net_available_once;
@@ -109,6 +110,25 @@ typedef struct _VmSock {
 } VmSock;
 
 #if defined(__APPLE__)
+/* Log the first read attempt independently of its completion. A socket may
+ * wait indefinitely by contract; do not change the game's timeout policy.
+ * The local flag pairs begin/return even with multiple reader threads. */
+static int jarbox_socket_note_read_begin(VmSock *sock, int wanted, int byte_mode) {
+    if (wanted <= 0 || __atomic_exchange_n(&sock->net_read_started_once, 1, __ATOMIC_RELAXED)) return 0;
+    char event[160];
+    const s32 scoped = jarbox_net_http_read_ms();
+    snprintf(event, sizeof(event), "tcp_first_read_begin:kind=%s,wanted=%d,timeout_ms=%d,nonblock=%u",
+             byte_mode ? "byte" : "buffer", wanted,
+             scoped > 0 ? scoped : sock->rcv_time_out, (unsigned)sock->non_block);
+    jvm_bridge_note_net_trace(event);
+    return 1;
+}
+static void jarbox_socket_note_read_return(int first, int result) {
+    if (!first) return;
+    char event[96];
+    snprintf(event, sizeof(event), "tcp_first_read_native_return:result=%d", result);
+    jvm_bridge_note_net_trace(event);
+}
 static void jarbox_socket_note_io(VmSock *sock, int reading, int wanted, int result, int byte_mode) {
     u8 *success = reading ? &sock->net_read_once : &sock->net_sent_once;
     u8 *failure = reading ? &sock->net_read_error_once : &sock->net_send_error_once;
@@ -623,8 +643,14 @@ s32 org_mini_net_SocketNative_readBuf(Runtime *runtime, JClass *clazz) {
         jarbox_socket_range_valid(jbyte_arr->arr_length, offset, count)) {
         VmSock *vmsock = (VmSock *) vmarr->arr_body;
 
+#if defined(__APPLE__)
+        int first_read = jarbox_socket_note_read_begin(vmsock, count, 0);
+#endif
         jthread_block_enter(runtime);
         ret = sock_recv(vmsock, (u8 *) jbyte_arr->arr_body + offset, count, runtime);
+#if defined(__APPLE__)
+        jarbox_socket_note_read_return(first_read, ret);
+#endif
         jthread_block_exit(runtime);
 #if defined(__APPLE__)
         jarbox_socket_note_io(vmsock, 1, count, ret, 0);
@@ -644,8 +670,14 @@ s32 org_mini_net_SocketNative_readByte(Runtime *runtime, JClass *clazz) {
     u8 b = 0;
     if (vmarr && vmarr->arr_length >= (s32)sizeof(VmSock)) {
         VmSock *vmsock = (VmSock *) vmarr->arr_body;
+#if defined(__APPLE__)
+        int first_read = jarbox_socket_note_read_begin(vmsock, 1, 1);
+#endif
         jthread_block_enter(runtime);
         ret = sock_recv(vmsock, &b, 1, runtime);
+#if defined(__APPLE__)
+        jarbox_socket_note_read_return(first_read, ret);
+#endif
         jthread_block_exit(runtime);
 #if defined(__APPLE__)
         jarbox_socket_note_io(vmsock, 1, 1, ret, 1);
@@ -718,8 +750,14 @@ static s32 jarbox_java_socket_read_stream(Runtime *runtime, JClass *clazz) {
     if (handle && handle->arr_length >= (s32)sizeof(VmSock) && data &&
         jarbox_socket_range_valid(data->arr_length, off, count)) {
         VmSock *sock = (VmSock *)handle->arr_body;
+#if defined(__APPLE__)
+        int first_read = jarbox_socket_note_read_begin(sock, count, 0);
+#endif
         jthread_block_enter(runtime);
         result = sock_recv_impl(sock, (u8 *)data->arr_body + off, count, runtime, 1);
+#if defined(__APPLE__)
+        jarbox_socket_note_read_return(first_read, result);
+#endif
         jthread_block_exit(runtime);
 #if defined(__APPLE__)
         jarbox_socket_note_io(sock, 1, count, result, 0);
