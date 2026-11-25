@@ -81,6 +81,10 @@ static int wsa_init_done = 0;
 #include <fcntl.h>
 #include <netdb.h>
 #include <errno.h>
+#if defined(__APPLE__) || defined(__linux__)
+#include <poll.h>
+#include <limits.h>
+#endif
 
 #endif /* ( _WIN32 || _WIN32_WCE ) && !EFIX64 && !EFI32 */
 
@@ -496,13 +500,24 @@ int mbedtls_net_recv_timeout( void *ctx, unsigned char *buf, size_t len,
                       uint32_t timeout )
 {
     int ret;
-    struct timeval tv;
-    fd_set read_fds;
     int fd = ((mbedtls_net_context *) ctx)->fd;
 
     if( fd < 0 )
         return( MBEDTLS_ERR_NET_INVALID_CONTEXT );
 
+#if defined(__APPLE__) || defined(__linux__)
+    /* select/FD_SET cannot safely represent high-numbered descriptors.
+     * Multi-session MIDlets can own many sockets/files. poll also reports
+     * HUP/ERR so the ordinary recv path can return EOF or the real error. */
+    struct pollfd waitfd = { fd, POLLIN, 0 };
+    int delay = timeout == 0 ? -1 :
+                timeout > INT_MAX ? INT_MAX : (int)timeout;
+    ret = poll(&waitfd, 1, delay);
+    if (ret > 0 && (waitfd.revents & POLLNVAL))
+        return( MBEDTLS_ERR_NET_INVALID_CONTEXT );
+#else
+    struct timeval tv;
+    fd_set read_fds;
     FD_ZERO( &read_fds );
     FD_SET( fd, &read_fds );
 
@@ -510,6 +525,7 @@ int mbedtls_net_recv_timeout( void *ctx, unsigned char *buf, size_t len,
     tv.tv_usec = ( timeout % 1000 ) * 1000;
 
     ret = select( fd + 1, &read_fds, NULL, NULL, timeout == 0 ? NULL : &tv );
+#endif
 
     /* Zero fds ready means we timed out */
     if( ret == 0 )

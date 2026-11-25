@@ -37,8 +37,8 @@ typedef struct {
 #define SOCK_OP_TYPE_KEEPALIVE 4
 #define SOCK_OP_TYPE_LINGER 5
 #define SOCK_OP_TYPE_TIMEOUT 6
-static int mbedtls_net_set_nonblock(NetCtx *ctx) {(void)ctx; return 0;}
-static int mbedtls_net_set_block(NetCtx *ctx) {(void)ctx; return 0;}
+static int mbedtls_net_set_nonblock(NetCtx *ctx) {int f = fcntl(ctx->fd, F_GETFL); return f < 0 ? -1 : fcntl(ctx->fd, F_SETFL, f | O_NONBLOCK);}
+static int mbedtls_net_set_block(NetCtx *ctx) {int f = fcntl(ctx->fd, F_GETFL); return f < 0 ? -1 : fcntl(ctx->fd, F_SETFL, f & ~O_NONBLOCK);}
 """
 TEST = r"""
 int main(void) {
@@ -103,7 +103,19 @@ int main(void) {
         raw_keepalive != 0) return 11;
     if (sock_option(&s, SOCK_OP_TYPE_LINGER, 0, 0)) return 12;
     if (sock_get_option(&s, SOCK_OP_TYPE_LINGER) != -1) return 13;
-    close(client); close(accepted); close(listener); return 0;
+    if (sock_option(&s, SOCK_OP_TYPE_NON_BLOCK, 1, 0) || !s.non_block ||
+        !(fcntl(client, F_GETFL) & O_NONBLOCK)) return 20;
+    if (sock_option(&s, SOCK_OP_TYPE_NON_BLOCK, 0, 0) || s.non_block ||
+        (fcntl(client, F_GETFL) & O_NONBLOCK)) return 21;
+    if (sock_option(&s, SOCK_OP_TYPE_TIMEOUT, -1, 0) == 0 ||
+        s.rcv_time_out != 750) return 22;
+    close(client);
+    s.contex.fd = -1;
+    if (sock_option(&s, SOCK_OP_TYPE_NON_BLOCK, 1, 0) == 0 || s.non_block)
+        return 23;
+    if (sock_option(&s, SOCK_OP_TYPE_TIMEOUT, 100, 0) == 0 ||
+        s.rcv_time_out != 750) return 24;
+    close(accepted); close(listener); return 0;
 }
 """
 

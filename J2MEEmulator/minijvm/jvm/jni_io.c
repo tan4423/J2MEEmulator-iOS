@@ -130,12 +130,9 @@ s32 sock_option(VmSock *vmsock, s32 opType, s32 opValue, s32 opValue2) {
     s32 ret = 0;
     switch (opType) {
         case SOCK_OP_TYPE_NON_BLOCK: {// blocking setting
-            if (opValue) {
-                mbedtls_net_set_nonblock(&vmsock->contex);
-                vmsock->non_block = 1;
-            } else {
-                mbedtls_net_set_block(&vmsock->contex);
-            }
+            ret = opValue ? mbedtls_net_set_nonblock(&vmsock->contex)
+                          : mbedtls_net_set_block(&vmsock->contex);
+            if (ret == 0) vmsock->non_block = opValue != 0;
             break;
         }
         case SOCK_OP_TYPE_REUSEADDR: {//
@@ -155,7 +152,7 @@ s32 sock_option(VmSock *vmsock, s32 opType, s32 opValue, s32 opValue2) {
             break;
         }
         case SOCK_OP_TYPE_TIMEOUT: {
-            vmsock->rcv_time_out = opValue;
+            if (opValue < 0) return -1;
 #if __JVM_OS_MINGW__ || __JVM_OS_VS__
             s32 nTime = opValue;
             ret = setsockopt(vmsock->contex.fd, SOL_SOCKET, SO_RCVTIMEO, (const c8 *) &nTime, sizeof(nTime));
@@ -163,6 +160,7 @@ s32 sock_option(VmSock *vmsock, s32 opType, s32 opValue, s32 opValue2) {
             struct timeval timeout = {opValue / 1000, (opValue % 1000) * 1000};
             ret = setsockopt(vmsock->contex.fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
 #endif
+            if (ret == 0) vmsock->rcv_time_out = opValue;
             break;
         }
         case SOCK_OP_TYPE_LINGER: {
@@ -397,7 +395,11 @@ s32 org_mini_net_SocketNative_connect0(Runtime *runtime, JClass *clazz) {
     s32 proto = localvar_getInt(runtime->localvar, 3);
 
     s32 ret = -1;
-    if (vmarr && host && port) {
+    if (vmarr && vmarr->arr_length >= (s32)sizeof(VmSock) && host && port &&
+        host->arr_length > 1 && host->arr_length <= (s32)sizeof(((VmSock *)0)->hostname) &&
+        port->arr_length > 1 && port->arr_length <= (s32)sizeof(((VmSock *)0)->hostport) &&
+        ((const char *)host->arr_body)[host->arr_length - 1] == '\0' &&
+        ((const char *)port->arr_body)[port->arr_length - 1] == '\0') {
         VmSock *vmsock = (VmSock *) vmarr->arr_body;
         mbedtls_net_context *ctx = &vmsock->contex;
 
@@ -459,35 +461,71 @@ s32 org_mini_net_SocketNative_connect0(Runtime *runtime, JClass *clazz) {
  * @return
  */
 static s32 sock_recv(VmSock *vmsock, u8 *buf, s32 count, Runtime *runtime) {
-    s32 ret;
-    while (1) {
+    if (count == 0) return 0;
+    if (count < 0) return -1;
+    const s32 timeout = vmsock->rcv_time_out;
+    const s64 started = timeout > 0 ? nanoTime() : 0;
+    // Poll in bounded slices so cancellation remains responsive even with
+    // a long Java receive timeout. EINTR/WANT_READ never means a NUL byte.
+    s32 remaining = timeout;
+    while (!runtime->thrd_info->is_interrupt) {
+        s32 ret;
         if (vmsock->non_block) {
             ret = mbedtls_net_recv(&vmsock->contex, buf, count);
         } else {
-            ret = mbedtls_net_recv_timeout(&vmsock->contex, buf, count, vmsock->rcv_time_out ? vmsock->rcv_time_out : 100);
-        }
-        if (runtime->thrd_info->is_interrupt) {//vm waiting for destroy
-            ret = -1;
-            break;
-        }
-        if (ret == MBEDTLS_ERR_SSL_TIMEOUT) {
-            if (vmsock->rcv_time_out) {
-                ret = -2;
-                break;
+            s32 wait = 100;
+            if (timeout > 0) {
+                const s64 elapsed = (nanoTime() - started) / 1000000;
+                if (elapsed >= timeout || remaining <= 0) return -2;
+                if (elapsed >= 0 && timeout - elapsed < remaining)
+                    remaining = (s32)(timeout - elapsed);
+                if (remaining < wait) wait = remaining;
             }
+            ret = mbedtls_net_recv_timeout(&vmsock->contex, buf, count, wait);
+            if (ret == MBEDTLS_ERR_SSL_TIMEOUT && timeout > 0)
+                remaining -= wait;
+        }
+        if (runtime->thrd_info->is_interrupt) return -1;
+        if (ret == MBEDTLS_ERR_SSL_TIMEOUT) {
+            if (vmsock->non_block) return -2;
+            if (timeout > 0 && remaining <= 0) return -2;
+            continue;
+        }
+        if (ret == MBEDTLS_ERR_SSL_WANT_READ) {
+            if (vmsock->non_block) return 0;
             thrd_yield();
             continue;
-        } else if (ret == MBEDTLS_ERR_SSL_WANT_READ) {//nonblock
-            ret = 0;
-            break;
-        } else if (ret <= 0) {
-            ret = -1;
-            break;
-        } else {
-            break;
         }
+        return ret > 0 ? ret : -1; // positive byte count or EOF/error
     }
-    return ret;
+    return -1;
+}
+
+static s32 sock_send(VmSock *vmsock, const u8 *buf, s32 count, Runtime *runtime) {
+    if (count == 0) return 0;
+    if (count < 0) return -1;
+    while (!runtime->thrd_info->is_interrupt) {
+        s32 ret = mbedtls_net_send(&vmsock->contex, buf, count);
+        if (ret == MBEDTLS_ERR_SSL_WANT_WRITE) {
+            if (vmsock->non_block) return 0;
+            thrd_yield();
+            continue;
+        }
+        // Preserve actual partial counts for native callers that loop.
+        return ret > 0 ? ret : -1;
+    }
+    return -1;
+}
+
+static int jarbox_socket_range_valid(s32 capacity, s32 offset, s32 count) {
+    return capacity >= 0 && offset >= 0 && count >= 0 &&
+           offset <= capacity && count <= capacity - offset;
+}
+
+static s32 jarbox_socket_byte_result(s32 result, u8 byte) {
+    // Native nonblocking buffer reads can return 0 (would block).
+    // A one-byte Java read cannot: zero is a valid received byte.
+    return result > 0 ? (s32)byte : result == 0 ? -2 : result;
 }
 
 s32 org_mini_net_SocketNative_readBuf(Runtime *runtime, JClass *clazz) {
@@ -496,7 +534,8 @@ s32 org_mini_net_SocketNative_readBuf(Runtime *runtime, JClass *clazz) {
     s32 offset = localvar_getInt(runtime->localvar, 2);
     s32 count = localvar_getInt(runtime->localvar, 3);
     s32 ret = -1;
-    if (vmarr && jbyte_arr) {
+    if (vmarr && vmarr->arr_length >= (s32)sizeof(VmSock) && jbyte_arr &&
+        jarbox_socket_range_valid(jbyte_arr->arr_length, offset, count)) {
         VmSock *vmsock = (VmSock *) vmarr->arr_body;
 
         jthread_block_enter(runtime);
@@ -518,7 +557,7 @@ s32 org_mini_net_SocketNative_readByte(Runtime *runtime, JClass *clazz) {
     Instance *vmarr = localvar_getRefer(runtime->localvar, 0);
     s32 ret = -1;
     u8 b = 0;
-    if (vmarr) {
+    if (vmarr && vmarr->arr_length >= (s32)sizeof(VmSock)) {
         VmSock *vmsock = (VmSock *) vmarr->arr_body;
         jthread_block_enter(runtime);
         ret = sock_recv(vmsock, &b, 1, runtime);
@@ -527,7 +566,7 @@ s32 org_mini_net_SocketNative_readByte(Runtime *runtime, JClass *clazz) {
         jarbox_socket_note_io(vmsock, 1, 1, ret, 1);
 #endif
     }
-    push_int(runtime->stack, ret < 0 ? ret : (u8) b);
+    push_int(runtime->stack, jarbox_socket_byte_result(ret, b));
 
 #if _JVM_DEBUG_LOG_LEVEL > 5
     invoke_deepth(runtime);
@@ -543,17 +582,12 @@ s32 org_mini_net_SocketNative_writeBuf(Runtime *runtime, JClass *clazz) {
     s32 offset = localvar_getInt(runtime->localvar, 2);
     s32 count = localvar_getInt(runtime->localvar, 3);
     s32 ret = -1;
-    if (vmarr && jbyte_arr) {
+    if (vmarr && vmarr->arr_length >= (s32)sizeof(VmSock) && jbyte_arr &&
+        jarbox_socket_range_valid(jbyte_arr->arr_length, offset, count)) {
         VmSock *vmsock = (VmSock *) vmarr->arr_body;
-        mbedtls_net_context *ctx = &vmsock->contex;
         jthread_block_enter(runtime);
-        ret = mbedtls_net_send(ctx, (const u8 *) jbyte_arr->arr_body + offset, count);
+        ret = sock_send(vmsock, (const u8 *) jbyte_arr->arr_body + offset, count, runtime);
         jthread_block_exit(runtime);
-        if (ret == MBEDTLS_ERR_SSL_WANT_WRITE) {
-            ret = 0;
-        } else if (ret < 0) {
-            ret = -1;
-        }
 #if defined(__APPLE__)
         jarbox_socket_note_io(vmsock, 0, count, ret, 0);
 #endif
@@ -571,17 +605,11 @@ s32 org_mini_net_SocketNative_writeByte(Runtime *runtime, JClass *clazz) {
     s32 val = localvar_getInt(runtime->localvar, 1);
     u8 b = (u8) val;
     s32 ret = -1;
-    if (vmarr) {
+    if (vmarr && vmarr->arr_length >= (s32)sizeof(VmSock)) {
         VmSock *vmsock = (VmSock *) vmarr->arr_body;
-        mbedtls_net_context *ctx = &vmsock->contex;
         jthread_block_enter(runtime);
-        ret = mbedtls_net_send(ctx, &b, 1);
+        ret = sock_send(vmsock, &b, 1, runtime);
         jthread_block_exit(runtime);
-        if (ret == MBEDTLS_ERR_SSL_WANT_WRITE) {
-            ret = 0;
-        } else if (ret < 0) {
-            ret = -1;
-        }
 #if defined(__APPLE__)
         jarbox_socket_note_io(vmsock, 0, 1, ret, 1);
 #endif
@@ -621,6 +649,7 @@ s32 org_mini_net_SocketNative_available0(Runtime *runtime, JClass *clazz) {
 
 s32 org_mini_net_SocketNative_close0(Runtime *runtime, JClass *clazz) {
     Instance *vmarr = localvar_getRefer(runtime->localvar, 0);
+    if (!vmarr || vmarr->arr_length < (s32)sizeof(VmSock)) return 0;
     VmSock *vmsock = (VmSock *) vmarr->arr_body;
     mbedtls_net_context *ctx = &vmsock->contex;
 #if defined(__APPLE__)

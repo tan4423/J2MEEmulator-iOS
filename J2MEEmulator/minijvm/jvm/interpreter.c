@@ -640,6 +640,65 @@ extern int jvm_bridge_mod_loop_exception_log_slot(void);
 extern int jvm_bridge_mod_dispatch_probe_slot(void);
 extern int jvm_bridge_mod_method_missing_slot(void);
 extern int jvm_bridge_mod_protocol_note_slot(void);
+
+// Match the duplicated version-gate bytecode by symbolic references, not
+// by a list of obfuscated class names/PCs. Only used by the mod diagnostic.
+// Read operands with memcpy (the converted bytecode uses native endian).
+static int treo_diag_method_ref(JClass *clazz, const u8 *op,
+                                const char *owner, const char *name, const char *desc) {
+    u16 index;
+    memcpy(&index, op + 1, sizeof(index));
+    if (!clazz || index == 0 || index >= clazz->constant_item_count) return 0;
+    ConstantItem *item = class_get_constant_item(clazz, index);
+    if (!item || item->tag != CONSTANT_METHOD_REF) return 0;
+    ConstantMethodRef *ref = (ConstantMethodRef *)item;
+    return ref->clsName && ref->name && ref->descriptor &&
+        utf8_equals_c(ref->clsName, owner) && utf8_equals_c(ref->name, name) &&
+        utf8_equals_c(ref->descriptor, desc);
+}
+
+static int treo_diag_version_gate(Runtime *runtime, CodeAttribute *ca) {
+    const uintptr_t base = ca && ca->code ? (uintptr_t)ca->code : 0;
+    const uintptr_t at = (uintptr_t)runtime->pc;
+    if (!base || at < base || at - base < 9 || at - base + 3 > ca->code_length)
+        return 0;
+    const u8 *pc = (const u8 *)runtime->pc;
+    if ((pc[-3] != op_getstatic && pc[-3] != op_getstatic_byte) ||
+        (pc[-6] != op_putstatic && pc[-6] != op_putstatic_byte) ||
+        (pc[-9] != op_invokevirtual && pc[-9] != op_invokevirtual_fast) ||
+        pc[-2] != pc[-5] || pc[-1] != pc[-4]) return 0;
+    s16 branch;
+    memcpy(&branch, pc + 1, sizeof(branch));
+    const s64 target = (s64)(at - base) + branch;
+    if (target < 0 || target + 8 > ca->code_length) return 0;
+    const u8 *reject = ca->code + target;
+    if (reject[0] != op_aload ||
+        (reject[2] != op_invokevirtual && reject[2] != op_invokevirtual_fast) ||
+        (reject[5] != op_invokestatic && reject[5] != op_invokestatic_fast))
+        return 0;
+    return treo_diag_method_ref(runtime->clazz, pc - 9,
+               "java/lang/String", "equals", "(Ljava/lang/Object;)Z") &&
+           treo_diag_method_ref(runtime->clazz, reject + 2,
+               "java/io/BufferedReader", "readLine", "()Ljava/lang/String;") &&
+           treo_diag_method_ref(runtime->clazz, reject + 5,
+               "Class_cu", "d", "(Ljava/lang/String;)V");
+}
+
+static void treo_diag_popup_origin(Runtime *caller, MethodInfo *callee) {
+    if (!caller || !caller->clazz || !caller->method ||
+        !jvm_bridge_mod_protocol_note_slot()) return;
+    const CodeAttribute *ca = caller->method->converted_code;
+    const uintptr_t base = ca && ca->code ? (uintptr_t)ca->code : 0;
+    const uintptr_t at = (uintptr_t)caller->pc;
+    const long pc = base && at >= base && at - base < ca->code_length ?
+                    (long)(at - base) : -1L;
+    char event[240];
+    snprintf(event, sizeof(event),
+             "game_popup_origin:callee=%.32s,caller=%.64s.%.40s,pc=%ld,mono_ms=%lld",
+             utf8_cstr(callee->name), utf8_cstr(caller->clazz->name),
+             utf8_cstr(caller->method->name), pc, (long long)(nanoTime() / 1000000));
+    jvm_bridge_note_net_trace(event);
+}
 #endif
 
 s32 exception_handle(RuntimeStack *stack, Runtime *runtime) {
@@ -1573,8 +1632,8 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
     f32 fval1, fval2;
     s64 lval1, lval2;
     __refer rval1, rval2;
-    ConstantMethodRef *cmr;
-    ConstantFieldRef *cfr;
+    ConstantMethodRef *cmr = NULL;
+    ConstantFieldRef *cfr = NULL;
     JClass *other;
     StackEntry entry;
     Utf8String *ustr;
@@ -1631,8 +1690,10 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                       utf8_equals_c(method->name, "d") ||
                       utf8_equals_c(method->name, "e")) &&
                      utf8_equals_c(method->descriptor,
-                                   "(Ljava/lang/String;)V"))
+                                   "(Ljava/lang/String;)V")) {
                 jvm_bridge_note_net_trace("game_popup:configured");
+                treo_diag_popup_origin(pruntime, method);
+            }
         } else if (utf8_equals_c(clazz->name, "Class_em") &&
                    utf8_equals_c(method->name, "a") &&
                    utf8_equals_c(method->descriptor,
@@ -3761,27 +3822,16 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         case op_ifeq: TREO_VM_HANDLER(op_ifeq) {
                             ival1 = (--sp)->ivalue;
 #if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__
-                            // First-line acceptance branches in the original
-                            // MIDlet. Report only the game's boolean decision;
-                            // never change the result or log response contents.
+                            // Detect any equivalent duplicated version check,
+                            // including obfuscated copies not in the old PC list.
                             if (treo_nso_init_for_runtime(runtime) &&
-                                ((utf8_equals_c(clazz->name, "Class_fq") &&
-                                  utf8_equals_c(method->name, "d") &&
-                                  (s32)(runtime->pc - ca->code) == 587) ||
-                                 (utf8_equals_c(clazz->name, "Class_gv") &&
-                                  utf8_equals_c(method->name, "g") &&
-                                  (s32)(runtime->pc - ca->code) == 153) ||
-                                 (utf8_equals_c(clazz->name, "Class_cu") &&
-                                  utf8_equals_c(method->name, "q") &&
-                                  (s32)(runtime->pc - ca->code) == 153) ||
-                                 (utf8_equals_c(clazz->name, "GameMidlet") &&
-                                  utf8_equals_c(method->name, "c") &&
-                                  (s32)(runtime->pc - ca->code) == 588)) &&
+                                treo_diag_version_gate(runtime, ca) &&
                                 jvm_bridge_mod_protocol_note_slot()) {
-                                char event[124];
+                                char event[180];
                                 snprintf(event, sizeof(event),
-                                         "mod_version_status:source=%s,accepted=%d",
-                                         utf8_cstr(clazz->name), ival1 != 0);
+                                         "mod_version_status:source=%.64s.%.40s,pc=%ld,accepted=%d",
+                                         utf8_cstr(clazz->name), utf8_cstr(method->name),
+                                         (long)(runtime->pc - ca->code), ival1 != 0);
                                 jvm_bridge_note_net_trace(event);
                             }
 #endif
@@ -4696,6 +4746,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                             m = bootMethod->make;
 
                             if (!m) {
+                                cmr = NULL; // invokedynamic has no ConstantMethodRef here
                                 err_msg = "Lambda generated method";
                                 goto label_nosuchmethod_throw;
                             } else {
@@ -5611,15 +5662,15 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                     label_nosuchmethod_throw:
                     {
 #if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__
-                        if (treo_nso_init_for_runtime(runtime) &&
-                            jvm_bridge_mod_method_missing_slot()) {
+                        if (jvm_bridge_mod_method_missing_slot()) {
                             const uintptr_t start = ca && ca->code ? (uintptr_t)ca->code : 0;
                             const uintptr_t at = (uintptr_t)runtime->pc;
                             const long offset = start && at >= start &&
                                 at - start < ca->code_length ? (long)(at - start) : -1L;
                             char event[304];
                             snprintf(event, sizeof(event),
-                                     "mod_method_throw:caller=%s.%s,pc=%ld,op=%u,ref=%s.%s%s",
+                                     "%s:caller=%s.%s,pc=%ld,op=%u,ref=%s.%s%s",
+                                     treo_nso_init_for_runtime(runtime) ? "mod_method_throw" : "vm_missing_method",
                                      clazz ? utf8_cstr(clazz->name) : "?",
                                      method ? utf8_cstr(method->name) : "?",
                                      offset, offset >= 0 ? (unsigned)(u8)*runtime->pc : 0u,
@@ -5655,6 +5706,18 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
 
                     label_nosuchfield_throw:
                     {
+#if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__
+                        if (cfr && jvm_bridge_mod_method_missing_slot()) {
+                            char event[256];
+                            snprintf(event, sizeof(event),
+                                     "vm_missing_field:caller=%.48s.%.32s,pc=%ld,ref=%.64s.%.40s%.48s",
+                                     utf8_cstr(clazz->name), utf8_cstr(method->name),
+                                     (long)(runtime->pc - ca->code),
+                                     utf8_cstr(cfr->clsName), utf8_cstr(cfr->name),
+                                     utf8_cstr(cfr->descriptor));
+                            jvm_bridge_note_net_trace(event);
+                        }
+#endif
                         stack->sp = sp;
                         push_ref(stack, (__refer) exception_create_str(JVM_EXCEPTION_NOSUCHFIELD, runtime, err_msg));
                         goto label_exception_handle;
