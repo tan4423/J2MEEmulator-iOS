@@ -66,6 +66,7 @@ typedef struct {
     uint64_t smart_gc_cycles, smart_gc_cpu_ns;
     uint64_t gc_worker_cycles, gc_worker_aborts, gc_worker_cpu_ns;
     uint64_t int_leaf_fast_calls, ref_leaf_fast_calls;
+    uint64_t aload_field_fusions;
     int mode, family, canvas, smart_period_ms, smart_fallback;
 } JarBoxTreoSnapshot;
 int jvm_bridge_treo_snapshot_for_token(uint64_t token, JarBoxTreoSnapshot *out);

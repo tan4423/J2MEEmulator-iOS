@@ -1338,6 +1338,7 @@ struct _JavaThreadInfo {
     u8 jarbox_headless_scope; // only written/read by the owning Java thread
     u8 jarbox_int_leaf_pending; // batched successful calls; owning thread only
     u8 jarbox_ref_leaf_pending;
+    u16 jarbox_aload_field_pending; // owning Java thread, batch 256
     Instance *jthread;
     Instance *context_classloader;
     Runtime *top_runtime;

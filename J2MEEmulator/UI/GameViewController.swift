@@ -1446,7 +1446,8 @@ class GameViewController: UIViewController {
             "gc_worker_cpu_ns=\(treo.gc_worker_cpu_ns)",
             "smart_period_ms=\(treo.smart_period_ms)", "smart_fallback=\(treo.smart_fallback)",
             "int_leaf_fast_calls_approx=\(treo.int_leaf_fast_calls)",
-            "ref_leaf_fast_calls_approx=\(treo.ref_leaf_fast_calls)"
+            "ref_leaf_fast_calls_approx=\(treo.ref_leaf_fast_calls)",
+            "aload_field_fusions_approx=\(treo.aload_field_fusions)"
         ]
         let treoLine = "treo_session:" + (treoAvailable ? treoFields.joined(separator: ",") : "unavailable")
         var cpu = JarBoxCpuSnapshot()

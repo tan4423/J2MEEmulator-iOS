@@ -51,6 +51,35 @@ uint64_t treo_vm_switch_method_calls(void) { return 0; }
 #endif
 int treo_vm_direct_dispatch_build(void) { return TREO_VM_DIRECT_DISPATCH; }
 
+// A bounded two-opcode dispatch fusion: the first handler has already
+// pushed its local and advanced PC. Enter ONLY an already-quickened field
+// read, with its original PC, stack, null exception and width handling.
+// No code rewrite, no extra heap access, no bypass of resolution or calls.
+// The ordinary loop has no safepoint between these two forward opcodes
+// outside JDWP. Debug/profiling builds and switch dispatch stay untouched.
+#if TREO_VM_DIRECT_DISPATCH && !_JVM_DEBUG_PROFILE && _JVM_DEBUG_LOG_LEVEL == 0 && !defined(__JVM_DEBUG__) && !defined(TREO_VM_ALOAD_FIELD_FUSION_DISABLED)
+#define TREO_VM_FUSE_ALOAD_FIELD() do { \
+    if (treo_vm_use_direct && runtime->pc < treo_vm_code_end && \
+        treo_vm_code_end - runtime->pc >= 3) { \
+        const u8 next = *runtime->pc; \
+        if (next >= op_getfield_ref && next <= op_getfield_byte) { \
+            if (++thrd_info->jarbox_aload_field_pending == 256) { \
+                thrd_info->jarbox_aload_field_pending = 0; \
+                if (jvm->session) \
+                    __atomic_fetch_add(&jvm->session->treo_state.aload_field_fusions, \
+                                       256, __ATOMIC_RELAXED); \
+            } \
+            goto *treo_vm_targets[next]; \
+        } \
+    } \
+} while (0)
+#define TREO_VM_ALOAD_FIELD_FUSION 1
+#else
+#define TREO_VM_FUSE_ALOAD_FIELD() ((void)0)
+#define TREO_VM_ALOAD_FIELD_FUSION 0
+#endif
+
+
 // "Paint bridge": preserve the JAR's Canvas.paint() Java logic but skip a
 // verified bundled Graphics draw wrapper when its Canvas target is headless.
 // This build flag produces a matched baseline without changing the renderer.
@@ -1967,6 +1996,9 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
 #if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__
                 const int treo_vm_use_direct = TREO_VM_DIRECT_DISPATCH && !jvm->jdwp_enable;
                 treo_vm_note_method(treo_vm_use_direct);
+#if TREO_VM_ALOAD_FIELD_FUSION
+                const u8 *const treo_vm_code_end = ca->code + ca->code_length;
+#endif
 #endif
 
                 do {
@@ -2545,6 +2577,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         case op_aload_0: TREO_VM_HANDLER(op_aload_0) {
                             (sp++)->rvalue = localvar[0].rvalue;
                             runtime->pc++;
+                            TREO_VM_FUSE_ALOAD_FIELD();
                             break;
                         }
 
@@ -2552,6 +2585,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         case op_aload_1: TREO_VM_HANDLER(op_aload_1) {
                             (sp++)->rvalue = localvar[1].rvalue;
                             runtime->pc++;
+                            TREO_VM_FUSE_ALOAD_FIELD();
                             break;
                         }
 
@@ -2559,6 +2593,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         case op_aload_2: TREO_VM_HANDLER(op_aload_2) {
                             (sp++)->rvalue = localvar[2].rvalue;
                             runtime->pc++;
+                            TREO_VM_FUSE_ALOAD_FIELD();
                             break;
                         }
 
@@ -2566,6 +2601,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         case op_aload_3: TREO_VM_HANDLER(op_aload_3) {
                             (sp++)->rvalue = localvar[3].rvalue;
                             runtime->pc++;
+                            TREO_VM_FUSE_ALOAD_FIELD();
                             break;
                         }
 
