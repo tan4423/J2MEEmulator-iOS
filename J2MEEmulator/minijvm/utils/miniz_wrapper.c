@@ -1,125 +1,85 @@
 #include "miniz.h"
 #include "miniz_wrapper.h"
+#include <stdint.h>
 
+/*
+ * Java archive entry names are case-sensitive. Obfuscated MIDlets commonly
+ * contain distinct a.class/A.class (and similar) entries. Resolve once, then
+ * extract by index so a second case-insensitive lookup cannot change identity.
+ * Exact lookup is linear in miniz, so skip its unused case-folded sort on
+ * each short-lived read-only archive. Do not change ZIP writer behavior.
+ */
+static int jarbox_zip_find_entry(mz_zip_archive *archive, const char *jarpath,
+                                 const char *filename, mz_zip_archive_file_stat *stat) {
+    if (!jarpath || !filename) return -1;
+    if (filename[0] == '/') filename++;
+    if (mz_zip_reader_init_file(archive, jarpath,
+                                MZ_ZIP_FLAG_DO_NOT_SORT_CENTRAL_DIRECTORY) == MZ_FALSE) {
+        return -1;
+    }
+    int index = mz_zip_reader_locate_file(archive, filename, NULL,
+                                          MZ_ZIP_FLAG_CASE_SENSITIVE);
+    if (index < 0 || !mz_zip_reader_file_stat(archive, (mz_uint) index, stat)) {
+        mz_zip_reader_end(archive);
+        return -1;
+    }
+    return index;
+}
 
 s32 zip_loadfile(char const *jarpath, char const *filename, ByteBuf *buf) {
-    int file_index = 0;
-    mz_zip_archive zipArchive = {0};
-    mz_zip_archive_file_stat file_stat = {0};
-
-    //skit the first '/'
-    if (filename && filename[0] == '/') {
-        filename += 1;
-    }
-
-    int ret = 0;
-    if (mz_zip_reader_init_file(&zipArchive, jarpath, 0) == MZ_FALSE) {//
-        ret = -1;
-    } else {
-
-        file_index = mz_zip_reader_locate_file(&zipArchive, filename, NULL, 0);//
-        if (!mz_zip_reader_file_stat(&zipArchive, file_index, &file_stat)) {
-            ret = -1;
-        } else {
-            size_t uncompressed_size = (size_t) file_stat.m_uncomp_size;
-            bytebuf_expand(buf, uncompressed_size);
-            mz_bool p = mz_zip_reader_extract_file_to_mem(&zipArchive, file_stat.m_filename, buf->buf, uncompressed_size, 0);
-            if (p == MZ_FALSE) {
-                ret = -1;
-            } else {
-                buf->wp = uncompressed_size;
-            }
+    if (!buf) return -1;
+    mz_zip_archive archive = {0};
+    mz_zip_archive_file_stat stat = {0};
+    int index = jarbox_zip_find_entry(&archive, jarpath, filename, &stat);
+    if (index < 0) return -1;
+    s32 ret = -1;
+    /* ByteBuf and the Java byte-array API cannot represent larger entries. */
+    if (stat.m_uncomp_size <= INT32_MAX) {
+        u32 size = (u32) stat.m_uncomp_size;
+        if (size > buf->_alloc_size) bytebuf_expand(buf, size);
+        /* bytebuf_expand leaves the old allocation intact on failure. */
+        if (buf->buf && size <= buf->_alloc_size &&
+            mz_zip_reader_extract_to_mem(&archive, (mz_uint) index, buf->buf, size, 0)) {
+            buf->rp = 0;
+            buf->wp = size;
+            ret = 0;
         }
-        mz_zip_reader_end(&zipArchive);
     }
+    mz_zip_reader_end(&archive);
     return ret;
 }
 
-
 s32 zip_loadfile_to_mem(char const *jarpath, char const *filename, c8 *buf, s64 bufsize) {
-    int file_index = 0;
-    mz_zip_archive zipArchive = {0};
-    mz_zip_archive_file_stat file_stat = {0};
-
-    //skit the first '/'
-    if (filename && filename[0] == '/') {
-        filename += 1;
+    if (bufsize < 0 || (uint64_t) bufsize > SIZE_MAX || (!buf && bufsize != 0)) return -1;
+    mz_zip_archive archive = {0};
+    mz_zip_archive_file_stat stat = {0};
+    int index = jarbox_zip_find_entry(&archive, jarpath, filename, &stat);
+    if (index < 0) return -1;
+    s32 ret = -1;
+    if (stat.m_uncomp_size <= (uint64_t) bufsize &&
+        mz_zip_reader_extract_to_mem(&archive, (mz_uint) index, buf, (size_t) bufsize, 0)) {
+        ret = 0;
     }
-
-//    if (filename[0] == '0' && filename[1] == '\0') {
-//        s32 debug = 1;
-//    }
-    int ret = 0;
-    if (mz_zip_reader_init_file(&zipArchive, jarpath, 0) == MZ_FALSE) {//
-        ret = -1;
-    } else {
-
-        file_index = mz_zip_reader_locate_file(&zipArchive, filename, NULL, 0);//
-        if (!mz_zip_reader_file_stat(&zipArchive, file_index, &file_stat)) {
-            ret = -1;
-        } else {
-            size_t uncompressed_size = (size_t) file_stat.m_uncomp_size;
-            mz_bool op = mz_zip_reader_extract_file_to_mem(&zipArchive, file_stat.m_filename, buf, bufsize, MZ_ZIP_FLAG_CASE_SENSITIVE);
-            if (!op) {
-                ret = -1;
-            }
-        }
-        mz_zip_reader_end(&zipArchive);
-    }
+    mz_zip_reader_end(&archive);
     return ret;
 }
 
 s64 zip_get_file_unzip_size(char const *jarpath, char const *filename) {
-    int file_index = 0;
-    mz_zip_archive zipArchive = {0};
-    mz_zip_archive_file_stat file_stat = {0};
-
-    //skit the first '/'
-    if (filename && filename[0] == '/') {
-        filename += 1;
-    }
-
-    s64 ret = 0;
-    if (mz_zip_reader_init_file(&zipArchive, jarpath, 0) == MZ_FALSE) {//
-        ret = -1;
-    } else {
-
-        file_index = mz_zip_reader_locate_file(&zipArchive, filename, NULL, 0);//
-        if (!mz_zip_reader_file_stat(&zipArchive, file_index, &file_stat)) {
-            ret = -1;
-        } else {
-            size_t uncompressed_size = (size_t) file_stat.m_uncomp_size;
-            ret = uncompressed_size;
-        }
-        mz_zip_reader_end(&zipArchive);
-    }
-    return ret;
+    mz_zip_archive archive = {0};
+    mz_zip_archive_file_stat stat = {0};
+    int index = jarbox_zip_find_entry(&archive, jarpath, filename, &stat);
+    if (index < 0) return -1;
+    s64 size = stat.m_uncomp_size <= INT32_MAX ? (s64) stat.m_uncomp_size : -1;
+    mz_zip_reader_end(&archive);
+    return size;
 }
 
 s32 zip_get_file_index(char const *jarpath, char const *filename) {
-    int file_index = 0;
-    mz_zip_archive zipArchive = {0};
-    mz_zip_archive_file_stat file_stat = {0};
-
-    //skit the first '/'
-    if (filename && filename[0] == '/') {
-        filename += 1;
-    }
-
-    int ret = 0;
-    if (mz_zip_reader_init_file(&zipArchive, jarpath, 0) == MZ_FALSE) {//
-        ret = -1;
-    } else {
-
-        file_index = mz_zip_reader_locate_file(&zipArchive, filename, NULL, 0);//
-        if (!mz_zip_reader_file_stat(&zipArchive, file_index, &file_stat)) {
-            ret = -1;
-        } else {
-            ret = file_index;
-        }
-        mz_zip_reader_end(&zipArchive);
-    }
-    return ret;
+    mz_zip_archive archive = {0};
+    mz_zip_archive_file_stat stat = {0};
+    int index = jarbox_zip_find_entry(&archive, jarpath, filename, &stat);
+    if (index >= 0) mz_zip_reader_end(&archive);
+    return index;
 }
 
 
