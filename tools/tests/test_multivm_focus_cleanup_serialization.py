@@ -179,11 +179,19 @@ def harness(src):
     locks = "\n".join(line for line in src.splitlines() if line.startswith((
         "static pthread_mutex_t g_bridge_lifecycle_lock =",
         "static pthread_mutex_t g_bridge_focus_transition_lock =")))
-    begin = src.index("int jvm_bridge_park_session(")
-    end = src.index("int jvm_bridge_session_is_parked(", begin)
-    cleanup = src.index("static void bridge_begin_slot_cleanup(")
-    destroy = src.index("static void bridge_destroy_slot(", cleanup)
-    return PRELUDE + locks + "\n" + MOCKS + src[begin:end] + src[cleanup:destroy] + MAIN
+    # Extract exact function bodies, not a range ending at an unrelated API.
+    # New background/audio helpers can be inserted between park/focus APIs
+    # without becoming dependencies of this intentionally small fixture.
+    def function(signature):
+        start = src.index(signature)
+        end = src.index("\n}", start) + len("\n}")
+        return src[start:end] + "\n"
+    functions = "".join(function(signature) for signature in (
+        "int jvm_bridge_park_session(uint64_t token) {",
+        "int jvm_bridge_focus_session(uint64_t token) {",
+        "static void bridge_begin_slot_cleanup(JarBoxVMContext *slot) {",
+    ))
+    return PRELUDE + locks + "\n" + MOCKS + functions + MAIN
 
 
 class FocusCleanupSerializationTest(unittest.TestCase):
