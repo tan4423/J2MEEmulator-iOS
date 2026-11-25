@@ -49,7 +49,7 @@ void jvm_bridge_cpu_worker_end(struct JarBoxSession *s) {
     ++cpu_ends;
 }
 static int jarbox_session_enter_foreground(void *s) { assert(s); ++foreground; return 1; }
-static void jvm_bridge_note_net_trace(const char *s) { (void)s; }
+void jvm_bridge_note_net_trace(const char *s) { (void)s; }
 static ArrayList *arraylist_create(int n) { (void)n; return &list; }
 static void arraylist_push_back(ArrayList *a, void *b) { assert(a && b); }
 static void arraylist_destroy(ArrayList *a) { assert(a == &list && cpu_stage == 0); }
