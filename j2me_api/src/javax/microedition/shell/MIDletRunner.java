@@ -43,7 +43,9 @@ public class MIDletRunner {
 
         try {
             // 1. Read manifest
+            long phaseStarted = System.nanoTime();
             Map<String, String> manifestAttrs = readManifest(jarPath);
+            NativeBridge.startupPhase(1, System.nanoTime() - phaseStarted);
 
             String midletName = manifestAttrs.get("MIDlet-Name");
             String midletVersion = manifestAttrs.get("MIDlet-Version");
@@ -77,8 +79,12 @@ public class MIDletRunner {
 
             // 4. Load and instantiate MIDlet class
             System.out.println("[MIDletRunner] Loading class: " + className);
+            phaseStarted = System.nanoTime();
             Class<?> clazz = Class.forName(className);
+            NativeBridge.startupPhase(2, System.nanoTime() - phaseStarted);
+            phaseStarted = System.nanoTime();
             MIDlet midlet = (MIDlet) clazz.newInstance();
+            NativeBridge.startupPhase(3, System.nanoTime() - phaseStarted);
 
             // 5. Run lifecycle
             enteredLifecycle = true;
@@ -213,7 +219,9 @@ public class MIDletRunner {
         try {
             // startApp
             System.out.println("[MIDletRunner] >>> Calling startApp()");
+            long started = System.nanoTime();
             midlet.callStartApp();
+            NativeBridge.startupPhase(4, System.nanoTime() - started);
             System.out.println("[MIDletRunner] <<< startApp() returned");
 
             // Run event/render loop — blocks until MIDlet calls notifyDestroyed().

@@ -5,6 +5,9 @@
 #include "garbage.h"
 #include "jvm_util.h"
 #include <math.h>
+#if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__
+#include "../../NativeBridge/jvm_bridge.h"
+#endif
 
 
 #if  defined(__JVM_OS_MAC__) || defined(__JVM_OS_LINUX__)
@@ -61,6 +64,30 @@ s32 com_sun_cldc_io_ResourceInputStream_open(Runtime *runtime, JClass *clazz) {
     Utf8String *path = utf8_create();
     jstring_2_utf8(jstr, path, runtime);
     ByteBuf *buf = load_file_from_classpath(runtime->jvm->boot_classloader, path);
+    // CLDC resource lookup must not stop at a bootstrap-only classpath.
+    // A game may request an absolute resource through a platform class
+    // (e.g. String.class). If the boot lookup misses, try the nearest
+    // actual Java caller's non-bootstrap classloader in this VM.
+    if (!buf) {
+        for (Runtime *caller = runtime->parent; caller; caller = caller->parent) {
+            Instance *loader = caller->clazz ? caller->clazz->jloader : NULL;
+            if (!loader) continue;
+            PeerClassLoader *peer = classLoaders_find_by_instance(runtime->jvm, loader);
+            if (peer && peer != runtime->jvm->boot_classloader)
+                buf = load_file_from_classpath(peer, path);
+            break;
+        }
+    }
+#if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__
+    // NST_X1's login artwork is a text resource, not a normal PNG.
+    // Record only this known resource's existence and size, no contents.
+    if (utf8_equals_c(path, "x1/tt.png") || utf8_equals_c(path, "/x1/tt.png")) {
+        char event[80];
+        snprintf(event, sizeof(event), "nst_login_resource:found=%d,bytes=%d",
+                 buf != NULL, buf ? (int)buf->wp : 0);
+        jvm_bridge_note_net_trace(event);
+    }
+#endif
     if (buf) {
         s32 _j_t_bytes = buf->wp;
         Instance *_arr = jarray_create_by_type_index(runtime, _j_t_bytes, DATATYPE_BYTE);

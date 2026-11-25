@@ -361,6 +361,21 @@ static s32 n_pollInputEvent(Runtime *runtime, JClass *clazz) {
     return RUNTIME_STATUS_NORMAL;
 }
 
+// One event per launcher phase. Use only fixed labels and elapsed time.
+static s32 n_startupPhase(Runtime *runtime, JClass *clazz) {
+    int phase = localvar_getInt(runtime->localvar, 0);
+    s64 elapsed = localvar_getLong(runtime->localvar, 1);
+    const char *name = phase == 1 ? "manifest" : phase == 2 ? "load_class" :
+                       phase == 3 ? "constructor" : phase == 4 ? "start_app" : NULL;
+    if (name && elapsed >= 0) {
+        char event[96];
+        snprintf(event, sizeof(event), "startup_java_%s_ms=%.1f", name,
+                 (double)elapsed / 1000000.0);
+        jvm_bridge_note_net_trace(event);
+    }
+    return RUNTIME_STATUS_NORMAL;
+}
+
 // Java launcher exception bridge. A failed MIDlet should display the real
 // Java exception name/message rather than only "game execution failed (1)".
 static s32 n_reportLaunchError(Runtime *runtime, JClass *clazz) {
@@ -522,6 +537,7 @@ static java_native_method j2me_input_methods[] = {
     {CLS, "pollInputEvent", "()[I", n_pollInputEvent},
     {CLS, "isStopRequested", "()Z", n_isStopRequested},
     {CLS, "reportLaunchError", "(Ljava/lang/String;)V", n_reportLaunchError},
+    {CLS, "startupPhase", "(IJ)V", n_startupPhase},
     {CLS, "displayWaitEnabled", "()Z", n_displayWaitEnabled},
     {CLS, "displayWaitVersion", "()I", n_displayWaitVersion},
     {CLS, "displayWaitIfUnchanged", "(II)I", n_displayWaitIfUnchanged},

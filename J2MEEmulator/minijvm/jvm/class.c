@@ -6,6 +6,7 @@
 #include "jvm.h"
 #include "jvm_util.h"
 #include "garbage.h"
+#include "jit.h"
 
 
 //===============================    Create and load  ==================================
@@ -333,6 +334,14 @@ void class_clinit(JClass *clazz, Runtime *runtime) {
         clazz->status = CLASS_STATUS_CLINITING;
 
         s32 i, len;
+#if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__ && JIT_ENABLE
+        // The interpreter has checked first-use resolvers. Do not load the
+        // entire external dependency graph just to initialize one class.
+        // Keep eager linking when the optional native JIT is explicitly on.
+        const int defer_external = !treo_game_jit_is_enabled();
+#else
+        const int defer_external = 0;
+#endif
 
         /**
          * Convert some index references to memory object references to speed up bytecode execution
@@ -342,19 +351,22 @@ void class_clinit(JClass *clazz, Runtime *runtime) {
          */
         for (i = 0; i < clazz->constantPool.methodRef->length; i++) {
             ConstantMethodRef *cmr = (ConstantMethodRef *) arraylist_get_value(clazz->constantPool.methodRef, i);
-            cmr->methodInfo = find_methodInfo_by_methodref(clazz, cmr->item.index, runtime);
+            if (!defer_external || utf8_equals(cmr->clsName, clazz->name))
+                cmr->methodInfo = find_methodInfo_by_methodref(clazz, cmr->item.index, runtime);
             cmr->virtual_methods = pairlist_create(0);
             //jvm_printf("%s.%s %llx\n", utf8_cstr(clazz->name), utf8_cstr(cmr->name), (s64) (intptr_t) cmr->virtual_methods);
         }
 
         for (i = 0; i < clazz->constantPool.interfaceMethodRef->length; i++) {
             ConstantMethodRef *cmr = (ConstantMethodRef *) arraylist_get_value(clazz->constantPool.interfaceMethodRef, i);
-            cmr->methodInfo = find_methodInfo_by_methodref(clazz, cmr->item.index, runtime);
+            if (!defer_external || utf8_equals(cmr->clsName, clazz->name))
+                cmr->methodInfo = find_methodInfo_by_methodref(clazz, cmr->item.index, runtime);
             cmr->virtual_methods = pairlist_create(0);
         }
 
         for (i = 0; i < clazz->constantPool.fieldRef->length; i++) {
             ConstantFieldRef *cfr = (ConstantFieldRef *) arraylist_get_value(clazz->constantPool.fieldRef, i);
+            if (defer_external && !utf8_equals(cfr->clsName, clazz->name)) continue;
             FieldInfo *fi = find_fieldInfo_by_fieldref(clazz, cfr->item.index, runtime);
             cfr->fieldInfo = fi;
             if (!fi) {

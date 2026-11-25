@@ -79,6 +79,7 @@ public class NativeBridge {
     public static native boolean isStopRequested();
     // Called only by MIDletRunner on startup/lifecycle failure, never per tick.
     public static native void reportLaunchError(String detail);
+    public static native void startupPhase(int phase, long elapsedNanos);
     // Event-only network diagnostic phases, no host, URL, or packet bytes.
     public static native void netTraceStage(int stage);
 

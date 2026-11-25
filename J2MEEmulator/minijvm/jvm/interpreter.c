@@ -660,6 +660,32 @@ s32 exception_handle(RuntimeStack *stack, Runtime *runtime) {
     ExceptionTable *et = NULL;// _find_exception_handler(runtime, ins, ca, (s32) (runtime->pc - ca->code), &index);
     s32 offset = (s32) (runtime->pc - ca->code);
 #if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__
+    // a.run PC409 is an invokevirtual, not necessarily the origin of
+    // the NPE. Capture the deepest interpreted frame while it still exists.
+    // No heap inspection, argument values or game data are recorded.
+    if (ins && ins->mb.clazz && runtime->clazz && runtime->method &&
+        utf8_equals_c(ins->mb.clazz->name, "java/lang/NullPointerException")) {
+        Runtime *frame = runtime;
+        for (unsigned depth = 0; frame && depth < 64; ++depth, frame = frame->parent) {
+            if (!frame->clazz || !frame->method ||
+                !utf8_equals_c(frame->clazz->name, "a") ||
+                !utf8_equals_c(frame->method->name, "run") ||
+                !utf8_equals_c(frame->method->descriptor, "()V")) continue;
+            const CodeAttribute *caller = frame->method->converted_code;
+            const uintptr_t base = caller ? (uintptr_t)caller->code : 0;
+            const uintptr_t at = (uintptr_t)frame->pc;
+            if (base && at >= base && at - base == 409 &&
+                caller->code_length > 409 && jvm_bridge_mod_loop_exception_log_slot()) {
+                char event[208];
+                snprintf(event, sizeof(event),
+                         "nst_login_npe:frame=%.64s.%.48s,pc=%d,depth=%u",
+                         utf8_cstr(runtime->clazz->name),
+                         utf8_cstr(runtime->method->name), offset, depth);
+                jvm_bridge_note_net_trace(event);
+            }
+            break;
+        }
+    }
     // NST_X1's a.run catches Exception (PC37..554), sleeps a second,
     // prints it and retries. An uncaught-worker probe cannot see that failure.
     // Restrict this diagnostic to exception paths; never log credentials.
@@ -1060,6 +1086,9 @@ static inline void _synchronized_unlock_method(MethodInfo *method, Runtime *runt
  * @param parent_method_code
  */
 static inline void _optimize_empty_method_call(MethodInfo *subm, CodeAttribute *parent_ca, u8 *parent_method_code) {
+    // An empty method can still trigger <clinit> or acquire a monitor.
+    // Never erase those observable side effects during first-use linking.
+    if (subm->_this_class->status < CLASS_STATUS_CLINITED || subm->is_sync) return;
     CodeAttribute *ca = subm->converted_code;
 #ifndef TREO_IOS_GAME_JIT
     u8 *parent_jit_code = &parent_ca->bytecode_for_jit[parent_method_code - parent_ca->code];
@@ -1611,7 +1640,11 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
         }
     }
 #endif
-    while (clazz->status < CLASS_STATUS_CLINITING) {
+    // CLINITING is not CLINITED: a foreign Java thread must not execute
+    // methods against half-initialized static fields. class_clinit takes
+    // the existing recursive VM lock, so same-thread <clinit> recursion
+    // returns without running the initializer a second time.
+    if (clazz->status < CLASS_STATUS_CLINITED) {
         class_clinit(clazz, runtime);
     }
 #if _JVM_DEBUG_LOG_LEVEL > 3
@@ -3715,16 +3748,22 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         case op_ifeq: TREO_VM_HANDLER(op_ifeq) {
                             ival1 = (--sp)->ivalue;
 #if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__
-                            // Exact first-line acceptance branch in the
-                            // unmodified JAR: Class_fq.d PC587 and
-                            // Class_gv.g PC153. Record boolean only.
+                            // First-line acceptance branches in the original
+                            // MIDlet. Report only the game's boolean decision;
+                            // never change the result or log response contents.
                             if (treo_nso_init_for_runtime(runtime) &&
                                 ((utf8_equals_c(clazz->name, "Class_fq") &&
                                   utf8_equals_c(method->name, "d") &&
                                   (s32)(runtime->pc - ca->code) == 587) ||
                                  (utf8_equals_c(clazz->name, "Class_gv") &&
                                   utf8_equals_c(method->name, "g") &&
-                                  (s32)(runtime->pc - ca->code) == 153)) &&
+                                  (s32)(runtime->pc - ca->code) == 153) ||
+                                 (utf8_equals_c(clazz->name, "Class_cu") &&
+                                  utf8_equals_c(method->name, "q") &&
+                                  (s32)(runtime->pc - ca->code) == 153) ||
+                                 (utf8_equals_c(clazz->name, "GameMidlet") &&
+                                  utf8_equals_c(method->name, "c") &&
+                                  (s32)(runtime->pc - ca->code) == 588)) &&
                                 jvm_bridge_mod_protocol_note_slot()) {
                                 char event[124];
                                 snprintf(event, sizeof(event),
@@ -4552,6 +4591,14 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         case op_invokespecial: TREO_VM_HANDLER(op_invokespecial) {
                             cmr = class_get_constant_method_ref(clazz, *((u16 *) (runtime->pc + 1)));
                             m = cmr->methodInfo;
+                            if (!m) {
+                                // Preserve the live operand stack while the
+                                // resolver may invoke a Java ClassLoader.
+                                stack->sp = sp;
+                                m = find_methodInfo_by_methodref(clazz, cmr->item.index, runtime);
+                                sp = stack->sp;
+                                cmr->methodInfo = m;
+                            }
 #if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__
                             treo_nso_trace_cu_invokespecial(runtime, nso_init_probe,
                                                              cmr, m, "special_resolve");
@@ -4570,6 +4617,14 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         case op_invokestatic: TREO_VM_HANDLER(op_invokestatic) {
                             cmr = class_get_constant_method_ref(clazz, *((u16 *) (runtime->pc + 1)));
                             m = cmr->methodInfo;
+                            if (!m) {
+                                // Preserve the live operand stack while the
+                                // resolver may invoke a Java ClassLoader.
+                                stack->sp = sp;
+                                m = find_methodInfo_by_methodref(clazz, cmr->item.index, runtime);
+                                sp = stack->sp;
+                                cmr->methodInfo = m;
+                            }
 
                             if (!m) {
                                 err_msg = utf8_cstr(cmr->name);
