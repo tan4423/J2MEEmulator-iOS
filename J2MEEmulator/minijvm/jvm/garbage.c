@@ -635,18 +635,26 @@ s32 _gc_thread_run(void *para) {
 #if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__
             treo_diag_gc_cycle_begin();
             const int smartRecord = __atomic_load_n(&jvm->session->treo_state.smart_enabled, __ATOMIC_ACQUIRE);
-            const uint64_t smartCpuStart = smartRecord ? treo_gc_smart_thread_cpu() : 0;
+            const uint64_t gcCpuStart = treo_gc_smart_thread_cpu();
 #endif
-            _garbage_collect(collector);
+            s64 gcResult = _garbage_collect(collector);
 #if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__
-            if (smartCpuStart && __atomic_load_n(&jvm->session->treo_state.smart_enabled, __ATOMIC_ACQUIRE)) {
-                const uint64_t smartCpuEnd = treo_gc_smart_thread_cpu();
-                if (smartCpuEnd >= smartCpuStart) {
-                    jarbox_treo_smart_record_gc(&jvm->session->treo_state,
-                                                smartCpuEnd - smartCpuStart);
-                }
+            const uint64_t gcCpuEnd = treo_gc_smart_thread_cpu();
+            JarBoxTreoState *metrics = &jvm->session->treo_state;
+            // Lifetime totals include attempted cycles (including aborts).
+            // Two clock reads per collection, not per object or game tick.
+            if (gcCpuStart && gcCpuEnd >= gcCpuStart) {
+                uint64_t elapsed = gcCpuEnd - gcCpuStart;
+                __atomic_fetch_add(&metrics->gc_worker_cpu_ns, elapsed, __ATOMIC_RELAXED);
+                if (smartRecord && __atomic_load_n(&metrics->smart_enabled, __ATOMIC_ACQUIRE))
+                    jarbox_treo_smart_record_gc(metrics, elapsed);
             }
+            __atomic_fetch_add(&metrics->gc_worker_cycles, 1, __ATOMIC_RELAXED);
+            if (gcResult < 0)
+                __atomic_fetch_add(&metrics->gc_worker_aborts, 1, __ATOMIC_RELAXED);
             treo_diag_gc_cycle_end();
+#else
+            (void)gcResult;
 #endif
             s64 native_after = 0;
             s64 heap_after = gc_sum_heap_sample(collector, &native_after);
@@ -965,13 +973,21 @@ s32 _gc_wait_thread_suspend(MiniJVM *jvm, Runtime *runtime) {
  * mark thread's localvar and stack refered obj and deep search
  * @return ret
  */
-s32 _gc_big_search(GcCollector *collector) {
-    //thread stack frame mark
-    s32 i, len;
-    for (i = 0, len = collector->runtime_refer_copy->length; i < len; i++) {
-        __refer r = arraylist_get_value(collector->runtime_refer_copy, i);
-        _gc_mark_object(collector, r, collector->mark_cnt);
+// The collector owns its root snapshot and the stopped-world reference
+// arrays. Their contents/length cannot change while this traversal runs.
+// Do not acquire a list lock or decode an array element type per reference.
+static inline void gc_mark_refs(GcCollector *collector, const __refer *refs,
+                                s32 length, u8 flag_cnt) {
+    for (s32 i = 0; i < length; ++i) {
+        __refer ref = refs[i];
+        if (ref) _gc_mark_object(collector, ref, flag_cnt);
     }
+}
+
+s32 _gc_big_search(GcCollector *collector) {
+    // Private copy; _gc_copy_objs completed with the world stopped.
+    ArrayList *roots = collector->runtime_refer_copy;
+    gc_mark_refs(collector, roots->data, roots->length, collector->mark_cnt);
 
     //holder mark
     HashsetIterator hi;
@@ -1084,10 +1100,9 @@ static inline void _gc_instance_mark(GcCollector *collector, Instance *ins, u8 f
     s32 i, len;
     JClass *clazz = ins->mb.clazz;
     while (clazz) {
-        FieldPool *fp = &clazz->fieldPool;
         ArrayList *fiList = clazz->insFieldPtrIndex;
         for (i = 0, len = fiList->length; i < len; i++) {
-            FieldInfo *fi = arraylist_get_value_unsafe(fiList, i);
+            FieldInfo *fi = fiList->data[i];
 
             if (fi->is_ref_target && GCFLAG_WEAKREFERENCE_GET(ins->mb.gcflag)) continue;//skip weakreference target mark, but others mark need
             c8 *ptr = getInstanceFieldPtr(ins, fi);
@@ -1095,7 +1110,10 @@ static inline void _gc_instance_mark(GcCollector *collector, Instance *ins, u8 f
                 __refer ref = getFieldRefer(ptr);
                 if (ref)_gc_mark_object(collector, ref, flag_cnt);
             }
-            _gc_mark_object(collector, fi->_this_class, flag_cnt);
+            // This class is marked once below; retain an unusual field
+            // owner's edge if it is different from the class being scanned.
+            if (fi->_this_class != clazz)
+                _gc_mark_object(collector, fi->_this_class, flag_cnt);
         }
         _gc_mark_object(collector, clazz, flag_cnt);//keep class and classloader alive
         clazz = getSuperClass(clazz);
@@ -1121,11 +1139,8 @@ static inline void _gc_jarray_mark(GcCollector *collector, Instance *arr, u8 fla
 //            jvm_printf("check %llx\n", (s64) (intptr_t) arr);
 //        }
         if (isDataReferByIndex(arr->mb.arr_type_index)) {
-            s32 i;
-            for (i = 0; i < arr->arr_length; i++) {// Remove all references; otherwise, garbage collection will not occur.
-                s64 val = jarray_get_field(arr, i);
-                if (val)_gc_mark_object(collector, (__refer) (intptr_t) val, flag_cnt);
-            }
+            gc_mark_refs(collector, (const __refer *)arr->arr_body,
+                         arr->arr_length, flag_cnt);
         }
     }
     return;
@@ -1138,10 +1153,9 @@ static inline void _gc_jarray_mark(GcCollector *collector, Instance *arr, u8 fla
 static inline void _gc_class_mark(GcCollector *collector, JClass *clazz, u8 flag_cnt) {
     s32 i, len;
     if (clazz->field_static) {
-        FieldPool *fp = &clazz->fieldPool;
         ArrayList *fiList = clazz->staticFieldPtrIndex;
         for (i = 0, len = fiList->length; i < len; i++) {
-            FieldInfo *fi = arraylist_get_value_unsafe(fiList, i);
+            FieldInfo *fi = fiList->data[i];
             c8 *ptr = getStaticFieldPtr(fi);
             if (ptr) {
                 __refer ref = getFieldRefer(ptr);

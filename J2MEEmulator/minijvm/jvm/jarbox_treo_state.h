@@ -32,6 +32,7 @@ typedef struct JarBoxTreoState {
     uint64_t smart_heap_peak;
     uint64_t smart_cycles;
     uint64_t smart_cpu_ns;
+    uint64_t gc_worker_cycles, gc_worker_aborts, gc_worker_cpu_ns; // session lifetime
 } JarBoxTreoState;
 
 static inline void jarbox_treo_mode_set(JarBoxTreoState *state, int mode) {

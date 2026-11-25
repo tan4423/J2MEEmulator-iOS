@@ -1442,6 +1442,8 @@ class GameViewController: UIViewController {
             "requests=\(treo.repaint_requests)", "repaint_skips=\(treo.repaint_skips)",
             "service_skips=\(treo.service_skips)", "paint_skips=\(treo.paint_skips)",
             "smart_gc_cycles=\(treo.smart_gc_cycles)", "smart_gc_cpu_ns=\(treo.smart_gc_cpu_ns)",
+            "gc_worker_cycles=\(treo.gc_worker_cycles)", "gc_worker_aborts=\(treo.gc_worker_aborts)",
+            "gc_worker_cpu_ns=\(treo.gc_worker_cpu_ns)",
             "smart_period_ms=\(treo.smart_period_ms)", "smart_fallback=\(treo.smart_fallback)",
             "int_leaf_fast_calls_approx=\(treo.int_leaf_fast_calls)",
             "ref_leaf_fast_calls_approx=\(treo.ref_leaf_fast_calls)"

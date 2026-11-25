@@ -797,6 +797,9 @@ static void bridge_treo_snapshot(MiniJVM *vm, void *arg) {
     out->canvas = jarbox_treo_nso_canvas_recognized(s);
     out->int_leaf_fast_calls = __atomic_load_n(&s->int_leaf_fast_calls, __ATOMIC_RELAXED);
     out->ref_leaf_fast_calls = __atomic_load_n(&s->ref_leaf_fast_calls, __ATOMIC_RELAXED);
+    out->gc_worker_cycles = __atomic_load_n(&s->gc_worker_cycles, __ATOMIC_RELAXED);
+    out->gc_worker_aborts = __atomic_load_n(&s->gc_worker_aborts, __ATOMIC_RELAXED);
+    out->gc_worker_cpu_ns = __atomic_load_n(&s->gc_worker_cpu_ns, __ATOMIC_RELAXED);
     out->smart_gc_cycles = __atomic_load_n(&s->smart_cycles, __ATOMIC_RELAXED);
     out->smart_gc_cpu_ns = __atomic_load_n(&s->smart_cpu_ns, __ATOMIC_RELAXED);
     out->smart_period_ms = jarbox_treo_smart_period(s);
