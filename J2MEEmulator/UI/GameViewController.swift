@@ -478,7 +478,6 @@ class GameViewController: UIViewController {
     private let lskButton = UIButton(type: .system)
     private let rskButton = UIButton(type: .system)
     private let softKeyHaptic = UIImpactFeedbackGenerator(style: .light)
-    private(set) var placeholderIconView: UIImageView?
 
     // Controls — created based on layoutMode
     private var joystickView: JoystickView?
@@ -675,6 +674,8 @@ class GameViewController: UIViewController {
     private var lastMeasurement: (title: String, message: String)?
     private var cpuMetalBaseline: (UInt64, UInt64, UInt64) = (0, 0, 0)
     private var startupWatchdog: DispatchWorkItem?
+    private var startupBeganAt: TimeInterval?
+    private var startupFirstSurface = "pending"
     private var stopEscalationWork: DispatchWorkItem?
     private var stopRescueWork: DispatchWorkItem?
     private var ownsJVMSession = false
@@ -722,26 +723,11 @@ class GameViewController: UIViewController {
         case .portrait: setupNGageLayout(portrait: true)
         case .ngage: setupNGageLayout()
         }
-        // Placeholder icon — visible until first game frame
-        let iconIV = UIImageView(image: appIcon)
-        iconIV.contentMode = .center
-        iconIV.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(iconIV)
-        NSLayoutConstraint.activate([
-            iconIV.centerXAnchor.constraint(equalTo: emulatorView.centerXAnchor),
-            iconIV.centerYAnchor.constraint(equalTo: emulatorView.centerYAnchor),
-        ])
-        placeholderIconView = iconIV
+        // Present the game canvas directly; no intermediate icon or fade.
         view.bringSubviewToFront(backButton)
         view.bringSubviewToFront(closeTabButton)
-
-        // Remove the startup placeholder immediately; no fade animation
-        // and no second per-frame game-image copy behind the canvas.
         emulatorView.onFirstFrame = { [weak self] in
-            NSLog("[J2ME Treo] First game frame displayed")
-            self?.finishStartupWatchdog()
-            self?.placeholderIconView?.removeFromSuperview()
-            self?.placeholderIconView = nil
+            self?.finishStartupWatchdog(readySurface: "canvas")
         }
 
         // Register native callbacks only after acquiring the exclusive
@@ -947,8 +933,9 @@ class GameViewController: UIViewController {
               !gameStopRequested, !libraryIsPresented, presentedViewController == nil else { return }
         do {
             let id = try library.createTabBeside(self)
-            refreshGameTabStrip()
             switchGameTab(to: id)
+            // Refresh only if the handoff failed and this tab stays visible.
+            if !libraryIsPresented { refreshGameTabStrip() }
         } catch { showTabOperationError(error) }
     }
 
@@ -1366,7 +1353,7 @@ class GameViewController: UIViewController {
         let path = jarPath
         let closing = cloneID
         library?.managedGameDidEnd(self)
-        library?.beginGameTabTransition()
+        library?.beginGameTabTransition(from: viewIfLoaded)
         let finish = { [weak self, weak library] in
             guard let self else {
                 library?.finishGameTabTransitionIfIdle()
@@ -1451,6 +1438,7 @@ class GameViewController: UIViewController {
         let report = "JarBoxNET\n" +
             "build_commit=" + buildID + "\n" +
             "boot_patch=" + bootPatch + "\n" +
+            "first_surface=" + startupFirstSurface + "\n" +
             "vm_start_probe=" + (hasStartupProbe ? "seen" : "missing") + "\n" +
             "display_poll_count=" + String(treo_display_poll_calls()) + "\n" +
             "popup_update_count=" + String(jvm_bridge_mod_popup_tick_count()) + "\n" +
@@ -3886,6 +3874,7 @@ class GameViewController: UIViewController {
     private func startGame() {
         guard !didStartGame else { return }
         didStartGame = true
+        startupBeganAt = ProcessInfo.processInfo.systemUptime
         NSLog("[J2ME Treo] Game view appeared; scheduling JVM startup")
 
         guard let resRoot = Bundle.main.resourcePath,
@@ -4045,8 +4034,8 @@ class GameViewController: UIViewController {
         }
         let watchdog = DispatchWorkItem { [weak self] in
             guard let self, self.ownsJVMSession, !self.gameStopRequested,
-                  !self.startupTimeoutShown,
-                  let icon = self.placeholderIconView, !icon.isHidden else { return }
+                  !self.startupTimeoutShown, self.startupWatchdog != nil,
+                  self.gameSessionToken == launchingToken else { return }
             self.startupTimeoutShown = true
             NSLog("[JarBoxVM][Lifecycle] startup_no_frame=20s phase=%d",
                   jvm_bridge_session_phase())
@@ -4069,7 +4058,13 @@ class GameViewController: UIViewController {
         DispatchQueue.global(qos: .userInitiated).async(execute: worker)
     }
 
-    private func finishStartupWatchdog() {
+    private func finishStartupWatchdog(readySurface: String? = nil) {
+        if let began = startupBeganAt, let readySurface {
+            let elapsedMs = (ProcessInfo.processInfo.systemUptime - began) * 1000
+            startupFirstSurface = String(format: "%@ %.1fms", readySurface, elapsedMs)
+            NSLog("[JarBoxVM][Startup] first_surface=%@", startupFirstSurface)
+        }
+        startupBeganAt = nil
         startupWatchdog?.cancel()
         startupWatchdog = nil
         if !gameStopRequested {
@@ -4424,7 +4419,7 @@ class GameViewController: UIViewController {
             emulatorView.clearPendingGameFrame()
             if activeGameViewController === self { activeGameViewController = nil }
             let switchTab = requestedTabSwitch
-            if switchTab != nil { library.beginGameTabTransition() }
+            if switchTab != nil { library.beginGameTabTransition(from: viewIfLoaded) }
             dismiss(animated: false) { [weak self, weak library] in
                 defer { library?.finishGameTabTransitionIfIdle() }
                 guard let self else { return }
@@ -4538,8 +4533,7 @@ class GameViewController: UIViewController {
 
     func showFormView(ownerKey: UInt64) {
         deferredGameAlert = false
-        finishStartupWatchdog()
-        placeholderIconView?.isHidden = true
+        finishStartupWatchdog(readySurface: "form")
         formView.buildFromNativeData(ownerKey: ownerKey)
         formView.isHidden = false
         emulatorView.isHidden = true
@@ -4559,8 +4553,7 @@ class GameViewController: UIViewController {
 
     func showListView(ownerKey: UInt64) {
         deferredGameAlert = false
-        finishStartupWatchdog()
-        placeholderIconView?.isHidden = true
+        finishStartupWatchdog(readySurface: "list")
         listView.buildFromNativeData(ownerKey: ownerKey)
         listView.isHidden = false
         emulatorView.isHidden = true
@@ -4575,7 +4568,7 @@ class GameViewController: UIViewController {
         // Capture *both* the worker's immutable session token and the
         // MIDP render owner for every deferred Alert action and timeout.
         guard ownsLiveGameSession() else { return }
-        finishStartupWatchdog()
+        finishStartupWatchdog(readySurface: "alert")
         let originToken = gameSessionToken
         if libraryIsPresented {
             // Keep the pending game Alert when Deep Treo revoked native

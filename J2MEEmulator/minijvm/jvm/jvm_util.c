@@ -835,6 +835,17 @@ s32 jthread_run(void *para) {
     push_ref(runtime->stack, (__refer) jthread);
     ret = execute_method_impl(method, runtime);
     if (ret == RUNTIME_STATUS_EXCEPTION) {
+#if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__
+        // A game-loop thread can die while the main Display loop stays alive.
+        // Record the worker entry class, not game arguments or network data.
+        if (jarbox_session_phase(held_session) < JARBOX_SESSION_STOPPING) {
+            char event[192];
+            snprintf(event, sizeof(event), "vm_worker_uncaught:class=%.120s",
+                     method && method->_this_class && method->_this_class->name
+                         ? utf8_cstr(method->_this_class->name) : "unknown");
+            jvm_bridge_note_net_trace(event);
+        }
+#endif
         print_exception(runtime);
     }
 

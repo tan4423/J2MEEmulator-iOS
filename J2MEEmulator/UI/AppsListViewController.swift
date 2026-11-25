@@ -1097,10 +1097,11 @@ class AppsListViewController: UIViewController,
         viewIfLoaded?.window != nil && !isBeingDismissed && pendingTabMutation == nil
     }
 
-    // Cover only the library, not the window or the incoming game. A UIKit
-    // full-screen dismiss/present pair can otherwise expose one springboard
-    // frame. This is a plain view, no screenshot, animation or polling.
-    func beginGameTabTransition() {
+    // Cover only the library during UIKit's dismiss/present handoff.
+    // Retain one transient snapshot of the outgoing game view instead of
+    // flashing a black interstitial. Never use it as a live game frame,
+    // never persist it, and release it when presentation completes.
+    func beginGameTabTransition(from source: UIView?) {
         guard gameTabTransitionCover == nil else { return }
         cancelAutoProtection()
         setSpringboardMotion(false, reason: "tab handoff")
@@ -1117,6 +1118,15 @@ class AppsListViewController: UIViewController,
             cover.leadingAnchor.constraint(equalTo: container.leadingAnchor),
             cover.trailingAnchor.constraint(equalTo: container.trailingAnchor)
         ])
+        container.layoutIfNeeded()
+        if let source, source.window != nil,
+           let snapshot = source.snapshotView(afterScreenUpdates: false) {
+            snapshot.frame = cover.bounds
+            snapshot.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+            snapshot.isUserInteractionEnabled = false
+            snapshot.accessibilityElementsHidden = true
+            cover.addSubview(snapshot)
+        }
         gameTabTransitionCover = cover
         container.layoutIfNeeded()
     }
@@ -1256,7 +1266,7 @@ class AppsListViewController: UIViewController,
         try requireNewTabSlot(for: app)
         let clone = try JarBoxGameStorage.createCloneAfter(jarPath: app.path,
             documents: Self.documentsDirectory, after: source.cloneID)
-        scanApps()
+        updateRegisteredCloneCount(for: app.path, count: tabs.count)
         return clone.id
     }
 
@@ -1304,7 +1314,7 @@ class AppsListViewController: UIViewController,
             let unrelated = retainedGames.compactMap { $0.nativeSessionToken }
             try JarBoxGameStorage.removeClones(jarPath: app.path, documents: Self.documentsDirectory,
                                                cloneIDs: [deletion.id], unrelatedTokens: unrelated)
-            scanApps()
+            updateRegisteredCloneCount(for: app.path, count: tabs.count - 2)
             finishTabMutation(deletion.ticket)
             let updated = try registeredTabs(for: app)
             guard let next = updated.first(where: { $0.id == target.id }) else { return }
@@ -2214,6 +2224,18 @@ class AppsListViewController: UIViewController,
         let cloneCount: Int
     }
     private var apps: [AppInfo] = []
+
+    // Tab mutations change only the registry count, not the JAR, icon or
+    // manifest. Do not launch a whole-library JAR scan on the handoff path.
+    private func updateRegisteredCloneCount(for path: String, count: Int) {
+        guard let index = apps.firstIndex(where: { $0.path == path }) else { return }
+        let app = apps[index]
+        apps[index] = AppInfo(name: app.name, path: app.path, fileName: app.fileName,
+                              version: app.version, vendor: app.vendor, icon: app.icon,
+                              cloneCount: max(0, count))
+        // The library is covered or offscreen during tab handoff.
+        springboardCollectionView.reloadData()
+    }
 
     private func scanApps() {
         let gamesDir = Self.gamesDirectory

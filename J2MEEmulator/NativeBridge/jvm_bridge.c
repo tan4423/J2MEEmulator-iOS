@@ -30,7 +30,7 @@ static int bridge_jar_requires_exclusive(const char *path) {
     if (!path || stat(path, &st) != 0 || st.st_size <= 0 ||
         st.st_size > 64 * 1024 * 1024) return 1;
     mz_zip_archive zip = {0};
-    if (!mz_zip_reader_init_file(&zip, path, 0)) return 1;
+    if (!mz_zip_reader_init_file(&zip, path, MZ_ZIP_FLAG_DO_NOT_SORT_CENTRAL_DIRECTORY)) return 1;
     int exclusive = 1;
     unsigned classes = 0;
     size_t total = 0;
@@ -97,7 +97,7 @@ static int treo_is_nso_family(const char *jar_path, int *init_target) {
     };
     if (!jar_path) return 0;
     mz_zip_archive archive = {0};
-    if (!mz_zip_reader_init_file(&archive, jar_path, 0)) return 0;
+    if (!mz_zip_reader_init_file(&archive, jar_path, MZ_ZIP_FLAG_DO_NOT_SORT_CENTRAL_DIRECTORY)) return 0;
     // A mod may add/remove a few resources. Five of seven independent
     // signature assets plus map and sprite categories is sufficient.
     // The loaded Canvas bytecode shape is verified separately before skipping.

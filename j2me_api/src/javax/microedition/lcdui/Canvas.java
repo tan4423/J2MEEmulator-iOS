@@ -156,9 +156,27 @@ public abstract class Canvas extends Displayable {
      * Initialize the offscreen context. Called when canvas becomes current.
      */
     void initContext() {
-        if (nativeContext == 0) {
-            nativeContext = NativeBridge.createContext(width, height);
-            graphics = new Graphics(nativeContext, width, height);
+        // setCurrent can publish this Canvas while a game or Display worker
+        // is already painting it. Serialize construction with paint, flush,
+        // and destroy so a partially initialized Graphics is never observed
+        // by another paint thread and two native contexts are not leaked.
+        synchronized (paintLock) {
+            if (nativeContext == 0) {
+                long context = NativeBridge.createContext(width, height);
+                if (context == 0) {
+                    throw new OutOfMemoryError("Canvas context allocation failed");
+                }
+                try {
+                    graphics = new Graphics(context, width, height);
+                    nativeContext = context;
+                } catch (RuntimeException failure) {
+                    NativeBridge.destroyContext(context);
+                    throw failure;
+                } catch (Error failure) {
+                    NativeBridge.destroyContext(context);
+                    throw failure;
+                }
+            }
         }
     }
 
