@@ -1691,7 +1691,58 @@ void _class_annotations_destroy(JClass *clazz) {
     clazz->annotationsAttr = NULL;
 }
 
+/* Fast path for valid JVM parameter descriptors. Collect at most 255 slots
+ * before publishing the output, so unsupported inputs leave it untouched.
+ * Reference types and arrays always occupy one slot, including long[] and
+ * double[]. No temporary Utf8String, substring shifts or per-ref output. */
+static s32 jarbox_method_para_fast(Utf8String *methodType, Utf8String *out) {
+    if (!methodType || !methodType->data || methodType->length < 3 ||
+        methodType->data[0] != '(') return -1;
+    const unsigned char *data = methodType->data;
+    const s32 len = methodType->length;
+    s32 pos = 1, slots = 0, n = 0;
+    unsigned char types[255];
+    while (pos < len && data[pos] != ')') {
+        int array = 0;
+        while (pos < len && data[pos] == '[') { array = 1; ++pos; }
+        if (pos >= len) return -1;
+        unsigned char ch = data[pos++];
+        unsigned char kind;
+        switch (ch) {
+            case 'S': case 'C': case 'B': case 'I': case 'F': case 'Z':
+                kind = array ? 'R' : '4'; break;
+            case 'D': case 'J':
+                kind = array ? 'R' : '8'; break;
+            case 'L': {
+                s32 start = pos;
+                while (pos < len && data[pos] != ';') {
+                    if (data[pos] == '(' || data[pos] == ')' || data[pos] == '[' ||
+                        data[pos] == 0) return -1;
+                    ++pos;
+                }
+                if (pos == start || pos >= len) return -1;
+                ++pos;
+                kind = 'R'; break;
+            }
+            default: return -1;
+        }
+        slots += kind == '8' ? 2 : 1;
+        if (slots > 255) return -1;
+        if (out) types[n++] = kind;
+    }
+    // Preserve the legacy last-')' behavior for unusual descriptors by
+    // declining the fast path if another ')' is present after this one.
+    if (pos >= len || pos + 1 >= len) return -1;
+    for (s32 i = pos + 1; i < len; ++i)
+        if (data[i] == ')') return -1;
+    if (out && n) utf8_append_data(out, (const char *)types, n);
+    return slots;
+}
+
 s32 parseMethodPara(Utf8String *methodType, Utf8String *out) {
+    s32 fast = jarbox_method_para_fast(methodType, out);
+    if (fast >= 0) return fast;
+    // Keep legacy behavior for unusual descriptors outside the fast path.
     s32 count = 0;
     Utf8String *para = utf8_create_copy(methodType);
     utf8_substring(para, utf8_indexof_c(para, "(") + 1, utf8_last_indexof_c(para, ")"));
@@ -1739,6 +1790,15 @@ s32 parseMethodPara(Utf8String *methodType, Utf8String *out) {
     }
     utf8_destroy(para);
     return count;
+}
+
+static s32 jarbox_method_para_slots(Utf8String *descriptor) {
+    s32 slots = jarbox_method_para_fast(descriptor, NULL);
+    if (slots >= 0) return slots;
+    Utf8String *tmp = utf8_create();
+    slots = parseMethodPara(descriptor, tmp);
+    utf8_destroy(tmp);
+    return slots;
 }
 
 
@@ -1909,9 +1969,7 @@ void _class_optimize(JClass *clazz) {
 //            int debug = 1;
 //        }
         if (cmr->para_slots == -1) {
-            Utf8String *tmps = utf8_create();
-            cmr->para_slots = parseMethodPara(cmr->descriptor, tmps);
-            utf8_destroy(tmps);
+            cmr->para_slots = jarbox_method_para_slots(cmr->descriptor);
         }
     }
     for (i = 0; i < clazz->constantPool.interfaceMethodRef->length; i++) {
@@ -1924,9 +1982,7 @@ void _class_optimize(JClass *clazz) {
         cmr->descriptor = class_get_utf8_string(clazz, cmr->nameAndType->typeIndex);
         cmr->clsName = class_get_constant_classref(clazz, cmr->classIndex)->name;
         if (cmr->para_slots == -1) {
-            Utf8String *tmps = utf8_create();
-            cmr->para_slots = parseMethodPara(cmr->descriptor, tmps);
-            utf8_destroy(tmps);
+            cmr->para_slots = jarbox_method_para_slots(cmr->descriptor);
         }
     }
 
