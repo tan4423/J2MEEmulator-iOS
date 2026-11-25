@@ -29,7 +29,7 @@ class GameStartStopUITest(unittest.TestCase):
         self.assertIn('closeTabButton.accessibilityLabel = "Hủy khởi động game"', self.src)
         self.assertIn('closeTabButton.accessibilityLabel = "Đang dừng game"', self.src)
         self.assertIn('backButton.isEnabled = false', self.src)
-        finish = self.src.split("private func finishStartupWatchdog() {", 1)[1].split("\n    }", 1)[0]
+        finish = self.src.split("private func finishStartupWatchdog(readySurface: String? = nil) {", 1)[1].split("\n    }", 1)[0]
         self.assertIn('if !gameStopRequested {', finish)
         self.assertIn('backButton.isEnabled = true', finish)
         self.assertIn('closeTabButton.accessibilityLabel = "Dừng tab"', finish)
@@ -46,7 +46,7 @@ class GameStartStopUITest(unittest.TestCase):
     def test_stale_alert_does_not_cancel_startup_watchdog(self):
         body = self.src.split('func showAlert() {', 1)[1].split('\n    }', 1)[0]
         self.assertLess(body.index('guard ownsLiveGameSession() else { return }'),
-                        body.index('finishStartupWatchdog()'))
+                        body.index('finishStartupWatchdog(readySurface: "alert")'))
 
 
 if __name__ == "__main__":
