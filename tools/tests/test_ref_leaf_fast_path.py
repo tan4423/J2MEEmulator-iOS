@@ -35,7 +35,67 @@ int main(void){
     return 0;
 }
 """
+
+RUNTIME_PRE=r"""
+#include <stdint.h>
+#include <stddef.h>
+#include <stdio.h>
+#include <string.h>
+typedef uint32_t u32; typedef uint16_t u16; typedef int32_t s32; typedef char c8; typedef void *__refer;
+enum {CONSTANT_FIELD_REF=9, ACC_STATIC=8, ACC_VOLATILE=64};
+typedef struct {int tag;} ConstantItem;
+typedef struct {int constant_item_count; ConstantItem **constant_item_ptr; char *field_static; int field_static_len;} JClass;
+typedef struct {JClass *_this_class; int access_flags,isrefer,isvolatile,offset;} FieldInfo;
+typedef struct {ConstantItem item; FieldInfo *fieldInfo;} ConstantFieldRef;
+typedef struct {int max_stack;} CodeAttribute;
+typedef struct {u32 treo_ref_leaf; JClass *_this_class; CodeAttribute *converted_code;} MethodInfo;
+typedef struct {__refer *store,*sp; int max_size;} RuntimeStack;
+typedef struct {RuntimeStack *stack;} Runtime;
+static ConstantItem *class_get_constant_item(JClass *cl,int cp){return cl->constant_item_ptr[cp];}
+static c8 *getStaticFieldPtr(FieldInfo *fi){return fi->_this_class->field_static+fi->offset;}
+static void push_ref(RuntimeStack *s,__refer v){*s->sp++=v;}
+"""
+RUNTIME_MAIN=r"""
+#define CHECK(x) do{if(!(x)){fprintf(stderr,"line %d\n",__LINE__);return 1;}}while(0)
+int main(void){
+ int objects[2]={1,2}; __refer a=NULL,b=&objects[1];
+ ConstantItem *acp[2]={0},*bcp[2]={0};
+ JClass ca={2,acp,(char*)&a,sizeof(a)},cb={2,bcp,(char*)&b,sizeof(b)};
+ FieldInfo fa={&ca,ACC_STATIC,1,0,0},fb={&cb,ACC_STATIC,1,0,0};
+ ConstantFieldRef ra={{CONSTANT_FIELD_REF},&fa},rb={{CONSTANT_FIELD_REF},&fb};acp[1]=&ra.item;bcp[1]=&rb.item;
+ CodeAttribute code={2};MethodInfo ma={0x10001,&ca,&code},mb={0x10001,&cb,&code};
+ __refer data[4]={0};RuntimeStack st={data,data,4};Runtime r={&st};
+ CHECK(!jarbox_try_ref_leaf(&ma,&r)&&st.sp==data);
+ for(int i=0;i<100000;i++){a=&objects[i&1];CHECK(jarbox_try_ref_leaf(&ma,&r)&&data[0]==a);st.sp=data;CHECK(jarbox_try_ref_leaf(&mb,&r)&&data[0]==b);st.sp=data;}
+ a=NULL;ma.treo_ref_leaf=1;CHECK(jarbox_try_ref_leaf(&ma,&r)&&data[0]==NULL);st.sp=data;
+ ma.treo_ref_leaf=0x10001;a=&objects[0];
+ fa.isvolatile=1;CHECK(!jarbox_try_ref_leaf(&ma,&r));fa.isvolatile=0;
+ fa.access_flags=ACC_STATIC|ACC_VOLATILE;CHECK(!jarbox_try_ref_leaf(&ma,&r));fa.access_flags=ACC_STATIC;
+ fa.access_flags=0;CHECK(!jarbox_try_ref_leaf(&ma,&r));fa.access_flags=ACC_STATIC;
+ fa.isrefer=0;CHECK(!jarbox_try_ref_leaf(&ma,&r));fa.isrefer=1;
+ ra.fieldInfo=&fb;CHECK(!jarbox_try_ref_leaf(&ma,&r));ra.fieldInfo=NULL;CHECK(!jarbox_try_ref_leaf(&ma,&r));ra.fieldInfo=&fa;
+ ra.item.tag=0;CHECK(!jarbox_try_ref_leaf(&ma,&r));ra.item.tag=CONSTANT_FIELD_REF;
+ ca.field_static_len=1;CHECK(!jarbox_try_ref_leaf(&ma,&r));ca.field_static_len=sizeof(a);
+ fa.offset=1;CHECK(!jarbox_try_ref_leaf(&ma,&r));fa.offset=0;
+ ma.treo_ref_leaf=0x10002;CHECK(!jarbox_try_ref_leaf(&ma,&r));ma.treo_ref_leaf=0x10001;
+ st.sp=data+3;CHECK(!jarbox_try_ref_leaf(&ma,&r)&&st.sp==data+3);
+ return 0;
+}
+"""
+
 class RefLeafTest(unittest.TestCase):
+    def test_live_field_and_fallback(self):
+        cc=shutil.which("cc")
+        if not cc:self.skipTest("host compiler unavailable")
+        s=(JVM/"interpreter.c").read_text()
+        a=s.index("static inline int jarbox_try_ref_leaf(")
+        b=s.index("\n}\n",a)+3
+        with tempfile.TemporaryDirectory() as td:
+            p,exe=Path(td)/"runtime.c",Path(td)/"runtime"
+            p.write_text(RUNTIME_PRE+s[a:b]+RUNTIME_MAIN)
+            subprocess.run([cc,"-std=c11","-Wall","-Wextra","-Werror",str(p),"-o",str(exe)],check=True,timeout=30)
+            subprocess.run([str(exe)],check=True,timeout=10)
+
     def test_shape(self):
         cc=shutil.which("cc")
         if not cc:self.skipTest("host compiler unavailable")
