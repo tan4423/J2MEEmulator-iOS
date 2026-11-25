@@ -129,7 +129,18 @@ class MultiVMTreoStateTest(unittest.TestCase):
         self.assertIn("jarbox_treo_probe_period(&jvm->session->treo_state)", collector)
         self.assertIn("jarbox_treo_smart_force_safe(&jvm->session->treo_state)", collector)
         self.assertIn("jarbox_treo_probe_fallback(&jvm->session->treo_state)", collector)
-        self.assertIn("jarbox_treo_smart_record_gc(&jvm->session->treo_state", collector)
+        # Lifetime and Smart GC accounting must both target the collecting JVM.
+        worker = collector.split("s32 _gc_thread_run(void *para) {", 1)[1].split(
+            "static void gc_process_deferred_objects(", 1)[0]
+        self.assertIn("MiniJVM *jvm = collector->jvm;", worker)
+        self.assertIn("JarBoxTreoState *metrics = &jvm->session->treo_state;", worker)
+        self.assertIn("jarbox_treo_smart_record_gc(metrics, elapsed);", worker)
+        self.assertIn("smartRecord && __atomic_load_n(&metrics->smart_enabled, __ATOMIC_ACQUIRE)", worker)
+        self.assertIn("__atomic_fetch_add(&metrics->gc_worker_cpu_ns, elapsed, __ATOMIC_RELAXED)", worker)
+        self.assertIn("__atomic_fetch_add(&metrics->gc_worker_cycles, 1, __ATOMIC_RELAXED)", worker)
+        self.assertIn("__atomic_fetch_add(&metrics->gc_worker_aborts, 1, __ATOMIC_RELAXED)", worker)
+        self.assertLess(worker.index("JarBoxTreoState *metrics = &jvm->session->treo_state;"),
+                        worker.index("jarbox_treo_smart_record_gc(metrics, elapsed);"))
         self.assertNotIn("static int treo_gc_probe_requested_ms;", collector)
         self.assertNotIn("static int treo_gc_smart_enabled,", collector)
         self.assertIn("void jvm_bridge_visit_running_vm(", bridge)

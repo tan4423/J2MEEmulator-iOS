@@ -44,7 +44,18 @@ class StartupLazyLinkingTest(unittest.TestCase):
     def test_launch_and_version_diagnostics(self):
         vm = (CORE / "interpreter.c").read_text()
         self.assertIn("nst_login_npe:frame=", vm)
-        self.assertIn('utf8_equals_c(clazz->name, "GameMidlet")', vm)
+        # Check the cached constructor classification and its actual use.
+        roles = vm.split("static u16 treo_mod_diag_roles(MethodInfo *m) {", 1)[1].split(
+            "extern void jvm_bridge_note_net_trace", 1)[0]
+        self.assertIn("Utf8String *cl = m->_this_class->name, *name = m->name", roles)
+        self.assertIn('utf8_equals_c(cl, "GameMidlet") && utf8_equals_c(name, "<init>")', roles)
+        self.assertIn("roles |= TREO_DIAG_MIDLET_CTOR;", roles)
+        entry = vm.split("s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {", 1)[1]
+        self.assertIn("if (treo_nso_init_for_runtime(runtime)) {", entry)
+        self.assertIn("const u16 roles = treo_mod_diag_roles(method);", entry)
+        self.assertIn("else if (roles & TREO_DIAG_MIDLET_CTOR) nso_init_probe = 2;", entry)
+        self.assertIn("treo_nso_trace_cu_invokespecial(runtime, nso_init_probe,", entry)
+        self.assertIn("nso_init_probe == 2", entry)
         runner = (ROOT / "j2me_api/src/javax/microedition/shell/MIDletRunner.java").read_text()
         for phase in range(1, 5):
             self.assertIn("NativeBridge.startupPhase(" + str(phase) + ",", runner)
