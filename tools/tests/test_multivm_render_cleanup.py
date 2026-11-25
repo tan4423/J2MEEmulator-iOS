@@ -135,7 +135,30 @@ class MultiVMRenderCleanupTest(unittest.TestCase):
         self.assertIn("if (!rc->heap_key) { free(rc); return NULL; }", render)
         self.assertIn("if (!owner_key || !data || length <= 0) return NULL;", render)
         self.assertIn("if (!img->ctx) { free(img); return NULL; }", render)
-        self.assertIn("CGImageRelease(cgImage);\n        free(img);", render)
+        # The decoded cache owns a copied CFData key until decode finishes.
+        # Check each failure path locally rather than a formatting-sensitive
+        # pair of statements anywhere in the renderer.
+        create = render.split("static RenderImage *createImageFromData(", 1)[1].split(
+            "// Caller holds an image reference.", 1)[0]
+        for cleanup_pattern in (
+            r"if\s*\(!cfData\)\s*\{\s*free\(img\);\s*return NULL;\s*\}",
+            r"if\s*\(!cgImage\)\s*\{\s*CFRelease\(cfData\);\s*free\(img\);\s*return NULL;\s*\}",
+            r"if\s*\(!imageWidth \|\| !imageHeight[^{}]+\)\s*\{\s*CGImageRelease\(cgImage\);\s*CFRelease\(cfData\);\s*free\(img\);\s*return NULL;\s*\}",
+            r"if\s*\(!img->ctx\)\s*\{\s*CGImageRelease\(cgImage\);\s*CFRelease\(cfData\);\s*free\(img\);\s*return NULL;\s*\}",
+        ):
+            self.assertRegex(create, cleanup_pattern)
+        self.assertLess(create.index("img->heap_key = owner_key;"), create.index("jarbox_decoded_lookup("))
+        self.assertLess(create.index("jarbox_decoded_lookup("), create.index("if (!track_img(img))"))
+        self.assertLess(create.index("if (!track_img(img))"), create.index("native_heap_add("))
+        rejected = create.split("if (!track_img(img)) {", 1)[1].split("\n    }", 1)[0]
+        for release in (
+            "if (img->immutableSnapshot) CGImageRelease(img->immutableSnapshot);",
+            "if (img->immutablePixels) CFRelease(img->immutablePixels);",
+            "if (img->ctx) CGContextRelease(img->ctx);",
+            "free(img);",
+            "return NULL;",
+        ):
+            self.assertIn(release, rejected)
         flush = render[render.index("static s32 n_flushToScreen("):
                        render.index("// --- Color & State ---", render.index("static s32 n_flushToScreen("))]
         self.assertIn("callerKey != visibleKey", flush)
