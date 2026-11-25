@@ -64,6 +64,16 @@ void jit_destroy(Jit *jit);
 void construct_jit(MethodInfo *method, Runtime *runtime);
 #ifdef TREO_IOS_GAME_JIT
 int treo_game_jit_is_enabled(void);
+// Interpreter calls this on the hot path; retain the external ABI above
+// for Swift/bridge callers. Same relaxed atomic state, no cached decision.
+#if JIT_ENABLE
+extern int treo_jit_enabled_state;
+static inline int treo_game_jit_enabled_fast(void) {
+    return __atomic_load_n(&treo_jit_enabled_state, __ATOMIC_RELAXED);
+}
+#else
+static inline int treo_game_jit_enabled_fast(void) { return 0; }
+#endif
 void treo_game_jit_set_enabled(int enabled);
 int treo_game_jit_compiled_count(void);
 int treo_game_jit_call_count(void);

@@ -113,7 +113,7 @@ class RefLeafTest(unittest.TestCase):
                       "if (!value) return 0;","push_ref(stack, value);"):
             self.assertIn(guard,body)
         self.assertEqual(body.count("__atomic_load_n((__refer *)address, __ATOMIC_RELAXED)"),2)
-        self.assertIn("!treo_game_jit_is_enabled() && jarbox_try_ref_leaf(method, pruntime)",s)
+        self.assertIn("!treo_game_jit_enabled_fast() && jarbox_try_ref_leaf(method, pruntime)",s)
         self.assertIn("jarbox_ref_leaf_pending == 64",s)
         cl=(JVM/"class_load.c").read_text()
         self.assertIn("ptr->treo_ref_leaf = jarbox_ref_leaf_match(",cl)

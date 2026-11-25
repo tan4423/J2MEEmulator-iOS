@@ -21,7 +21,7 @@
 #include <sys/mman.h>
 #include <unistd.h>
 
-static atomic_int treo_jit_enabled;
+int treo_jit_enabled_state;
 static atomic_int treo_jit_compiled;
 static atomic_int treo_jit_calls;
 static atomic_int treo_jit_fallbacks;
@@ -31,8 +31,8 @@ int treo_game_jit_fallback_count(void) { return atomic_load_explicit(&treo_jit_f
 int treo_game_jit_code_kib(void) { return (int)(atomic_load_explicit(&treo_jit_rx_bytes, memory_order_relaxed) / 1024); }
 static pthread_mutex_t treo_jit_compile_mutex = PTHREAD_MUTEX_INITIALIZER;
 
-int treo_game_jit_is_enabled(void) { return atomic_load_explicit(&treo_jit_enabled, memory_order_relaxed); }
-void treo_game_jit_set_enabled(int enabled) { atomic_store_explicit(&treo_jit_enabled, enabled != 0, memory_order_relaxed); }
+int treo_game_jit_is_enabled(void) { return treo_game_jit_enabled_fast(); }
+void treo_game_jit_set_enabled(int enabled) { __atomic_store_n(&treo_jit_enabled_state, enabled != 0, __ATOMIC_RELAXED); }
 int treo_game_jit_compiled_count(void) { return atomic_load_explicit(&treo_jit_compiled, memory_order_relaxed); }
 int treo_game_jit_call_count(void) { return atomic_load_explicit(&treo_jit_calls, memory_order_relaxed); }
 void treo_game_jit_record_call(void) { atomic_fetch_add_explicit(&treo_jit_calls, 1, memory_order_relaxed); }

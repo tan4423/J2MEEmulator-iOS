@@ -1616,7 +1616,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
     if (int_leaf && method->_this_class->status >= CLASS_STATUS_CLINITED &&
         !pruntime->jvm->jdwp_enable && !method->breakpoint &&
         !pruntime->thrd_info->is_stop && !pruntime->thrd_info->suspend_count &&
-        !treo_game_jit_is_enabled()) {
+        !treo_game_jit_enabled_fast()) {
         RuntimeStack *caller = pruntime->stack;
         CodeAttribute *leaf_code = method->converted_code;
         const s32 slots = method->para_slots;
@@ -1646,7 +1646,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
     if (method->treo_ref_leaf && method->_this_class->status >= CLASS_STATUS_CLINITED &&
         !pruntime->jvm->jdwp_enable && !method->breakpoint &&
         !pruntime->thrd_info->is_stop && !pruntime->thrd_info->suspend_count &&
-        !treo_game_jit_is_enabled() && jarbox_try_ref_leaf(method, pruntime)) {
+        !treo_game_jit_enabled_fast() && jarbox_try_ref_leaf(method, pruntime)) {
         if (++pruntime->thrd_info->jarbox_ref_leaf_pending == 64) {
             pruntime->thrd_info->jarbox_ref_leaf_pending = 0;
             if (pruntime->jvm->session)
@@ -1933,7 +1933,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
             }
 #endif
 #ifdef TREO_IOS_GAME_JIT
-            const int treo_enabled = !jvm->jdwp_enable && treo_game_jit_is_enabled();
+            const int treo_enabled = !jvm->jdwp_enable && treo_game_jit_enabled_fast();
             if (treo_enabled && __atomic_load_n(&ca->jit.state, __ATOMIC_ACQUIRE) == JIT_GEN_SUCCESS) {
                 treo_game_jit_record_call();
 #else

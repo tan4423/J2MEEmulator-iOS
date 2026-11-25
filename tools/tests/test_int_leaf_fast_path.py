@@ -78,7 +78,7 @@ class IntLeafTest(unittest.TestCase):
         fast=interpreter.split("const u8 int_leaf = method->treo_int_leaf_kind;",1)[1].split("// Retain game logic inside paint()",1)[0]
         for guard in ("CLASS_STATUS_CLINITED","!pruntime->jvm->jdwp_enable","!method->breakpoint",
                       "!pruntime->thrd_info->is_stop","!pruntime->thrd_info->suspend_count",
-                      "!treo_game_jit_is_enabled()","leaf_code->max_stack <= caller->max_size - used",
+                      "!treo_game_jit_enabled_fast()","leaf_code->max_stack <= caller->max_size - used",
                       "caller->sp = args;","push_int(caller, result);"):
             self.assertIn(guard,fast)
         self.assertIn("jarbox_int_leaf_pending == 64",fast)
