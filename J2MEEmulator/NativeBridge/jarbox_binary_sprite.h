@@ -32,9 +32,11 @@ static inline int jarbox_binary_rect(JarBoxBinaryRect *o,int64_t x,int64_t y,int
 /* Source and destination are nonaliasing, validated by caller. */
 static inline void jarbox_binary_blit(uint32_t *dst,size_t ds,const uint32_t *src,size_t ss,int w,int h,unsigned kind) {
     if(kind==JB_BIN_CLEAR)return;
-    for(int y=0;y<h;y++,dst+=ds,src+=ss) {
-        if(kind==JB_BIN_OPAQUE) memcpy(dst,src,(size_t)w*sizeof(*dst));
-        else for(int x=0;x<w;x++) {uint32_t m=0u-(src[x]>>31);dst[x]=(src[x]&m)|(dst[x]&~m);}
+    for(int y=0;y<h;y++) {
+        uint32_t *d=dst+(size_t)y*ds;
+        const uint32_t *s=src+(size_t)y*ss;
+        if(kind==JB_BIN_OPAQUE) memcpy(d,s,(size_t)w*sizeof(*d));
+        else for(int x=0;x<w;x++) {uint32_t m=0u-(s[x]>>31);d[x]=(s[x]&m)|(d[x]&~m);}
     }
 }
 #endif
