@@ -586,7 +586,7 @@ int treo_nso_canvas_recognized(void) {
 typedef struct { int compatible_only, mode; } TreoParkChoice;
 static void treo_park_choice_visitor(MiniJVM *vm, void *arg) {
     TreoParkChoice *choice = arg;
-    choice->mode = jarbox_treo_park_mode(&vm->session->treo_state,
+    choice->mode = jarbox_treo_safe_automatic_park_mode(&vm->session->treo_state,
                                          choice->compatible_only);
 }
 int treo_park_mode_for_token(uint64_t token, int compatible_only) {
@@ -872,15 +872,16 @@ int treo_render_set_afk_mode_for_token(uint64_t token, int mode) {
 }
 
 /* Automatic parking is one serialized owner transition, not four
- * separately leased Swift calls. The profile is a preference, never
- * permission to skip an unverified Canvas. No per-tab timer is needed. */
+ * separately leased Swift calls. The 9-byte forwarder is recognition,
+ * not a proof of delegate purity: automatic parking uses compatible mode.
+ * Explicit diagnostic modes remain separate. No per-tab timer is needed. */
 typedef struct { int compatible_only, mode, entering; } TreoParkTransition;
 static void treo_park_transition_visitor(MiniJVM *vm, void *arg) {
     TreoParkTransition *change = arg;
     JarBoxTreoState *state = &vm->session->treo_state;
     pthread_mutex_lock(&g_treo_transition_lock);
     const int mode = change->entering
-        ? jarbox_treo_park_mode(state, change->compatible_only) : 0;
+        ? jarbox_treo_safe_automatic_park_mode(state, change->compatible_only) : 0;
     jarbox_treo_guard_auto_set(state, mode == 8);
     jarbox_treo_smart_set(state, mode == 8);
     if (mode == 8 && jvm_bridge_memory_state(NULL) != 0)

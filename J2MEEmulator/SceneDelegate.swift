@@ -57,6 +57,7 @@ struct JarBoxPowerEvidence {
 // is started here. Retained values contain tokens and counters, not VM pointers.
 @MainActor enum JarBoxBackgroundDiagnostics {
     private static let key = "jarbox.background.report.v1"
+    private static let incidentKey = "jarbox.background.incidents.v1"
     private static var entered: Date?
     private static var visible: UInt64 = 0
     private static var starts: [(UInt64, JarBoxBackgroundSample?)] = []
@@ -99,7 +100,9 @@ struct JarBoxPowerEvidence {
         default: state = "unknown"
         }
         let info = ProcessInfo.processInfo
-        return "environment_\(label):battery_percent=\(battery),battery_state=\(state),low_power=\(info.isLowPowerModeEnabled ? 1 : 0),thermal=\(thermalCode())"
+        var available: UInt64 = 0
+        let memoryState = jvm_bridge_memory_state(&available)
+        return "environment_\(label):battery_percent=\(battery),battery_state=\(state),low_power=\(info.isLowPowerModeEnabled ? 1 : 0),thermal=\(thermalCode()),headroom_bytes=\(available),memory_state=\(memoryState)"
     }
     static func installEnvironmentObservers() {
         guard observers.isEmpty else { return }
@@ -222,8 +225,35 @@ struct JarBoxPowerEvidence {
         starts.removeAll()
         save(lines.joined(separator: "\n"))
     }
+    // Bounded main-thread breadcrumbs at existing lifecycle boundaries.
+    // Best-effort persistence, not a crash handler or a watchdog timer.
+    static func recordIncident(_ event: String, token: UInt64 = 0) {
+        let defaults = UserDefaults.standard
+        var recent = defaults.stringArray(forKey: incidentKey) ?? []
+        var headroom: UInt64 = 0
+        let memoryState = jvm_bridge_memory_state(&headroom)
+        var tokens = [UInt64](repeating: 0, count: 64)
+        let capacity = Int32(tokens.count)
+        let count = tokens.withUnsafeMutableBufferPointer {
+            jvm_bridge_background_tokens($0.baseAddress, capacity)
+        }
+        var owners: [String] = []
+        for owner in tokens.prefix(max(0, min(Int(count), tokens.count))) where owner != 0 {
+            var bytes: UInt64 = 0
+            let sampled = jvm_bridge_status_heap_bytes_for_token(owner, &bytes) != 0
+            let heap = sampled ? String(bytes) : "unavailable"
+            owners.append("\(owner):\(heap):\(treo_mode_for_token(owner))")
+        }
+        let line = "time=\(Date()),build=\(build),event=\(event),token=\(token),headroom_bytes=\(headroom),memory_state=\(memoryState),owners(token:heap_bytes:mode)=\(owners.joined(separator: ";"))"
+        recent.append(line)
+        defaults.set(Array(recent.suffix(8)), forKey: incidentKey)
+        NSLog("%@", line)
+    }
     static func report() -> String {
-        UserDefaults.standard.string(forKey: key) ?? "Chưa có lần thử tắt màn hình. Hãy khóa máy rồi mở lại."
+        let defaults = UserDefaults.standard
+        let background = defaults.string(forKey: key) ?? "Chưa có lần thử tắt màn hình. Hãy khóa máy rồi mở lại."
+        let incidents = defaults.stringArray(forKey: incidentKey) ?? []
+        return background + "\n\nRecent lifecycle events (best effort):\n" + incidents.joined(separator: "\n")
     }
     static func show(from controller: UIViewController) {
         guard controller.presentedViewController == nil else { return }

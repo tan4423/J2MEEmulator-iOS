@@ -3979,6 +3979,7 @@ class GameViewController: UIViewController {
             }
             return
         }
+        JarBoxBackgroundDiagnostics.recordIncident("launch_admitted", token: acquiredToken)
         ownsJVMSession = true
         gameSessionToken = acquiredToken
         emulatorView.inputSessionToken = acquiredToken
@@ -4012,6 +4013,7 @@ class GameViewController: UIViewController {
                 guard let self, self.ownsJVMSession,
                       self.gameSessionToken == launchingToken,
                       launchingToken != 0 else { return }
+                JarBoxBackgroundDiagnostics.recordIncident(failure == nil ? "worker_returned" : "worker_failed", token: launchingToken)
                 // The native worker has already finished/unregistered A.
                 // If B acquired the global slot meanwhile, A's late UIKit
                 // cleanup must not reset B's Treo or render state.
@@ -4143,6 +4145,7 @@ class GameViewController: UIViewController {
                 startupRequestToSurface = String(format: "%.1fms", (ProcessInfo.processInfo.systemUptime - requested) * 1000)
             }
             NSLog("[JarBoxVM][Startup] first_surface=%@", startupFirstSurface)
+            JarBoxBackgroundDiagnostics.recordIncident("first_surface", token: gameSessionToken)
         }
         startupBeganAt = nil
         startupWatchdog?.cancel()
@@ -4378,8 +4381,8 @@ class GameViewController: UIViewController {
     }
 
     // Every tab reads the JAR group's preference, but owns its actual mode,
-    // Canvas proof, fallback and GC. Verified NSO uses guarded mode 8;
-    // unverified/compatible games use mode 1 with normal GC and Display.
+    // Canvas recognition is not proof of delegate purity. Automatic Treo
+    // now uses mode 1 with normal Java paint, GC and Display.
     // No per-tab timer or artificial game-loop slowdown.
     func sceneSuspendGameInput() {
         if ownsVisibleGameSession() { cancelGameInput() }

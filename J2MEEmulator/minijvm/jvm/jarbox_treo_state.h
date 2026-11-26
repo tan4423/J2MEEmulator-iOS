@@ -125,6 +125,14 @@ static inline int jarbox_treo_park_mode(const JarBoxTreoState *state, int compat
     return !compatible_only && jarbox_treo_nso_canvas_recognized(state) &&
            !__atomic_load_n(&state->deep_canvas_rejected, __ATOMIC_ACQUIRE) ? 8 : 1;
 }
+// Release automatic parking: a short Canvas forwarder is not proof
+// that its virtual draw delegate has no Java state changes. Preserve all
+// paint callbacks and pixel semantics until a stronger proof exists.
+// The historical candidate selector above remains for diagnostic tests.
+static inline int jarbox_treo_safe_automatic_park_mode(const JarBoxTreoState *state, int compatible_only) {
+    (void)compatible_only;
+    return jarbox_treo_park_mode(state, 1);
+}
 static inline void jarbox_treo_probe_set(JarBoxTreoState *state, int requested) {
     __atomic_store_n(&state->probe_requested_ms, requested == 2000 ? 2000 : 0, __ATOMIC_RELEASE);
     __atomic_store_n(&state->probe_heap_peak, 0, __ATOMIC_RELEASE);

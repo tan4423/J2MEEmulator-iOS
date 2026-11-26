@@ -47,12 +47,26 @@ int main(void) {
     recognize(&restarted);
     assert(jarbox_treo_park_mode(&restarted, 0) == 8);
     assert(jarbox_treo_park_mode(NULL, 0) == 1);
+    // Production selector must preserve paint regardless of recognition,
+    // legacy preference or previous fallback. Both owners stay independent.
+    for (int i = 0; i < 10000; ++i) {
+        assert(jarbox_treo_safe_automatic_park_mode(&a, 0) == 1);
+        assert(jarbox_treo_safe_automatic_park_mode(&b, 0) == 1);
+        assert(jarbox_treo_safe_automatic_park_mode(&restarted, 0) == 1);
+        assert(jarbox_treo_safe_automatic_park_mode(&b, 1) == 1);
+        assert(jarbox_treo_safe_automatic_park_mode(NULL, 0) == 1);
+    }
     return 0;
 }
 """
 
 
 class DeepTreoReparkTest(unittest.TestCase):
+    def test_production_auto_park_uses_compatible_mode(self):
+        render = (ROOT / "J2MEEmulator/NativeBridge/j2me_render.m").read_text()
+        self.assertIn("choice->mode = jarbox_treo_safe_automatic_park_mode", render)
+        self.assertIn("? jarbox_treo_safe_automatic_park_mode(state, change->compatible_only) : 0", render)
+
     def test_late_canvas_failure_is_not_rearmed_by_back(self):
         cc = shutil.which("cc") or shutil.which("clang")
         if not cc:

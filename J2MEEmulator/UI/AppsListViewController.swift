@@ -3110,6 +3110,7 @@ class AppsListViewController: UIViewController,
             return
         }
         let count = jvm_bridge_active_session_count()
+        JarBoxBackgroundDiagnostics.recordIncident("launch_requested")
         if count > 0 && app.path.withCString({ jvm_bridge_3d_conflict_for_jar($0) }) != 0 {
             let alert = UIAlertController(title: "Chưa hỗ trợ chạy song song game 3D",
                 message: "Game 3D hoặc game chưa xác định phải chạy riêng. Hãy giữ icon các game đang chạy và chọn Dừng trước khi mở game khác.",
