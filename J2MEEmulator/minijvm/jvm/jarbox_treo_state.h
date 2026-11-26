@@ -31,6 +31,7 @@ typedef struct JarBoxTreoState {
     // Existing AFK/audit paint CPU clock, attributed to the invoking JVM.
     uint64_t afk_profile_paint_calls, afk_profile_paint_cpu_ns;
     uint64_t compatible_font_reuses;
+    uint64_t compatible_crop_hits, compatible_crop_misses, compatible_state_reuses, compatible_region_culls;
     JarBoxBackgroundTrace background_trace;
     uint64_t int_leaf_fast_calls; // batched count, all modes, per JVM
     uint64_t ref_leaf_fast_calls;

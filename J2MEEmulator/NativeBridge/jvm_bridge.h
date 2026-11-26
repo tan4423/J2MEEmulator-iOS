@@ -95,6 +95,7 @@ typedef struct {
     uint64_t const_arith_fusions, const_branch_fusions, decoded_int_calls;
     uint64_t event_sleep_handled, event_sleep_fallbacks;
     uint64_t afk_profile_paint_calls, afk_profile_paint_cpu_ns, compatible_font_reuses;
+    uint64_t compatible_crop_hits, compatible_crop_misses, compatible_state_reuses, compatible_region_culls;
     uint64_t nso_repaint_skips, nso_service_skips, nso_paint_skips;
     uint64_t shared_zip_probes, shared_zip_hits, shared_zip_negative_hits;
     uint64_t shared_prepared_candidates, shared_prepared_hits;

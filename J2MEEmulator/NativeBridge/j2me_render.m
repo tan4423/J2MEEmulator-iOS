@@ -21,6 +21,7 @@
 #include "j2me_render.h"
 #include "jarbox_flush_routes.h"
 #include "jarbox_scene_gpu_gate.h"
+#include "jarbox_crop_cache.h"
 #include "jvm_bridge.h"
 #include "j2me_input.h"
 #include "jvm.h"
@@ -120,6 +121,8 @@ typedef struct RenderContext {
     CGRect regionClipBounds;
     TreoLiveRun *liveRun;
     TreoCPUCache *cpuCache;
+    JarBoxCropCache *cropCache; // only immutable sources, owned by this Canvas
+    uint64_t compatible_crop_hits, compatible_crop_misses, compatible_state_reuses, compatible_region_culls;
     uint32_t *softwarePixels;
     uint64_t swRegions, swFast, swChecked, swMismatch, swDirect;
     unsigned swSequence;
@@ -942,6 +945,16 @@ static inline int treo_afk_fast_canvas(void) {
 }
 static inline int treo_rc_fast_canvas(const RenderContext *rc) {
     return treo_rc_mode(rc) == TreoAFKFastCanvas;
+}
+// Extend only exact duplicate state operations, never the mode-9 raster policy.
+static inline int treo_rc_reuse_state(const RenderContext *rc) {
+    const int mode=treo_rc_mode(rc);
+    return mode == TreoAFKFastCanvas || (mode == 1 &&
+        !atomic_load_explicit(&treo_replay_state,memory_order_relaxed));
+}
+static inline void treo_note_state_reuse(RenderContext *rc) {
+    ++rc->fastState;
+    if (treo_rc_mode(rc)==1) ++rc->compatible_state_reuses;
 }
 int treo_direct_graphics_enabled(void) {
     return treo_afk_fast_canvas() || atomic_load_explicit(&treo_direct_graphics_on, memory_order_relaxed);
@@ -2564,7 +2577,19 @@ static s32 n_flushToScreen(Runtime *runtime, JClass *clazz) {
             if (end >= start) TREO_PROF_ADD(live_boundary_ns, end - start);
         }
     }
-    if (rc) { rc->liveBlocked = 0; treo_software_publish(rc); }
+    if (rc) {
+        rc->liveBlocked = 0; treo_software_publish(rc);
+        // Publish Canvas-local counters at the existing flush boundary.
+        JarBoxTreoState *state=treo_runtime_state(runtime);
+        if (state) {
+            if (rc->compatible_crop_hits) __atomic_fetch_add(&state->compatible_crop_hits,rc->compatible_crop_hits,__ATOMIC_RELAXED);
+            if (rc->compatible_crop_misses) __atomic_fetch_add(&state->compatible_crop_misses,rc->compatible_crop_misses,__ATOMIC_RELAXED);
+            if (rc->compatible_state_reuses) __atomic_fetch_add(&state->compatible_state_reuses,rc->compatible_state_reuses,__ATOMIC_RELAXED);
+            if (rc->compatible_region_culls) __atomic_fetch_add(&state->compatible_region_culls,rc->compatible_region_culls,__ATOMIC_RELAXED);
+        }
+        rc->compatible_crop_hits=rc->compatible_crop_misses=0;
+        rc->compatible_state_reuses=rc->compatible_region_culls=0;
+    }
     // A native framebuffer is owned by its creating VM. It may never be
     // published when another tab owns the visible screen or when its VM
     // no longer has a live generation key. Avoid a snapshot as well.
@@ -2630,8 +2655,8 @@ static s32 n_setColor(Runtime *runtime, JClass *clazz) {
     s32 argb = env->localvar_getInt(runtime->localvar, 2);
     RenderContext *rc = rc_acquire(handle, jarbox_native_heap_key_for_runtime(runtime));
     if (rc) {
-        if (rc->ownsPixels && rc->clipSaved && treo_rc_fast_canvas(rc) && rc->liveColor == (uint32_t)argb)
-            ++rc->fastState;
+        if (rc->ownsPixels && rc->clipSaved && treo_rc_reuse_state(rc) && rc->liveColor == (uint32_t)argb)
+            treo_note_state_reuse(rc);
         else setColorFromARGB(rc->ctx, argb);
         rc->liveColor = (uint32_t)argb;
     }
@@ -2652,10 +2677,10 @@ static s32 n_setClip(Runtime *runtime, JClass *clazz) {
                                              CGRectStandardize(CGRectMake(x, y, w, h)));
         if (rc->cpuCache) treo_cpu_batch_drain(rc);
         if (w < 0 || h < 0) treo_live_barrier(rc);
-        if (rc->ownsPixels && rc->clipSaved && treo_rc_fast_canvas(rc) &&
+        if (rc->ownsPixels && rc->clipSaved && treo_rc_reuse_state(rc) &&
             w >= 0 && h >= 0 && CGRectEqualToRect(rc->liveRawClip, CGRectMake(x, y, w, h)) &&
             rc->liveColor == rc->liveSavedColor && rc->liveStroke == rc->liveSavedStroke) {
-            ++rc->fastState;
+            treo_note_state_reuse(rc);
             rc_release(rc);
             return RUNTIME_STATUS_NORMAL;
         }
@@ -2707,8 +2732,8 @@ static s32 n_setStrokeStyle(Runtime *runtime, JClass *clazz) {
     s32 style = env->localvar_getInt(runtime->localvar, 2);
     RenderContext *rc = rc_acquire(handle, jarbox_native_heap_key_for_runtime(runtime));
     if (rc) {
-        if (rc->ownsPixels && rc->clipSaved && treo_rc_fast_canvas(rc) && rc->liveStroke == style)
-            ++rc->fastState;
+        if (rc->ownsPixels && rc->clipSaved && treo_rc_reuse_state(rc) && rc->liveStroke == style)
+            treo_note_state_reuse(rc);
         else treo_apply_stroke(rc->ctx, style);
         rc->liveStroke = style;
     }
@@ -3715,6 +3740,12 @@ static void treo_live_clear(TreoLiveRun *run) {
 }
 
 static void treo_live_discard(RenderContext *rc) {
+    if (rc->cropCache) {
+        native_heap_sub(rc->heap_key,(s32)(sizeof(*rc->cropCache)+rc->cropCache->bytes));
+        jarbox_crop_clear(rc->cropCache);
+        free(rc->cropCache);
+        rc->cropCache=NULL;
+    }
     treo_cpu_batch_free(rc);
     if (!rc->liveRun) return;
     treo_live_clear(rc->liveRun);
@@ -4448,6 +4479,27 @@ typedef struct {
     uint64_t owner_key;
 } TreoRegionArgs;
 
+// Same CG crop result, reused only for valid immutable source regions on the
+// compatible parked Canvas. Keep replay, mutable images and offscreen on CG.
+static CGImageRef treo_compatible_crop(RenderContext *rc, CGImageRef source,
+                                      int x,int y,int w,int h) {
+    if (!rc->cropCache) {
+        rc->cropCache=calloc(1,sizeof(*rc->cropCache));
+        if (rc->cropCache) native_heap_add(rc->heap_key,(s32)sizeof(*rc->cropCache));
+    }
+    size_t before=rc->cropCache ? rc->cropCache->bytes : 0;
+    int hit;
+    CGImageRef crop=jarbox_crop_get(rc->cropCache,source,x,y,w,h,&hit);
+    if (rc->cropCache) {
+        size_t after=rc->cropCache->bytes;
+        if (after>before) native_heap_add(rc->heap_key,(s32)(after-before));
+        else if (before>after) native_heap_sub(rc->heap_key,(s32)(before-after));
+    }
+    if (hit) ++rc->compatible_crop_hits;
+    else ++rc->compatible_crop_misses;
+    return crop;
+}
+
 static s32 treo_draw_region(const TreoRegionArgs *p, int direct) {
     s64 ctxHandle = p->ctx, imgHandle = p->img;
     s32 xSrc = p->sx, ySrc = p->sy, wSrc = p->w, hSrc = p->h, transform = p->transform;
@@ -4511,9 +4563,22 @@ static s32 treo_draw_region(const TreoRegionArgs *p, int direct) {
     }
     treo_live_barrier(rc);
     CGContextRef rctx = rc->ctx;
+    const int compatible = afkMode==1 && rc->ownsPixels && rc->clipSaved &&
+        !img->isMutable && img->immutableSnapshot &&
+        xSrc>=0 && ySrc>=0 && wSrc>0 && hSrc>0 && transform>=0 && transform<=7 &&
+        (int64_t)xSrc+wSrc<=img->width && (int64_t)ySrc+hSrc<=img->height &&
+        rc->liveRawClip.size.width>=0 && rc->liveRawClip.size.height>=0 &&
+        !atomic_load_explicit(&treo_replay_state,memory_order_relaxed);
+    // After all older draws drain; no persistent graphics state is changed.
+    if (compatible && treo_region_outside_clip(rc->regionClipBounds,xDst,yDst,outW,outH)) {
+        ++rc->compatible_region_culls;
+        img_release(img); rc_release(rc);
+        return RUNTIME_STATUS_NORMAL;
+    }
     CGImageRef fullImage = copyImageSnapshot(img);
     if (!fullImage) { img_release(img); rc_release(rc); return RUNTIME_STATUS_NORMAL; }
-    CGImageRef subImage = CGImageCreateWithImageInRect(fullImage, CGRectMake(xSrc, ySrc, wSrc, hSrc));
+    CGImageRef subImage = compatible ? treo_compatible_crop(rc,fullImage,xSrc,ySrc,wSrc,hSrc)
+        : CGImageCreateWithImageInRect(fullImage, CGRectMake(xSrc, ySrc, wSrc, hSrc));
     if (subImage) treo_replay_capture(rc, fullImage, xDst, yDst, xSrc, ySrc, wSrc, hSrc, transform);
     CGImageRelease(fullImage);
     if (!subImage) { img_release(img); rc_release(rc); return RUNTIME_STATUS_NORMAL; }

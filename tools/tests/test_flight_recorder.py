@@ -66,7 +66,7 @@ class FlightRecorderTest(unittest.TestCase):
             self.assertIn(f"out->{field}=__atomic_load_n(&session->{field},__ATOMIC_RELAXED);",sampler)
             self.assertIn(field + r"=\(slot." + field + ")",scene)
         # Existing AFK paint timing is attributed to the invoking owner.
-        for field in ("afk_profile_paint_calls", "afk_profile_paint_cpu_ns", "compatible_font_reuses"):
+        for field in ("afk_profile_paint_calls", "afk_profile_paint_cpu_ns", "compatible_font_reuses", "compatible_crop_hits", "compatible_crop_misses", "compatible_state_reuses", "compatible_region_culls"):
             self.assertIn(f"out->{field}=__atomic_load_n(&session->treo_state.{field},__ATOMIC_RELAXED);",sampler)
             self.assertIn(field + r"=\(slot." + field + ")",scene)
         for stage, field in enumerate(("nso_repaint_skips", "nso_service_skips", "nso_paint_skips")):
@@ -88,7 +88,7 @@ class FlightRecorderTest(unittest.TestCase):
         ui=(ROOT/"J2MEEmulator/UI/GameViewController.swift").read_text()
         self.assertIn('JarBoxFlightRecorder.shared.event("park_entered", token: gameSessionToken)',ui)
         self.assertIn('JarBoxFlightRecorder.shared.event("park_exited", token: gameSessionToken)',ui)
-        # Compatible mode only gains exact immutable font reuse, not mode-9 raster.
+        # Compatible mode gains exact state/font reuse, not mode-9 raster.
         font=renderer.split("static s32 n_setFont(",1)[1].split("\n}",1)[0]
         self.assertIn("rc->ownsPixels && (mode == 1 || mode == TreoAFKFastCanvas)",font)
         self.assertIn("rc->font && rc->fastFontValid",font)
