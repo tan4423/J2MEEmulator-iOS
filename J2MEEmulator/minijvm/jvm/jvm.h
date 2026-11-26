@@ -21,6 +21,12 @@ extern "C" {
 #include "../utils/utf8_string.h"
 #include "../utils/arraylist.h"
 #include "../utils/pairlist.h"
+#if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__ && !defined(JARBOX_VM_INLINE_DISPATCH_DISABLED)
+#define JARBOX_VM_INLINE_DISPATCH 1
+#include "jarbox_dispatch_cache.h"
+#else
+#define JARBOX_VM_INLINE_DISPATCH 0
+#endif
 #include "../utils/bytebuf.h"
 #include "../utils/hashset.h"
 #include "jarbox_treo_state.h"
@@ -826,6 +832,9 @@ typedef struct _ConstantMethodRef {
     Utf8String *descriptor;
     Utf8String *clsName;
     Pairlist *virtual_methods;
+#if JARBOX_VM_INLINE_DISPATCH
+    JarBoxDispatchCache dispatch_cache;
+#endif
 } ConstantMethodRef, ConstantInterfaceMethodRef;
 
 typedef struct _ConstantMethodHandle {
@@ -1096,6 +1105,9 @@ typedef struct _AttributePool {
  */
 struct _ClassType {
     MemoryBlock mb;
+#if JARBOX_VM_INLINE_DISPATCH
+    uint64_t dispatch_id;
+#endif
     JClass *superclass;
     __refer *constant_item_ptr;//存放常量池项目地址
     s32 constant_item_count;//总数
@@ -1953,6 +1965,9 @@ struct _MiniJVM {
     PeerClassLoader *boot_classloader;
     ArrayList *classloaders;
     spinlock_t lock_cloader;
+#if JARBOX_VM_INLINE_DISPATCH
+    uint64_t dispatch_id_counter;
+#endif
 
     Hashtable *table_jstring_const;//for cache same string
 

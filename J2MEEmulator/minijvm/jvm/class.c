@@ -17,6 +17,9 @@ JClass *class_create(Runtime *runtime) {
     s32 jcsize = sizeof(JClass);
     JClass *clazz = jvm_calloc(jcsize);
     clazz->mb.heap_size = jcsize;
+#if JARBOX_VM_INLINE_DISPATCH
+    clazz->dispatch_id = jarbox_dispatch_next_id(&runtime->jvm->dispatch_id_counter);
+#endif
     clazz->mb.clazz = clazz;
     clazz->mb.type = MEM_TYPE_CLASS;
     clazz->field_instance_len = 0;
@@ -353,7 +356,9 @@ void class_clinit(JClass *clazz, Runtime *runtime) {
             ConstantMethodRef *cmr = (ConstantMethodRef *) arraylist_get_value(clazz->constantPool.methodRef, i);
             if (!defer_external || utf8_equals(cmr->clsName, clazz->name))
                 cmr->methodInfo = find_methodInfo_by_methodref(clazz, cmr->item.index, runtime);
+#if !JARBOX_VM_INLINE_DISPATCH
             cmr->virtual_methods = pairlist_create(0);
+#endif
             //jvm_printf("%s.%s %llx\n", utf8_cstr(clazz->name), utf8_cstr(cmr->name), (s64) (intptr_t) cmr->virtual_methods);
         }
 
@@ -361,7 +366,9 @@ void class_clinit(JClass *clazz, Runtime *runtime) {
             ConstantMethodRef *cmr = (ConstantMethodRef *) arraylist_get_value(clazz->constantPool.interfaceMethodRef, i);
             if (!defer_external || utf8_equals(cmr->clsName, clazz->name))
                 cmr->methodInfo = find_methodInfo_by_methodref(clazz, cmr->item.index, runtime);
+#if !JARBOX_VM_INLINE_DISPATCH
             cmr->virtual_methods = pairlist_create(0);
+#endif
         }
 
         for (i = 0; i < clazz->constantPool.fieldRef->length; i++) {
@@ -513,7 +520,7 @@ void class_clear_cached_virtualmethod(MiniJVM *jvm, JClass *tgt) {
                 }
             }
             for (i = 0; i < clazz->constantPool.interfaceMethodRef->length; i++) {
-                ConstantMethodRef *cmr = (ConstantMethodRef *) arraylist_get_value(clazz->constantPool.methodRef, i);
+                ConstantMethodRef *cmr = (ConstantMethodRef *) arraylist_get_value(clazz->constantPool.interfaceMethodRef, i);
                 if (cmr->virtual_methods) {
 #if _JVM_DEBUG_LOG_LEVEL > 2
                     if (pairlist_get(cmr->virtual_methods, tgt)) {

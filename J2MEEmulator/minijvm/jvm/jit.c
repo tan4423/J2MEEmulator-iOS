@@ -1159,12 +1159,17 @@ s32 invokevirtual(Runtime *runtime, s32 idx) {
         _null_throw_exception(stack, runtime);
         return RUNTIME_STATUS_EXCEPTION;
     } else {
+        spin_lock(&runtime->jvm->lock_cloader);
         MethodInfo *m = (MethodInfo *) pairlist_get(cmr->virtual_methods, ins->mb.clazz);
+        spin_unlock(&runtime->jvm->lock_cloader);
         if (!m) {
             m = find_instance_methodInfo_by_name(ins, cmr->name, cmr->descriptor, runtime);
             spin_lock(&runtime->jvm->lock_cloader);
             {
-                pairlist_put(cmr->virtual_methods, ins->mb.clazz, m);//放入缓存，以便下次直接调用
+                if (m) {
+                    if (!cmr->virtual_methods) cmr->virtual_methods = pairlist_create(0);
+                    pairlist_put(cmr->virtual_methods, ins->mb.clazz, m);
+                }
             }
             spin_unlock(&runtime->jvm->lock_cloader);
         }

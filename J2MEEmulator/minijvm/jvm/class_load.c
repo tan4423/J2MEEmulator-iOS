@@ -335,7 +335,8 @@ s32 _class_constant_pool_destroy(JClass *clazz) {
                     }
                     break;
                 }
-                case CONSTANT_METHOD_REF: {
+                case CONSTANT_METHOD_REF:
+                case CONSTANT_INTERFACE_METHOD_REF: {
                     ConstantMethodRef *ptr = (ConstantMethodRef *) cptr;
                     if (ptr->virtual_methods) {
                         pairlist_destroy(ptr->virtual_methods);

@@ -3,6 +3,41 @@
 #include "jit.h"
 #include "garbage.h"
 #include "jarbox_int_leaf.h"
+
+// Keep the legacy map in baseline builds. Ordinary iOS dispatch uses two
+// immutable receiver identity slots without allocating or reading a map.
+static inline MethodInfo *jarbox_virtual_lookup(MiniJVM *jvm, ConstantMethodRef *ref, Instance *receiver) {
+#if JARBOX_VM_INLINE_DISPATCH
+    (void)jvm;
+    return (MethodInfo *)jarbox_dispatch_find(&ref->dispatch_cache, receiver->mb.clazz->dispatch_id);
+#else
+    spin_lock(&jvm->lock_cloader);
+    MethodInfo *m=(MethodInfo *)pairlist_get(ref->virtual_methods,receiver->mb.clazz);
+    spin_unlock(&jvm->lock_cloader);
+    return m;
+#endif
+}
+static inline int jarbox_virtual_publish(MiniJVM *jvm, ConstantMethodRef *ref, Instance *receiver, MethodInfo *method) {
+    if (!method) return 0;
+#if JARBOX_VM_INLINE_DISPATCH
+    JClass *cl=receiver->mb.clazz, *owner=method->_this_class;
+    // GC retains an ordinary instance's class, loader and the loader's
+    // defined classes; bootstrap classes are separately rooted.
+    // Do not rely on array marking or unrelated loaders for target lifetime.
+    if (!owner || receiver->mb.type!=MEM_TYPE_INS ||
+        (owner!=cl && owner->jloader && owner->jloader!=cl->jloader)) return 0;
+    spin_lock(&jvm->lock_cloader);
+    int retained=jarbox_dispatch_publish_locked(&ref->dispatch_cache,cl->dispatch_id,method);
+    spin_unlock(&jvm->lock_cloader);
+    return retained;
+#else
+    spin_lock(&jvm->lock_cloader);
+    if (!ref->virtual_methods) ref->virtual_methods=pairlist_create(0);
+    int retained=pairlist_put(ref->virtual_methods,receiver->mb.clazz,method)>=0;
+    spin_unlock(&jvm->lock_cloader);
+    return retained;
+#endif
+}
 #include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -4670,16 +4705,13 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                             if (!ins) {
                                 goto label_null_throw;
                             } else {
-                                m = (MethodInfo *) pairlist_get(cmr->virtual_methods, ins->mb.clazz);
+                                m = jarbox_virtual_lookup(jvm, cmr, ins);
+                                int retained = m != NULL;
                                 if (!m) {
                                     stack->sp = sp;
                                     m = find_instance_methodInfo_by_name(ins, cmr->name, cmr->descriptor, runtime);
                                     sp = stack->sp;
-                                    spin_lock(&jvm->lock_cloader);
-                                    {
-                                        pairlist_put(cmr->virtual_methods, ins->mb.clazz, m);//放入缓存，以便下次直接调用
-                                    }
-                                    spin_unlock(&jvm->lock_cloader);
+                                    retained = jarbox_virtual_publish(jvm, cmr, ins, m);
                                 }
 
 #if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__
@@ -4795,7 +4827,17 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                                         runtime->pc += 3;
                                     }
                                     if (!match) {
-                                        *runtime->pc = op_invokevirtual_fast;
+                                        if (retained) {
+                                            *runtime->pc = op_invokevirtual_fast;
+                                        } else {
+                                            // Full/ineligible/OOM: execute once instead of
+                                            // endlessly alternating slow and fast opcodes.
+                                            stack->sp = sp;
+                                            ret = execute_method_impl(m, runtime);
+                                            sp = stack->sp;
+                                            if (ret) goto label_exception_handle;
+                                            runtime->pc += 3;
+                                        }
                                     }
                                 }
                             }
@@ -4861,22 +4903,25 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                             if (!ins) {
                                 goto label_null_throw;
                             } else {
-                                m = (MethodInfo *) pairlist_get(cmr->virtual_methods, ins->mb.clazz);
+                                m = jarbox_virtual_lookup(jvm, cmr, ins);
+                                int retained = m != NULL;
                                 if (!m) {
                                     stack->sp = sp;
                                     m = find_instance_methodInfo_by_name(ins, cmr->name, cmr->descriptor, runtime);
                                     sp = stack->sp;
-                                    spin_lock(&jvm->lock_cloader);
-                                    {
-                                        pairlist_put(cmr->virtual_methods, ins->mb.clazz, m);// store in cache for direct use in the next call
-                                    }
-                                    spin_unlock(&jvm->lock_cloader);
+                                    retained = jarbox_virtual_publish(jvm, cmr, ins, m);
                                 }
                                 if (!m) {
                                     err_msg = utf8_cstr(cmr->name);
                                     goto label_nosuchmethod_throw;
-                                } else {
+                                } else if (retained) {
                                     *runtime->pc = op_invokeinterface_fast;
+                                } else {
+                                    stack->sp = sp;
+                                    ret = execute_method_impl(m, runtime);
+                                    sp = stack->sp;
+                                    if (ret) goto label_exception_handle;
+                                    runtime->pc += 5;
                                 }
                             }
                             break;
@@ -5634,7 +5679,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                             if (!ins) {
                                 goto label_null_throw;
                             } else {
-                                m = (MethodInfo *) pairlist_get(cmr->virtual_methods, ins->mb.clazz);
+                                m = jarbox_virtual_lookup(jvm, cmr, ins);
 #if _JVM_DEBUG_PROFILE
                                 spent = nanoTime() - start_at;
 #endif
@@ -5716,7 +5761,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                             if (!ins) {
                                 goto label_null_throw;
                             } else {
-                                m = (MethodInfo *) pairlist_get(cmr->virtual_methods, ins->mb.clazz);
+                                m = jarbox_virtual_lookup(jvm, cmr, ins);
 #if _JVM_DEBUG_PROFILE
                                 spent = nanoTime() - start_at;
 #endif
