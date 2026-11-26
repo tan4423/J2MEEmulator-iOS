@@ -15,6 +15,7 @@ struct UIImage { init(systemName: String) {} }
 struct Attributes: OptionSet {
     let rawValue: Int
     static let disabled = Attributes(rawValue: 1)
+    static let destructive = Attributes(rawValue: 2)
 }
 class UIMenuElement {}
 class UIAction: UIMenuElement {
@@ -61,11 +62,15 @@ enum JarBoxBackgroundDiagnostics {
     static func showAudio(from controller: Library) { controller.audioMenuCalls += 1 }
     static func show(from controller: Library) { controller.logMenuCalls += 1 }
     static func showFlight(from controller: Library) { controller.flightMenuCalls += 1 }
+    static func showFullFlight(from controller: Library) { controller.fullFlightMenuCalls += 1 }
+    static func clearFlight(from controller: Library) { controller.clearFlightMenuCalls += 1 }
 }
 class Library {
     var audioMenuCalls = 0
     var logMenuCalls = 0
     var flightMenuCalls = 0
+    var fullFlightMenuCalls = 0
+    var clearFlightMenuCalls = 0
     let navigationItem = NavigationItem()
     let springboardCollectionView = Collection()
     var activeCount = 0
@@ -105,10 +110,23 @@ MAIN = r'''
               let log = menuAction("Log Treo tắt màn hình") else {
             preconditionFailure("Missing background controls")
         }
-        guard let flight = menuAction("Xuất nhật ký sự cố") else { preconditionFailure("Missing flight export") }
+        guard let flight = menuAction("Xuất log phiên hiện tại"),
+              let full = menuAction("Xuất lịch sử log (.gz)"),
+              let clear = menuAction("Xóa lịch sử Flight Recorder") else {
+            preconditionFailure("Missing flight recorder controls")
+        }
+        precondition(menuAction("Xuất nhật ký sự cố") == nil)
+        precondition(flight.attributes.isEmpty && full.attributes.isEmpty)
+        precondition(clear.attributes == .destructive)
         let previousFlight = flightMenuCalls
+        let previousFull = fullFlightMenuCalls
+        let previousClear = clearFlightMenuCalls
         flight.handler(flight)
-        precondition(flightMenuCalls == previousFlight + 1)
+        precondition(flightMenuCalls == previousFlight + 1 && fullFlightMenuCalls == previousFull && clearFlightMenuCalls == previousClear)
+        full.handler(full)
+        precondition(flightMenuCalls == previousFlight + 1 && fullFlightMenuCalls == previousFull + 1 && clearFlightMenuCalls == previousClear)
+        clear.handler(clear)
+        precondition(flightMenuCalls == previousFlight + 1 && fullFlightMenuCalls == previousFull + 1 && clearFlightMenuCalls == previousClear + 1)
         let previousAudio = audioMenuCalls
         let previousLog = logMenuCalls
         audio.handler(audio)
@@ -157,6 +175,12 @@ for _ in 0..<1000 {
     lib.expect(false)
 }
 precondition(lib.audioMenuCalls == 9000 && lib.logMenuCalls == 9000)
+precondition(lib.flightMenuCalls == 9000 && lib.fullFlightMenuCalls == 9000 && lib.clearFlightMenuCalls == 9000)
+let other = Library()
+other.refresh()
+other.expect(false)
+precondition(other.flightMenuCalls == 1 && other.fullFlightMenuCalls == 1 && other.clearFlightMenuCalls == 1)
+precondition(lib.flightMenuCalls == 9000 && lib.fullFlightMenuCalls == 9000 && lib.clearFlightMenuCalls == 9000)
 print("Library ownership and menu: 1000 cycles OK")
 '''
 
