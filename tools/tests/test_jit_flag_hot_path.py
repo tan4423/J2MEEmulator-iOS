@@ -43,7 +43,19 @@ int main(void) {
     def test_interpreter_and_public_state(self):
         i=(CORE/"interpreter.c").read_text()
         j=(CORE/"jit.c").read_text()
-        self.assertEqual(i.count("treo_game_jit_enabled_fast()"),3)
+        # Each interpreter-only tier must refuse execution when JIT is on.
+        # Keep the hot getter contract, but check the actual gate sites.
+        for start, end in (
+            ("const u8 int_leaf = method->treo_int_leaf_kind;", "#endif"),
+            ("CodeAttribute *decoded = method->converted_code;", "#endif"),
+            ("if (method->treo_ref_leaf &&", "#endif"),
+        ):
+            with self.subTest(tier=start):
+                block = i.split(start, 1)[1].split(end, 1)[0]
+                self.assertIn("!treo_game_jit_enabled_fast()", block)
+                self.assertEqual(block.count("treo_game_jit_enabled_fast()"), 1)
+        self.assertIn("const int treo_enabled = !jvm->jdwp_enable && treo_game_jit_enabled_fast();", i)
+        self.assertEqual(i.count("treo_game_jit_enabled_fast()"), 4)
         self.assertNotIn("treo_game_jit_is_enabled()",i)
         self.assertEqual(j.count("int treo_jit_enabled_state;"),1)
         self.assertIn("int treo_game_jit_is_enabled(void) { return treo_game_jit_enabled_fast(); }",j)

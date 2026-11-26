@@ -64,7 +64,16 @@ class ParkedGameLibraryTest(unittest.TestCase):
         self.assertIn('treo_park_begin_for_token(gameSessionToken, compatibleOnly ? 1 : 0)', self.game)
         self.assertIn('treo_park_end_for_token(gameSessionToken)', self.game)
         self.assertIn('treo_mode_for_token(gameSessionToken)', self.game)
-        self.assertIn('jarbox_treo_park_mode(state, change->compatible_only)', renderer)
+        # Automatic parking must use the release-safe selector, not the
+        # diagnostic deep-Treo candidate (Canvas shape alone is not proof).
+        transition = renderer.split("static void treo_park_transition_visitor(", 1)[1].split("\n}", 1)[0]
+        self.assertIn('? jarbox_treo_safe_automatic_park_mode(state, change->compatible_only) : 0', transition)
+        self.assertNotIn('jarbox_treo_park_mode(state,', transition)
+        choice = renderer.split("static void treo_park_choice_visitor(", 1)[1].split("\n}", 1)[0]
+        self.assertIn('choice->mode = jarbox_treo_safe_automatic_park_mode', choice)
+        policy = (ROOT / "J2MEEmulator/minijvm/jvm/jarbox_treo_state.h").read_text(encoding="utf-8")
+        safe = policy.split("static inline int jarbox_treo_safe_automatic_park_mode(", 1)[1].split("\n}", 1)[0]
+        self.assertIn("return jarbox_treo_park_mode(state, 1);", safe)
         self.assertIn('jarbox_treo_guard_auto_set(state, mode == 8)', renderer)
         self.assertIn('jarbox_treo_smart_set(state, mode == 8)', renderer)
         self.assertIn('treo_display_wait_set_for_vm(vm, 0)', renderer)
