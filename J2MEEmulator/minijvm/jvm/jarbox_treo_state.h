@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include "jarbox_background_trace.h"
 #include "jarbox_ninja_core_policy.h"
+#include "jarbox_hotspot.h"
 
 // Owned by one MiniJVM allocation and never shared with a different JVM.
 // Atomic builtins allow the collector thread and the UIKit control thread
@@ -44,6 +45,7 @@ typedef struct JarBoxTreoState {
     uint64_t native_diag_plain_cpu_ns, native_diag_discarded_frames, native_diag_draw_calls, native_diag_draw_ns;
     uint64_t native_diag_lcd_other_calls, native_diag_lcd_other_ns, native_diag_other_calls, native_diag_other_ns;
     uint64_t native_diag_drawrgb_calls, native_diag_drawrgb_pixels, native_diag_getrgb_calls, native_diag_getrgb_pixels;
+    JarBoxHotspot hotspot; // diagnostic table, per session; zero initialized
     JarBoxBackgroundTrace background_trace;
     uint64_t int_leaf_fast_calls; // batched count, all modes, per JVM
     uint64_t ref_leaf_fast_calls;

@@ -154,6 +154,44 @@ static inline void treo_native_paint_exit(int token) {
 }
 #endif
 
+#if defined(TREO_HOTSPOT_DIAG) && TREO_HOTSPOT_DIAG && __JVM_OS_IOS__
+#include <time.h>
+static inline void jarbox_hot_checkpoint(Runtime *r,MethodInfo *m,const u8 *pc) {
+    JavaThreadInfo *t=r->thrd_info;
+    if (!t || (++t->jarbox_hot_ticks&255u)!=0) return;
+    JarBoxSession *s=r->jvm->session;
+    if (!s || r->jvm->jdwp_enable || t->is_stop || t->suspend_count ||
+        jarbox_treo_mode_get(&s->treo_state)!=1) return;
+    struct timespec ts;
+    if (clock_gettime(CLOCK_THREAD_CPUTIME_ID,&ts)) {
+        __atomic_fetch_add(&s->treo_state.hotspot.invalid,1,__ATOMIC_RELAXED);
+        return;
+    }
+    uint64_t now=(uint64_t)ts.tv_sec*UINT64_C(1000000000)+(uint64_t)ts.tv_nsec;
+    if (!jarbox_hot_due(now,&t->jarbox_hot_next_ns)) return;
+    if (!m || !m->_this_class || !m->_this_class->name || !m->name || !m->descriptor) {
+        __atomic_fetch_add(&s->treo_state.hotspot.invalid,1,__ATOMIC_RELAXED);
+        return;
+    }
+    unsigned scope=0;
+#if defined(TREO_NATIVE_PAINT_DIAG) && TREO_NATIVE_PAINT_DIAG
+    // 1: inside observed paint scope; 2: outside observed scope, not proof of game logic.
+    scope=native_paint_diag.scope && native_paint_diag.owner==s ? 1u : 2u;
+#endif
+    uint32_t offset=UINT32_MAX; // method entry, or unavailable target
+    if (pc && m->converted_code && m->converted_code->code) {
+        uintptr_t p=(uintptr_t)pc, start=(uintptr_t)m->converted_code->code;
+        if (p>=start && p-start<(uintptr_t)m->converted_code->code_length &&
+            p-start<UINT32_MAX) offset=(uint32_t)(p-start);
+    }
+    jarbox_hot_note(&s->treo_state.hotspot,utf8_cstr(m->_this_class->name),
+                    utf8_cstr(m->name),utf8_cstr(m->descriptor),scope,offset);
+}
+#define JARBOX_HOT_CHECK(r,m,p) jarbox_hot_checkpoint(r,m,p)
+#else
+#define JARBOX_HOT_CHECK(r,m,p) ((void)0)
+#endif
+
 /*
  * JarBox no-dynamic-JIT interpreter. Clang's labels-as-values point only
  * to opcode handlers already compiled and code-signed inside the app.
@@ -1196,6 +1234,7 @@ static s32 filterClassName(Utf8String *clsName) {
 }
 
 #define check_gc_pause(offset){\
+    if (offset < 0) JARBOX_HOT_CHECK(runtime,method,runtime->pc);\
     if (offset < 0 && thrd_info->suspend_count) {\
         \
         runtime->stack->sp = sp;\
@@ -1715,6 +1754,7 @@ static inline int jarbox_try_ref_leaf(MethodInfo *method, Runtime *caller) {
 #endif
 
 s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
+    JARBOX_HOT_CHECK(pruntime,method,NULL);
 #if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__
     // These server/mod notices are drawn by Class_cu.d(String), from
     // Class_fq.d or Class_gv.g. A popup can be a server-supplied message

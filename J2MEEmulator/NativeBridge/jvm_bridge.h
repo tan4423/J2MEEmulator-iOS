@@ -100,6 +100,9 @@ typedef struct {
     uint64_t compatible_crop_hits, compatible_crop_misses, compatible_state_reuses, compatible_region_culls;
     uint64_t region_stage_seen, region_stage_samples, region_stage_hit_samples;
     uint64_t region_stage_hit_ns, region_stage_miss_ns, region_stage_draw_ns, region_stage_invalid;
+    uint64_t hot_samples, hot_busy, hot_invalid;
+    int hot_ok;
+    char hot_rows[1280];
     uint64_t qos_paint_attempts, qos_paint_applied, qos_paint_already_utility, qos_paint_unrestorable, qos_paint_errors, qos_paint_restore_errors;
     uint64_t qos_paint_completed, qos_paint_cpu_ns, qos_paint_wall_ns, qos_paint_over_budget, qos_paint_backoff, qos_original_class;
     uint64_t qos_observed_class, qos_paint_normal_completed, qos_paint_normal_wall_ns, compatible_text_attr_reuses;
@@ -116,6 +119,7 @@ typedef struct {
     int phase, stop_requested, mode, counters_ok, cpu_ok;
 } JarBoxFlightSlot;
 int jvm_bridge_flight_sample(JarBoxFlightProcess *process, JarBoxFlightSlot *slots, int capacity, int detail);
+const char *jvm_bridge_flight_hot_text(const JarBoxFlightSlot *slot);
 /// Bounded gzip export. Free result using the matching function.
 uint8_t *jvm_bridge_flight_gzip(const uint8_t *input,size_t input_size,size_t *output_size);
 void jvm_bridge_flight_gzip_free(uint8_t *bytes);
