@@ -17,7 +17,7 @@ workflows:
         JARBOX_VM_PERF_CANDIDATE: "0" # Matched all-off control for Treo CPU investigation; set 1 to reproduce candidate
         JARBOX_PAINT_QOS_EXPERIMENT: "0" # isolate Ninja Core; QoS trial remains available
         JARBOX_NINJA_CORE_EXPERIMENT: "0" # continuous scoped Core trial is OFF
-        JARBOX_CORE_ABA: "1" # one-shot 225s A/B/A on an eligible owner; 0 = full raster with above OFF
+        JARBOX_CORE_ABA: "0" # device E3: scoped sink regressed process CPU; full raster default
         JARBOX_NATIVE_PAINT_DIAG: "1" # sparse native CPU attribution; 0 = same-source uninstrumented control
         JARBOX_CROP_CACHE_V2: "1" # candidate; 0 = old direct-mapped cache
         JARBOX_REGION_STAGE_DIAG: "1" # sparse region tail timing, independently switchable

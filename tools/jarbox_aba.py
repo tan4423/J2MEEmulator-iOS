@@ -5,7 +5,8 @@ import json
 from pathlib import Path
 
 KEYS = ('afk_profile_paint_calls', 'afk_profile_paint_cpu_ns', 'repaints',
-        'java_ns', 'gc_ns', 'nso_core_frames', 'nso_core_faults',
+        'runner_ns', 'java_ns', 'gc_ns', 'gc_cycles', 'gc_aborts',
+        'nso_core_frames', 'nso_core_faults',
         'scoped_native_draw_skips', 'scoped_vm_draw_skips')
 
 
@@ -82,18 +83,32 @@ def analyze(text, run):
         d = dict(zip(KEYS,(x-y for x,y in zip(b[2],a[2]))))
         frames=d['afk_profile_paint_calls']; paint=d['afk_profile_paint_cpu_ns']
         core=d['nso_core_frames']; skips=d['scoped_native_draw_skips']+d['scoped_vm_draw_skips']
-        if not frames or paint>p or d['nso_core_faults'] or (phase==4 and (core<.95*frames or core>1.05*frames or not skips)) or (phase!=4 and (core or skips)):
+        if not frames or paint>p or d['gc_aborts'] or d['nso_core_faults'] or (phase==4 and (core<.95*frames or core>1.05*frames or not skips)) or (phase!=4 and (core or skips)):
             raise ValueError('candidate not actually exercised or mixed leg: '+label)
+        workers=d['runner_ns']+d['java_ns']+d['gc_ns']
+        cycles=d['gc_cycles']
         result.append(dict(leg=label,seconds=wall/1e9,process_pct=100*p/wall,paint_pct=100*paint/wall,
+                           outside_paint_pct=100*(p-paint)/wall,runner_pct=100*d['runner_ns']/wall,
+                           worker_residual_pct=100*(p-workers)/wall,
+                           java_minus_paint_pct=100*(d['java_ns']-paint)/wall,
+                           gc_cycles=cycles,gc_cycles_per_s=cycles*1e9/wall,
+                           gc_worker_ms_per_cycle=d['gc_ns']/cycles/1e6 if cycles else None,
                            paint_ms=paint/frames/1e6,paint_hz=frames*1e9/wall,
                            repaint_hz=d['repaints']*1e9/wall,java_pct=100*d['java_ns']/wall,gc_pct=100*d['gc_ns']/wall,
                            core_frames=core,scoped_skips=skips))
     a,b,c=result
+    differences = {k:b[k]-(a[k]+c[k])/2 for k in
+                   ('process_pct','paint_pct','outside_paint_pct','runner_pct','java_pct',
+                    'gc_pct','worker_residual_pct','java_minus_paint_pct')}
     return {'run':run,'epoch':identity[3],'legs':result,
-            'b_vs_a_mean_process_points':b['process_pct']-(a['process_pct']+c['process_pct'])/2,
+            'b_vs_a_mean_process_points':differences['process_pct'],
+            'b_vs_a_mean_points':differences,
+            'process_cost_reduced':differences['process_pct']<0,
             'a2_vs_a1_process_points':c['process_pct']-a['process_pct'],
             'limitations':['not randomized; scene/logic progression must be checked separately',
                            'process includes other app threads; Java and paint overlap',
+                           'worker residual and Java minus paint are arithmetic differences, not direct thread categories; clocks and snapshots differ',
+                           'GC worker ms/cycle includes activity outside the collection itself',
                            'repaint rate is not gameplay proof; no automatic promotion']}
 
 

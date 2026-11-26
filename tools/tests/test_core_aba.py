@@ -38,7 +38,12 @@ class CoreABATest(unittest.TestCase):
             self.assertIn("out->"+k+"=",b)
             self.assertIn(k+r"=\(slot."+k+")",scene)
         self.assertIn("if decision.save || abaSave",scene)
-        self.assertIn('JARBOX_CORE_ABA: "1"',(ROOT/"codemagic.yaml").read_text())
+        config=(ROOT/"codemagic.yaml").read_text()
+        # Measured E3 regression: diagnostic remains selectable, but both
+        # automatic scoped-sink admission switches default OFF.
+        self.assertIn('JARBOX_CORE_ABA: "0"',config)
+        self.assertIn('JARBOX_NINJA_CORE_EXPERIMENT: "0"',config)
+        self.assertIn("-DTREO_CORE_ABA=1",config)
 
 
 if __name__=="__main__":
