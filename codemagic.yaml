@@ -14,7 +14,7 @@ workflows:
         JARBOX_VM_IMAGE_CACHE_BASELINE: "1" # OFF by default: measured ~0 hits in 188.7s
         JARBOX_VM_ARRAY_LOOKUP_EXPERIMENT: "0" # Isolate game-aware Treo
         JARBOX_VM_ARRAY_LOOKUP_DIAGNOSTIC: "0" # No method observer overhead
-        JARBOX_VM_PERF_CANDIDATE: "1" # Combined device candidate on this branch; set 0 for matched baseline
+        JARBOX_VM_PERF_CANDIDATE: "0" # Matched all-off control for Treo CPU investigation; set 1 to reproduce candidate
         JARBOX_VM_DECODED_INT_EXPERIMENT: "0"
         JARBOX_VM_EVENT_SLEEP_EXPERIMENT: "0"
         JARBOX_VM_CONST_ARITH_FUSION_EXPERIMENT: "0"
