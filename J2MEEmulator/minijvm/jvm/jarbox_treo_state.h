@@ -7,6 +7,7 @@
 #include "jarbox_hotspot.h"
 #include "jarbox_core_aba.h"
 #include "jarbox_gc_phase.h"
+#include "jarbox_canvas_phase.h"
 
 // Owned by one MiniJVM allocation and never shared with a different JVM.
 // Atomic builtins allow the collector thread and the UIKit control thread
@@ -59,6 +60,7 @@ typedef struct JarBoxTreoState {
     uint64_t smart_cpu_ns;
     uint64_t gc_worker_cycles, gc_worker_aborts, gc_worker_cpu_ns; // session lifetime
     JarBoxGCPhaseStats gc_phase; // only completed background worker collections
+    JarBoxCanvasPhaseStats canvas_phase; // mode-1 matched begin/end scopes
 } JarBoxTreoState;
 
 static inline void jarbox_treo_mode_set(JarBoxTreoState *state, int mode) {

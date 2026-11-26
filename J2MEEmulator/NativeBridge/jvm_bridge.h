@@ -94,7 +94,9 @@ typedef struct {
 } JarBoxFlightProcess;
 typedef struct {
     uint64_t token, runner_ns, java_ns, gc_ns, gc_cycles, gc_aborts, repaint_requests;
-    int gc_phase_ok;
+    int gc_phase_ok, canvas_phase_ok;
+    uint64_t canvas_phase_frames, canvas_phase_pre_ns, canvas_phase_paint_ns, canvas_phase_post_ns;
+    uint64_t canvas_phase_invalid, canvas_phase_busy;
     uint64_t gc_phase_busy;
     uint64_t gc_phase_invalid;
     uint64_t gc_phase_aborted;

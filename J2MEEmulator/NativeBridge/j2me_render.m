@@ -843,8 +843,21 @@ static int treo_afk_skip_draw(RenderContext *rc) {
     return 1;
 }
 
+#if defined(TREO_CANVAS_PHASE_DIAG) && TREO_CANVAS_PHASE_DIAG
+static _Thread_local JarBoxCanvasPhaseScope treo_canvas_phase;
+static inline uint64_t treo_canvas_phase_owner(Runtime *r) {
+    return r && r->jvm && r->jvm->session ?
+        __atomic_load_n(&r->jvm->session->token,__ATOMIC_ACQUIRE) : 0;
+}
+#endif
 static s32 n_beginAfkPaint(Runtime *runtime, JClass *clazz) {
     const uint64_t key = jarbox_native_heap_key_for_runtime(runtime);
+#if defined(TREO_CANVAS_PHASE_DIAG) && TREO_CANVAS_PHASE_DIAG
+    uint64_t phaseOwner=key?treo_canvas_phase_owner(runtime):0;
+    int phaseActive=phaseOwner && treo_runtime_mode(runtime)==1;
+    jarbox_canvas_phase_begin(&treo_canvas_phase,phaseOwner,phaseActive,
+                              phaseActive?treo_thread_cpu_ns():0);
+#endif
     // Reset stale TLS Canvas state on a generation switch, not only on a
     // well-paired begin/end. No Java input is allowed to inherit this state.
     if (!key || key != g_afk_canvas_owner_key) {
@@ -886,6 +899,15 @@ static s32 n_endAfkPaint(Runtime *runtime, JClass *clazz) {
         atomic_fetch_add_explicit(&g_afk_skipped_draws, g_afk_draw_count, memory_order_relaxed);
         g_afk_draw_count = 0;
     }
+#if defined(TREO_CANVAS_PHASE_DIAG) && TREO_CANVAS_PHASE_DIAG
+    uint64_t phaseOwner=key?treo_canvas_phase_owner(runtime):0;
+    JarBoxTreoState *phaseState=phaseOwner?treo_runtime_state(runtime):NULL;
+    int phaseActive=phaseState && treo_runtime_mode(runtime)==1;
+    uint64_t phaseEnd=treo_canvas_phase.active && treo_canvas_phase.depth==1 ?
+        treo_thread_cpu_ns():0;
+    jarbox_canvas_phase_end(&treo_canvas_phase,phaseState?&phaseState->canvas_phase:NULL,
+                            phaseOwner,phaseActive,phaseEnd);
+#endif
     return RUNTIME_STATUS_NORMAL;
 }
 static void stop_afk_haptics(void);
@@ -1896,6 +1918,10 @@ static s32 n_profilePaintBegin(Runtime *runtime, JClass *clazz) {
         if (!g_afk_thread_id) pthread_threadid_np(NULL, &g_afk_thread_id);
         atomic_store_explicit(&g_afk_paint_tid, g_afk_thread_id, memory_order_relaxed);
         start = -(s64)treo_thread_cpu_ns();
+#if defined(TREO_CANVAS_PHASE_DIAG) && TREO_CANVAS_PHASE_DIAG
+        if (treo_canvas_phase.active && start<0)
+            jarbox_canvas_phase_point(&treo_canvas_phase,treo_canvas_phase_owner(runtime),1,(uint64_t)(-start));
+#endif
         treo_vm_paint_sample_begin();
 #if defined(TREO_NATIVE_PAINT_DIAG) && TREO_NATIVE_PAINT_DIAG
         if (start<0) treo_native_paint_diag_begin(runtime);
@@ -1913,6 +1939,10 @@ static s32 n_profilePaintEnd(Runtime *runtime, JClass *clazz) {
     if (stamp < 0) {
         const int sampled = treo_vm_paint_sample_end();
         const uint64_t end = treo_thread_cpu_ns(), begin = (uint64_t)(-stamp);
+#if defined(TREO_CANVAS_PHASE_DIAG) && TREO_CANVAS_PHASE_DIAG
+        if (treo_canvas_phase.active)
+            jarbox_canvas_phase_point(&treo_canvas_phase,treo_canvas_phase_owner(runtime),2,end);
+#endif
 #if defined(TREO_NATIVE_PAINT_DIAG) && TREO_NATIVE_PAINT_DIAG
         treo_native_paint_diag_end(runtime,end>=begin ? end-begin : 0,end>=begin);
 #endif

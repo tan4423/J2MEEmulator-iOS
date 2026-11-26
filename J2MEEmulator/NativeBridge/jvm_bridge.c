@@ -1062,6 +1062,19 @@ int jvm_bridge_flight_sample(JarBoxFlightProcess *process, JarBoxFlightSlot *slo
             out->gc_phase_sweep_wall_ns=gt.wall[5];
         }
 #endif
+#if defined(TREO_CANVAS_PHASE_DIAG) && TREO_CANVAS_PHASE_DIAG
+        JarBoxCanvasPhaseStats *cp=&session->treo_state.canvas_phase;
+        JarBoxCanvasPhaseTotals ct;
+        out->canvas_phase_ok=jarbox_canvas_phase_snapshot(cp,&ct);
+        out->canvas_phase_invalid=__atomic_load_n(&cp->invalid,__ATOMIC_RELAXED);
+        out->canvas_phase_busy=__atomic_load_n(&cp->busy,__ATOMIC_RELAXED);
+        if (out->canvas_phase_ok) {
+            out->canvas_phase_frames=ct.frames;
+            out->canvas_phase_pre_ns=ct.pre_ns;
+            out->canvas_phase_paint_ns=ct.paint_ns;
+            out->canvas_phase_post_ns=ct.post_ns;
+        }
+#endif
         out->repaint_requests=__atomic_load_n(&session->treo_state.nso_repaint_requests,__ATOMIC_RELAXED);
         out->afk_profile_paint_calls=__atomic_load_n(&session->treo_state.afk_profile_paint_calls,__ATOMIC_RELAXED);
         out->afk_profile_paint_cpu_ns=__atomic_load_n(&session->treo_state.afk_profile_paint_cpu_ns,__ATOMIC_RELAXED);
