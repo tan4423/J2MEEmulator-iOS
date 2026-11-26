@@ -4724,6 +4724,7 @@ typedef struct {
     s32 sx, sy, w, h, transform, x, y, anchor;
     uint64_t owner_key;
 } TreoRegionArgs;
+#include "jarbox_region_slots.h"
 
 // Same CG crop result, reused only for valid immutable source regions on the
 // compatible parked Canvas. Keep replay, mutable images and offscreen on CG.
@@ -4834,7 +4835,10 @@ static s32 treo_draw_region(const TreoRegionArgs *p, int direct) {
         }
     }
 #endif
-    CGImageRef fullImage = copyImageSnapshot(img);
+    // img_acquire keeps the RenderImage and its immutable snapshot alive
+    // through draw and replay capture. The compatible path can borrow the
+    // image already owned by img; mutable/noncompatible paths stay owned.
+    CGImageRef fullImage = compatible ? img->immutableSnapshot : copyImageSnapshot(img);
     if (!fullImage) {
 #if defined(TREO_REGION_STAGE_DIAG) && TREO_REGION_STAGE_DIAG
         if (stageSelected) ++rc->regionStage.invalid;
@@ -4844,7 +4848,7 @@ static s32 treo_draw_region(const TreoRegionArgs *p, int direct) {
     CGImageRef subImage = compatible ? treo_compatible_crop(rc,fullImage,xSrc,ySrc,wSrc,hSrc)
         : CGImageCreateWithImageInRect(fullImage, CGRectMake(xSrc, ySrc, wSrc, hSrc));
     if (subImage) treo_replay_capture(rc, fullImage, xDst, yDst, xSrc, ySrc, wSrc, hSrc, transform);
-    CGImageRelease(fullImage);
+    if (!compatible) CGImageRelease(fullImage);
     if (!subImage) {
 #if defined(TREO_REGION_STAGE_DIAG) && TREO_REGION_STAGE_DIAG
         if (stageSelected) ++rc->regionStage.invalid;
@@ -4883,21 +4887,10 @@ static s32 treo_profiled_region(const TreoRegionArgs *p, int direct) {
 }
 
 static s32 n_profiledDrawRegion(Runtime *runtime, JClass *clazz) {
-    JniEnv *env = runtime->jnienv;
-    s64 ctxHandle = env->localvar_getLong_2slot(runtime->localvar, 0);
-    s64 imgHandle = env->localvar_getLong_2slot(runtime->localvar, 2);
-    s32 xSrc = env->localvar_getInt(runtime->localvar, 4);
-    s32 ySrc = env->localvar_getInt(runtime->localvar, 5);
-    s32 wSrc = env->localvar_getInt(runtime->localvar, 6);
-    s32 hSrc = env->localvar_getInt(runtime->localvar, 7);
-    s32 transform = env->localvar_getInt(runtime->localvar, 8);
-    int64_t xDst = env->localvar_getInt(runtime->localvar, 9);
-    int64_t yDst = env->localvar_getInt(runtime->localvar, 10);
-    s32 anchor = env->localvar_getInt(runtime->localvar, 11);
-
-    const TreoRegionArgs p = {ctxHandle, imgHandle, xSrc, ySrc, wSrc, hSrc,
-                              transform, (s32)xDst, (s32)yDst, anchor,
-                              jarbox_native_heap_key_for_runtime(runtime)};
+    // Preserve native frame, stop/exception behavior and renderer entry.
+    // The JNI getters delegate to the same VM local slot accessors.
+    const TreoRegionArgs p=jarbox_region_args(runtime->localvar,
+                                            jarbox_native_heap_key_for_runtime(runtime));
     return treo_profiled_region(&p, 0);
 }
 
