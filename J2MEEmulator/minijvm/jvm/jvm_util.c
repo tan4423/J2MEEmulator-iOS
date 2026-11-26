@@ -2202,46 +2202,24 @@ void referarr_2_jlongarr(ReferArr *ref_arr, Instance *jlong_arr) {
  * load file less than 4G bytes
  */
 s32 _loadFileContents(c8 const *file, ByteBuf *buf) {
-
-    FILE *pFile;
-    long lSize;
-    c8 *buffer;
-    size_t result;
-
-    /* 若要一个byte不漏地读入整个文件，只能采用二进制方式打开 */
-    pFile = fopen(file, "rb");
-    if (pFile == NULL) {
-        //jvm_printf("File error");
-        return -1;
-    }
-
-    /* 获取文件大小 */
-    fseek(pFile, 0, SEEK_END);
-    lSize = ftell(pFile);
-    rewind(pFile);
-
-    /* 分配内存存储整个文件 */
-    buffer = jvm_malloc((u32) lSize);
-    if (buffer == NULL) {
-        //jvm_printf("Memory error");
-        return -1;
-    }
-
-    /* 将文件拷贝到buffer中 */
-    result = fread(buffer, 1, lSize, pFile);
-    if (result != lSize) {
-        //jvm_printf("Reading error");
-        return -1;
-    }
-    /* 现在整个文件已经在buffer中，可由标准输出打印内容 */
-    //printf("%s", buffer);
-
-    /* 结束演示，关闭文件并释放内存 */
-    fclose(pFile);
-    bytebuf_write_batch(buf, buffer, (s32) lSize);
+    if (!file || !buf) return -1;
+    FILE *fp = fopen(file, "rb");
+    if (!fp) return -1;
+    s32 ret = -1;
+    c8 *buffer = NULL;
+    if (fseek(fp, 0, SEEK_END) != 0) goto done;
+    long length = ftell(fp);
+    if (length < 0 || (u64)length > INT32_MAX) goto done;
+    if (fseek(fp, 0, SEEK_SET) != 0) goto done;
+    if (!length) { ret = 0; goto done; }
+    buffer = jvm_malloc((u32)length);
+    if (!buffer) goto done;
+    if (fread(buffer, 1, (size_t)length, fp) != (size_t)length) goto done;
+    if (bytebuf_write_batch(buf, buffer, (s32)length) == (s32)length) ret = 0;
+done:
     jvm_free(buffer);
-
-    return 0;
+    fclose(fp);
+    return ret;
 }
 
 
@@ -2258,15 +2236,18 @@ ByteBuf *load_file_from_classpath(PeerClassLoader *cloader, Utf8String *path) {
             utf8_append(filepath, path);
 
             bytebuf = bytebuf_create(16);
-            iret = _loadFileContents(utf8_cstr(filepath), bytebuf);
+            iret = bytebuf ? _loadFileContents(utf8_cstr(filepath), bytebuf) : -1;
             utf8_destroy(filepath);
             //回收
             if (iret != 0) {
                 bytebuf_destroy(bytebuf);
                 bytebuf = NULL;
+            } else {
+                break; // first matching classpath entry wins, as for JARs
             }
         } else { //from jar
             bytebuf = bytebuf_create(16);
+            if (!bytebuf) break;
             int hit_kind = 0;
             iret = zip_classpath_loadfile_profiled(utf8_cstr(pClassPath), utf8_cstr(path), bytebuf, &hit_kind);
             ++probes;

@@ -29,10 +29,18 @@ CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
 static s32 HASH_TABLE_DEFAULT_SIZE = 16;
 
-static int hash_table_allocate_table(Hashtable *hash_table, s64 size) {
-    if (!size || !hash_table) return 0;
+// Hash callbacks may legally return any signed 64-bit value.
+static inline s64 hashtable_bucket(s64 hash, s64 size) {
+    return (s64)((u64)hash % (u64)size);
+}
+static inline int hashtable_capacity_valid(s64 size) {
+    return size > 0 && (u64)size <= UINT32_MAX / sizeof(HashtableEntry *);
+}
 
-    HashtableEntry **new_table = jvm_calloc((unsigned int) size * sizeof(HashtableEntry *));
+static int hash_table_allocate_table(Hashtable *hash_table, s64 size) {
+    if (!hash_table || !hashtable_capacity_valid(size)) return 0;
+
+    HashtableEntry **new_table = jvm_calloc((u32)((u64)size * sizeof(HashtableEntry *)));
     if (!new_table) return 0;
 
     hash_table->table = new_table;
@@ -189,16 +197,16 @@ int hashtable_put(Hashtable *hash_table, HashtableKey key, HashtableValue value)
             }
         }
 
-        s64 index = hash_table->hash_func(key) % hash_table->table_size;
+        s64 index = hashtable_bucket(hash_table->hash_func(key), hash_table->table_size);
         HashtableEntry *rover = hash_table->table[index];
 
         // Try to update existing entry
         while (rover != NULL) {
             if (hash_table->equal_func(rover->key, key) != 0) {
-                if (hash_table->value_free_func) {
+                if (hash_table->value_free_func && rover->value != value) {
                     hash_table->value_free_func(rover->value);
                 }
-                if (hash_table->key_free_func) {
+                if (hash_table->key_free_func && rover->key != key) {
                     hash_table->key_free_func(rover->key);
                 }
                 rover->key = key;
@@ -233,7 +241,7 @@ HashtableValue hashtable_get(Hashtable *hash_table, HashtableKey key) {
 
     spin_lock(&hash_table->spinlock);
     {
-        index = hash_table->hash_func(key) % hash_table->table_size;
+        index = hashtable_bucket(hash_table->hash_func(key), hash_table->table_size);
 
         rover = hash_table->table[index];
 
@@ -260,7 +268,7 @@ int hashtable_remove(Hashtable *hash_table, HashtableKey key, int resize) {
         if (resize && (hash_table->entries << 3) < hash_table->table_size) {
             hashtable_resize(hash_table, hash_table->table_size >> 1);
         }
-        index = hash_table->hash_func(key) % hash_table->table_size;
+        index = hashtable_bucket(hash_table->hash_func(key), hash_table->table_size);
 
         rover = hash_table->table[index];
         pre = rover;
@@ -430,9 +438,9 @@ void hashtable_iter_safe(Hashtable *hash_table, HashtableIteratorFunc func, void
 }
 
 int hashtable_resize(Hashtable *hash_table, s64 size) {
-    if (!hash_table || !size || size < HASH_TABLE_DEFAULT_SIZE) return 0;
+    if (!hash_table || size < HASH_TABLE_DEFAULT_SIZE || !hashtable_capacity_valid(size)) return 0;
 
-    HashtableEntry **new_table = jvm_calloc((unsigned int) size * sizeof(HashtableEntry *));
+    HashtableEntry **new_table = jvm_calloc((u32)((u64)size * sizeof(HashtableEntry *)));
     if (!new_table) return 0;
 
     HashtableEntry **old_table = hash_table->table;
@@ -444,7 +452,7 @@ int hashtable_resize(Hashtable *hash_table, s64 size) {
         HashtableEntry *rover = old_table[i];
         while (rover != NULL) {
             HashtableEntry *next = rover->next;
-            s64 index = hash_table->hash_func(rover->key) % size;
+            s64 index = hashtable_bucket(hash_table->hash_func(rover->key), size);
             rover->next = new_table[index];
             new_table[index] = rover;
             rover = next;

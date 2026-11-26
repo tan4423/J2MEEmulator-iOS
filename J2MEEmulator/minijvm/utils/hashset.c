@@ -23,10 +23,9 @@ HashsetEntry *_hashset_get_entry(Hashset *set) {
 }
 
 static void _hashset_free_entry(Hashset *set, HashsetEntry *entry) {
-    if (set->entry_pool->length < HASH_SET_POOL_SIZE)
-        arraylist_push_back_unsafe(set->entry_pool, entry);
-    else
-        jvm_free(entry);
+    if (set->entry_pool->length < HASH_SET_POOL_SIZE &&
+        arraylist_push_back_unsafe(set->entry_pool, entry)) return;
+    jvm_free(entry);
 }
 
 void _hashset_clear_pool(Hashset *set) {
@@ -38,13 +37,12 @@ void _hashset_clear_pool(Hashset *set) {
 }
 
 unsigned int hashset_allocate_table(Hashset *set, unsigned int size) {
-    if (size) {
-        set->table = jvm_calloc(size *
-                                sizeof(HashsetEntry *));
-        if (set->table)set->table_size = size;
-    }
-
-    return set->table != NULL;
+    if (!size || (u64)size > UINT32_MAX / sizeof(HashsetEntry *)) return 0;
+    HashsetEntry **table = jvm_calloc((u32)((u64)size * sizeof(HashsetEntry *)));
+    if (!table) return 0;
+    set->table = table;
+    set->table_size = size;
+    return 1;
 }
 
 
@@ -65,7 +63,8 @@ static int hashset_resize(Hashset *set, u64 size) {
     u64 index;
     unsigned int i;
 
-    if (size != 0 && size != set->table_size) {
+    if (!size || size > UINT32_MAX / sizeof(HashsetEntry *)) return 0;
+    if (size != set->table_size) {
         old_table = set->table;
         old_table_size = set->table_size;
 
@@ -73,7 +72,7 @@ static int hashset_resize(Hashset *set, u64 size) {
             printf("CRITICAL: FAILED TO ALLOCATE HASH TABLE!\n");
             set->table = old_table;
             set->table_size = old_table_size;
-            old_table = NULL;
+            return 0;
 
         } else {
             for (i = 0; i < old_table_size; ++i) {
@@ -112,6 +111,11 @@ Hashset *hashset_create() {
         return NULL;
     }
     set->entry_pool = arraylist_create(HASH_SET_POOL_SIZE);
+    if (!set->entry_pool) {
+        jvm_free(set->table);
+        jvm_free(set);
+        return NULL;
+    }
     spin_init(&set->lock, 0);
     return set;
 }
@@ -138,6 +142,8 @@ void hashset_destroy(Hashset *hash_table) {
 
 
 void hashset_clear(Hashset *set) {
+    if (!set) return;
+    spin_lock(&set->lock);
     HashsetEntry *rover;
     HashsetEntry *next;
     unsigned int i;
@@ -155,14 +161,12 @@ void hashset_clear(Hashset *set) {
     _hashset_clear_pool(set);
 
     if (set->table_size > HASH_SET_DEFAULT_SIZE) {
-        jvm_free(set->table);
-        set->table = NULL;
-        set->table_size = 0;
-        if (!hashset_allocate_table(set, HASH_SET_DEFAULT_SIZE)) {
-            arraylist_destroy(set->entry_pool);
-            jvm_free(set);
-        }
+        // Shrink is optional: retain the cleared table if allocation fails.
+        HashsetEntry **old_table = set->table;
+        if (hashset_allocate_table(set, HASH_SET_DEFAULT_SIZE))
+            jvm_free(old_table);
     }
+    spin_unlock(&set->lock);
 }
 
 int hashset_put(Hashset *set, HashsetKey key) {
@@ -292,6 +296,8 @@ void hashset_iterate(Hashset *set, HashsetIterator *iterator) {
     u64 chain;
 
     iterator->set = set;
+    iterator->curr_entry = NULL;
+    iterator->curr_chain = iterator->next_chain = 0;
     iterator->next_entry = NULL;
     for (chain = 0; chain < set->table_size; ++chain) {
 
