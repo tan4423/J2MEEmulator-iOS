@@ -6,6 +6,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <sys/stat.h>
+#include <time.h>
 #include "jvm.h"
 #include "jvm_util.h"
 #include "arraylist.h"
@@ -14,7 +15,8 @@
 typedef struct { const char *rt, *api, *app, *tag, *mode; char save[512]; int port;
     MiniJVM *jvm; pthread_t th; pthread_mutex_t lock; atomic_int finished;
     int stop_requested, rc;
-    uint64_t char_calls, array_calls, gc_cycles; } Job;
+    uint64_t char_calls, array_calls, gc_cycles;
+    uint64_t thread_cpu_ns, process_cpu_ns; } Job;
 
 static void request_vm_stop(MiniJVM *vm) {
     vm->collector->exit_flag = 1;
@@ -22,6 +24,13 @@ static void request_vm_stop(MiniJVM *vm) {
     gc_request_thread_status(vm->collector, GARBAGE_THREAD_STOP);
     thread_stop_all(vm);
 }
+#if defined(JARBOX_HOST_INTRINSIC_TEST) && !__JVM_OS_IOS__
+static uint64_t cpu_now(clockid_t clock) {
+    struct timespec t;
+    if (clock_gettime(clock,&t)) return 0;
+    return (uint64_t)t.tv_sec*UINT64_C(1000000000)+(uint64_t)t.tv_nsec;
+}
+#endif
 static void *job_main(void *p) {
     Job *j = p; char cp[2048], portbuf[16];
     snprintf(cp, sizeof cp, "%s:%s", j->api, j->app);
@@ -45,14 +54,21 @@ static void *job_main(void *p) {
     arraylist_push_back(args, (void *)j->tag); arraylist_push_back(args, (void *)j->save);
     arraylist_push_back(args, (void *)j->mode); arraylist_push_back(args, (void *)portbuf);
 #if defined(JARBOX_HOST_INTRINSIC_TEST) && !__JVM_OS_IOS__
-    int intrinsic_on=!strcmp(j->mode,"intrinsic-on");
-    int intrinsic_off=!strcmp(j->mode,"intrinsic-off");
-    if (intrinsic_on) {
-        // Synthetic host fixture only; no game archive admission override on iOS.
+    int intrinsic=!strncmp(j->mode,"intrinsic-",10);
+    unsigned mask=!strcmp(j->mode,"intrinsic-on")?3u:
+                  !strcmp(j->mode,"intrinsic-array")?1u:
+                  !strcmp(j->mode,"intrinsic-char")?2u:0u;
+    if (intrinsic) {
+        // Same mode/profile in ALL legs; mask is host-only and per owner.
+        __atomic_store_n(&vm->session->treo_state.host_intrinsic_mask,mask,__ATOMIC_RELAXED);
         jarbox_treo_nso_profile_set(&vm->session->treo_state,1,0);
         jarbox_treo_mode_set(&vm->session->treo_state,1);
     }
-    j->rc=call_main(vm,(intrinsic_on||intrinsic_off)?"IntrinsicMain":"SmokeMain",args);
+    uint64_t p0=cpu_now(CLOCK_PROCESS_CPUTIME_ID),t0=cpu_now(CLOCK_THREAD_CPUTIME_ID);
+    j->rc=call_main(vm,intrinsic?"IntrinsicMain":"SmokeMain",args);
+    uint64_t t1=cpu_now(CLOCK_THREAD_CPUTIME_ID),p1=cpu_now(CLOCK_PROCESS_CPUTIME_ID);
+    if (t0 && t1>t0) j->thread_cpu_ns=t1-t0;
+    if (p0 && p1>p0) j->process_cpu_ns=p1-p0;
     j->char_calls=__atomic_load_n(&vm->session->treo_state.char_leaf_calls,__ATOMIC_RELAXED);
     j->array_calls=__atomic_load_n(&vm->session->treo_state.array_lookup_mode1_calls,__ATOMIC_RELAXED);
     j->gc_cycles=__atomic_load_n(&vm->session->treo_state.gc_worker_cycles,__ATOMIC_RELAXED);
@@ -135,7 +151,28 @@ int main(int argc, char **argv) {
     printf("save roots: %s\n", base);
     int bport = 20000 + (getpid() % 20000); Job a, b, a2;
 #if defined(JARBOX_HOST_INTRINSIC_TEST) && !__JVM_OS_IOS__
-    if (!strcmp(scenario,"intrinsic_diff")) {
+    if (!strcmp(scenario,"intrinsic_bench")) {
+        const char *modes[]={"intrinsic-off","intrinsic-array","intrinsic-char","intrinsic-on"};
+        // Each leg owns a fresh VM, no other live VM, same Java fixture and
+        // same tag prefix (salt). Rotate positions to reduce order bias.
+        for (unsigned round=0;round<4;round++) {
+            for (unsigned pos=0;pos<4;pos++) {
+                unsigned mask=(round+pos)%4;
+                char tag[32]; snprintf(tag,sizeof tag,"A%u_%u",round,pos);
+                Job leg;
+                init_job(&leg,argv,tag,modes[mask],bport,base);
+                start_job(&leg); join_job(&leg);
+                REQUIRE(!leg.rc && intrinsic_ok(&leg) && leg.gc_cycles>0);
+                REQUIRE(leg.thread_cpu_ns>0 && leg.process_cpu_ns>0);
+                REQUIRE((mask&1u)?leg.array_calls>=64:leg.array_calls==0);
+                REQUIRE((mask&2u)?leg.char_calls>=64:leg.char_calls==0);
+                printf("bench round=%u mask=%u thread_ns=%llu process_ns=%llu array=%llu char=%llu gc=%llu\n",
+                       round,mask,(unsigned long long)leg.thread_cpu_ns,(unsigned long long)leg.process_cpu_ns,
+                       (unsigned long long)leg.array_calls,(unsigned long long)leg.char_calls,
+                       (unsigned long long)leg.gc_cycles);
+            }
+        }
+    } else if (!strcmp(scenario,"intrinsic_diff")) {
         init_job(&a,argv,"A","intrinsic-on",bport,base);
         init_job(&b,argv,"B","intrinsic-off",bport+1,base);
         start_job(&a); start_job(&b); join_job(&a); join_job(&b);

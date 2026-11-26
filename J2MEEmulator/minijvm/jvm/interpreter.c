@@ -12,6 +12,9 @@
 #error Host intrinsic differential must never be compiled into the iOS/JIT build
 #endif
 static inline int treo_game_jit_enabled_fast(void) { return 0; }
+#define JARBOX_HOST_INTRINSIC_ALLOWED(r,bit) ((r)->jvm->session && (__atomic_load_n(&(r)->jvm->session->treo_state.host_intrinsic_mask,__ATOMIC_RELAXED)&(bit)))
+#else
+#define JARBOX_HOST_INTRINSIC_ALLOWED(r,bit) 1
 #endif
 #include <string.h>
 
@@ -1847,7 +1850,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
     // Only an already bound charAt0 native on a valid in-range slice can
     // avoid creating a native frame. No Java calls, allocation or safepoint.
     if (method->is_native && method->native_func==java_lang_String_charAt0 &&
-        pruntime->jvm->session &&
+        JARBOX_HOST_INTRINSIC_ALLOWED(pruntime,2u) && pruntime->jvm->session &&
         jarbox_treo_mode_get(&pruntime->jvm->session->treo_state)==1 &&
         !pruntime->jvm->jdwp_enable && !pruntime->thrd_info->is_stop &&
         !pruntime->thrd_info->suspend_count && !treo_game_jit_enabled_fast() &&
@@ -2024,6 +2027,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
     // path. Null/OOB, uninitialized fields, debugger, suspension and other
     // rare conditions retain the original exception and Java semantics.
     const int lookup_mode1=TREO_VM_ARRAY_LOOKUP_MODE1 && treo_paint_mode==1 &&
+        JARBOX_HOST_INTRINSIC_ALLOWED(pruntime,1u) &&
         jarbox_treo_nso_family_verified(&pruntime->jvm->session->treo_state);
     if ((lookup_mode1 || (TREO_VM_ARRAY_LOOKUP_LEGACY && treo_paint_mode == 8)) &&
         method->para_slots == 2 && method->return_slots == 1 && method->is_static &&

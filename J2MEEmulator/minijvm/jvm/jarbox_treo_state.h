@@ -55,6 +55,9 @@ typedef struct JarBoxTreoState {
     uint64_t int_leaf_fast_calls; // batched count, all modes, per JVM
     uint64_t array_lookup_mode1_calls; // mode-1 candidate successes, batch 64
     uint64_t char_leaf_calls; // successful built-in charAt0 leaves, batch 64
+#if defined(JARBOX_HOST_INTRINSIC_TEST) && !__JVM_OS_IOS__
+    unsigned host_intrinsic_mask; // fixture only, set before Java entry; bit 0 array, bit 1 char
+#endif
     uint64_t ref_leaf_fast_calls;
     uint64_t aload_field_fusions;
     uint64_t smart_heap_peak;
