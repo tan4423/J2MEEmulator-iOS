@@ -2220,23 +2220,18 @@ static void process_dead_shells_for_owner(uint64_t owner_key) {
 // Reference counting: acquire / release
 // ============================================================
 
-static inline RenderContext *rc_acquire(s64 handle, uint64_t owner_key) {
+static inline RenderContext *rc_acquire_locked(s64 handle, uint64_t owner_key) {
     if (!handle || !owner_key) return NULL;
     // Compare the address as an integer; don't dereference until live
     // membership AND JVM generation are both validated under the same lock.
     RenderContext *result = NULL;
-    spin_lock(&g_track_lock);
-    if (render_owner_stopped_locked(owner_key)) {
-        spin_unlock(&g_track_lock);
-        return NULL;
-    }
     RenderContext *target = (RenderContext *)(intptr_t)handle;
     for (RenderContext *candidate = g_rc_live_buckets[render_handle_bucket(handle)];
          candidate; candidate = candidate->next_live) {
         if (candidate != target) continue;
         if (candidate->heap_key == owner_key) {
             int32_t prev = atomic_load_explicit(&candidate->refcount, memory_order_relaxed);
-            while (prev > 0) {
+            while (prev > 0 && prev < INT32_MAX) {
                 if (atomic_compare_exchange_weak_explicit(
                         &candidate->refcount, &prev, prev + 1,
                         memory_order_acquire, memory_order_relaxed)) {
@@ -2247,6 +2242,16 @@ static inline RenderContext *rc_acquire(s64 handle, uint64_t owner_key) {
         }
         break;
     }
+    return result;
+}
+
+// Caller must not hold g_track_lock. The locked helper validates membership
+// and owner and acquires a positive reference, but does not check STOP.
+static inline RenderContext *rc_acquire(s64 handle, uint64_t owner_key) {
+    if (!handle || !owner_key) return NULL;
+    spin_lock(&g_track_lock);
+    RenderContext *result=render_owner_stopped_locked(owner_key) ? NULL :
+        rc_acquire_locked(handle,owner_key);
     spin_unlock(&g_track_lock);
     return result;
 }
@@ -2271,21 +2276,16 @@ static inline void rc_release(RenderContext *rc) {
     }
 }
 
-static inline RenderImage *img_acquire(s64 handle, uint64_t owner_key) {
+static inline RenderImage *img_acquire_locked(s64 handle, uint64_t owner_key) {
     if (!handle || !owner_key) return NULL;
     RenderImage *result = NULL;
-    spin_lock(&g_track_lock);
-    if (render_owner_stopped_locked(owner_key)) {
-        spin_unlock(&g_track_lock);
-        return NULL;
-    }
     RenderImage *target = (RenderImage *)(intptr_t)handle;
     for (RenderImage *candidate = g_img_live_buckets[render_handle_bucket(handle)];
          candidate; candidate = candidate->next_live) {
         if (candidate != target) continue;
         if (candidate->heap_key == owner_key) {
             int32_t prev = atomic_load_explicit(&candidate->refcount, memory_order_relaxed);
-            while (prev > 0) {
+            while (prev > 0 && prev < INT32_MAX) {
                 if (atomic_compare_exchange_weak_explicit(
                         &candidate->refcount, &prev, prev + 1,
                         memory_order_acquire, memory_order_relaxed)) {
@@ -2296,8 +2296,41 @@ static inline RenderImage *img_acquire(s64 handle, uint64_t owner_key) {
         }
         break;
     }
+    return result;
+}
+
+// Caller must not hold g_track_lock. The locked helper validates membership
+// and owner and acquires a positive reference, but does not check STOP.
+static inline RenderImage *img_acquire(s64 handle, uint64_t owner_key) {
+    if (!handle || !owner_key) return NULL;
+    spin_lock(&g_track_lock);
+    RenderImage *result=render_owner_stopped_locked(owner_key) ? NULL :
+        img_acquire_locked(handle,owner_key);
     spin_unlock(&g_track_lock);
     return result;
+}
+
+// In compatible Treo, admit the Canvas and Image together under the
+// registry lock. STOP is linearized before or after the entire admission;
+// already admitted references may finish as with ordinary native drawing.
+// No renderer work, release or queue drain occurs while holding this lock.
+static inline RenderContext *region_acquire(s64 ctx,s64 image,uint64_t owner,
+        int allow_pair,RenderImage **out,int *paired) {
+    *out=NULL;
+    *paired=0;
+    if (!ctx || !owner) return NULL;
+    spin_lock(&g_track_lock);
+    RenderContext *rc=NULL;
+    if (!render_owner_stopped_locked(owner)) {
+        rc=rc_acquire_locked(ctx,owner);
+        if (rc && allow_pair &&
+            atomic_load_explicit(&rc->afk_mode,memory_order_acquire)==1) {
+            *paired=1;
+            *out=img_acquire_locked(image,owner);
+        }
+    }
+    spin_unlock(&g_track_lock);
+    return rc;
 }
 
 // LCDUI icon reads are infrequent, so validate the handle in the live
@@ -4859,9 +4892,12 @@ static s32 treo_draw_region(const TreoRegionArgs *p, int direct) {
     s32 xSrc = p->sx, ySrc = p->sy, wSrc = p->w, hSrc = p->h, transform = p->transform;
     int64_t xDst = p->x, yDst = p->y;
     s32 anchor = p->anchor;
-    RenderContext *rc = rc_acquire(ctxHandle, p->owner_key);
+    RenderImage *img=NULL;
+    int paired=0;
+    RenderContext *rc=region_acquire(ctxHandle,imgHandle,p->owner_key,
+                                     !g_afk_canvas,&img,&paired);
     if (!rc) return RUNTIME_STATUS_NORMAL;
-    if (treo_afk_skip_draw(rc)) { rc_release(rc); return RUNTIME_STATUS_NORMAL; }
+    if (treo_afk_skip_draw(rc)) { img_release(img); rc_release(rc); return RUNTIME_STATUS_NORMAL; }
     if (direct && rc->ownsPixels) rc->swDirect++;
 
     int outW = wSrc, outH = hSrc;
@@ -4880,11 +4916,12 @@ static s32 treo_draw_region(const TreoRegionArgs *p, int direct) {
         transform >= 0 && transform <= 7 &&
         treo_region_outside_clip(rc->regionClipBounds, xDst, yDst, outW, outH)) {
         if (treo_profile_active()) TREO_PROF_ADD(region_culled, 1);
+        img_release(img);
         rc_release(rc);
         return RUNTIME_STATUS_NORMAL;
     }
 
-    RenderImage *img = img_acquire(imgHandle, p->owner_key);
+    if (!paired) img = img_acquire(imgHandle, p->owner_key);
     if (!img) { rc_release(rc); return RUNTIME_STATUS_NORMAL; }
     // AFK SIMD keeps producing canvas pixels, but never presents them.
     // Use the same verified raster and CG fallback as the visible backend.

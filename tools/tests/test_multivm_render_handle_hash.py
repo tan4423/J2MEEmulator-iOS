@@ -33,6 +33,7 @@ typedef struct RenderContext {
     _Atomic int32_t refcount;
     _Atomic int java_owned;
     struct RenderContext *next_live;
+    _Atomic int afk_mode;
 } RenderContext;
 typedef struct RenderImage {
     uint64_t heap_key;
@@ -50,7 +51,9 @@ static int g_live_img_count;
 #define RENDER_HANDLE_BUCKETS 8192u
 static RenderContext *g_rc_live_buckets[RENDER_HANDLE_BUCKETS];
 static RenderImage *g_img_live_buckets[RENDER_HANDLE_BUCKETS];
+static _Thread_local unsigned lock_entries;
 static void spin_lock(spinlock_t *lock) {
+    ++lock_entries;
     while (atomic_exchange_explicit(&lock->held, 1, memory_order_acquire))
         sched_yield();
 }
@@ -75,6 +78,49 @@ static void *worker(void *arg) {
     }
     return NULL;
 }
+static int pair_checks(RenderContext *a,RenderImage *ai,RenderImage *bi) {
+    s64 h=(s64)(intptr_t)a, ih=(s64)(intptr_t)ai;
+    RenderImage *image=NULL; int paired=0;
+    atomic_store(&a->afk_mode,1);
+    lock_entries=0;
+    for (unsigned i=0;i<100000;i++) {
+        RenderContext *rc=region_acquire(h,ih,a->heap_key,1,&image,&paired);
+        if (rc!=a || image!=ai || !paired) return 1;
+        atomic_fetch_sub(&rc->refcount,1); atomic_fetch_sub(&image->refcount,1);
+    }
+    if (lock_entries!=100000) return 2;
+    lock_entries=0;
+    for (unsigned i=0;i<100000;i++) {
+        RenderContext *rc=rc_acquire(h,a->heap_key);
+        image=img_acquire(ih,a->heap_key);
+        if (rc!=a || image!=ai) return 3;
+        atomic_fetch_sub(&rc->refcount,1);atomic_fetch_sub(&image->refcount,1);
+    }
+    if (lock_entries!=200000) return 4;
+    RenderContext *rc=region_acquire(h,(s64)(intptr_t)bi,a->heap_key,1,&image,&paired);
+    if (rc!=a || image || !paired) return 5;
+    atomic_fetch_sub(&rc->refcount,1);
+    rc=region_acquire(h,1234,a->heap_key,1,&image,&paired);
+    if (rc!=a || image || !paired) return 6;
+    atomic_fetch_sub(&rc->refcount,1);
+    rc=region_acquire(h,ih,bi->heap_key,1,&image,&paired);
+    if (rc || image || paired) return 7;
+    atomic_store(&ai->refcount,0);
+    rc=region_acquire(h,ih,a->heap_key,1,&image,&paired);
+    if (rc!=a || image || !paired) return 8;
+    atomic_fetch_sub(&rc->refcount,1);atomic_store(&ai->refcount,1);
+    rc=region_acquire(h,ih,a->heap_key,0,&image,&paired);
+    if (rc!=a || image || paired) return 9;
+    atomic_fetch_sub(&rc->refcount,1);
+    atomic_store(&a->afk_mode,0);
+    rc=region_acquire(h,ih,a->heap_key,1,&image,&paired);
+    if (rc!=a || image || paired) return 10;
+    atomic_fetch_sub(&rc->refcount,1);
+    if (atomic_load(&a->refcount)!=1 || atomic_load(&ai->refcount)!=1 ||
+        atomic_load(&bi->refcount)!=1) return 11;
+    puts("paired leases: 100000 vs 200000 lock entries; rejection and refcounts PASS");
+    return 0;
+}
 int main(void) {
     RenderContext a = {0}, b = {0};
     RenderImage ai = {0}, bi = {0};
@@ -93,6 +139,7 @@ int main(void) {
     if (img_acquire((s64)(intptr_t)&ai, 202)) return 3;
     if (rc_acquire((s64)0x1234, 101)) return 4;
     if (img_acquire((s64)0x1234, 101)) return 5;
+    if (pair_checks(&a,&ai,&bi)) return 24;
     Job jobs[4] = {
         {(s64)(intptr_t)&a, 101, 0, 0},
         {(s64)(intptr_t)&ai, 101, 1, 0},
@@ -107,7 +154,15 @@ int main(void) {
         atomic_load(&ai.refcount) != 1 ||
         atomic_load(&b.refcount) != 1 ||
         atomic_load(&bi.refcount) != 1) return 8;
+    // A lease admitted before STOP may finish, but new pairs must fail.
+    atomic_store(&a.afk_mode,1);
+    RenderImage *heldImage=NULL;int paired=0;
+    RenderContext *held=region_acquire((s64)(intptr_t)&a,(s64)(intptr_t)&ai,101,1,&heldImage,&paired);
+    if (held!=&a || heldImage!=&ai || !paired) return 25;
     j2me_render_stop_for_owner(101);
+    RenderImage *after=NULL;
+    if (region_acquire((s64)(intptr_t)&a,(s64)(intptr_t)&ai,101,1,&after,&paired) || after || paired) return 26;
+    atomic_fetch_sub(&held->refcount,1);atomic_fetch_sub(&heldImage->refcount,1);
     // Revoking A must leave B's frame callback and handles intact.
     JarBoxFlushLegacy legacy = NULL;
     JarBoxFlushOwned owned = NULL;
@@ -182,9 +237,9 @@ class MultiVMRenderHandleHashTest(unittest.TestCase):
             # and requires RenderContext.afk_mode, absent from this mock struct.
             section(code, "static int track_rc(",
                     "/* A transition never mutates buffers") +
-            section(code, "static inline RenderContext *rc_acquire(",
+            section(code, "static inline RenderContext *rc_acquire_locked(",
                     "static inline void rc_release(") +
-            section(code, "static inline RenderImage *img_acquire(",
+            section(code, "static inline RenderImage *img_acquire_locked(",
                     "// LCDUI icon reads") +
             section(code, "void j2me_render_stop_for_owner(",
                     "// Ownership is by native JVM generation") +
@@ -211,6 +266,7 @@ class MultiVMRenderHandleHashTest(unittest.TestCase):
             self.assertEqual(run.returncode, 0,
                              run.stdout + run.stderr)
             self.assertIn("2D owned handle host harness: OK", run.stdout)
+            self.assertIn("paired leases: 100000 vs 200000 lock entries",run.stdout)
 
     def test_no_raw_dereference_in_any_java_2d_native_acquire(self):
         code = RENDER.read_text(encoding="utf-8")
