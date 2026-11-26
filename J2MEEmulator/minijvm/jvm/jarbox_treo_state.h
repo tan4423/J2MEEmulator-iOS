@@ -37,6 +37,7 @@ typedef struct JarBoxTreoState {
     uint64_t afk_profile_paint_calls, afk_profile_paint_cpu_ns;
     uint64_t compatible_font_reuses;
     uint64_t compatible_crop_hits, compatible_crop_misses, compatible_state_reuses, compatible_region_culls;
+    uint64_t binary_sprite_fast, binary_sprite_checks, binary_sprite_mismatch;
     uint64_t region_stage_seen, region_stage_samples, region_stage_hit_samples;
     uint64_t region_stage_hit_ns, region_stage_miss_ns, region_stage_draw_ns, region_stage_invalid;
     uint64_t qos_paint_attempts, qos_paint_applied, qos_paint_already_utility, qos_paint_unrestorable, qos_paint_errors, qos_paint_restore_errors;

@@ -5,12 +5,12 @@ from pathlib import Path
 from zipfile import ZipFile
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from run_ios_candidate_ci import CANDIDATES, OFF, prepare, verify_ipa
+from run_ios_candidate_ci import BINARY, CANDIDATES, OFF, prepare, verify_ipa
 
 
 def config():
     return {'workflows': {'jit-probe-unsigned': {
-        'environment': {'vars': dict.fromkeys(CANDIDATES + OFF, '0')},
+        'environment': {'vars': dict.fromkeys(CANDIDATES + (BINARY,) + OFF, '0')},
         'scripts': [{'name': 'Build and package unsigned iPhone IPA', 'script': 'set -euo pipefail\ntrue'}]
     }}}
 
@@ -23,6 +23,10 @@ class IOSCandidateTest(unittest.TestCase):
         self.assertNotIn('JARBOX_OTHER', e)
         self.assertTrue(all(e[k] == '0' for k in OFF))
         self.assertTrue(all(e[k] == '1' for k in CANDIDATES))
+        self.assertEqual(e[BINARY], '0')
+        binary=prepare(c, 'binary', {})[1]
+        self.assertEqual(binary[BINARY], '1')
+        self.assertTrue(all(binary[k]=='0' for k in CANDIDATES+OFF))
         self.assertTrue(all(prepare(c, 'control', {})[1][k] == '0' for k in CANDIDATES + OFF))
         self.assertEqual(c['workflows']['jit-probe-unsigned']['environment']['vars'][CANDIDATES[0]], '0')
 
@@ -33,7 +37,7 @@ class IOSCandidateTest(unittest.TestCase):
             prepare(c, 'intrinsics', {})
 
     def test_archive(self):
-        profile = 'const-arith-0_const-branch-0_decoded-int-0_event-sleep-0_paint-qos-0_ninja-core-0_core-aba-0_array-mode1-1_char-leaf-1'
+        profile = 'const-arith-0_const-branch-0_decoded-int-0_event-sleep-0_paint-qos-0_ninja-core-0_core-aba-0_array-mode1-1_char-leaf-1_binary-sprite-0'
         with tempfile.TemporaryDirectory() as d:
             p = Path(d) / 'test.ipa'
             for actual, sha, extra in [(profile, 'a', False), (profile.replace('core-aba-0','core-aba-1'), 'a', False), (profile, 'b', False), (profile, 'a', True), (profile+'_char-leaf-0','a',False)]:

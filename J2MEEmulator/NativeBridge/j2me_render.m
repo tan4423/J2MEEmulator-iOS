@@ -23,6 +23,7 @@
 #include "jarbox_scene_gpu_gate.h"
 #include "jarbox_crop_cache.h"
 #include "jarbox_region_stage.h"
+#include "jarbox_binary_sprite.h"
 #include "jarbox_paint_qos_policy.h"
 #include "jvm_bridge.h"
 #include "j2me_input.h"
@@ -135,6 +136,11 @@ typedef struct RenderContext {
     uint32_t *softwarePixels;
     uint64_t swRegions, swFast, swChecked, swMismatch, swDirect;
     unsigned swSequence;
+#if defined(TREO_BINARY_SPRITE_EXPERIMENT) && TREO_BINARY_SPRITE_EXPERIMENT
+    unsigned binarySequence;
+    bool binaryReady, binaryRejected;
+    uint64_t binaryFast, binaryChecks, binaryMismatch;
+#endif
     unsigned fastFillSequence;
     bool fastFillRejected;
     bool fastFontValid;
@@ -162,6 +168,9 @@ typedef struct RenderImage {
     const uint32_t *softwareSource;
     size_t softwareStride;
     atomic_uint softwareVerified, softwareRejected;
+#if defined(TREO_BINARY_SPRITE_EXPERIMENT) && TREO_BINARY_SPRITE_EXPERIMENT
+    atomic_uint binaryKind, binaryVerified;
+#endif
     uint64_t heap_key;
     _Atomic int32_t refcount;
     struct RenderImage *next_dead;
@@ -2614,6 +2623,10 @@ static RenderImage *createImageFromData(MiniJVM *owner, const uint8_t *data, int
     atomic_init(&img->java_owned, 1);
     atomic_init(&img->softwareVerified, 0);
     atomic_init(&img->softwareRejected, 0);
+#if defined(TREO_BINARY_SPRITE_EXPERIMENT) && TREO_BINARY_SPRITE_EXPERIMENT
+    atomic_init(&img->binaryKind,JB_BIN_UNKNOWN);
+    atomic_init(&img->binaryVerified,0);
+#endif
     img->heap_key = owner_key;
     img->isMutable = 0;
 
@@ -2810,6 +2823,14 @@ static s32 n_flushToScreen(Runtime *runtime, JClass *clazz) {
             if (rc->regionStage.invalid) __atomic_fetch_add(&state->region_stage_invalid,rc->regionStage.invalid,__ATOMIC_RELAXED);
         }
         rc->regionStage=(JarBoxRegionStage){0};
+#endif
+#if defined(TREO_BINARY_SPRITE_EXPERIMENT) && TREO_BINARY_SPRITE_EXPERIMENT
+        if (state) {
+            if (rc->binaryFast) __atomic_fetch_add(&state->binary_sprite_fast,rc->binaryFast,__ATOMIC_RELAXED);
+            if (rc->binaryChecks) __atomic_fetch_add(&state->binary_sprite_checks,rc->binaryChecks,__ATOMIC_RELAXED);
+            if (rc->binaryMismatch) __atomic_fetch_add(&state->binary_sprite_mismatch,rc->binaryMismatch,__ATOMIC_RELAXED);
+        }
+        rc->binaryFast=rc->binaryChecks=rc->binaryMismatch=0;
 #endif
         rc->compatible_crop_hits=rc->compatible_crop_misses=0;
         rc->compatible_state_reuses=rc->compatible_region_culls=0;
@@ -4747,6 +4768,65 @@ static CGImageRef treo_compatible_crop(RenderContext *rc, CGImageRef source,
     return crop;
 }
 
+#if defined(TREO_BINARY_SPRITE_EXPERIMENT) && TREO_BINARY_SPRITE_EXPERIMENT
+/* Strict subset of the existing software backend. No partial-alpha blend,
+ * no rotation, no mutable image/offscreen context, no speculative write on
+ * a canary. Caller has drained prior draw queues and holds both leases. */
+static int treo_binary_mode1_draw(RenderContext *rc,RenderImage *img,int64_t x,int64_t y,
+                                  int sx,int sy,int w,int h) {
+    if (rc->binaryRejected || !rc->softwarePixels || img->isMutable ||
+        !img->immutableSnapshot || !img->softwareSource ||
+        (uint64_t)w*(uint64_t)h>65536 || rc->width>1024 || rc->height>1024) return 0;
+    CGRect clip=rc->regionClipBounds;
+    if (CGRectIsNull(clip) || CGRectIsEmpty(clip)) return 0;
+    CGFloat l=CGRectGetMinX(clip),t=CGRectGetMinY(clip),rr=CGRectGetMaxX(clip),bb=CGRectGetMaxY(clip);
+    if (!(l>=0 && t>=0 && rr<=rc->width && bb<=rc->height) ||
+        l!=(int)l || t!=(int)t || rr!=(int)rr || bb!=(int)bb) return 0;
+    JarBoxBinaryRect p;
+    if (!jarbox_binary_rect(&p,x,y,sx,sy,w,h,img->width,img->height,rc->width,rc->height,
+                            (int)l,(int)t,(int)rr,(int)bb) || !p.w || !p.h) return 0;
+    unsigned kind=atomic_load_explicit(&img->binaryKind,memory_order_relaxed);
+    if (!kind) {
+        kind=jarbox_binary_kind(img->softwareSource,img->width,img->height,img->softwareStride);
+        atomic_store_explicit(&img->binaryKind,kind,memory_order_relaxed);
+    }
+    if (kind<JB_BIN_MIXED || kind>JB_BIN_CLEAR) return 0;
+    uint32_t *dst=rc->softwarePixels+(size_t)p.y*rc->width+p.x;
+    const uint32_t *src=img->softwareSource+(size_t)p.sy*img->softwareStride+p.sx;
+    const int check=!rc->binaryReady ||
+        !atomic_load_explicit(&img->binaryVerified,memory_order_relaxed) ||
+        ((++rc->binarySequence&1023u)==0);
+    if (check) {
+        CGAffineTransform ctm=CGContextGetCTM(rc->ctx);
+        if (ctm.a!=1 || ctm.b!=0 || ctm.c!=0 || ctm.d!=-1 || ctm.tx!=0 || ctm.ty!=rc->height ||
+            CGBitmapContextGetData(rc->ctx)!=rc->softwarePixels ||
+            CGBitmapContextGetBytesPerRow(rc->ctx)!=(size_t)rc->width*4) {
+            rc->binaryRejected=true; ++rc->binaryMismatch; return 0;
+        }
+        size_t row=(size_t)p.w*4;
+        uint32_t *expected=malloc(row*(size_t)p.h);
+        if (!expected) return 0;
+        CGImageRef crop=CGImageCreateWithImageInRect(img->immutableSnapshot,CGRectMake(sx,sy,w,h));
+        if (!crop) {free(expected);return 0;}
+        CGContextFlush(rc->ctx);
+        for (int i=0;i<p.h;i++) memcpy(expected+(size_t)i*p.w,dst+(size_t)i*rc->width,row);
+        jarbox_binary_blit(expected,p.w,src,img->softwareStride,p.w,p.h,kind);
+        // Only reference pixels touch the actual Canvas on a check.
+        treo_draw_region_cg(rc->ctx,crop,x,y,w,h,TRANS_NONE);
+        CGImageRelease(crop); CGContextFlush(rc->ctx);
+        int equal=1;
+        for (int i=0;i<p.h;i++) if (memcmp(expected+(size_t)i*p.w,dst+(size_t)i*rc->width,row)) {equal=0;break;}
+        free(expected); ++rc->binaryChecks;
+        if (equal) {rc->binaryReady=true;atomic_store_explicit(&img->binaryVerified,1,memory_order_relaxed);}
+        else {rc->binaryRejected=true;++rc->binaryMismatch;}
+        return 1;
+    }
+    jarbox_binary_blit(dst,rc->width,src,img->softwareStride,p.w,p.h,kind);
+    ++rc->binaryFast;
+    return 1;
+}
+#endif
+
 static s32 treo_draw_region(const TreoRegionArgs *p, int direct) {
     s64 ctxHandle = p->ctx, imgHandle = p->img;
     s32 xSrc = p->sx, ySrc = p->sy, wSrc = p->w, hSrc = p->h, transform = p->transform;
@@ -4822,6 +4902,12 @@ static s32 treo_draw_region(const TreoRegionArgs *p, int direct) {
         img_release(img); rc_release(rc);
         return RUNTIME_STATUS_NORMAL;
     }
+#if defined(TREO_BINARY_SPRITE_EXPERIMENT) && TREO_BINARY_SPRITE_EXPERIMENT
+    if (compatible && transform==TRANS_NONE &&
+        treo_binary_mode1_draw(rc,img,xDst,yDst,xSrc,ySrc,wSrc,hSrc)) {
+        img_release(img); rc_release(rc); return RUNTIME_STATUS_NORMAL;
+    }
+#endif
 #if defined(TREO_REGION_STAGE_DIAG) && TREO_REGION_STAGE_DIAG
     // Sparse eligible-region tail timing, after handle acquisition, barriers and culling.
     int stageSelected=0;

@@ -121,6 +121,7 @@ typedef struct {
     uint64_t event_sleep_handled, event_sleep_fallbacks;
     uint64_t afk_profile_paint_calls, afk_profile_paint_cpu_ns, compatible_font_reuses;
     uint64_t compatible_crop_hits, compatible_crop_misses, compatible_state_reuses, compatible_region_culls;
+    uint64_t binary_sprite_fast, binary_sprite_checks, binary_sprite_mismatch;
     uint64_t region_stage_seen, region_stage_samples, region_stage_hit_samples;
     uint64_t region_stage_hit_ns, region_stage_miss_ns, region_stage_draw_ns, region_stage_invalid;
     uint64_t hot_samples, hot_busy, hot_invalid;

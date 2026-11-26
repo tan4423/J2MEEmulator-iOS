@@ -1082,6 +1082,9 @@ int jvm_bridge_flight_sample(JarBoxFlightProcess *process, JarBoxFlightSlot *slo
         out->afk_profile_paint_cpu_ns=__atomic_load_n(&session->treo_state.afk_profile_paint_cpu_ns,__ATOMIC_RELAXED);
         out->compatible_font_reuses=__atomic_load_n(&session->treo_state.compatible_font_reuses,__ATOMIC_RELAXED);
         out->compatible_crop_hits=__atomic_load_n(&session->treo_state.compatible_crop_hits,__ATOMIC_RELAXED);
+        out->binary_sprite_fast=__atomic_load_n(&session->treo_state.binary_sprite_fast,__ATOMIC_RELAXED);
+        out->binary_sprite_checks=__atomic_load_n(&session->treo_state.binary_sprite_checks,__ATOMIC_RELAXED);
+        out->binary_sprite_mismatch=__atomic_load_n(&session->treo_state.binary_sprite_mismatch,__ATOMIC_RELAXED);
 #if defined(TREO_HOTSPOT_DIAG) && TREO_HOTSPOT_DIAG && __JVM_OS_IOS__
         _Static_assert(sizeof(out->hot_rows)==JARBOX_HOT_TEXT,"hotspot text ABI");
         out->hot_ok=jarbox_hot_report(&session->treo_state.hotspot,&out->hot_samples,out->hot_rows);

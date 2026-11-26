@@ -8,10 +8,10 @@ on:
   workflow_dispatch:
     inputs:
       configuration:
-        description: 'Isolated intrinsic candidate or matched control'
+        description: 'Isolated binary raster, intrinsic candidate or matched control'
         type: choice
-        options: [intrinsics, control]
-        default: intrinsics
+        options: [binary, intrinsics, control]
+        default: binary
 permissions:
   contents: read
 jobs:
@@ -20,7 +20,7 @@ jobs:
     timeout-minutes: 40
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
-      CONFIGURATION: ${{ inputs.configuration || 'intrinsics' }}
+      CONFIGURATION: ${{ inputs.configuration || 'binary' }}
     steps:
       - uses: actions/checkout@v4
         with:
