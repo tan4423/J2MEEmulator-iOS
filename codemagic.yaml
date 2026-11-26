@@ -15,7 +15,8 @@ workflows:
         JARBOX_VM_ARRAY_LOOKUP_EXPERIMENT: "0" # Isolate game-aware Treo
         JARBOX_VM_ARRAY_LOOKUP_DIAGNOSTIC: "0" # No method observer overhead
         JARBOX_VM_PERF_CANDIDATE: "0" # Matched all-off control for Treo CPU investigation; set 1 to reproduce candidate
-        JARBOX_PAINT_QOS_EXPERIMENT: "1" # scoped Utility trial; 0 = same paint, original QoS
+        JARBOX_PAINT_QOS_EXPERIMENT: "0" # isolate Ninja Core; QoS trial remains available
+        JARBOX_NINJA_CORE_EXPERIMENT: "1" # exact-profile scoped Canvas sink device trial; 0 = compatible control
         JARBOX_VM_DECODED_INT_EXPERIMENT: "0"
         JARBOX_VM_EVENT_SLEEP_EXPERIMENT: "0"
         JARBOX_VM_CONST_ARITH_FUSION_EXPERIMENT: "0"
@@ -434,7 +435,12 @@ workflows:
             const_fusion_flags="$const_fusion_flags -DTREO_PAINT_QOS_EXPERIMENT=1"
             perf_qos=1
           fi
-          perf_profile="const-arith-${perf_arith}_const-branch-${perf_branch}_decoded-int-${perf_decoded}_event-sleep-${perf_sleep}_paint-qos-${perf_qos}"
+          perf_core=0
+          if [[ "${JARBOX_NINJA_CORE_EXPERIMENT:-0}" == "1" ]]; then
+            const_fusion_flags="$const_fusion_flags -DTREO_NINJA_CORE_EXPERIMENT=1"
+            perf_core=1
+          fi
+          perf_profile="const-arith-${perf_arith}_const-branch-${perf_branch}_decoded-int-${perf_decoded}_event-sleep-${perf_sleep}_paint-qos-${perf_qos}_ninja-core-${perf_core}"
           echo "[JarBoxVM][BUILD] perf_profile=$perf_profile const_fusion_flags=${const_fusion_flags:-off}"
           xcodebuild -list -project "$J2ME_PROJECT"
           xcodebuild -project "$J2ME_PROJECT" \

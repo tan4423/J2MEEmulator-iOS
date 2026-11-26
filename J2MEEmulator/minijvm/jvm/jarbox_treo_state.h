@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 #include "jarbox_background_trace.h"
+#include "jarbox_ninja_core_policy.h"
 
 // Owned by one MiniJVM allocation and never shared with a different JVM.
 // Atomic builtins allow the collector thread and the UIKit control thread
@@ -35,6 +36,7 @@ typedef struct JarBoxTreoState {
     uint64_t qos_paint_attempts, qos_paint_applied, qos_paint_already_utility, qos_paint_unrestorable, qos_paint_errors, qos_paint_restore_errors;
     uint64_t qos_paint_completed, qos_paint_cpu_ns, qos_paint_wall_ns, qos_paint_over_budget, qos_paint_backoff, qos_original_class;
     uint64_t qos_observed_class, qos_paint_normal_completed, qos_paint_normal_wall_ns, compatible_text_attr_reuses;
+    JarBoxNinjaCoreState ninja_core;
     JarBoxBackgroundTrace background_trace;
     uint64_t int_leaf_fast_calls; // batched count, all modes, per JVM
     uint64_t ref_leaf_fast_calls;
@@ -62,7 +64,8 @@ static inline void jarbox_treo_render_mode_set(JarBoxTreoState *s,
                                             UINT64_C(60000000000)) : 0,
                          __ATOMIC_RELEASE);
     }
-    if ((mode >= 2 && mode <= 4) || mode == 6 || mode == 7 || mode == 8)
+    if ((mode >= 2 && mode <= 4) || mode == 6 || mode == 7 || mode == 8 ||
+        jarbox_ninja_core_active(&s->ninja_core,mode))
         __atomic_store_n(&s->render_needs_redraw, 1, __ATOMIC_RELEASE);
     int prior = __atomic_exchange_n(&s->afk_mode, mode, __ATOMIC_ACQ_REL);
     if (mode) __atomic_store_n(&s->render_refresh, 0, __ATOMIC_RELEASE);

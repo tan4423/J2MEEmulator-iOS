@@ -273,11 +273,17 @@ public abstract class Canvas extends Displayable {
             final boolean discard = guarded && !treoUsesExplicitBuffer && !target.treoPixelDependent &&
                     fullRepaint && !(this instanceof javax.microedition.lcdui.game.GameCanvas);
             final boolean headless = policy == 3 || policy == 4 || discard;
-            final boolean rebuild = treoSkippedCanvasPixels && !headless;
-            treoSkippedCanvasPixels = discard;
+            // Core never suppresses paint or mutates the shared Graphics
+            // headless flag. Only the matching native Canvas sink is scoped.
+            final boolean core = policy == 1 && !treoUsesExplicitBuffer && !target.treoPixelDependent &&
+                    fullRepaint && !(this instanceof javax.microedition.lcdui.game.GameCanvas) &&
+                    NativeBridge.ninjaCorePaint(this);
+            final boolean rebuild = treoSkippedCanvasPixels && !headless && !core;
+            treoSkippedCanvasPixels = discard || core;
             final boolean previousHeadless = target.headless;
-            final long previousAfkCanvas = NativeBridge.beginAfkPaint(nativeContext, headless);
+            final long previousAfkCanvas = NativeBridge.beginAfkPaint(nativeContext, headless || core);
             target.headless = headless;
+            boolean coreCompleted = false;
             try {
                 if (fullRepaint || rebuild) target.reset(0, 0, width, height);
                 else target.reset(clipX, clipY, clipW, clipH);
@@ -288,10 +294,12 @@ public abstract class Canvas extends Displayable {
                     if (profileStart != 0) NativeBridge.profilePaintEnd(profileStart);
                 }
                 if (Display.isCurrentCanvas(this)) NativeBridge.flushToScreen(nativeContext);
+                coreCompleted = true;
             } finally {
                 target.headless = previousHeadless;
                 NativeBridge.endAfkPaint(previousAfkCanvas);
                 if (guarded) NativeBridge.afkCanvasResult(discard ? (target.treoPixelDependent ? 2 : 1) : 0);
+                if (core) NativeBridge.ninjaCorePaintResult(target.treoPixelDependent ? 1 : (coreCompleted ? 0 : 2));
             }
             // Reset for next frame
             fullRepaint = true;

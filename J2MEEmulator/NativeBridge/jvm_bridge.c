@@ -22,6 +22,9 @@
 #include "miniz_wrapper.h"
 #if defined(__APPLE__) && __JVM_OS_IOS__
 #include <os/proc.h>
+#if defined(TREO_NINJA_CORE_EXPERIMENT) && TREO_NINJA_CORE_EXPERIMENT
+#include <CommonCrypto/CommonDigest.h>
+#endif
 #include <time.h>
 #include <mach/mach.h>
 #include <sys/resource.h>
@@ -160,6 +163,26 @@ int treo_ninja_deep_verified(void) {
  *
  * One archive read at MIDlet load; no ZIP or disk work in the Treo hot loop.
  */
+#if defined(TREO_NINJA_CORE_EXPERIMENT) && TREO_NINJA_CORE_EXPERIMENT
+// Launch-only exact archive gate. Bounded streaming hash; no file I/O in paint.
+static unsigned treo_ninja_core_archive_profile(const char *path) {
+    if (!path) return 0;
+    FILE *f=fopen(path,"rb");
+    if (!f) return 0;
+    CC_SHA256_CTX ctx;
+    unsigned char buf[16384],digest[CC_SHA256_DIGEST_LENGTH];
+    size_t total=0,n;
+    int ok=CC_SHA256_Init(&ctx)==1;
+    while (ok && (n=fread(buf,1,sizeof(buf),f))!=0) {
+        total+=n;
+        if (total>16U*1024U*1024U) { ok=0; break; }
+        ok=CC_SHA256_Update(&ctx,buf,(CC_LONG)n)==1;
+    }
+    ok=ok && !ferror(f) && feof(f) && total && CC_SHA256_Final(digest,&ctx)==1;
+    fclose(f);
+    return ok ? jarbox_ninja_core_profile(digest) : 0;
+}
+#endif
 static int treo_is_nso_family(const char *jar_path, int *init_target) {
     *init_target = 0;
     static const char *const resources[] = {
@@ -1012,6 +1035,13 @@ int jvm_bridge_flight_sample(JarBoxFlightProcess *process, JarBoxFlightSlot *slo
         out->qos_paint_normal_completed=__atomic_load_n(&session->treo_state.qos_paint_normal_completed,__ATOMIC_RELAXED);
         out->qos_paint_normal_wall_ns=__atomic_load_n(&session->treo_state.qos_paint_normal_wall_ns,__ATOMIC_RELAXED);
         out->compatible_text_attr_reuses=__atomic_load_n(&session->treo_state.compatible_text_attr_reuses,__ATOMIC_RELAXED);
+        out->nso_core_profile=__atomic_load_n(&session->treo_state.ninja_core.profile,__ATOMIC_RELAXED);
+        out->nso_core_armed=__atomic_load_n(&session->treo_state.ninja_core.armed,__ATOMIC_RELAXED);
+        out->nso_core_rejected=__atomic_load_n(&session->treo_state.ninja_core.rejected,__ATOMIC_RELAXED);
+        out->nso_core_frames=__atomic_load_n(&session->treo_state.ninja_core.frames,__ATOMIC_RELAXED);
+        out->nso_core_faults=__atomic_load_n(&session->treo_state.ninja_core.faults,__ATOMIC_RELAXED);
+        out->scoped_native_draw_skips=__atomic_load_n(&session->treo_state.ninja_core.scoped_native_draw_skips,__ATOMIC_RELAXED);
+        out->scoped_vm_draw_skips=__atomic_load_n(&session->treo_state.ninja_core.scoped_vm_draw_skips,__ATOMIC_RELAXED);
         out->nso_repaint_skips=jarbox_treo_nso_skip_count(&session->treo_state,0);
         out->nso_service_skips=jarbox_treo_nso_skip_count(&session->treo_state,1);
         out->nso_paint_skips=jarbox_treo_nso_skip_count(&session->treo_state,2);
@@ -1281,10 +1311,14 @@ static int bridge_init_slot(JarBoxVMContext *slot, const char *res_root, const c
     if (atomic_load_explicit(&slot->stop_requested, memory_order_acquire)) return -9;
     // These results belong to this archive, not the most recent launch.
     int ninja_match = 0, init_target = 0;
+    unsigned ninja_core_profile = 0;
     if (jvm_bridge_supported_concurrent_sessions() == 1)
         treo_nso_probe_reset();
 #if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__ && !defined(TREO_NINJA_DEEP_DISABLED)
     ninja_match = treo_is_nso_family(midlet_jar, &init_target);
+#if defined(TREO_NINJA_CORE_EXPERIMENT) && TREO_NINJA_CORE_EXPERIMENT
+    if (ninja_match) ninja_core_profile=treo_ninja_core_archive_profile(midlet_jar);
+#endif
     printf("[JarBoxVM][NinjaDeep] profile=%s (NSO resource family)\n",
            ninja_match ? "matched" : "generic");
     // Historical mod probes only recognize one set of class signatures.
@@ -1352,6 +1386,7 @@ static int bridge_init_slot(JarBoxVMContext *slot, const char *res_root, const c
     // recognition or give a foreign Canvas permission to use the fast path.
     jarbox_treo_nso_profile_set(&slot->jvm->session->treo_state,
         ninja_match, init_target);
+    __atomic_store_n(&slot->jvm->session->treo_state.ninja_core.profile,ninja_core_profile,__ATOMIC_RELEASE);
 
     jarbox_session_configure_render_scale(slot->jvm->session, render_3d_scale);
     slot->jvm->jdwp_enable = 0;

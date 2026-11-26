@@ -100,6 +100,7 @@ typedef struct {
     uint64_t qos_paint_attempts, qos_paint_applied, qos_paint_already_utility, qos_paint_unrestorable, qos_paint_errors, qos_paint_restore_errors;
     uint64_t qos_paint_completed, qos_paint_cpu_ns, qos_paint_wall_ns, qos_paint_over_budget, qos_paint_backoff, qos_original_class;
     uint64_t qos_observed_class, qos_paint_normal_completed, qos_paint_normal_wall_ns, compatible_text_attr_reuses;
+    uint64_t nso_core_profile, nso_core_armed, nso_core_rejected, nso_core_frames, nso_core_faults, scoped_native_draw_skips, scoped_vm_draw_skips;
     uint64_t nso_repaint_skips, nso_service_skips, nso_paint_skips;
     uint64_t shared_zip_probes, shared_zip_hits, shared_zip_negative_hits;
     uint64_t shared_prepared_candidates, shared_prepared_hits;

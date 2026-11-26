@@ -741,6 +741,25 @@ static s32 n_ninjaDeepSkip(Runtime *runtime, JClass *clazz) {
     push_int(runtime->stack, skip);
     return RUNTIME_STATUS_NORMAL;
 }
+// Candidate is a scoped screen sink, NOT a skipped paint or a new mode.
+static s32 n_ninjaCorePaint(Runtime *runtime, JClass *clazz) {
+    int enabled=0;
+#if defined(TREO_NINJA_CORE_EXPERIMENT) && TREO_NINJA_CORE_EXPERIMENT
+    JarBoxTreoState *state=treo_runtime_state(runtime);
+    Instance *canvas=runtime->jnienv->localvar_getRefer(runtime->localvar,0);
+    enabled=state && jarbox_ninja_core_active(&state->ninja_core,treo_runtime_mode(runtime)) &&
+        ninja_profile_for_runtime(runtime) && canvas &&
+        (canvas->mb.type & MEM_TYPE_INS) && treo_nso_simple_canvas_paint(canvas->mb.clazz);
+#endif
+    push_int(runtime->stack,enabled);
+    return RUNTIME_STATUS_NORMAL;
+}
+static s32 n_ninjaCorePaintResult(Runtime *runtime, JClass *clazz) {
+    JarBoxTreoState *state=treo_runtime_state(runtime);
+    unsigned reason=(unsigned)runtime->jnienv->localvar_getInt(runtime->localvar,0);
+    if (state) jarbox_ninja_core_finish(&state->ninja_core,reason);
+    return RUNTIME_STATUS_NORMAL;
+}
 static s32 n_afkPaintPolicy(Runtime *runtime, JClass *clazz) {
     push_int(runtime->stack, treo_runtime_mode(runtime));
     return RUNTIME_STATUS_NORMAL;
@@ -816,6 +835,8 @@ static s32 n_beginAfkPaint(Runtime *runtime, JClass *clazz) {
     // well-paired begin/end. No Java input is allowed to inherit this state.
     if (!key || key != g_afk_canvas_owner_key) {
         g_afk_canvas = 0;
+        g_afk_draw_count=0;
+        g_afk_elided_local=0;
         g_afk_canvas_owner_key = key;
     }
     s64 previous = g_afk_canvas;
@@ -834,15 +855,20 @@ static s32 n_beginAfkPaint(Runtime *runtime, JClass *clazz) {
 }
 static s32 n_endAfkPaint(Runtime *runtime, JClass *clazz) {
     const uint64_t key = jarbox_native_heap_key_for_runtime(runtime);
-    g_afk_canvas = key && key == g_afk_canvas_owner_key ?
+    const int same_owner=key && key==g_afk_canvas_owner_key;
+    g_afk_canvas = same_owner ?
         runtime->jnienv->localvar_getLong_2slot(runtime->localvar, 0) : 0;
+    if (!same_owner) { g_afk_elided_local=0; g_afk_draw_count=0; }
     if (!g_afk_canvas) g_afk_canvas_owner_key = 0;
     runtime->thrd_info->jarbox_headless_scope = g_afk_canvas != 0;
+    JarBoxTreoState *state=same_owner ? treo_runtime_state(runtime) : NULL;
     if (!g_afk_canvas && g_afk_elided_local) {
+        if (state) __atomic_fetch_add(&state->ninja_core.scoped_vm_draw_skips,g_afk_elided_local,__ATOMIC_RELAXED);
         atomic_fetch_add_explicit(&g_afk_elided, g_afk_elided_local, memory_order_relaxed);
         g_afk_elided_local = 0;
     }
     if (!g_afk_canvas && g_afk_draw_count) {
+        if (state) __atomic_fetch_add(&state->ninja_core.scoped_native_draw_skips,g_afk_draw_count,__ATOMIC_RELAXED);
         atomic_fetch_add_explicit(&g_afk_skipped_draws, g_afk_draw_count, memory_order_relaxed);
         g_afk_draw_count = 0;
     }
@@ -858,6 +884,7 @@ typedef struct { int mode; uint64_t now_ns; } TreoModeChange;
 static void treo_render_mode_visitor(MiniJVM *vm, void *arg) {
     const TreoModeChange *change = arg;
     pthread_mutex_lock(&g_treo_transition_lock);
+    jarbox_ninja_core_arm(&vm->session->treo_state.ninja_core,0);
     treo_apply_mode_locked(vm, change->mode, change->now_ns);
     pthread_mutex_unlock(&g_treo_transition_lock);
     j2me_display_wake_for_vm(vm);
@@ -889,6 +916,8 @@ static void treo_park_transition_visitor(MiniJVM *vm, void *arg) {
     pthread_mutex_lock(&g_treo_transition_lock);
     const int mode = change->entering
         ? jarbox_treo_safe_automatic_park_mode(state, change->compatible_only) : 0;
+    jarbox_ninja_core_arm(&state->ninja_core,change->entering && !change->compatible_only &&
+        mode==1 && jarbox_treo_nso_canvas_recognized(state));
     jarbox_treo_guard_auto_set(state, mode == 8);
     jarbox_treo_smart_set(state, mode == 8);
     if (mode == 8 && jvm_bridge_memory_state(NULL) != 0)
@@ -4774,7 +4803,7 @@ static int treo_instance_offset(JClass *clazz, const char *name, const char *typ
     return -1;
 }
 
-int treo_afk_elide_graphics(Runtime *runtime, JClass *clazz, Instance *receiver) {
+int treo_afk_elide_graphics(Runtime *runtime, JClass *clazz, Instance *receiver, int core) {
     const uint64_t caller_key = jarbox_native_heap_key_for_runtime(runtime);
     if (!caller_key || caller_key != g_afk_canvas_owner_key ||
         !g_afk_canvas || !receiver || receiver->mb.clazz != clazz)
@@ -4789,7 +4818,13 @@ int treo_afk_elide_graphics(Runtime *runtime, JClass *clazz, Instance *receiver)
     }
     s64 ctx;
     memcpy(&ctx, receiver->obj_fields + (u16)layout, sizeof(ctx));
-    if (ctx != g_afk_canvas || !receiver->obj_fields[(u16)(layout >> 16)]) return 0;
+    if (ctx != g_afk_canvas) return 0;
+    // Core uses the existing TLS Canvas scope, without changing the shared
+    // Java Graphics.headless flag. Non-core modes keep their old guard.
+    if (core) {
+        JarBoxTreoState *state=treo_runtime_state(runtime);
+        if (!state || !jarbox_ninja_core_active(&state->ninja_core,treo_runtime_mode(runtime))) return 0;
+    } else if (!receiver->obj_fields[(u16)(layout >> 16)]) return 0;
     ++g_afk_elided_local;
     return 1;
 }
@@ -5073,7 +5108,7 @@ static s32 n_copyArea(Runtime *runtime, JClass *clazz) {
     s32 xDst = env->localvar_getInt(runtime->localvar, 6);
     s32 yDst = env->localvar_getInt(runtime->localvar, 7);
     RenderContext *rc = rc_acquire(handle, jarbox_native_heap_key_for_runtime(runtime));
-    if (rc && treo_afk_skip_draw(rc)) { rc_release(rc); return RUNTIME_STATUS_NORMAL; }
+    if (rc && treo_runtime_mode(runtime)!=1 && treo_afk_skip_draw(rc)) { rc_release(rc); return RUNTIME_STATUS_NORMAL; }
     if (!rc || w <= 0 || h <= 0) { rc_release(rc); return RUNTIME_STATUS_NORMAL; }
     treo_live_barrier(rc);
     CGImageRef fullImg = treo_canvas_snapshot(rc);
@@ -5227,6 +5262,8 @@ static java_native_method j2me_render_methods[] = {
     {CLS, "afkPaintPolicy", "()I", n_afkPaintPolicy},
     {CLS, "ninjaDeepActive", "()Z", n_ninjaDeepActive},
     {CLS, "ninjaDeepSkip", "(Ljava/lang/Object;I)Z", n_ninjaDeepSkip},
+    {CLS, "ninjaCorePaint", "(Ljava/lang/Object;)Z", n_ninjaCorePaint},
+    {CLS, "ninjaCorePaintResult", "(I)V", n_ninjaCorePaintResult},
     {CLS, "afkImageCacheEnabled", "()Z", n_afkImageCacheEnabled},
     {CLS, "imageCacheNote", "(II)V", n_imageCacheNote},
     {CLS, "afkCanvasResult", "(I)V", n_afkCanvasResult},

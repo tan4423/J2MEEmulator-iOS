@@ -618,12 +618,12 @@ const char *treo_vm_paint_sample_report(void) {
 
 #if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__
 extern _Atomic int treo_afk_mode;
-extern int treo_afk_elide_graphics(Runtime *runtime, JClass *clazz, Instance *receiver);
+extern int treo_afk_elide_graphics(Runtime *runtime, JClass *clazz, Instance *receiver, int core);
 extern int treo_direct_graphics_enabled_for_runtime(Runtime *runtime);
 
 static int treo_headless_eligible(MethodInfo *m) {
     u8 tag = __atomic_load_n(&m->treo_afk_kind, __ATOMIC_RELAXED);
-    if (tag) return tag == 2;
+    if (tag) return tag >= 2;
     tag = 1;
     JClass *clazz = m->_this_class;
     static const char *const allowed[][2] = {
@@ -643,14 +643,16 @@ static int treo_headless_eligible(MethodInfo *m) {
                 !utf8_equals_c(f->descriptor, "I")) continue;
             for (size_t k = 0; k < sizeof(allowed)/sizeof(allowed[0]); ++k) {
                 if (utf8_equals_c(m->name, allowed[k][0]) && utf8_equals_c(m->descriptor, allowed[k][1])) {
-                    tag = 2; break;
+                    // Core only skips simple sink wrappers, not allocation
+                    // or array argument processing in char/triangle/RGB.
+                    tag = (k == 3 || k >= 11) ? 2 : 3; break;
                 }
             }
             break;
         }
     }
     __atomic_store_n(&m->treo_afk_kind, tag, __ATOMIC_RELAXED);
-    return tag == 2;
+    return tag >= 2;
 }
 extern int treo_try_graphics_draw_region(Runtime *runtime, JClass *clazz);
 extern int treo_jar_audit_enabled(void);
@@ -1753,16 +1755,19 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
     const int treo_paint_mode = (headless_scope || TREO_VM_ARRAY_LOOKUP) &&
         pruntime->jvm && pruntime->jvm->session ?
         jarbox_treo_mode_get(&pruntime->jvm->session->treo_state) : 0;
+    const int core_sink = headless_scope && TREO_VM_PAINT_BRIDGE && treo_paint_mode == 1 &&
+        jarbox_ninja_core_active(&pruntime->jvm->session->treo_state.ninja_core,treo_paint_mode);
     if (headless_scope && (treo_paint_mode == 4 ||
-         (TREO_VM_PAINT_BRIDGE && treo_paint_mode == 8)) &&
+         (TREO_VM_PAINT_BRIDGE && treo_paint_mode == 8) || core_sink) &&
         method->para_slots >= 4 && method->return_slots == 0 &&
         !method->is_static && !method->is_sync && !method->is_native &&
         method->_this_class->status >= CLASS_STATUS_CLINITED &&
         !pruntime->jvm->jdwp_enable && !pruntime->thrd_info->is_stop &&
-        !pruntime->thrd_info->suspend_count && treo_headless_eligible(method)) {
+        !pruntime->thrd_info->suspend_count && method->breakpoint == NULL && treo_headless_eligible(method) &&
+        (!core_sink || __atomic_load_n(&method->treo_afk_kind,__ATOMIC_RELAXED)==3)) {
         RuntimeStack *caller = pruntime->stack;
         StackEntry *args = caller->sp - method->para_slots;
-        if (treo_afk_elide_graphics(pruntime, method->_this_class, args->ins)) {
+        if (treo_afk_elide_graphics(pruntime, method->_this_class, args->ins,core_sink)) {
             caller->sp = args;
             return RUNTIME_STATUS_NORMAL;
         }
