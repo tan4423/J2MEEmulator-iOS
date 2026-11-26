@@ -1,4 +1,4 @@
-"""Host regression for a worker finishing before thrd_create returns.
+"""Host regression for worker retirement before Thread.start returns.
 
 The start function and lease policy are production code; worker and GC
 finalization are modeled, not a full miniJVM or iOS execution.
@@ -15,28 +15,65 @@ PRELUDE = r"""
 #include <assert.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <time.h>
 #include "jarbox_session.h"
 typedef uintptr_t thrd_t;
 enum { thrd_success, thrd_error };
 enum { THREAD_STATUS_NEW, THREAD_STATUS_RUNNING, THREAD_STATUS_ZOMBIE };
-typedef struct { JarBoxSession *session; } MiniJVM;
 typedef struct Runtime Runtime;
-typedef struct { Runtime *runtime; } Instance;
-typedef struct { Instance *jthread; void *context_classloader; thrd_t pthread; int lock, thread_status; } Info;
-struct Runtime { MiniJVM *jvm; Info *thrd_info; };
-static int fail_create, stop_during_init, removed, created;
+typedef struct { int spinlock; Runtime *entry; } ArrayList;
+typedef struct { JarBoxSession *session; ArrayList *thread_list; } MiniJVM;
+typedef struct { Runtime *runtime; struct { void *clazz; } mb; } Instance;
+typedef struct { Instance *jthread; void *context_classloader; int lock, thread_status; } Info;
+struct Runtime { MiniJVM *jvm; Info *thrd_info; void *clazz; };
+static int fail_create, stop_during_publish, fail_publish, stop_during_lookup;
+static int removed, created, busy_once, safepoints, sleeps;
+static ArrayList *active_list;
+static Runtime *pending_child;
+static int jthread_run(void *arg);
 static void spin_lock(int *l) { assert(!*l); *l = 1; }
-static void spin_unlock(int *l) { assert(*l); *l = 0; }
+static int spin_trylock(int *l) {
+    if (busy_once) { busy_once = 0; return 1; }
+    if (*l) return 1;
+    spin_lock(l); return 0;
+}
+static void spin_unlock(int *l) {
+    assert(*l); *l = 0;
+    // A real child cannot retire from the list until the parent unlocks it.
+    // Model retirement and GC immediately at unlock, before parent returns.
+    if (l == &active_list->spinlock && pending_child) {
+        Runtime *child = pending_child;
+        pending_child = NULL;
+        jthread_run(child);
+    }
+}
+static void check_suspend_and_pause(Runtime *r) { assert(r); ++safepoints; }
+static void thrd_sleep(const struct timespec *t, void *unused) {
+    assert(t->tv_sec == 0 && t->tv_nsec == 1000000L);
+    (void)unused; ++sleeps;
+}
 static Runtime *jthread_get_stackframe_value(MiniJVM *vm, Instance *ins) {
-    (void)vm; return ins->runtime;
+    if (stop_during_lookup) jarbox_session_begin_stop(vm->session);
+    return ins->runtime;
 }
-static void jthread_init(MiniJVM *vm, Instance *ins) {
-    (void)ins; if (stop_during_init) jarbox_session_begin_stop(vm->session);
+static int arraylist_push_back_unsafe(ArrayList *l, Runtime *r) {
+    assert(l->spinlock && !l->entry && r->clazz == r->thrd_info->jthread->mb.clazz);
+    assert(r->thrd_info->thread_status == THREAD_STATUS_RUNNING);
+    if (fail_publish) return 0;
+    l->entry = r;
+    if (stop_during_publish) jarbox_session_begin_stop(r->jvm->session);
+    return 1;
 }
-static void threadlist_remove(Runtime *r) { (void)r; ++removed; }
+static void arraylist_remove_unsafe(ArrayList *l, Runtime *r) {
+    assert(l->spinlock && l->entry == r);
+    l->entry = NULL; ++removed;
+}
 static int jthread_run(void *arg) {
     Runtime *r = arg;
     JarBoxSession *held = r->jvm->session;
+    assert(!active_list->spinlock && active_list->entry == r);
+    assert(!r->thrd_info->lock);
+    active_list->entry = NULL;
     r->thrd_info->jthread->runtime = NULL;
     free(r->thrd_info);
     free(r);
@@ -44,41 +81,55 @@ static int jthread_run(void *arg) {
     return 0;
 }
 static int thrd_create(thrd_t *out, int (*run)(void *), void *arg) {
+    assert(run == jthread_run && active_list->spinlock && active_list->entry == arg);
     ++created;
     if (fail_create) return thrd_error;
     *out = 123;
-    /* A fast child and collector may finish before the parent returns. */
-    run(arg);
+    assert(!pending_child);
+    pending_child = arg;
     return thrd_success;
 }
 """
 MAIN = r"""
 int main(void) {
-    for (int i = 0; i < 10000; ++i) {
-        MiniJVM vm = {0};
+    for (int i = 0; i < 16000; ++i) {
+        ArrayList list = {0};
+        MiniJVM vm = {.thread_list = &list};
         vm.session = jarbox_session_create(&vm);
-        Info pi = {0}; Runtime parent = {&vm, &pi}; Instance ins = {0};
+        assert(vm.session);
+        Info pi = {0}; Runtime parent = {.jvm = &vm, .thrd_info = &pi};
+        Instance ins = {0}; ins.mb.clazz = &vm;
         Runtime *child = calloc(1, sizeof(*child));
+        assert(child);
         child->jvm = &vm; child->thrd_info = calloc(1, sizeof(Info));
+        assert(child->thrd_info);
         ins.runtime = child;
-        int mode = i % 5;
+        int mode = i % 8;
         fail_create = mode == 1;
-        stop_during_init = mode == 2;
-        removed = created = 0;
+        stop_during_publish = mode == 2;
+        fail_publish = mode == 5;
+        stop_during_lookup = mode == 6;
+        busy_once = mode == 7;
+        removed = created = safepoints = sleeps = 0;
+        active_list = &list;
+        assert(!pending_child);
         if (mode == 3) jarbox_session_begin_stop(vm.session);
         if (mode == 4) child->thrd_info->thread_status = THREAD_STATUS_RUNNING;
         thrd_t result = jthread_start(&ins, &parent);
         assert(jarbox_session_active_lease_count(vm.session) == 0);
-        if (mode == 0) {
+        assert(!list.spinlock && !list.entry && !pending_child);
+        assert(safepoints == (mode == 7) && sleeps == safepoints);
+        if (mode == 0 || mode == 7) {
             assert(result == 123 && !ins.runtime && removed == 0 && created == 1);
         } else {
             assert(!result && ins.runtime == child);
             assert(removed == (mode == 1 || mode == 2));
             assert(created == (mode == 1));
+            assert(!child->thrd_info->lock);
+            assert(!child->thrd_info->jthread);
             assert(child->thrd_info->thread_status ==
-                   (mode == 3 ? THREAD_STATUS_NEW :
+                   (mode == 3 || mode == 6 ? THREAD_STATUS_NEW :
                     mode == 4 ? THREAD_STATUS_RUNNING : THREAD_STATUS_ZOMBIE));
-            // Model GC reclamation through the retained Java stackFrame link.
             free(child->thrd_info); free(child);
         }
         jarbox_session_begin_stop(vm.session);
@@ -91,13 +142,13 @@ int main(void) {
 
 
 def harness(src):
-    begin = src.index("thrd_t jthread_start(")
+    begin = src.index("static int jthread_start_list_lock(Runtime *parent) {")
     end = src.index("\n__refer jthread_get_name_value", begin)
     return PRELUDE + src[begin:end] + MAIN
 
 
 class JavaWorkerStartHandleTest(unittest.TestCase):
-    def test_fast_worker_can_finish_before_parent_returns(self):
+    def test_worker_registration_and_fast_retirement_before_parent_returns(self):
         cc = shutil.which("cc") or shutil.which("clang")
         if not cc:
             self.skipTest("host C compiler unavailable")
