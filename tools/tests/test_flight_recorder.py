@@ -65,6 +65,20 @@ class FlightRecorderTest(unittest.TestCase):
         for field in ("const_arith_fusions", "const_branch_fusions", "decoded_int_calls", "event_sleep_handled", "event_sleep_fallbacks", "shared_zip_probes", "shared_zip_hits", "shared_zip_negative_hits", "shared_prepared_candidates", "shared_prepared_hits", "startup_image_decodes", "startup_image_hits", "startup_image_decode_ns"):
             self.assertIn(f"out->{field}=__atomic_load_n(&session->{field},__ATOMIC_RELAXED);",sampler)
             self.assertIn(field + r"=\(slot." + field + ")",scene)
+        # Existing AFK paint timing is attributed to the invoking owner.
+        for field in ("afk_profile_paint_calls", "afk_profile_paint_cpu_ns"):
+            self.assertIn(f"out->{field}=__atomic_load_n(&session->treo_state.{field},__ATOMIC_RELAXED);",sampler)
+            self.assertIn(field + r"=\(slot." + field + ")",scene)
+        for stage, field in enumerate(("nso_repaint_skips", "nso_service_skips", "nso_paint_skips")):
+            self.assertIn(f"out->{field}=jarbox_treo_nso_skip_count(&session->treo_state,{stage});",sampler)
+            self.assertIn(field + r"=\(slot." + field + ")",scene)
+        renderer=(ROOT/"J2MEEmulator/NativeBridge/j2me_render.m").read_text()
+        end=renderer.split("static s32 n_profilePaintEnd(",1)[1].split("\n}",1)[0]
+        afk=end.split("if (stamp < 0)",1)[1].split("return RUNTIME_STATUS_NORMAL;",1)[0]
+        self.assertIn("JarBoxTreoState *state = treo_runtime_state(runtime);",afk)
+        self.assertIn("__atomic_fetch_add(&state->afk_profile_paint_calls, 1, __ATOMIC_RELAXED);",afk)
+        self.assertIn("__atomic_fetch_add(&state->afk_profile_paint_cpu_ns, elapsed, __ATOMIC_RELAXED);",afk)
+        self.assertEqual(end.count("treo_thread_cpu_ns()"),2) # no extra clock reads
         for name in ("GameViewController.swift","AppsListViewController.swift"):
             self.assertIn("JarBoxBackgroundDiagnostics.showFlight(from: self)",(ROOT/"J2MEEmulator/UI"/name).read_text())
 if __name__=="__main__":unittest.main()

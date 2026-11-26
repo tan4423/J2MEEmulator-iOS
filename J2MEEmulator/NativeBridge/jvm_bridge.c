@@ -985,6 +985,11 @@ int jvm_bridge_flight_sample(JarBoxFlightProcess *process, JarBoxFlightSlot *slo
         out->gc_cycles=__atomic_load_n(&session->treo_state.gc_worker_cycles,__ATOMIC_RELAXED);
         out->gc_aborts=__atomic_load_n(&session->treo_state.gc_worker_aborts,__ATOMIC_RELAXED);
         out->repaint_requests=__atomic_load_n(&session->treo_state.nso_repaint_requests,__ATOMIC_RELAXED);
+        out->afk_profile_paint_calls=__atomic_load_n(&session->treo_state.afk_profile_paint_calls,__ATOMIC_RELAXED);
+        out->afk_profile_paint_cpu_ns=__atomic_load_n(&session->treo_state.afk_profile_paint_cpu_ns,__ATOMIC_RELAXED);
+        out->nso_repaint_skips=jarbox_treo_nso_skip_count(&session->treo_state,0);
+        out->nso_service_skips=jarbox_treo_nso_skip_count(&session->treo_state,1);
+        out->nso_paint_skips=jarbox_treo_nso_skip_count(&session->treo_state,2);
         out->const_arith_fusions=__atomic_load_n(&session->const_arith_fusions,__ATOMIC_RELAXED);
         out->const_branch_fusions=__atomic_load_n(&session->const_branch_fusions,__ATOMIC_RELAXED);
         out->decoded_int_calls=__atomic_load_n(&session->decoded_int_calls,__ATOMIC_RELAXED);

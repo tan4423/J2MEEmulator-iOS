@@ -94,6 +94,8 @@ typedef struct {
     uint64_t token, runner_ns, java_ns, gc_ns, gc_cycles, gc_aborts, repaint_requests;
     uint64_t const_arith_fusions, const_branch_fusions, decoded_int_calls;
     uint64_t event_sleep_handled, event_sleep_fallbacks;
+    uint64_t afk_profile_paint_calls, afk_profile_paint_cpu_ns;
+    uint64_t nso_repaint_skips, nso_service_skips, nso_paint_skips;
     uint64_t shared_zip_probes, shared_zip_hits, shared_zip_negative_hits;
     uint64_t shared_prepared_candidates, shared_prepared_hits;
     uint64_t startup_image_decodes, startup_image_hits, startup_image_decode_ns;

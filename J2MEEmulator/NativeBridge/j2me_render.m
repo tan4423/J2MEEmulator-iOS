@@ -1731,6 +1731,13 @@ static s32 n_profilePaintEnd(Runtime *runtime, JClass *clazz) {
             const uint64_t elapsed = end - begin;
             atomic_fetch_add_explicit(&g_afk_paint_cpu_ns, elapsed, memory_order_relaxed);
             atomic_fetch_add_explicit(&g_afk_paint_count, 1, memory_order_relaxed);
+            // Reuse the existing negative-stamp AFK/audit measurement.
+            // A paint spanning a mode transition remains in this bucket.
+            JarBoxTreoState *state = treo_runtime_state(runtime);
+            if (state) {
+                __atomic_fetch_add(&state->afk_profile_paint_calls, 1, __ATOMIC_RELAXED);
+                __atomic_fetch_add(&state->afk_profile_paint_cpu_ns, elapsed, __ATOMIC_RELAXED);
+            }
             treo_vm_paint_sample_note_duration(sampled, elapsed);
         }
         return RUNTIME_STATUS_NORMAL;
