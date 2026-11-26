@@ -985,6 +985,19 @@ int jvm_bridge_flight_sample(JarBoxFlightProcess *process, JarBoxFlightSlot *slo
         out->gc_cycles=__atomic_load_n(&session->treo_state.gc_worker_cycles,__ATOMIC_RELAXED);
         out->gc_aborts=__atomic_load_n(&session->treo_state.gc_worker_aborts,__ATOMIC_RELAXED);
         out->repaint_requests=__atomic_load_n(&session->treo_state.nso_repaint_requests,__ATOMIC_RELAXED);
+        out->const_arith_fusions=__atomic_load_n(&session->const_arith_fusions,__ATOMIC_RELAXED);
+        out->const_branch_fusions=__atomic_load_n(&session->const_branch_fusions,__ATOMIC_RELAXED);
+        out->decoded_int_calls=__atomic_load_n(&session->decoded_int_calls,__ATOMIC_RELAXED);
+        out->event_sleep_handled=__atomic_load_n(&session->event_sleep_handled,__ATOMIC_RELAXED);
+        out->event_sleep_fallbacks=__atomic_load_n(&session->event_sleep_fallbacks,__ATOMIC_RELAXED);
+        out->shared_zip_probes=__atomic_load_n(&session->shared_zip_probes,__ATOMIC_RELAXED);
+        out->shared_zip_hits=__atomic_load_n(&session->shared_zip_hits,__ATOMIC_RELAXED);
+        out->shared_zip_negative_hits=__atomic_load_n(&session->shared_zip_negative_hits,__ATOMIC_RELAXED);
+        out->shared_prepared_candidates=__atomic_load_n(&session->shared_prepared_candidates,__ATOMIC_RELAXED);
+        out->shared_prepared_hits=__atomic_load_n(&session->shared_prepared_hits,__ATOMIC_RELAXED);
+        out->startup_image_decodes=__atomic_load_n(&session->startup_image_decodes,__ATOMIC_RELAXED);
+        out->startup_image_hits=__atomic_load_n(&session->startup_image_hits,__ATOMIC_RELAXED);
+        out->startup_image_decode_ns=__atomic_load_n(&session->startup_image_decode_ns,__ATOMIC_RELAXED);
         out->counters_ok=1;
         if (pthread_mutex_trylock(&bridge_cpu_lock)==0) {
             uint64_t totals[JARBOX_CPU_KINDS];

@@ -1354,6 +1354,8 @@ struct _JavaThreadInfo {
     u8 jarbox_int_leaf_pending; // batched successful calls; owning thread only
     u8 jarbox_ref_leaf_pending;
     u16 jarbox_aload_field_pending; // owning Java thread, batch 256
+    u16 jarbox_const_arith_pending, jarbox_const_branch_pending;
+    u8 jarbox_decoded_int_pending; // owning thread, batch 64
     Instance *jthread;
     Instance *context_classloader;
     Runtime *top_runtime;

@@ -60,6 +60,11 @@ class FlightRecorderTest(unittest.TestCase):
             self.assertIn(anchor,scene)
         self.assertIn('"JarBoxPerfProfile"',scene)
         self.assertIn(r"perf=\(perf)",scene)
+        # Counters are sampled only under the owner lease and logged with
+        # the existing bounded journal. No extra timer or per-call logging.
+        for field in ("const_arith_fusions", "const_branch_fusions", "decoded_int_calls", "event_sleep_handled", "event_sleep_fallbacks", "shared_zip_probes", "shared_zip_hits", "shared_zip_negative_hits", "shared_prepared_candidates", "shared_prepared_hits", "startup_image_decodes", "startup_image_hits", "startup_image_decode_ns"):
+            self.assertIn(f"out->{field}=__atomic_load_n(&session->{field},__ATOMIC_RELAXED);",sampler)
+            self.assertIn(field + r"=\(slot." + field + ")",scene)
         for name in ("GameViewController.swift","AppsListViewController.swift"):
             self.assertIn("JarBoxBackgroundDiagnostics.showFlight(from: self)",(ROOT/"J2MEEmulator/UI"/name).read_text())
 if __name__=="__main__":unittest.main()

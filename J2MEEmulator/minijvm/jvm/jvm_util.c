@@ -1328,6 +1328,10 @@ s32 jthread_sleep(Runtime *runtime, s64 ms) {
     // A native wait failure returns the remaining duration to the fallback.
     if (ms >= PERIOD && ms <= INT32_MAX) {
         ms = jarbox_event_sleep(runtime, ms);
+        if (runtime->jvm->session) {
+            uint64_t *total = ms ? &runtime->jvm->session->event_sleep_fallbacks : &runtime->jvm->session->event_sleep_handled;
+            __atomic_fetch_add(total, 1, __ATOMIC_RELAXED);
+        }
         if (!ms) goto sleep_done;
     }
 #endif

@@ -34,11 +34,16 @@ static inline int jarbox_const_fusion_target(unsigned op, size_t remaining) {
 // Called only after the original integer constant handler has pushed its
 // value and advanced PC. The target cannot chain again; normal dispatch
 // resumes after one additional original opcode. Never bypass JDWP.
+#ifndef JARBOX_CONST_FUSION_NOTE
+#define JARBOX_CONST_FUSION_NOTE(op) ((void)(op))
+#endif
 #define TREO_VM_FUSE_INT_CONSTANT() do { \
     if (treo_vm_use_direct && runtime->pc < treo_vm_code_end) { \
         const unsigned next = *runtime->pc; \
-        if (jarbox_const_fusion_target(next, (size_t)(treo_vm_code_end - runtime->pc))) \
+        if (jarbox_const_fusion_target(next, (size_t)(treo_vm_code_end - runtime->pc))) { \
+            JARBOX_CONST_FUSION_NOTE(next); \
             goto *treo_vm_targets[next]; \
+        } \
     } \
 } while (0)
 #else

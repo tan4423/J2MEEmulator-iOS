@@ -25,6 +25,7 @@ enum { op_iadd=0x60, op_isub=0x64, op_imul=0x68,
        op_iand=0x7e, op_ior=0x80, op_ixor=0x82,
        op_if_icmpeq=0x9f, op_if_icmpne=0xa0, op_if_icmplt=0xa1,
        op_if_icmpge=0xa2, op_if_icmpgt=0xa3, op_if_icmple=0xa4 };
+#define JARBOX_CONST_FUSION_NOTE(op) do { assert((op)==bytes[8]); ++notes; } while(0)
 #include "jarbox_const_fusion.h"
 typedef struct { unsigned char *pc; } Runtime;
 typedef struct { uint32_t stack[2]; int depth, pc, pauses, chained; } Result;
@@ -57,6 +58,7 @@ static Result run(unsigned op, uint32_t a,uint32_t b,int direct,int remaining,in
     unsigned char bytes[16]={0};bytes[8]=(unsigned char)op;
     Runtime rt={bytes+8};Runtime *runtime=&rt;
     Result r={{a,b},2,8,0,0};
+    unsigned notes=0;
 #if TREO_VM_CONST_FUSION
     const unsigned char *treo_vm_code_end=bytes+8+remaining;
     const int treo_vm_use_direct=direct;
@@ -70,11 +72,13 @@ static Result run(unsigned op, uint32_t a,uint32_t b,int direct,int remaining,in
     (void)direct;(void)runtime;
 #endif
     TREO_VM_FUSE_INT_CONSTANT();
+    assert(notes==0);
     if (!remaining || (!arithmetic(op) && (!comparison(op)||remaining<3))) return r;
     goto execute;
 #if TREO_VM_CONST_FUSION
 chain:
     assert(runtime->pc==bytes+8 && r.depth==2);
+    assert(notes==1);
     r.chained=1;
 #endif
 execute:

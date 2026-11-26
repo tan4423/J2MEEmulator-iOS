@@ -117,6 +117,19 @@ int treo_vm_direct_dispatch_build(void) { return TREO_VM_DIRECT_DISPATCH; }
 #define TREO_VM_ALOAD_FIELD_FUSION 0
 #endif
 
+// Count only accepted chains, never a failed eligibility probe.
+// Like aload-field fusion, publish per owner in batches, not per opcode.
+#define JARBOX_CONST_FUSION_NOTE(op) do { \
+    const int branch = (op) >= op_if_icmpeq && (op) <= op_if_icmple; \
+    u16 *pending = branch ? &thrd_info->jarbox_const_branch_pending : &thrd_info->jarbox_const_arith_pending; \
+    if (++*pending == 256) { \
+        *pending = 0; \
+        if (jvm->session) { \
+            uint64_t *total = branch ? &jvm->session->const_branch_fusions : &jvm->session->const_arith_fusions; \
+            __atomic_fetch_add(total, 256, __ATOMIC_RELAXED); \
+        } \
+    } \
+} while (0)
 #include "jarbox_const_fusion.h"
 
 
@@ -1702,6 +1715,11 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
             const s32 result = jarbox_decoded_int_eval(decoded->jarbox_decoded_int_plan, values);
             caller->sp = args;
             push_int(caller, result);
+            if (++pruntime->thrd_info->jarbox_decoded_int_pending == 64) {
+                pruntime->thrd_info->jarbox_decoded_int_pending = 0;
+                if (pruntime->jvm->session)
+                    __atomic_fetch_add(&pruntime->jvm->session->decoded_int_calls, 64, __ATOMIC_RELAXED);
+            }
             return RUNTIME_STATUS_NORMAL;
         }
     }
