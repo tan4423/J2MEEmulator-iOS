@@ -94,6 +94,26 @@ typedef struct {
 } JarBoxFlightProcess;
 typedef struct {
     uint64_t token, runner_ns, java_ns, gc_ns, gc_cycles, gc_aborts, repaint_requests;
+    int gc_phase_ok;
+    uint64_t gc_phase_busy;
+    uint64_t gc_phase_invalid;
+    uint64_t gc_phase_aborted;
+    uint64_t gc_phase_cycles;
+    uint64_t gc_phase_scanned;
+    uint64_t gc_phase_reclaimed;
+    uint64_t gc_phase_freed_bytes;
+    uint64_t gc_phase_pause_cpu_ns;
+    uint64_t gc_phase_pause_wall_ns;
+    uint64_t gc_phase_roots_cpu_ns;
+    uint64_t gc_phase_roots_wall_ns;
+    uint64_t gc_phase_mark_cpu_ns;
+    uint64_t gc_phase_mark_wall_ns;
+    uint64_t gc_phase_resume_cpu_ns;
+    uint64_t gc_phase_resume_wall_ns;
+    uint64_t gc_phase_deferred_cpu_ns;
+    uint64_t gc_phase_deferred_wall_ns;
+    uint64_t gc_phase_sweep_cpu_ns;
+    uint64_t gc_phase_sweep_wall_ns;
     uint64_t const_arith_fusions, const_branch_fusions, decoded_int_calls;
     uint64_t event_sleep_handled, event_sleep_fallbacks;
     uint64_t afk_profile_paint_calls, afk_profile_paint_cpu_ns, compatible_font_reuses;

@@ -6,6 +6,7 @@
 #include "jarbox_ninja_core_policy.h"
 #include "jarbox_hotspot.h"
 #include "jarbox_core_aba.h"
+#include "jarbox_gc_phase.h"
 
 // Owned by one MiniJVM allocation and never shared with a different JVM.
 // Atomic builtins allow the collector thread and the UIKit control thread
@@ -57,6 +58,7 @@ typedef struct JarBoxTreoState {
     uint64_t smart_cycles;
     uint64_t smart_cpu_ns;
     uint64_t gc_worker_cycles, gc_worker_aborts, gc_worker_cpu_ns; // session lifetime
+    JarBoxGCPhaseStats gc_phase; // only completed background worker collections
 } JarBoxTreoState;
 
 static inline void jarbox_treo_mode_set(JarBoxTreoState *state, int mode) {

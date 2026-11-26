@@ -1036,6 +1036,32 @@ int jvm_bridge_flight_sample(JarBoxFlightProcess *process, JarBoxFlightSlot *slo
         out->mode=jarbox_treo_mode_get(&session->treo_state);
         out->gc_cycles=__atomic_load_n(&session->treo_state.gc_worker_cycles,__ATOMIC_RELAXED);
         out->gc_aborts=__atomic_load_n(&session->treo_state.gc_worker_aborts,__ATOMIC_RELAXED);
+#if defined(TREO_GC_PHASE_DIAG) && TREO_GC_PHASE_DIAG && defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__
+        JarBoxGCPhaseStats *gp=&session->treo_state.gc_phase;
+        JarBoxGCPhaseTotals gt;
+        out->gc_phase_ok=jarbox_gc_phase_snapshot(gp,&gt);
+        out->gc_phase_busy=__atomic_load_n(&gp->busy,__ATOMIC_RELAXED);
+        out->gc_phase_invalid=__atomic_load_n(&gp->invalid,__ATOMIC_RELAXED);
+        out->gc_phase_aborted=__atomic_load_n(&gp->aborted,__ATOMIC_RELAXED);
+        if (out->gc_phase_ok) {
+            out->gc_phase_cycles=gt.cycles;
+            out->gc_phase_scanned=gt.scanned;
+            out->gc_phase_reclaimed=gt.reclaimed;
+            out->gc_phase_freed_bytes=gt.freed_bytes;
+            out->gc_phase_pause_cpu_ns=gt.cpu[0];
+            out->gc_phase_pause_wall_ns=gt.wall[0];
+            out->gc_phase_roots_cpu_ns=gt.cpu[1];
+            out->gc_phase_roots_wall_ns=gt.wall[1];
+            out->gc_phase_mark_cpu_ns=gt.cpu[2];
+            out->gc_phase_mark_wall_ns=gt.wall[2];
+            out->gc_phase_resume_cpu_ns=gt.cpu[3];
+            out->gc_phase_resume_wall_ns=gt.wall[3];
+            out->gc_phase_deferred_cpu_ns=gt.cpu[4];
+            out->gc_phase_deferred_wall_ns=gt.wall[4];
+            out->gc_phase_sweep_cpu_ns=gt.cpu[5];
+            out->gc_phase_sweep_wall_ns=gt.wall[5];
+        }
+#endif
         out->repaint_requests=__atomic_load_n(&session->treo_state.nso_repaint_requests,__ATOMIC_RELAXED);
         out->afk_profile_paint_calls=__atomic_load_n(&session->treo_state.afk_profile_paint_calls,__ATOMIC_RELAXED);
         out->afk_profile_paint_cpu_ns=__atomic_load_n(&session->treo_state.afk_profile_paint_cpu_ns,__ATOMIC_RELAXED);

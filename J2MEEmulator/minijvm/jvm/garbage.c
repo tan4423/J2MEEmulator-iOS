@@ -546,6 +546,22 @@ static s64 gc_sum_heap_sample(GcCollector *collector, s64 *out_native) {
 s64 gc_sum_heap(GcCollector *collector) {
     return gc_sum_heap_sample(collector, NULL);
 }
+#if defined(TREO_GC_PHASE_DIAG) && TREO_GC_PHASE_DIAG && defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__
+// The GC worker lends its own stack record for one synchronous collection.
+// Terminal cleanup and other callers leave this NULL. Never retain it in
+// session state, and never publish while holding a stopped-world lock.
+static _Thread_local JarBoxGCPhaseCycle *jarbox_gc_phase_current;
+static inline void jarbox_gc_phase_boundary(unsigned i) {
+    JarBoxGCPhaseCycle *c=jarbox_gc_phase_current;
+    if (c) {
+        c->cpu[i]=treo_gc_smart_thread_cpu();
+        c->wall[i]=clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW);
+    }
+}
+#define JARBOX_GC_BOUNDARY(i) jarbox_gc_phase_boundary(i)
+#else
+#define JARBOX_GC_BOUNDARY(i) ((void)0)
+#endif
 //==============================   thread_run() =====================================
 /**
  * Garbage Collection Thread Function.
@@ -650,7 +666,14 @@ s32 _gc_thread_run(void *para) {
             const int smartRecord = __atomic_load_n(&jvm->session->treo_state.smart_enabled, __ATOMIC_ACQUIRE);
             const uint64_t gcCpuStart = treo_gc_smart_thread_cpu();
 #endif
+#if defined(TREO_GC_PHASE_DIAG) && TREO_GC_PHASE_DIAG && defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__
+            JarBoxGCPhaseCycle phaseCycle={0};
+            jarbox_gc_phase_current=&phaseCycle;
+#endif
             s64 gcResult = _garbage_collect(collector);
+#if defined(TREO_GC_PHASE_DIAG) && TREO_GC_PHASE_DIAG && defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__
+            jarbox_gc_phase_current=NULL;
+#endif
 #if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__
             const uint64_t gcCpuEnd = treo_gc_smart_thread_cpu();
             JarBoxTreoState *metrics = &jvm->session->treo_state;
@@ -666,6 +689,9 @@ s32 _gc_thread_run(void *para) {
             if (gcResult < 0)
                 __atomic_fetch_add(&metrics->gc_worker_aborts, 1, __ATOMIC_RELAXED);
             treo_diag_gc_cycle_end();
+#if defined(TREO_GC_PHASE_DIAG) && TREO_GC_PHASE_DIAG && defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__
+            jarbox_gc_phase_publish(&metrics->gc_phase,&phaseCycle,gcResult<0);
+#endif
 #else
             (void)gcResult;
 #endif
@@ -773,6 +799,7 @@ s64 _garbage_collect(GcCollector *collector) {
     start = time = currentTimeMillis();
 
     //prepar gc resource ,
+    JARBOX_GC_BOUNDARY(0);
     vm_share_lock(jvm);
     {
         if (_gc_pause_the_world(jvm) != 0) {
@@ -783,6 +810,7 @@ s64 _garbage_collect(GcCollector *collector) {
             return -1;
         }
         collector->isworldstoped = 1;
+        JARBOX_GC_BOUNDARY(1);
 #if _JVM_DEBUG_GARBAGE
         jvm_printf("garbage_move_cache %lld\n", (currentTimeMillis() - time));
         time = currentTimeMillis();
@@ -813,6 +841,7 @@ s64 _garbage_collect(GcCollector *collector) {
         jvm_printf("garbage_copy_refer %lld\n", (currentTimeMillis() - time));
         time = currentTimeMillis();
 #endif
+        JARBOX_GC_BOUNDARY(2);
         //real GC start
         //
         collector->mark_cnt++;
@@ -820,6 +849,7 @@ s64 _garbage_collect(GcCollector *collector) {
             collector->mark_cnt = 1;
         }
         _gc_big_search(collector);
+        JARBOX_GC_BOUNDARY(3);
         //
 #if _JVM_DEBUG_GARBAGE
         jvm_printf("garbage_big_search %lld\n", (currentTimeMillis() - time));
@@ -834,6 +864,7 @@ s64 _garbage_collect(GcCollector *collector) {
         _gc_resume_the_world(jvm);
     }
     vm_share_unlock(jvm);
+    JARBOX_GC_BOUNDARY(4);
 
 #if _JVM_DEBUG_GARBAGE
     jvm_printf("garbage_resume_the_world %lld\n", (currentTimeMillis() - time));
@@ -847,6 +878,7 @@ s64 _garbage_collect(GcCollector *collector) {
 
 
     gc_process_deferred_objects(collector);
+    JARBOX_GC_BOUNDARY(5);
     MemoryBlock *nextmb, *curmb, *prevmb = NULL;
 
 #if _JVM_DEBUG_GARBAGE
@@ -908,7 +940,15 @@ s64 _garbage_collect(GcCollector *collector) {
 #ifdef MEM_ALLOC_LTALLOC
     jvm_squeeze(0);
 #endif
+#if defined(TREO_GC_PHASE_DIAG) && TREO_GC_PHASE_DIAG && defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__
+    if (jarbox_gc_phase_current && iter>=0 && del>=0 && mem_free>=0) {
+        jarbox_gc_phase_current->scanned=(uint64_t)iter;
+        jarbox_gc_phase_current->reclaimed=(uint64_t)del;
+        jarbox_gc_phase_current->freed_bytes=(uint64_t)mem_free;
+    }
+#endif
     collector->isgc = 0;
+    JARBOX_GC_BOUNDARY(6);
     return del;
 }
 
