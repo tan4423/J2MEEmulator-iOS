@@ -1,0 +1,9 @@
+# Runtime stability audit — follow-up to CPU termination
+
+Reviewed the exact c702b4e branch for Java thread startup/publication, GC stop-world/abort/worker loop, class-loading entry points, stop/cleanup, memory admission and cached status sampling, background scene and audio boundaries. This is a targeted audit, not exhaustive proof of all native/Java paths.
+
+Changes: the recursive spinlock retains its layout and zero initialization, with atomic owner publication on GCC/Clang, bounded short spins followed by a 1ms sleep only after contention, correct zero-success handling in adaptive and timeout helpers. This reduces CPU while a lock owner is descheduled; it does not fix arbitrary lock cycles. Thread.start now detects STOPPING before retrying the list lock, releasing its reserved worker lease when cancelled. A failed GC attempt uses completion time to prevent immediate repeat stop-world after a long wait. Primitive-class creation now rechecks under the VM lock, preventing duplicate canonical class publication. No game-loop sleep, game JAR, network, RMS, JIT or cross-VM live-object sharing changes.
+
+Remaining review risks: class initialization holds VM shared recursive mutex during Java execution (including no_pause paths), arbitrary native callbacks can remain uncooperative, JDWP gc_is_alive has collector/list lock-order risk (not changed in this device build), generic lock contention changes require iOS stress tests, GC timeout is not a process-level watchdog. Native heap allocation failures and full multi-VM startup/stop stress remain unproven. Existing automatic mode 1 quarantine stays in place; audio 0% unchanged. CI must pass before device validation. Do not claim all bugs resolved.
+
+Host tests cover recursive ownership, foreign unlock, try/timeout semantics, multiple incrementing pthreads and STOPPING registration model. The class/GC retry tests are source assertions, not a real Java runtime test.

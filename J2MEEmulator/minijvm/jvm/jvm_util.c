@@ -141,15 +141,19 @@ JClass *primitive_class_create_get(Runtime *runtime, Utf8String *ustr) {
     MiniJVM *jvm = runtime->jvm;
     JClass *cl = classes_get(jvm, NULL, ustr);
     if (!cl) {
-        Utf8String *typename = utf8_create_copy(ustr);
         vm_share_lock(jvm);
-        cl = class_create(runtime);
-        cl->name = typename;
-        cl->is_primitive = 1;
-        cl->jloader = NULL;//system classloader
-        classes_put(jvm, cl);
-        if (jdwp_client_count(jvm->jdwpserver) && cl)event_on_class_prepare(jvm->jdwpserver, runtime, cl);
-//        gc_obj_hold(jvm->collector, cl);
+        // Another worker may have created the canonical primitive class
+        // while this worker waited. Do not replace its live class identity.
+        cl = classes_get(jvm, NULL, ustr);
+        if (!cl) {
+            Utf8String *typename = utf8_create_copy(ustr);
+            cl = class_create(runtime);
+            cl->name = typename;
+            cl->is_primitive = 1;
+            cl->jloader = NULL;//system classloader
+            classes_put(jvm, cl);
+            if (jdwp_client_count(jvm->jdwpserver) && cl)event_on_class_prepare(jvm->jdwpserver, runtime, cl);
+        }
         vm_share_unlock(jvm);
 #if _JVM_DEBUG_LOG_LEVEL > 2
         jvm_printf("load class (%016llx load %016llx):  %s \n", (s64) (intptr_t) NULL, (s64) (intptr_t) cl, utf8_cstr(cl->name));
@@ -911,11 +915,13 @@ s32 jthread_run_finalize(Runtime *runtime) {
 // holding thread_list. Spinning inside arraylist_push_back cannot satisfy
 // that handshake. Only wait here, before changing the child or publishing
 // it. Never advertise is_blocking while manipulating Java state.
-static void jthread_start_list_lock(Runtime *parent) {
+static int jthread_start_list_lock(Runtime *parent) {
     const struct timespec retry = {0, 1000000L};
     for (;;) {
+        if (jarbox_session_phase(parent->jvm->session) >= JARBOX_SESSION_STOPPING)
+            return 0;
         if (spin_trylock(&parent->jvm->thread_list->spinlock) == 0)
-            return;
+            return 1;
         check_suspend_and_pause(parent);
         thrd_sleep(&retry, NULL);
     }
@@ -936,7 +942,10 @@ thrd_t jthread_start(Instance *ins, Runtime *parent) {//
     // covers both publication and native creation/rollback: GC must not
     // observe a RUNNING Runtime whose native worker has not been created.
     ArrayList *thread_list = parent->jvm->thread_list;
-    jthread_start_list_lock(parent);
+    if (!jthread_start_list_lock(parent)) {
+        jarbox_session_worker_done(session);
+        return failed;
+    }
     if (jarbox_session_phase(session) >= JARBOX_SESSION_STOPPING) {
         spin_unlock(&thread_list->spinlock);
         jarbox_session_worker_done(session);

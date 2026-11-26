@@ -21,7 +21,10 @@ typedef int64_t s64;
 typedef struct { atomic_int thread_status, is_suspend, is_blocking; } Info;
 typedef struct { pthread_mutex_t spinlock; } ArrayList;
 typedef struct { atomic_int status; } Collector;
-typedef struct { ArrayList *thread_list; Collector *collector; } MiniJVM;
+typedef struct { atomic_int phase; } Session;
+typedef struct { ArrayList *thread_list; Collector *collector; Session *session; } MiniJVM;
+enum { JARBOX_SESSION_STOPPING=3 };
+static int jarbox_session_phase(Session *s) { return atomic_load(&s->phase); }
 typedef struct { MiniJVM *jvm; Info *thrd_info; } Runtime;
 enum { THREAD_STATUS_NEW=0, THREAD_STATUS_RUNNING=1, THREAD_STATUS_ZOMBIE=2,
        GARBAGE_THREAD_NORMAL=1 };
@@ -50,7 +53,7 @@ static void vm_share_timedwait(MiniJVM *v, int ms) {
 MAIN=r"""
 static void *spawner(void *arg) {
     Runtime *r=arg;
-    jthread_start_list_lock(r);
+    assert(jthread_start_list_lock(r));
     assert(atomic_load(&r->thrd_info->is_suspend)==1);
     pthread_mutex_unlock(&r->jvm->thread_list->spinlock);
     return NULL;
@@ -59,7 +62,8 @@ int main(void) {
     ArrayList list={PTHREAD_MUTEX_INITIALIZER};
     Collector gc={.status=GARBAGE_THREAD_NORMAL};
     Info info={.thread_status=THREAD_STATUS_RUNNING};
-    MiniJVM vm={&list,&gc};
+    Session session={0};
+    MiniJVM vm={&list,&gc,&session};
     Runtime parent={&vm,&info};
     for(int i=0;i<100;++i) {
         atomic_store(&info.is_suspend,0);
@@ -75,6 +79,12 @@ int main(void) {
         assert(!pthread_join(th,NULL));
     }
     assert(atomic_load(&safepoints)>=100);
+    // A stopped parent must return without taking a still-locked list.
+    assert(!pthread_mutex_lock(&list.spinlock));
+    session.phase=JARBOX_SESSION_STOPPING;
+    assert(!jthread_start_list_lock(&parent));
+    pthread_mutex_unlock(&list.spinlock);
+    session.phase=0;
     info.is_suspend=0; waiting_info=&info;
     wait_behavior=0; wait_calls=0; clock_ns=0;
     assert(_gc_wait_thread_suspend(&vm,&parent)==-1 && wait_calls==20);
@@ -96,7 +106,7 @@ class GCThreadStartHandshakeTest(unittest.TestCase):
         if not cc:self.skipTest("host compiler unavailable")
         util=(JVM/"jvm_util.c").read_text()
         gc=(JVM/"garbage.c").read_text()
-        src=PRE+extract(util,"static void jthread_start_list_lock(Runtime *parent) {")+"\n"+extract(gc,"s32 _gc_wait_thread_suspend(MiniJVM *jvm, Runtime *runtime) {")+MAIN
+        src=PRE+extract(util,"static int jthread_start_list_lock(Runtime *parent) {")+"\n"+extract(gc,"s32 _gc_wait_thread_suspend(MiniJVM *jvm, Runtime *runtime) {")+MAIN
         with tempfile.TemporaryDirectory() as d:
             p,exe=Path(d)/"test.c",Path(d)/"test"
             p.write_text(src)

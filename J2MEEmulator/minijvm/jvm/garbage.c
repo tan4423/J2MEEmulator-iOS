@@ -671,7 +671,9 @@ s32 _gc_thread_run(void *para) {
                        heap_before / 1024, heap_after / 1024,
                        threshold / 1024,
                        (s64)collector->obj_count);
-            collector->lastgc = cur_mil;
+            // A stalled/aborted stop-world attempt may have consumed its
+            // entire period. Do not immediately re-suspend the same JVM.
+            collector->lastgc = gcResult < 0 ? currentTimeMillis() : cur_mil;
         } else {
             threadSleep(jvm->garbage_collect_period_ms / 2);
         }

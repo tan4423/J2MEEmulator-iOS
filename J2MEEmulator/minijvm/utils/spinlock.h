@@ -136,17 +136,51 @@ static inline int spin_destroy(spinlock_t *lock) {
     return 0;
 }
 
+// Keep the zero-initialized layout and recursive ownership contract.
+// GCC/Clang (including iOS) must not race on the volatile owner field.
+// Count is private to the owning thread until the final release.
+static inline thrd_t spin_owner_load(volatile spinlock_t *lock) {
+#if defined(__GNUC__)
+    return __atomic_load_n(&lock->owner, __ATOMIC_ACQUIRE);
+#else
+    return lock->owner;
+#endif
+}
+static inline void spin_owner_store(volatile spinlock_t *lock, thrd_t owner) {
+#if defined(__GNUC__)
+    __atomic_store_n(&lock->owner, owner, __ATOMIC_RELEASE);
+#else
+    lock->owner = owner;
+#endif
+}
+
+static inline int spin_trylock(volatile spinlock_t *lock) {
+    const thrd_t self = thrd_current();
+    const thrd_t owner = spin_owner_load(lock);
+    if (owner && thrd_equal(owner, self)) {
+        ATOMIC_INC(&lock->count);
+        return 0;
+    }
+    if (ATOMIC_CAS(&lock->lock, 0, 1)) {
+        lock->count = 1;
+        spin_owner_store(lock, self);
+        return 0;
+    }
+    return 1;
+}
+
+static inline void spin_contention_wait(void) {
+    // Bounded spinning for short sections; never burn a core indefinitely
+    // while an owner is descheduled. This does not resolve lock cycles.
+    const struct timespec retry = {0, 1000000L};
+    thrd_sleep(&retry, NULL);
+}
 static inline int spin_lock_count(volatile spinlock_t *lock, s32 count) {
+    const s32 budget = count <= 0 ? 1 : count > MAX_SPIN ? MAX_SPIN : count;
     for (;;) {
-        if (thrd_equal(lock->owner, thrd_current())) {
-            ATOMIC_INC(&lock->count);
-            return 0;
-        }
-        if (ATOMIC_CAS(&lock->lock, 0, 1)) {
-            lock->owner = thrd_current();
-            lock->count = 1;
-            return 0;
-        }
+        for (s32 i = 0; i < budget; ++i)
+            if (spin_trylock(lock) == 0) return 0;
+        spin_contention_wait();
     }
 }
 
@@ -154,42 +188,24 @@ static inline int spin_lock(volatile spinlock_t *lock) {
     return spin_lock_count(lock, 100);
 }
 
-static inline int spin_trylock(volatile spinlock_t *lock) {
-    if (thrd_equal(lock->owner, thrd_current())) {
-        ATOMIC_INC(&lock->count);
-        return 0;
-    }
-    if (ATOMIC_CAS(&lock->lock, 0, 1)) {
-        lock->owner = thrd_current();
-        lock->count = 1;
-        return 0;
-    }
-    return 1;
-}
-
 static inline int spin_unlock(volatile spinlock_t *lock) {
-    if (!thrd_equal(lock->owner, thrd_current())) {
-        return 1;
-    }
+    const thrd_t owner = spin_owner_load(lock);
+    if (!owner || !thrd_equal(owner, thrd_current())) return 1;
     MEMORY_BARRIER();
-    ATOMIC_DEC(&lock->count);
-    if (lock->count == 0) {
-        lock->owner = 0;
+    if (ATOMIC_DEC(&lock->count) == 0) {
+        spin_owner_store(lock, (thrd_t)0);
         ATOMIC_CAS(&lock->lock, 1, 0);
     }
     return 0;
 }
 
 static inline int spin_lock_adaptive(volatile spinlock_t *lock) {
-    int spin = 4; // 初始自旋次数
+    int spin = 4;
     for (;;) {
-        for (int i = 0; i < spin; i++) {
-            if (spin_trylock(lock))
-                return 0;
-        }
-        // 自旋失败，指数退避
-        spin = spin < MAX_SPIN ? spin * 2 : MAX_SPIN; // min(spin * 2, MAX_SPIN);
-        thrd_yield();                                 // 或者使用 nanosleep
+        for (int i = 0; i < spin; ++i)
+            if (spin_trylock(lock) == 0) return 0;
+        spin = spin < MAX_SPIN ? spin * 2 : MAX_SPIN;
+        spin_contention_wait();
     }
 }
 
@@ -200,11 +216,13 @@ static inline s64 current_timestamp() {
 }
 
 static inline int spin_lock_timeout(volatile spinlock_t *lock, int timeout_ms) {
-    s64 start = current_timestamp();
-    while ((current_timestamp() - start) < timeout_ms) {
-        if (spin_trylock(lock))
-            return 0;
-        thrd_yield();
+    const s64 start = current_timestamp();
+    if (timeout_ms <= 0) return spin_trylock(lock) == 0 ? 0 : ETIMEDOUT;
+    // Iteration bound also prevents an unbounded wait if wall time changes.
+    for (int attempt = 0; attempt < timeout_ms; ++attempt) {
+        if (spin_trylock(lock) == 0) return 0;
+        if (current_timestamp() - start >= timeout_ms) break;
+        spin_contention_wait();
     }
     return ETIMEDOUT;
 }
