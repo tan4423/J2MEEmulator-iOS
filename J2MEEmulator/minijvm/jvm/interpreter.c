@@ -5,6 +5,14 @@
 #include "jarbox_int_leaf.h"
 #include "jarbox_decoded_int.h"
 #include "jarbox_array_index.h"
+
+// Host differential uses the same interpreter candidate blocks and JIT stubs.
+#if defined(JARBOX_HOST_INTRINSIC_TEST)
+#if __JVM_OS_IOS__ || defined(TREO_IOS_GAME_JIT)
+#error Host intrinsic differential must never be compiled into the iOS/JIT build
+#endif
+static inline int treo_game_jit_enabled_fast(void) { return 0; }
+#endif
 #include <string.h>
 
 // Keep the legacy map in baseline builds. Ordinary iOS dispatch uses two
@@ -354,7 +362,7 @@ uint64_t treo_vm_utf16_fast_calls(void) { return 0; }
 #else
 #define TREO_VM_ARRAY_LOOKUP_MODE1 0
 #endif
-#if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__ && (TREO_VM_ARRAY_LOOKUP_LEGACY || TREO_VM_ARRAY_LOOKUP_MODE1)
+#if ((defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__) || defined(JARBOX_HOST_INTRINSIC_TEST)) && (TREO_VM_ARRAY_LOOKUP_LEGACY || TREO_VM_ARRAY_LOOKUP_MODE1)
 #define TREO_VM_ARRAY_LOOKUP 1
 #else
 #define TREO_VM_ARRAY_LOOKUP 0
@@ -1768,7 +1776,7 @@ static inline int jarbox_try_ref_leaf(MethodInfo *method, Runtime *caller) {
 }
 #endif
 
-#if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__ && defined(TREO_VM_CHAR_LEAF_EXPERIMENT) && TREO_VM_CHAR_LEAF_EXPERIMENT && !_JVM_DEBUG_PROFILE && _JVM_DEBUG_LOG_LEVEL == 0 && !TREO_VM_PAINT_SAMPLE && !defined(__JVM_DEBUG__)
+#if ((defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__) || defined(JARBOX_HOST_INTRINSIC_TEST)) && defined(TREO_VM_CHAR_LEAF_EXPERIMENT) && TREO_VM_CHAR_LEAF_EXPERIMENT && !_JVM_DEBUG_PROFILE && _JVM_DEBUG_LOG_LEVEL == 0 && !TREO_VM_PAINT_SAMPLE && !defined(__JVM_DEBUG__)
 #include "jarbox_char_leaf.h"
 #define JARBOX_CHAR_LEAF 1
 #else
@@ -1833,6 +1841,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
             game_stage = 4;
         if (game_stage) jvm_bridge_mod_loop_note_stage(game_stage);
     }
+#endif
 #if JARBOX_CHAR_LEAF
     // Preserve the ordinary Java String.charAt wrapper and its exceptions.
     // Only an already bound charAt0 native on a valid in-range slice can
@@ -1850,6 +1859,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
         return RUNTIME_STATUS_NORMAL;
     }
 #endif
+#if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__
 #if !defined(TREO_VM_INT_LEAF_DISABLED) && !_JVM_DEBUG_PROFILE && _JVM_DEBUG_LOG_LEVEL == 0 && !TREO_VM_PAINT_SAMPLE
     // No JIT, allocation, locking or repeated descriptor matching here.
     // Only the exact static, exception-free leaf patterns classified at load.
@@ -1981,6 +1991,11 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
     }
 #endif
 
+#elif TREO_VM_ARRAY_LOOKUP
+    // Host test only: same session policy, with fixture-only family admission.
+    const int treo_paint_mode=pruntime->jvm->session ?
+        jarbox_treo_mode_get(&pruntime->jvm->session->treo_state) : 0;
+#endif
 #if TREO_VM_ARRAY_LOOKUP
 
 #if TREO_VM_ARRAY_LOOKUP_DIAG
@@ -2025,10 +2040,15 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
         u16 array_cp, width_cp;
         memcpy(&array_cp,code+1,sizeof(array_cp));
         memcpy(&width_cp,code+5,sizeof(width_cp));
-        ConstantFieldRef *array_ref =
-            class_get_constant_fieldref(method->_this_class, array_cp);
-        ConstantFieldRef *width_ref =
-            class_get_constant_fieldref(method->_this_class, width_cp);
+        JClass *owner=method->_this_class;
+        ConstantItem *array_item=owner->constant_item_ptr && array_cp &&
+            array_cp<owner->constant_item_count ? class_get_constant_item(owner,array_cp) : NULL;
+        ConstantItem *width_item=owner->constant_item_ptr && width_cp &&
+            width_cp<owner->constant_item_count ? class_get_constant_item(owner,width_cp) : NULL;
+        ConstantFieldRef *array_ref=array_item && array_item->tag==CONSTANT_FIELD_REF ?
+            (ConstantFieldRef *)array_item : NULL;
+        ConstantFieldRef *width_ref=width_item && width_item->tag==CONSTANT_FIELD_REF ?
+            (ConstantFieldRef *)width_item : NULL;
         FieldInfo *array_field = array_ref ? array_ref->fieldInfo : NULL;
         FieldInfo *width_field = width_ref ? width_ref->fieldInfo : NULL;
         if (array_field && width_field) {
@@ -2040,9 +2060,15 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
             array_field->_this_class == method->_this_class &&
             width_field->_this_class == method->_this_class &&
             (array_field->access_flags & ACC_STATIC) && (width_field->access_flags & ACC_STATIC) &&
+            !(array_field->access_flags & ACC_VOLATILE) && !(width_field->access_flags & ACC_VOLATILE) &&
             array_field->isrefer && !array_field->isvolatile &&
             !width_field->isrefer && !width_field->isvolatile &&
-            width_field->datatype_bytes == 4 &&
+            array_field->datatype_bytes == sizeof(__refer) && width_field->datatype_bytes == 4 &&
+            owner->field_static && owner->field_static_len >= (s32)sizeof(__refer) &&
+            array_field->offset <= owner->field_static_len-(s32)sizeof(__refer) &&
+            width_field->offset <= owner->field_static_len-(s32)sizeof(s32) &&
+            (uintptr_t)getStaticFieldPtr(array_field)%_Alignof(__refer)==0 &&
+            (uintptr_t)getStaticFieldPtr(width_field)%_Alignof(s32)==0 &&
             utf8_equals_c(array_field->descriptor, "[I") &&
             utf8_equals_c(width_field->descriptor, "I")) {
 #if TREO_VM_ARRAY_LOOKUP_DIAG
@@ -2083,7 +2109,6 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
             }
         }
     }
-#endif
 #endif
 
 #if TREO_VM_PAINT_SAMPLE

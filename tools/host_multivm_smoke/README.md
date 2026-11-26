@@ -47,3 +47,7 @@ separate standard JVM processes; verified checksums, loopback socket
 exchange and surviving heartbeat after stopping A. Neither is a new
 real MiniJVM smoke-test result. Full checkout unavailable in local
 environment (GitHub DNS failure), so real MiniJVM and iOS builds not run.
+
+## Real interpreter intrinsic differential (new gate, not yet executed)
+
+Run `bash tools/host_multivm_smoke/run.sh asan 1 intrinsics` on Linux. Uses the actual interpreter, boot JAR, two simultaneous MiniJVMs and the existing JIT/TLS stubs. Only this host suite enables the two candidate compile flags; the host macro cannot compile into iOS. VM A receives synthetic profile admission and mode 1; B stays mode 0. Both run the same Java fixture with distinct static map contents. Exact OpenJDK digest 4902965299, all valid reads checked, null/OOB array fallback, negative/OOB String behavior, replacement and substring, all 65,536 UTF-16 units, repeated allocation and worker GC. Require both positive candidate counters on A, zero on B, completed worker collections on both. No false pass if fast path never executes. ASan+UBSan halt on detected errors; existing alignment/shift-base exclusions remain. No iOS/render/real game claims. Java fixture compiled with OpenJDK 21 targeting 8, bytecode lookup matches 17-byte pattern, two independent OpenJDK processes produced identical expected digest. Full MiniJVM test NOT run locally because GitHub DNS blocks clone. New GitHub Actions gate runs on branch pushes; candidate switches remain OFF in Codemagic until this gate and iOS checks pass.

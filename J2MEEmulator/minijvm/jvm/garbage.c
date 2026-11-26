@@ -692,6 +692,10 @@ s32 _gc_thread_run(void *para) {
 #if defined(TREO_GC_PHASE_DIAG) && TREO_GC_PHASE_DIAG && defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__
             jarbox_gc_phase_publish(&metrics->gc_phase,&phaseCycle,gcResult<0);
 #endif
+#elif defined(JARBOX_HOST_INTRINSIC_TEST) && !__JVM_OS_IOS__
+            // Host gate must prove the real worker collected during the run.
+            if (gcResult>=0)
+                __atomic_fetch_add(&jvm->session->treo_state.gc_worker_cycles,1,__ATOMIC_RELAXED);
 #else
             (void)gcResult;
 #endif

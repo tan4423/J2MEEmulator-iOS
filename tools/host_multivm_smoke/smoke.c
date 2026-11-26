@@ -13,7 +13,8 @@
 
 typedef struct { const char *rt, *api, *app, *tag, *mode; char save[512]; int port;
     MiniJVM *jvm; pthread_t th; pthread_mutex_t lock; atomic_int finished;
-    int stop_requested, rc; } Job;
+    int stop_requested, rc;
+    uint64_t char_calls, array_calls, gc_cycles; } Job;
 
 static void request_vm_stop(MiniJVM *vm) {
     vm->collector->exit_flag = 1;
@@ -43,7 +44,21 @@ static void *job_main(void *p) {
     ArrayList *args = arraylist_create(0);
     arraylist_push_back(args, (void *)j->tag); arraylist_push_back(args, (void *)j->save);
     arraylist_push_back(args, (void *)j->mode); arraylist_push_back(args, (void *)portbuf);
+#if defined(JARBOX_HOST_INTRINSIC_TEST) && !__JVM_OS_IOS__
+    int intrinsic_on=!strcmp(j->mode,"intrinsic-on");
+    int intrinsic_off=!strcmp(j->mode,"intrinsic-off");
+    if (intrinsic_on) {
+        // Synthetic host fixture only; no game archive admission override on iOS.
+        jarbox_treo_nso_profile_set(&vm->session->treo_state,1,0);
+        jarbox_treo_mode_set(&vm->session->treo_state,1);
+    }
+    j->rc=call_main(vm,(intrinsic_on||intrinsic_off)?"IntrinsicMain":"SmokeMain",args);
+    j->char_calls=__atomic_load_n(&vm->session->treo_state.char_leaf_calls,__ATOMIC_RELAXED);
+    j->array_calls=__atomic_load_n(&vm->session->treo_state.array_lookup_mode1_calls,__ATOMIC_RELAXED);
+    j->gc_cycles=__atomic_load_n(&vm->session->treo_state.gc_worker_cycles,__ATOMIC_RELAXED);
+#else
     j->rc = call_main(vm, "SmokeMain", args);
+#endif
     arraylist_destroy(args);
     pthread_mutex_lock(&j->lock);
     j->jvm = NULL; // no controller may touch this heap during destruction
@@ -71,6 +86,16 @@ static int result_ok(const Job *j) {
     size_t n = fread(buf, 1, sizeof buf - 1, f); fclose(f);
     return n == strlen(expected) && !memcmp(buf, expected, n);
 }
+#if defined(JARBOX_HOST_INTRINSIC_TEST) && !__JVM_OS_IOS__
+static int intrinsic_ok(const Job *j) {
+    char path[1024],buf[128]={0};
+    const char *expected="PASS 4902965299\n"; // verified OpenJDK fixture digest
+    snprintf(path,sizeof path,"%s/intrinsic.txt",j->save);
+    FILE *f=fopen(path,"r"); if(!f)return 0;
+    size_t n=fread(buf,1,sizeof buf-1,f); fclose(f);
+    return n==strlen(expected)&&!memcmp(buf,expected,n);
+}
+#endif
 static long heartbeat(const Job *j) {
     char path[1024]; snprintf(path, sizeof path, "%s/heartbeat.txt", j->save);
     FILE *f = fopen(path, "r"); if (!f) return -1;
@@ -109,6 +134,19 @@ int main(int argc, char **argv) {
     if (!mkdtemp(base)) return 2;
     printf("save roots: %s\n", base);
     int bport = 20000 + (getpid() % 20000); Job a, b, a2;
+#if defined(JARBOX_HOST_INTRINSIC_TEST) && !__JVM_OS_IOS__
+    if (!strcmp(scenario,"intrinsic_diff")) {
+        init_job(&a,argv,"A","intrinsic-on",bport,base);
+        init_job(&b,argv,"B","intrinsic-off",bport+1,base);
+        start_job(&a); start_job(&b); join_job(&a); join_job(&b);
+        printf("intrinsics A: char=%llu array=%llu gc=%llu; B: char=%llu array=%llu gc=%llu\n",
+            (unsigned long long)a.char_calls,(unsigned long long)a.array_calls,(unsigned long long)a.gc_cycles,
+            (unsigned long long)b.char_calls,(unsigned long long)b.array_calls,(unsigned long long)b.gc_cycles);
+        REQUIRE(!a.rc && !b.rc && intrinsic_ok(&a) && intrinsic_ok(&b));
+        REQUIRE(a.char_calls>=64 && a.array_calls>=64 && !b.char_calls && !b.array_calls);
+        REQUIRE(a.gc_cycles>0 && b.gc_cycles>0);
+    } else
+#endif
     if (!strcmp(scenario, "pair")) {
         init_job(&a, argv, "A", "short", bport, base); init_job(&b, argv, "B", "short", bport+1, base);
         start_job(&a); start_job(&b); join_job(&a); join_job(&b);
