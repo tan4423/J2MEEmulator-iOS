@@ -227,6 +227,8 @@ class ZipCaseSensitiveTest(unittest.TestCase):
                     archive.writestr("dup.class", b"first")
                     archive.writestr("dup.class", b"second")
                 archive.writestr("long/" + "x" * 2048, b"long")
+                archive.writestr("6853YV2EtYik", b"collision-one")
+                archive.writestr("2EKA24sqhDVj", b"collision-two")
                 for i in range(1024):
                     archive.writestr(f"classes/p{i:04d}.class", b"synthetic")
                 for i in range(30):
