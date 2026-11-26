@@ -1768,6 +1768,13 @@ static inline int jarbox_try_ref_leaf(MethodInfo *method, Runtime *caller) {
 }
 #endif
 
+#if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__ && defined(TREO_VM_CHAR_LEAF_EXPERIMENT) && TREO_VM_CHAR_LEAF_EXPERIMENT && !_JVM_DEBUG_PROFILE && _JVM_DEBUG_LOG_LEVEL == 0 && !TREO_VM_PAINT_SAMPLE && !defined(__JVM_DEBUG__)
+#include "jarbox_char_leaf.h"
+#define JARBOX_CHAR_LEAF 1
+#else
+#define JARBOX_CHAR_LEAF 0
+#endif
+
 s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
     JARBOX_HOT_CHECK(pruntime,method,NULL);
 #if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__
@@ -1826,6 +1833,23 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
             game_stage = 4;
         if (game_stage) jvm_bridge_mod_loop_note_stage(game_stage);
     }
+#if JARBOX_CHAR_LEAF
+    // Preserve the ordinary Java String.charAt wrapper and its exceptions.
+    // Only an already bound charAt0 native on a valid in-range slice can
+    // avoid creating a native frame. No Java calls, allocation or safepoint.
+    if (method->is_native && method->native_func==java_lang_String_charAt0 &&
+        pruntime->jvm->session &&
+        jarbox_treo_mode_get(&pruntime->jvm->session->treo_state)==1 &&
+        !pruntime->jvm->jdwp_enable && !pruntime->thrd_info->is_stop &&
+        !pruntime->thrd_info->suspend_count && !treo_game_jit_enabled_fast() &&
+        jarbox_try_char_leaf(method,pruntime)) {
+        if (++pruntime->thrd_info->jarbox_char_leaf_pending==64) {
+            pruntime->thrd_info->jarbox_char_leaf_pending=0;
+            __atomic_fetch_add(&pruntime->jvm->session->treo_state.char_leaf_calls,64,__ATOMIC_RELAXED);
+        }
+        return RUNTIME_STATUS_NORMAL;
+    }
+#endif
 #if !defined(TREO_VM_INT_LEAF_DISABLED) && !_JVM_DEBUG_PROFILE && _JVM_DEBUG_LOG_LEVEL == 0 && !TREO_VM_PAINT_SAMPLE
     // No JIT, allocation, locking or repeated descriptor matching here.
     // Only the exact static, exception-free leaf patterns classified at load.

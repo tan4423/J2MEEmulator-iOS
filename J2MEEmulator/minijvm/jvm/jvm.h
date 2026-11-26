@@ -1357,6 +1357,7 @@ struct _JavaThreadInfo {
     u16 jarbox_const_arith_pending, jarbox_const_branch_pending;
     u8 jarbox_decoded_int_pending; // owning thread, batch 64
     u8 jarbox_array_lookup_pending; // mode-1 successes, owning thread, batch 64
+    u8 jarbox_char_leaf_pending; // owning thread, batch 64
     uint32_t jarbox_hot_ticks; // owning Java thread only
     uint64_t jarbox_hot_next_ns;
     Instance *jthread;
