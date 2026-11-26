@@ -3,6 +3,7 @@
 #include "jit.h"
 #include "garbage.h"
 #include "jarbox_int_leaf.h"
+#include "jarbox_decoded_int.h"
 
 // Keep the legacy map in baseline builds. Ordinary iOS dispatch uses two
 // immutable receiver identity slots without allocating or reading a map.
@@ -1677,6 +1678,30 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                     __atomic_fetch_add(&pruntime->jvm->session->treo_state.int_leaf_fast_calls,
                                        64, __ATOMIC_RELAXED);
             }
+            return RUNTIME_STATUS_NORMAL;
+        }
+    }
+#endif
+#if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__ && defined(TREO_VM_DECODED_INT_EXPERIMENT) && TREO_VM_DECODED_INT_EXPERIMENT && !_JVM_DEBUG_PROFILE && _JVM_DEBUG_LOG_LEVEL == 0 && !TREO_VM_PAINT_SAMPLE && !defined(__JVM_DEBUG__)
+    // Only prevalidated, straight-line primitive plans. The compact scratch
+    // stack is not a Java frame and contains no GC references or safepoints.
+    CodeAttribute *decoded = method->converted_code;
+    if (decoded && decoded->jarbox_decoded_int_plan &&
+        method->_this_class->status >= CLASS_STATUS_CLINITED &&
+        !pruntime->jvm->jdwp_enable && !method->breakpoint &&
+        !pruntime->thrd_info->is_stop && !pruntime->thrd_info->suspend_count &&
+        !treo_game_jit_enabled_fast()) {
+        RuntimeStack *caller = pruntime->stack;
+        const s32 slots = method->para_slots;
+        const s32 used = (s32)(caller->sp - caller->store);
+        if (slots >= 0 && slots <= 4 && used >= slots && used <= caller->max_size &&
+            decoded->max_stack <= caller->max_size - used) {
+            StackEntry *args = caller->sp - slots;
+            uint32_t values[4] = {0};
+            for (s32 n=0; n<slots; ++n) values[n]=(uint32_t)args[n].ivalue;
+            const s32 result = jarbox_decoded_int_eval(decoded->jarbox_decoded_int_plan, values);
+            caller->sp = args;
+            push_int(caller, result);
             return RUNTIME_STATUS_NORMAL;
         }
     }

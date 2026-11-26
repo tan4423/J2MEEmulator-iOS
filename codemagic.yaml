@@ -14,7 +14,9 @@ workflows:
         JARBOX_VM_IMAGE_CACHE_BASELINE: "1" # OFF by default: measured ~0 hits in 188.7s
         JARBOX_VM_ARRAY_LOOKUP_EXPERIMENT: "0" # Isolate game-aware Treo
         JARBOX_VM_ARRAY_LOOKUP_DIAGNOSTIC: "0" # No method observer overhead
-        JARBOX_VM_PERF_CANDIDATE: "0" # Enable both constant fusions in one device candidate
+        JARBOX_VM_PERF_CANDIDATE: "0" # Enable opt-in runtime experiments in one device candidate
+        JARBOX_VM_DECODED_INT_EXPERIMENT: "0"
+        JARBOX_VM_EVENT_SLEEP_EXPERIMENT: "0"
         JARBOX_VM_CONST_ARITH_FUSION_EXPERIMENT: "0"
         JARBOX_VM_CONST_BRANCH_FUSION_EXPERIMENT: "0"
     scripts: &jarbox_ipa_shared_scripts
@@ -402,6 +404,8 @@ workflows:
           if [[ "${JARBOX_VM_PERF_CANDIDATE:-0}" == "1" ]]; then
             export JARBOX_VM_CONST_ARITH_FUSION_EXPERIMENT=1
             export JARBOX_VM_CONST_BRANCH_FUSION_EXPERIMENT=1
+            export JARBOX_VM_DECODED_INT_EXPERIMENT=1
+            export JARBOX_VM_EVENT_SLEEP_EXPERIMENT=1
           fi
           const_fusion_flags=""
           perf_arith=0
@@ -414,7 +418,17 @@ workflows:
             const_fusion_flags="$const_fusion_flags -DTREO_VM_CONST_BRANCH_FUSION_EXPERIMENT=1"
             perf_branch=1
           fi
-          perf_profile="const-arith-${perf_arith}_const-branch-${perf_branch}"
+          perf_decoded=0
+          perf_sleep=0
+          if [[ "${JARBOX_VM_DECODED_INT_EXPERIMENT:-0}" == "1" ]]; then
+            const_fusion_flags="$const_fusion_flags -DTREO_VM_DECODED_INT_EXPERIMENT=1"
+            perf_decoded=1
+          fi
+          if [[ "${JARBOX_VM_EVENT_SLEEP_EXPERIMENT:-0}" == "1" ]]; then
+            const_fusion_flags="$const_fusion_flags -DTREO_VM_EVENT_SLEEP_EXPERIMENT=1"
+            perf_sleep=1
+          fi
+          perf_profile="const-arith-${perf_arith}_const-branch-${perf_branch}_decoded-int-${perf_decoded}_event-sleep-${perf_sleep}"
           echo "[JarBoxVM][BUILD] perf_profile=$perf_profile const_fusion_flags=${const_fusion_flags:-off}"
           xcodebuild -list -project "$J2ME_PROJECT"
           xcodebuild -project "$J2ME_PROJECT" \

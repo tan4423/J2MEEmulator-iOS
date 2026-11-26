@@ -914,6 +914,9 @@ struct _CodeAttribute {
     s32 code_length;
     u8 *code; // [code_length];
     u8 *bytecode_for_jit; // [code_length];
+#if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__ && defined(TREO_VM_DECODED_INT_EXPERIMENT) && TREO_VM_DECODED_INT_EXPERIMENT
+    uint64_t jarbox_decoded_int_plan; // immutable, pointer-free, zero = fallback
+#endif
     spinlock_t compile_lock;
     struct _Jit {
         jit_func func;
@@ -1360,6 +1363,9 @@ struct _JavaThreadInfo {
     MemoryBlock *objs_tailer;//link to last instance, until garbage accept
     MemoryBlock *curThreadLock;//if thread is locked ,the filed save the lock
     JarBoxMonitorWaiter *monitor_waiter; // protected by JavaThreadInfo.lock
+#if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__ && defined(TREO_VM_EVENT_SLEEP_EXPERIMENT) && TREO_VM_EVENT_SLEEP_EXPERIMENT
+    JarBoxMonitorWaiter *sleep_waiter; // separate from Java monitor wait set
+#endif
 
     ArrayList *stacktrack;  //save methodrawindex, the pos 0 is the throw point
     ArrayList *lineNo;  //save methodrawindex, the pos 0 is the throw point

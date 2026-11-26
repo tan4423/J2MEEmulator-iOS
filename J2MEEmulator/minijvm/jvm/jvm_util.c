@@ -4,6 +4,7 @@
 
 
 #include <stdarg.h>
+#include <errno.h>
 #include <sys/stat.h>
 #include "jvm.h"
 
@@ -375,6 +376,9 @@ void thread_stop_all(MiniJVM *jvm) {
         info->is_stop = 1;
         info->is_interrupt = 1;
         jarbox_waiter_signal(info->monitor_waiter);
+#if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__ && defined(TREO_VM_EVENT_SLEEP_EXPERIMENT) && TREO_VM_EVENT_SLEEP_EXPERIMENT
+        jarbox_waiter_signal(info->sleep_waiter);
+#endif
         spin_unlock(&info->lock);
     }
     spin_unlock(&jvm->thread_list->spinlock);
@@ -1184,6 +1188,9 @@ s32 jthread_interrupt(Runtime *rt_thread) {
     spin_lock(&info->lock);
     info->is_interrupt = 1;
     jarbox_waiter_signal(info->monitor_waiter);
+#if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__ && defined(TREO_VM_EVENT_SLEEP_EXPERIMENT) && TREO_VM_EVENT_SLEEP_EXPERIMENT
+    jarbox_waiter_signal(info->sleep_waiter);
+#endif
     spin_unlock(&info->lock);
     return 0;
 }
@@ -1307,11 +1314,23 @@ s32 jthread_wakeup(Runtime *runtime) {
     return 0;
 }
 
+#if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__ && defined(TREO_VM_EVENT_SLEEP_EXPERIMENT) && TREO_VM_EVENT_SLEEP_EXPERIMENT
+#include "jarbox_event_sleep.h"
+#endif
+
 s32 jthread_sleep(Runtime *runtime, s64 ms) {
     static const s64 PERIOD = 500;
     jthread_block_enter(runtime);
     u8 thread_status = runtime->thrd_info->thread_status;
     runtime->thrd_info->thread_status = THREAD_STATUS_SLEEPING;
+#if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__ && defined(TREO_VM_EVENT_SLEEP_EXPERIMENT) && TREO_VM_EVENT_SLEEP_EXPERIMENT
+    // Long sleeps only; leave game tick-sized delays on the existing path.
+    // A native wait failure returns the remaining duration to the fallback.
+    if (ms >= PERIOD && ms <= INT32_MAX) {
+        ms = jarbox_event_sleep(runtime, ms);
+        if (!ms) goto sleep_done;
+    }
+#endif
     if (ms < PERIOD) {
         threadSleep(ms);
     } else {
@@ -1325,6 +1344,9 @@ s32 jthread_sleep(Runtime *runtime, s64 ms) {
             }
         }
     }
+#if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__ && defined(TREO_VM_EVENT_SLEEP_EXPERIMENT) && TREO_VM_EVENT_SLEEP_EXPERIMENT
+sleep_done:
+#endif
     runtime->thrd_info->thread_status = thread_status;
     jthread_block_exit(runtime);
     return check_throw_interruptexception(runtime);;

@@ -13,6 +13,7 @@
 #include "garbage.h"
 #include "jit.h"
 #include "jarbox_int_leaf.h"
+#include "jarbox_decoded_int.h"
 #include "jarbox_ref_leaf.h"
 #if defined(__APPLE__) || defined(__linux__)
 #include "jarbox_prepared_code_cache.h"
@@ -1954,6 +1955,13 @@ void _class_optimize(JClass *clazz) {
                 if (ptr->is_static && !ptr->is_native && !ptr->is_sync &&
                     ptr->para_slots == 0 && ptr->return_slots == 1)
                     ptr->treo_ref_leaf = jarbox_ref_leaf_match(
+                        ca->code, ca->code_length, utf8_cstr(ptr->descriptor),
+                        ca->max_locals, ca->max_stack, ca->exception_table_length);
+#endif
+#if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__ && defined(TREO_VM_DECODED_INT_EXPERIMENT) && TREO_VM_DECODED_INT_EXPERIMENT
+                if (!ptr->treo_int_leaf_kind && ptr->is_static && !ptr->is_native && !ptr->is_sync &&
+                    ptr->return_slots == 1 && ptr->para_slots == ca->max_locals)
+                    ca->jarbox_decoded_int_plan = jarbox_decoded_int_build(
                         ca->code, ca->code_length, utf8_cstr(ptr->descriptor),
                         ca->max_locals, ca->max_stack, ca->exception_table_length);
 #endif
