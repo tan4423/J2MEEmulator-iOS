@@ -85,6 +85,17 @@ typedef struct {
     uint64_t gc_aborts;
     int mode, family, canvas, trace_ok;
 } JarBoxBackgroundSample;
+// Negative count means busy registry, not an empty application.
+typedef struct {
+    uint64_t wall_ns, process_ns, headroom_bytes, footprint_bytes;
+    int process_ok, footprint_ok, memory_state;
+} JarBoxFlightProcess;
+typedef struct {
+    uint64_t token, runner_ns, java_ns, gc_ns, gc_cycles, gc_aborts, repaint_requests;
+    unsigned workers;
+    int phase, stop_requested, mode, counters_ok, cpu_ok;
+} JarBoxFlightSlot;
+int jvm_bridge_flight_sample(JarBoxFlightProcess *process, JarBoxFlightSlot *slots, int capacity, int detail);
 int jvm_bridge_background_tokens(uint64_t *out,int capacity);
 int jvm_bridge_background_sample(uint64_t token,int entering,JarBoxBackgroundSample *out);
 /// Check the actual ownership flag (phase may briefly be idle during start).

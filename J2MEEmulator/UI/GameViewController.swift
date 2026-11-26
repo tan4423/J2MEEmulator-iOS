@@ -1341,6 +1341,9 @@ class GameViewController: UIViewController {
             },
             UIAction(title: "Log Treo tắt màn hình") { [weak self] _ in
                 if let self { JarBoxBackgroundDiagnostics.show(from: self) }
+            },
+            UIAction(title: "Xuất nhật ký sự cố") { [weak self] _ in
+                if let self { JarBoxBackgroundDiagnostics.showFlight(from: self) }
             }
         ]
         if jarAuditID != nil {
@@ -4116,6 +4119,7 @@ class GameViewController: UIViewController {
                   !self.startupTimeoutShown, self.startupWatchdog != nil,
                   self.gameSessionToken == launchingToken else { return }
             self.startupTimeoutShown = true
+            JarBoxFlightRecorder.shared.event("startup_timeout", token: launchingToken)
             NSLog("[JarBoxVM][Lifecycle] startup_no_frame=20s phase=%d",
                   jvm_bridge_session_phase())
             guard self.presentedViewController == nil else { return }
@@ -4286,6 +4290,7 @@ class GameViewController: UIViewController {
             return
         }
         gameStopRequested = true
+        JarBoxFlightRecorder.shared.event("stop_requested", token: gameSessionToken)
         tabAddButton.isEnabled = false
         tabRemoveButton.isEnabled = false
         backButton.isEnabled = false

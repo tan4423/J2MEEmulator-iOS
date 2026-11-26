@@ -933,6 +933,90 @@ int jvm_bridge_cpu_snapshot_for_token(uint64_t token,JarBoxCpuSnapshot *out) {
 #endif
 }
 
+// Diagnostic snapshots never wait for bridge locks or walk Java heaps.
+int jvm_bridge_flight_sample(JarBoxFlightProcess *process, JarBoxFlightSlot *slots,
+                            int capacity, int detail) {
+    if (!process || !slots || capacity<=0) return -1;
+    memset(process,0,sizeof(*process));
+#if defined(__APPLE__) && __JVM_OS_IOS__
+    process->wall_ns=clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW);
+    struct rusage ru;
+    if (getrusage(RUSAGE_SELF,&ru)==0) {
+        process->process_ok=1;
+        process->process_ns=((uint64_t)ru.ru_utime.tv_sec+(uint64_t)ru.ru_stime.tv_sec)*UINT64_C(1000000000)
+            +((uint64_t)ru.ru_utime.tv_usec+(uint64_t)ru.ru_stime.tv_usec)*1000;
+    }
+    task_vm_info_data_t info={0};
+    mach_msg_type_number_t info_count=TASK_VM_INFO_COUNT;
+    if (task_info(mach_task_self(),TASK_VM_INFO,(task_info_t)&info,&info_count)==KERN_SUCCESS &&
+        info_count>=TASK_VM_INFO_REV1_COUNT) {
+        process->footprint_bytes=info.phys_footprint;
+        process->footprint_ok=1;
+    }
+    process->memory_state=jvm_bridge_memory_state(&process->headroom_bytes);
+    if (pthread_mutex_trylock(&g_bridge_lifecycle_lock)!=0) return -1;
+    JarBoxSession *held[JARBOX_REGISTRY_MAX_SLOTS]={0};
+    int count=0;
+    for (unsigned i=0;i<JARBOX_REGISTRY_MAX_SLOTS && count<capacity;++i) {
+        JarBoxVMContext *slot=&g_bridge_slots[i];
+        if (!atomic_load_explicit(&slot->active,memory_order_acquire)) continue;
+        JarBoxFlightSlot *out=&slots[count];
+        memset(out,0,sizeof(*out));
+        out->token=atomic_load_explicit(&slot->token,memory_order_acquire);
+        out->phase=atomic_load_explicit(&slot->phase,memory_order_acquire);
+        out->stop_requested=atomic_load_explicit(&slot->stop_requested,memory_order_acquire);
+        out->mode=-1;
+        // STARTING may be incomplete; CLEANUP may already be freeing the VM.
+        if (detail && out->phase==BRIDGE_RUNNING) {
+            MiniJVM *vm=atomic_load_explicit(&slot->jvm,memory_order_acquire);
+            if (vm && vm->session && jarbox_session_reserve_callback(vm->session))
+                held[count]=vm->session;
+        }
+        ++count;
+    }
+    pthread_mutex_unlock(&g_bridge_lifecycle_lock);
+    unsigned budget=128;
+    for (int i=0;i<count;++i) {
+        JarBoxSession *session=held[i];
+        if (!session) continue;
+        JarBoxFlightSlot *out=&slots[i];
+        out->workers=jarbox_session_worker_count(session);
+        out->mode=jarbox_treo_mode_get(&session->treo_state);
+        out->gc_cycles=__atomic_load_n(&session->treo_state.gc_worker_cycles,__ATOMIC_RELAXED);
+        out->gc_aborts=__atomic_load_n(&session->treo_state.gc_worker_aborts,__ATOMIC_RELAXED);
+        out->repaint_requests=__atomic_load_n(&session->treo_state.nso_repaint_requests,__ATOMIC_RELAXED);
+        out->counters_ok=1;
+        if (pthread_mutex_trylock(&bridge_cpu_lock)==0) {
+            uint64_t totals[JARBOX_CPU_KINDS];
+            memcpy(totals,session->cpu_retired_ns,sizeof(totals));
+            int ok=session->cpu_sample_errors==0;
+            for (JarBoxCpuThread *thread=session->cpu_threads;thread;thread=thread->next) {
+                if (!budget) { ok=0; break; }
+                --budget;
+                uint64_t now;
+                if (!thread->ready || !bridge_cpu_read_thread(thread->port,&now) ||
+                    now<thread->baseline_ns || thread->kind<0 || thread->kind>=JARBOX_CPU_KINDS) {
+                    ok=0; break;
+                }
+                totals[thread->kind]+=now-thread->baseline_ns;
+            }
+            if (ok) {
+                out->runner_ns=totals[JARBOX_CPU_RUNNER];
+                out->java_ns=totals[JARBOX_CPU_JAVA];
+                out->gc_ns=totals[JARBOX_CPU_GC];
+                out->cpu_ok=1;
+            }
+            pthread_mutex_unlock(&bridge_cpu_lock);
+        }
+        jarbox_session_callback_done(session);
+    }
+    return count;
+#else
+    (void)detail;
+    return -1;
+#endif
+}
+
 int jvm_bridge_background_tokens(uint64_t *out,int capacity) {
     if (!out || capacity<=0) return 0;
     int count=0;

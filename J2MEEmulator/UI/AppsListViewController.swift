@@ -1630,6 +1630,9 @@ class AppsListViewController: UIViewController,
             UIAction(title: "Log Treo tắt màn hình", image: UIImage(systemName: "doc.text")) { [weak self] _ in
                 if let self { JarBoxBackgroundDiagnostics.show(from: self) }
             },
+            UIAction(title: "Xuất nhật ký sự cố", image: UIImage(systemName: "square.and.arrow.up")) { [weak self] _ in
+                if let self { JarBoxBackgroundDiagnostics.showFlight(from: self) }
+            },
             UIAction(title: "Cài đặt", image: UIImage(systemName: "gearshape")) { [weak self] _ in
                 self?.showJarBoxSettings()
             }

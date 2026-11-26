@@ -60,10 +60,12 @@ class Collection { func reloadData() {} }
 enum JarBoxBackgroundDiagnostics {
     static func showAudio(from controller: Library) { controller.audioMenuCalls += 1 }
     static func show(from controller: Library) { controller.logMenuCalls += 1 }
+    static func showFlight(from controller: Library) { controller.flightMenuCalls += 1 }
 }
 class Library {
     var audioMenuCalls = 0
     var logMenuCalls = 0
+    var flightMenuCalls = 0
     let navigationItem = NavigationItem()
     let springboardCollectionView = Collection()
     var activeCount = 0
@@ -103,6 +105,10 @@ MAIN = r'''
               let log = menuAction("Log Treo tắt màn hình") else {
             preconditionFailure("Missing background controls")
         }
+        guard let flight = menuAction("Xuất nhật ký sự cố") else { preconditionFailure("Missing flight export") }
+        let previousFlight = flightMenuCalls
+        flight.handler(flight)
+        precondition(flightMenuCalls == previousFlight + 1)
         let previousAudio = audioMenuCalls
         let previousLog = logMenuCalls
         audio.handler(audio)

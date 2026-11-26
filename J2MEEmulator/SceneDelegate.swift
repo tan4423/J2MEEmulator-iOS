@@ -53,6 +53,171 @@ struct JarBoxPowerEvidence {
     }
 }
 
+// Bounded disk journal, serialized by the recorder's utility queue.
+nonisolated final class JarBoxFlightStore {
+    let directory: URL
+    let limit: Int
+    private let fm = FileManager.default
+    private var current: URL { directory.appendingPathComponent("current.log") }
+    private var previous: URL { directory.appendingPathComponent("previous.log") }
+    init(directory: URL, limit: Int = 512 * 1024) {
+        self.directory = directory
+        self.limit = limit
+    }
+    func append(_ line: String, durable: Bool) throws {
+        let data = Data((line + "\n").utf8)
+        guard data.count <= limit else { throw CocoaError(.fileWriteOutOfSpace) }
+        try fm.createDirectory(at: directory, withIntermediateDirectories: true)
+        #if os(iOS)
+        var folder = directory
+        var values = URLResourceValues()
+        values.isExcludedFromBackup = true
+        try? folder.setResourceValues(values)
+        #endif
+        let size = (try? fm.attributesOfItem(atPath: current.path)[.size] as? NSNumber)?.intValue ?? 0
+        if size > limit - data.count {
+            if fm.fileExists(atPath: previous.path) { try fm.removeItem(at: previous) }
+            try fm.moveItem(at: current, to: previous)
+        }
+        if !fm.fileExists(atPath: current.path) {
+            #if os(iOS)
+            let attributes: [FileAttributeKey: Any] = [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication]
+            #else
+            let attributes: [FileAttributeKey: Any] = [:]
+            #endif
+            guard fm.createFile(atPath: current.path, contents: nil, attributes: attributes) else {
+                throw CocoaError(.fileWriteUnknown)
+            }
+        }
+        let file = try FileHandle(forWritingTo: current)
+        defer { try? file.close() }
+        try file.seekToEnd()
+        try file.write(contentsOf: data)
+        if durable { try file.synchronize() }
+    }
+    func report() -> String {
+        [previous, current].compactMap { url in
+            guard let data = try? Data(contentsOf: url), data.count <= limit else { return nil }
+            return String(decoding: data, as: UTF8.self)
+        }.joined()
+    }
+}
+
+nonisolated struct JarBoxFlightPolicy {
+    private var lastWall: UInt64 = 0
+    private var lastCPU: UInt64 = 0
+    private var lastValid = false
+    private var lastSaved: UInt64 = 0
+    private var lastSignature = ""
+    mutating func observe(wall: UInt64, cpu: UInt64, valid: Bool, signature: String,
+                          urgent: Bool) -> (percent: Double?, gap: UInt64, save: Bool) {
+        let gap = lastWall > 0 && wall > lastWall ? wall - lastWall : 0
+        let percent: Double? = valid && lastValid && gap > 0 && cpu >= lastCPU
+            ? Double(cpu - lastCPU) * 100 / Double(gap) : nil
+        let high = (percent ?? 0) >= 60
+        let changed = signature != lastSignature
+        let due = lastSaved == 0 || wall < lastSaved || wall - lastSaved >= 60_000_000_000
+        let save = high || urgent || changed || due || gap > 15_000_000_000
+        lastWall = wall
+        lastCPU = cpu
+        lastValid = valid
+        lastSignature = signature
+        if save { lastSaved = wall }
+        return (percent, gap, save)
+    }
+}
+
+// All mutable state and disk I/O are confined to queue. No game payloads.
+nonisolated final class JarBoxFlightRecorder: @unchecked Sendable {
+    static let shared = JarBoxFlightRecorder()
+    private let queue = DispatchQueue(label: "app.jarbox.flight", qos: .utility)
+    private let run = UUID().uuidString
+    private let store: JarBoxFlightStore
+    private var timer: DispatchSourceTimer?
+    private var pending = Set<UInt64>()
+    private var emptyTicks = 0
+    private var policy = JarBoxFlightPolicy()
+    private var sequence: UInt64 = 0
+    private var writeFailures = 0
+    private var build = "unknown"
+    private init() {
+        let root = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? FileManager.default.temporaryDirectory
+        store = JarBoxFlightStore(directory: root.appendingPathComponent("JarBoxFlight-v1", isDirectory: true))
+    }
+    private func write(_ content: String, durable: Bool = true) {
+        sequence &+= 1
+        let line = "run=\(run) build=\(build) seq=\(sequence) epoch=\(Date().timeIntervalSince1970) " + content
+        do { try store.append(line, durable: durable) }
+        catch { writeFailures += 1 }
+    }
+    func event(_ name: String, token: UInt64 = 0) {
+        queue.async {
+            self.write("event=\(name) token=\(token)")
+            switch name {
+            case "launch_requested", "launch_admitted":
+                if token != 0 { self.pending.insert(token) }
+                self.start()
+            case "first_surface", "worker_failed", "worker_returned":
+                self.pending.remove(token)
+            default: break
+            }
+        }
+    }
+    func boot(build: String, model: String, os: String) {
+        queue.async {
+            self.build = build
+            self.write("event=boot schema=1 device=\(model) ios=\(os) ram=\(ProcessInfo.processInfo.physicalMemory)")
+        }
+    }
+    private func start() {
+        emptyTicks = 0
+        guard timer == nil else { return }
+        policy = JarBoxFlightPolicy()
+        let source = DispatchSource.makeTimerSource(queue: queue)
+        source.schedule(deadline: .now(), repeating: .seconds(5), leeway: .milliseconds(500))
+        source.setEventHandler { [weak self] in self?.tick() }
+        timer = source
+        source.resume()
+    }
+    private func tick() {
+        var process = JarBoxFlightProcess()
+        var slots = [JarBoxFlightSlot](repeating: JarBoxFlightSlot(), count: 64)
+        let count = slots.withUnsafeMutableBufferPointer {
+            jvm_bridge_flight_sample(&process, $0.baseAddress, Int32($0.count), 0)
+        }
+        let rows = slots.prefix(max(0, min(Int(count), slots.count)))
+        let signature = count < 0 ? "busy" : rows.map { "\($0.token):\($0.phase):\($0.stop_requested)" }.joined(separator: ",")
+        let urgent = !pending.isEmpty || count < 0 || rows.contains { $0.phase != 2 || $0.stop_requested != 0 }
+        let decision = policy.observe(wall: process.wall_ns, cpu: process.process_ns,
+                                      valid: process.process_ok != 0, signature: signature, urgent: urgent)
+        if decision.save {
+            let percent = decision.percent.map { String(format: "%.2f", $0) } ?? "unavailable"
+            var detailProcess = JarBoxFlightProcess()
+            let detailCount = slots.withUnsafeMutableBufferPointer {
+                jvm_bridge_flight_sample(&detailProcess, $0.baseAddress, Int32($0.count), 1)
+            }
+            let detail = slots.prefix(max(0, min(Int(detailCount), slots.count))).map { slot in
+                "token=\(slot.token),phase=\(slot.phase),stop=\(slot.stop_requested),mode=\(slot.mode),workers=\(slot.workers),counters_ok=\(slot.counters_ok),gc_cycles=\(slot.gc_cycles),gc_aborts=\(slot.gc_aborts),repaints=\(slot.repaint_requests),cpu_ok=\(slot.cpu_ok),runner_ns=\(slot.runner_ns),java_ns=\(slot.java_ns),gc_ns=\(slot.gc_ns)"
+            }.joined(separator: ";")
+            write("event=sample mono_ns=\(process.wall_ns) gap_ns=\(decision.gap) process_cpu_ok=\(process.process_ok) process_cpu_ns=\(process.process_ns) cpu_percent=\(percent) headroom_bytes=\(process.headroom_bytes) footprint_ok=\(process.footprint_ok) footprint_bytes=\(process.footprint_bytes) memory_state=\(process.memory_state) thermal=\(ProcessInfo.processInfo.thermalState.rawValue) low_power=\(ProcessInfo.processInfo.isLowPowerModeEnabled ? 1 : 0) registry=\(signature) detail_mono_ns=\(detailProcess.wall_ns) detail_count=\(detailCount) slots=[\(detail)]", durable: urgent || (decision.percent ?? 0) >= 60)
+        }
+        emptyTicks = count == 0 ? emptyTicks + 1 : 0
+        if emptyTicks >= 3 {
+            timer?.cancel()
+            timer = nil
+            pending.removeAll()
+            write("event=idle_sampling_stopped")
+        }
+    }
+    func export(extra: String, completion: @escaping @Sendable (String) -> Void) {
+        queue.async {
+            self.write("event=manual_export")
+            completion("JarBox Flight Recorder v1\nwrite_failures_this_run=\(self.writeFailures)\nphase: 1 STARTING, 2 RUNNING, 3 CLEANUP; CPU one core=100%; counters cumulative; gaps may be suspension\n\n" + self.store.report() + "\n\n--- Latest background report ---\n" + extra)
+        }
+    }
+}
+
 // Main-actor, process-wide diagnostic. No timer, background task or audio
 // is started here. Retained values contain tokens and counters, not VM pointers.
 @MainActor enum JarBoxBackgroundDiagnostics {
@@ -106,6 +271,7 @@ struct JarBoxPowerEvidence {
     }
     static func installEnvironmentObservers() {
         guard observers.isEmpty else { return }
+        JarBoxFlightRecorder.shared.boot(build: build, model: machineIdentifier(), os: UIDevice.current.systemVersion)
         let center = NotificationCenter.default
         for name in [ProcessInfo.thermalStateDidChangeNotification, Notification.Name.NSProcessInfoPowerStateDidChange] {
             observers.append(center.addObserver(forName: name, object: nil, queue: nil) { _ in
@@ -114,6 +280,7 @@ struct JarBoxPowerEvidence {
         }
     }
     private static func environmentChanged() {
+        JarBoxFlightRecorder.shared.event("power_or_thermal_change")
         if entered != nil {
             powerEvidence.observe(thermal: thermalCode(), lowPower: ProcessInfo.processInfo.isLowPowerModeEnabled)
         }
@@ -231,6 +398,7 @@ struct JarBoxPowerEvidence {
     // Bounded main-thread breadcrumbs at existing lifecycle boundaries.
     // Best-effort persistence, not a crash handler or a watchdog timer.
     static func recordIncident(_ event: String, token: UInt64 = 0) {
+        JarBoxFlightRecorder.shared.event(event, token: token)
         let defaults = UserDefaults.standard
         var recent = defaults.stringArray(forKey: incidentKey) ?? []
         var headroom: UInt64 = 0
@@ -257,6 +425,19 @@ struct JarBoxPowerEvidence {
         let background = defaults.string(forKey: key) ?? "Chưa có lần thử tắt màn hình. Hãy khóa máy rồi mở lại."
         let incidents = defaults.stringArray(forKey: incidentKey) ?? []
         return background + "\n\nRecent lifecycle events (best effort):\n" + incidents.joined(separator: "\n")
+    }
+    static func showFlight(from controller: UIViewController) {
+        guard controller.presentedViewController == nil else { return }
+        let extra = report()
+        JarBoxFlightRecorder.shared.export(extra: extra) { [weak controller] text in
+            DispatchQueue.main.async {
+                guard let controller, controller.presentedViewController == nil else { return }
+                let activity = UIActivityViewController(activityItems: [text], applicationActivities: nil)
+                activity.popoverPresentationController?.sourceView = controller.view
+                activity.popoverPresentationController?.sourceRect = CGRect(x: controller.view.bounds.midX, y: controller.view.bounds.midY, width: 1, height: 1)
+                controller.present(activity, animated: true)
+            }
+        }
     }
     static func show(from controller: UIViewController) {
         guard controller.presentedViewController == nil else { return }
@@ -300,6 +481,7 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     }
 
     func sceneDidDisconnect(_ scene: UIScene) {
+        JarBoxFlightRecorder.shared.event("scene_disconnect")
         // Called as the scene is being released by the system.
         // This occurs shortly after the scene enters the background, or when its session is discarded.
         // Release the foreground protection display lease even if the
@@ -318,6 +500,7 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     }
 
     func sceneDidBecomeActive(_ scene: UIScene) {
+        JarBoxFlightRecorder.shared.event("scene_active")
         JarBoxBackgroundDiagnostics.end()
         j2me_audio_background_revalidate()
         j2me_render_set_2d_scene_active(1)
@@ -326,6 +509,7 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     }
 
     func sceneWillResignActive(_ scene: UIScene) {
+        JarBoxFlightRecorder.shared.event("scene_inactive")
         j2me_audio_background_revalidate()
         j2me_render_set_2d_scene_active(0)
         activeGameViewController?.sceneSuspendGameInput()
@@ -333,12 +517,14 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     }
 
     func sceneWillEnterForeground(_ scene: UIScene) {
+        JarBoxFlightRecorder.shared.event("scene_foreground")
         // Called as the scene transitions from the background to the foreground.
         // Freeze the report before foreground rendering and Treo recovery.
         JarBoxBackgroundDiagnostics.end()
     }
 
     func sceneDidEnterBackground(_ scene: UIScene) {
+        JarBoxFlightRecorder.shared.event("scene_background")
         // Called as the scene transitions from the foreground to the background.
         // Idempotent fallback if the inactive notification was missed.
         j2me_render_set_2d_scene_active(0)
