@@ -114,6 +114,8 @@ int treo_vm_direct_dispatch_build(void) { return TREO_VM_DIRECT_DISPATCH; }
 #define TREO_VM_ALOAD_FIELD_FUSION 0
 #endif
 
+#include "jarbox_const_fusion.h"
+
 
 // "Paint bridge": preserve the JAR's Canvas.paint() Java logic but skip a
 // verified bundled Graphics draw wrapper when its Canvas target is headless.
@@ -2031,7 +2033,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
 #if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__
                 const int treo_vm_use_direct = TREO_VM_DIRECT_DISPATCH && !jvm->jdwp_enable;
                 treo_vm_note_method(treo_vm_use_direct);
-#if TREO_VM_ALOAD_FIELD_FUSION
+#if TREO_VM_ALOAD_FIELD_FUSION || TREO_VM_CONST_FUSION
                 const u8 *const treo_vm_code_end = ca->code + ca->code_length;
 #endif
 #endif
@@ -2340,6 +2342,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         case op_iconst_m1: TREO_VM_HANDLER(op_iconst_m1) {
                             (sp++)->ivalue = -1;
                             runtime->pc++;
+                            TREO_VM_FUSE_INT_CONSTANT();
                             break;
                         }
 
@@ -2347,6 +2350,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         case op_iconst_0: TREO_VM_HANDLER(op_iconst_0) {
                             (sp++)->ivalue = 0;
                             runtime->pc++;
+                            TREO_VM_FUSE_INT_CONSTANT();
                             break;
                         }
 
@@ -2354,6 +2358,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         case op_iconst_1: TREO_VM_HANDLER(op_iconst_1) {
                             (sp++)->ivalue = 1;
                             runtime->pc++;
+                            TREO_VM_FUSE_INT_CONSTANT();
                             break;
                         }
 
@@ -2361,6 +2366,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         case op_iconst_2: TREO_VM_HANDLER(op_iconst_2) {
                             (sp++)->ivalue = 2;
                             runtime->pc++;
+                            TREO_VM_FUSE_INT_CONSTANT();
                             break;
                         }
 
@@ -2368,6 +2374,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         case op_iconst_3: TREO_VM_HANDLER(op_iconst_3) {
                             (sp++)->ivalue = 3;
                             runtime->pc++;
+                            TREO_VM_FUSE_INT_CONSTANT();
                             break;
                         }
 
@@ -2375,6 +2382,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         case op_iconst_4: TREO_VM_HANDLER(op_iconst_4) {
                             (sp++)->ivalue = 4;
                             runtime->pc++;
+                            TREO_VM_FUSE_INT_CONSTANT();
                             break;
                         }
 
@@ -2382,6 +2390,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         case op_iconst_5: TREO_VM_HANDLER(op_iconst_5) {
                             (sp++)->ivalue = 5;
                             runtime->pc++;
+                            TREO_VM_FUSE_INT_CONSTANT();
                             break;
                         }
 
@@ -2448,6 +2457,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
 #endif
                             runtime->pc += 2;
 
+                            TREO_VM_FUSE_INT_CONSTANT();
                             break;
                         }
 
@@ -2460,6 +2470,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                             (sp++)->ivalue = *((s16 *) (runtime->pc + 1));
                             runtime->pc += 3;
 
+                            TREO_VM_FUSE_INT_CONSTANT();
                             break;
                         }
 

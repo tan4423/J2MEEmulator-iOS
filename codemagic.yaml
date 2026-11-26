@@ -14,6 +14,8 @@ workflows:
         JARBOX_VM_IMAGE_CACHE_BASELINE: "1" # OFF by default: measured ~0 hits in 188.7s
         JARBOX_VM_ARRAY_LOOKUP_EXPERIMENT: "0" # Isolate game-aware Treo
         JARBOX_VM_ARRAY_LOOKUP_DIAGNOSTIC: "0" # No method observer overhead
+        JARBOX_VM_CONST_ARITH_FUSION_EXPERIMENT: "0"
+        JARBOX_VM_CONST_BRANCH_FUSION_EXPERIMENT: "0"
     scripts: &jarbox_ipa_shared_scripts
       - name: Build and package unsigned iPhone IPA
         script: |
@@ -396,13 +398,21 @@ workflows:
             array_lookup_diagnostic_flag="-DTREO_VM_ARRAY_LOOKUP_DIAGNOSTIC=1"
             echo "[JarBoxVM][BUILD] array_lookup_diagnostic=on"
           fi
+          const_fusion_flags=""
+          if [[ "${JARBOX_VM_CONST_ARITH_FUSION_EXPERIMENT:-0}" == "1" ]]; then
+            const_fusion_flags="$const_fusion_flags -DTREO_VM_CONST_ARITH_FUSION_EXPERIMENT=1"
+          fi
+          if [[ "${JARBOX_VM_CONST_BRANCH_FUSION_EXPERIMENT:-0}" == "1" ]]; then
+            const_fusion_flags="$const_fusion_flags -DTREO_VM_CONST_BRANCH_FUSION_EXPERIMENT=1"
+          fi
+          echo "[JarBoxVM][BUILD] const_fusion_flags=${const_fusion_flags:-off}"
           xcodebuild -list -project "$J2ME_PROJECT"
           xcodebuild -project "$J2ME_PROJECT" \
             -scheme J2MEEmulator -configuration Release \
             -sdk iphoneos -destination 'generic/platform=iOS' \
             -derivedDataPath "$RUNNER_TEMP/jarbox-build" \
             "OTHER_LDFLAGS=\$(inherited) $RUNNER_TEMP/TreoSLJIT.o $RUNNER_TEMP/TreoJITProbe.o -framework UIKit -framework Foundation -framework Metal" \
-            "TREO_GAME_JIT_CFLAGS=-DTREO_IOS_GAME_JIT=1 -I$sljit $vm_dispatch_flag $vm_paint_bridge_flag $paint_sample_flag $utf16_flag $image_cache_flag $array_lookup_flag $array_lookup_diagnostic_flag" \
+            "TREO_GAME_JIT_CFLAGS=-DTREO_IOS_GAME_JIT=1 -I$sljit $vm_dispatch_flag $vm_paint_bridge_flag $paint_sample_flag $utf16_flag $image_cache_flag $array_lookup_flag $array_lookup_diagnostic_flag $const_fusion_flags" \
             PRODUCT_BUNDLE_IDENTIFIER=app.j2metreo.personal \
             DEBUG_INFORMATION_FORMAT=dwarf-with-dsym \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build
