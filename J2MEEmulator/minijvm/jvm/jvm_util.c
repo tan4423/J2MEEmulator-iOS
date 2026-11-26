@@ -907,6 +907,20 @@ s32 jthread_run_finalize(Runtime *runtime) {
     return 0;
 }
 
+// GC waits for the spawning Java thread to reach a safepoint while
+// holding thread_list. Spinning inside arraylist_push_back cannot satisfy
+// that handshake. Only wait here, before changing the child or publishing
+// it. Never advertise is_blocking while manipulating Java state.
+static void jthread_start_list_lock(Runtime *parent) {
+    const struct timespec retry = {0, 1000000L};
+    for (;;) {
+        if (spin_trylock(&parent->jvm->thread_list->spinlock) == 0)
+            return;
+        check_suspend_and_pause(parent);
+        thrd_sleep(&retry, NULL);
+    }
+}
+
 thrd_t jthread_start(Instance *ins, Runtime *parent) {//
     thrd_t failed = {0};
     if (!ins || !parent || !parent->jvm || !parent->jvm->session) return failed;
@@ -918,9 +932,20 @@ thrd_t jthread_start(Instance *ins, Runtime *parent) {//
         jarbox_session_worker_done(session);
         return failed;
     }
+    // Parent remains the registered GC root for ins. The list transaction
+    // covers both publication and native creation/rollback: GC must not
+    // observe a RUNNING Runtime whose native worker has not been created.
+    ArrayList *thread_list = parent->jvm->thread_list;
+    jthread_start_list_lock(parent);
+    if (jarbox_session_phase(session) >= JARBOX_SESSION_STOPPING) {
+        spin_unlock(&thread_list->spinlock);
+        jarbox_session_worker_done(session);
+        return failed;
+    }
     spin_lock(&runtime->thrd_info->lock);
     if (runtime->thrd_info->thread_status != THREAD_STATUS_NEW) {
         spin_unlock(&runtime->thrd_info->lock);
+        spin_unlock(&thread_list->spinlock);
         jarbox_session_worker_done(session);
         return failed;
     }
@@ -929,7 +954,9 @@ thrd_t jthread_start(Instance *ins, Runtime *parent) {//
     runtime->thrd_info->context_classloader = parent->thrd_info->context_classloader;//copy context classloader
     spin_unlock(&runtime->thrd_info->lock);
 
-    jthread_init(runtime->jvm, ins);
+    runtime->clazz = ins->mb.clazz;
+    if (!arraylist_push_back_unsafe(thread_list, runtime))
+        goto unregistered;
     // Re-check after registering the Runtime. If stop won this race,
     // do not spawn a new pthread after thread_stop_all has completed.
     if (jarbox_session_phase(session) >= JARBOX_SESSION_STOPPING) {
@@ -942,6 +969,7 @@ thrd_t jthread_start(Instance *ins, Runtime *parent) {//
         != thrd_success) {
         goto unstarted;
     }
+    spin_unlock(&thread_list->spinlock);
     return started;
 
 unstarted:
@@ -949,9 +977,11 @@ unstarted:
     // Java object's stackFrame link so GC can reclaim the unused Runtime.
     // Clearing stackFrame here would orphan the allocation. Mark terminal
     // before dropping the worker lease; do not pretend this thread ran.
-    threadlist_remove(runtime);
+    arraylist_remove_unsafe(thread_list, runtime);
+unregistered:
     runtime->thrd_info->jthread = NULL;
     runtime->thrd_info->thread_status = THREAD_STATUS_ZOMBIE;
+    spin_unlock(&thread_list->spinlock);
     jarbox_session_worker_done(session);
     return failed;
 }

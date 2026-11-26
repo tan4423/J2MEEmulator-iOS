@@ -894,23 +894,20 @@ s64 _garbage_collect(GcCollector *collector) {
 /**
  * Each thread marks the objects it still needs to use, indicating they cannot be collected.
  */
-static void _list_iter_thread_pause(ArrayListValue value, void *para) {
-    jthread_suspend((Runtime *) value);
-}
-
 s32 _gc_pause_the_world(MiniJVM *jvm) {
     GcCollector *collector = jvm->collector;
     ArrayList *thread_list = jvm->thread_list;
     s32 i;
-    //jvm_printf("thread size:%d\n", thread_list->length);
-    if (thread_list->length) {
-        arraylist_iter_safe(thread_list, _list_iter_thread_pause, NULL);
-
-        //此处可能存在多线程交互，比如某个线程结束等情况，导致for错误
-        spin_lock(&thread_list->spinlock);
+    // One list transaction: no new thread may slip between the suspend
+    // request pass and the acknowledgement pass. Thread.start cooperates
+    // with safepoints while contending on this lock.
+    spin_lock(&thread_list->spinlock);
+    {
+        for (i = 0; i < thread_list->length; i++)
+            jthread_suspend((Runtime *)arraylist_get_value_unsafe(thread_list, i));
         {
             for (i = 0; i < thread_list->length; i++) {
-                Runtime *runtime = arraylist_get_value(thread_list, i);
+                Runtime *runtime = arraylist_get_value_unsafe(thread_list, i);
                 if (_gc_wait_thread_suspend(jvm, runtime) == -1) {
                     // Abort must release the list before resuming Java or
                     // the stop worker will wait on this lock forever.
@@ -927,8 +924,8 @@ s32 _gc_pause_the_world(MiniJVM *jvm) {
 #endif
             }
         }
-        spin_unlock(&thread_list->spinlock);
     }
+    spin_unlock(&thread_list->spinlock);
     gc_move_objs_thread_2_gc(collector->runtime);// maybe someone new object in finalize...
 
     return 0;
@@ -938,8 +935,9 @@ s32 _gc_resume_the_world(MiniJVM *jvm) {
     GcCollector *collector = jvm->collector;
     ArrayList *thread_list = jvm->thread_list;
     s32 i;
+    spin_lock(&thread_list->spinlock);
     for (i = 0; i < thread_list->length; i++) {
-        Runtime *runtime = arraylist_get_value(thread_list, i);
+        Runtime *runtime = arraylist_get_value_unsafe(thread_list, i);
         if (runtime) {
 #if _JVM_DEBUG_GARBAGE_DUMP > 1
             Utf8String *stack = utf8_create();
@@ -948,28 +946,36 @@ s32 _gc_resume_the_world(MiniJVM *jvm) {
             utf8_destroy(stack);
 #endif
             jthread_resume(runtime);
-            vm_share_notifyall(jvm);
         }
     }
+    spin_unlock(&thread_list->spinlock);
+    vm_share_notifyall(jvm);
 
     return 0;
 }
 
 
 s32 _gc_wait_thread_suspend(MiniJVM *jvm, Runtime *runtime) {
-    if (runtime->thrd_info->thread_status == THREAD_STATUS_NEW || runtime->thrd_info->thread_status == THREAD_STATUS_ZOMBIE) {
-        return 0;
-    }
-    while (!(runtime->thrd_info->is_suspend ||  /// While executing bytecode, if suspend_count is not 0, pause bytecode execution and set is_suspend = 1
-             runtime->thrd_info->is_blocking)  // During certain IO waits, JNI sets is_blocking = 1
-            ) { //
+    // Abort this collection rather than keeping a non-cooperating worker
+    // and the registry locked forever (e.g. no_pause in class init).
+    // The existing caller resumes all threads and skips mark/sweep on -1.
+    const s64 started = nanoTime();
+    unsigned waits = 0;
+    for (;;) {
+        if (gc_thread_status(jvm->collector) != GARBAGE_THREAD_NORMAL)
+            return -1;
+        // A worker may exit while GC is waiting, not just before it starts.
+        if (runtime->thrd_info->thread_status == THREAD_STATUS_NEW ||
+            runtime->thrd_info->thread_status == THREAD_STATUS_ZOMBIE ||
+            runtime->thrd_info->is_suspend || runtime->thrd_info->is_blocking)
+            return 0;
+        const s64 now = nanoTime();
+        if ((now >= started && now - started >= INT64_C(2000000000)) ||
+            ++waits >= 2000)
+            return -1;
         vm_share_notifyall(jvm);
         vm_share_timedwait(jvm, 100);
-        if (gc_thread_status(jvm->collector) != GARBAGE_THREAD_NORMAL) {
-            return -1;
-        }
     }
-    return 0;
 }
 
 //=================================  big_search ==================================

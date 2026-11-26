@@ -24,14 +24,9 @@ typedef struct { Runtime *runtime; } GcCollector;
 typedef struct { GcCollector *collector; ArrayList *thread_list; } MiniJVM;
 static void spin_lock(pthread_mutex_t *m) { assert(!pthread_mutex_lock(m)); }
 static void spin_unlock(pthread_mutex_t *m) { assert(!pthread_mutex_unlock(m)); }
-static void _list_iter_thread_pause(Runtime *r, void *arg) { (void)r; (void)arg; }
-static void arraylist_iter_safe(ArrayList *l, void (*fn)(Runtime *, void *), void *arg) {
-    spin_lock(&l->spinlock);
-    for (int i = 0; i < l->length; ++i) fn(l->items[i], arg);
-    spin_unlock(&l->spinlock);
-}
-/* The production accessor is reentrant under its already-held spinlock. */
-static Runtime *arraylist_get_value(ArrayList *l, int i) { return l->items[i]; }
+static void jthread_suspend(Runtime *r) { (void)r; }
+/* The production accessor is called under the already-held list lock. */
+static Runtime *arraylist_get_value_unsafe(ArrayList *l, int i) { return l->items[i]; }
 static int _gc_wait_thread_suspend(MiniJVM *vm, Runtime *r) {
     (void)vm; return r->fail ? -1 : 0;
 }
