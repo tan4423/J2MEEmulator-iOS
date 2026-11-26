@@ -734,7 +734,7 @@ MethodInfo *find_methodInfo_by_name(Utf8String *clsName, Utf8String *methodName,
         //find superclass
         s32 sonIsInterface = other->cff.access_flags & ACC_INTERFACE;
         other = getSuperClass(other);
-        if (sonIsInterface && !(other->cff.access_flags & ACC_INTERFACE)) {//interface can not find method from java.lang.Object
+        if (sonIsInterface && (!other || !(other->cff.access_flags & ACC_INTERFACE))) {//interface can not find method from java.lang.Object
             other = NULL;
         }
     }

@@ -1,4 +1,6 @@
 #include <stdlib.h>
+#include <limits.h>
+#include <stdint.h>
 #include <string.h>
 #include "utf8_string.h"
 #include "d_type.h"
@@ -78,28 +80,39 @@ void utf8_append(Utf8String *a1, Utf8String *a2) {
     utf8_append_part(a1, a2, 0, a2->length);
 }
 
+// Reserve once and copy once. Keep binary UTF-8 bytes, including NUL,
+// and preserve the old string on failed growth.
+static int utf8_append_block(Utf8String *dst, const void *data, int len) {
+    if (!dst || !data || len < 0 || dst->length < 0 ||
+        dst->length > dst->_alloced || len > INT_MAX - dst->length) return 0;
+    if (!len) return 1;
+    uintptr_t base=(uintptr_t)dst->data, src=(uintptr_t)data;
+    int internal=src>=base && src-base<(uintptr_t)dst->_alloced;
+    size_t offset=internal ? (size_t)(src-base) : 0;
+    if (internal && (offset>(size_t)dst->length ||
+                     (size_t)len>(size_t)dst->length-offset)) return 0;
+    if (len > dst->_alloced-dst->length && !_utf8_space_require(dst,len)) return 0;
+    if (internal) data=dst->data+offset;
+    memmove(dst->data+dst->length,data,(size_t)len);
+    dst->length+=len;
+    dst->hash=0;
+    return 1;
+}
+
 void utf8_append_part(Utf8String *a1, Utf8String *a2, int start, int len) {
-    if (a1 == NULL || a2 == NULL)return;
-    _utf8_space_require(a1, len);
-    memcpy(a1->data + a1->length, a2->data + start * sizeof(utf8_char), len * sizeof(utf8_char));
-    a1->length += len;
+    if (!a1 || !a2 || start<0 || len<0 || start>a2->length ||
+        len>a2->length-start || !len) return;
+    utf8_append_block(a1,a2->data+start,len);
 }
 
 void utf8_append_c(Utf8String *a1, char const *a2) {
-    int i = 0;
-    for (i = 0;; i++) {
-        char ch = a2[i];
-        if (ch == 0)break;
-        utf8_pushback(a1, ch);
-    }
+    if (!a1 || !a2) return;
+    size_t len=strlen(a2);
+    if (len<=INT_MAX) utf8_append_block(a1,a2,(int)len);
 }
 
 void utf8_append_data(Utf8String *a1, char const *a2, s32 size) {
-    int i = 0;
-    for (i = 0; i < size; i++) {
-        char ch = a2[i];
-        utf8_pushback(a1, ch);
-    }
+    utf8_append_block(a1,a2,size);
 }
 
 void utf8_append_s64(Utf8String *a1, s64 val, int radix) {
@@ -357,6 +370,19 @@ void utf8_replace_c(Utf8String *a1, char const *a2, char const *a3) {
     int count2 = strlen(a2);
     int count3 = strlen(a3);
     if (a1->length == 0 || count2 == 0)return;
+    // Class names frequently normalize '.' to '/' (and vice versa).
+    // A one-byte substitution cannot change length or require allocation.
+    if (count2 == 1 && count3 == 1) {
+        const utf8_char from=(utf8_char)a2[0], to=(utf8_char)a3[0];
+        if (from==to) return;
+        for (int i=0;i<a1->length;++i) {
+            if (a1->data[i]==from) {
+                a1->data[i]=to;
+                a1->hash=0;
+            }
+        }
+        return;
+    }
     _utf8_replace_impl(a1, a2, count2, a3, count3);
 }
 
@@ -365,17 +391,13 @@ static inline int _utf8_equals_impl(utf8_char *a1, int count1, utf8_char *a2, in
     if (a1 == NULL || a2 == NULL)return 0;
     if (count1 != count2)return 0;
 
-    int i = 0;
-    for (; i < count1; i++) {
-        if (a1[i] != a2[i]) {
-            return 0;
-        }
-    }
-    return 1;
+    return count1 >= 0 && memcmp(a1,a2,(size_t)count1)==0;
 }
 
 int utf8_equals(Utf8String *a1, Utf8String *a2) {
     if (a1 && a2) {
+        if (a1==a2) return 1;
+        if (a1->length!=a2->length) return 0;
         if (_utf8_hashCode(a1) != _utf8_hashCode(a2))return 0;
         return _utf8_equals_impl(a1->data, a1->length, a2->data, a2->length);
     }
@@ -397,7 +419,8 @@ int UNICODE_STR_EQUALS_FUNC(HashtableValue value1, HashtableValue value2) {
 
 s64 UNICODE_STR_HASH_FUNC(HashtableKey kmer) {
     s64 v = _utf8_hashCode(kmer);
-    return v < 0 ? -v : v;
+    // INT64_MIN has no positive signed counterpart.
+    return v == INT64_MIN ? v : (v < 0 ? -v : v);
 }
 
 
@@ -413,36 +436,21 @@ unsigned long _utf8_hashCode(Utf8String *ustr) {
 }
 
 int _utf8_space_require(Utf8String *ustr, int need) {
-    if ((!ustr) || ustr->length + need <= ustr->_alloced) {
-        return 0;
+    if (!ustr || need<0 || ustr->length<0 ||
+        ustr->length>ustr->_alloced || need>INT_MAX-ustr->length) return 0;
+    int required=ustr->length+need;
+    if (required<=ustr->_alloced) return 0;
+    int newsize=ustr->_alloced>0 ? ustr->_alloced : 32;
+    while (newsize<required) {
+        if (newsize>INT_MAX/2) { newsize=required; break; }
+        newsize*=2;
     }
-
-    utf8_char *data;
-    int newsize;
-
-    /* Double the allocated size */
-
-    newsize = ustr->_alloced << 1;
-    while (newsize < need + ustr->length) {
-        newsize <<= 1;
-    }
-
-    /* Reallocate the array to the new size */
-
-    data = jvm_malloc(sizeof(utf8_char) * newsize);
-    if (data == NULL) {
-        return 0;
-    }
-
-    /* Copy existing data to new memory */
-    memmove(data, ustr->data, sizeof(utf8_char) * ustr->length);
-
-    /* Free old memory */
+    utf8_char *data=jvm_malloc((u32)newsize);
+    if (!data) return 0;
+    if (ustr->length) memcpy(data,ustr->data,(size_t)ustr->length);
     jvm_free(ustr->data);
-
-    ustr->data = data;
-    ustr->_alloced = newsize;
-
+    ustr->data=data;
+    ustr->_alloced=newsize;
     return 1;
 }
 
@@ -467,6 +475,7 @@ int utf8_insert(Utf8String *ustr, int index, utf8_char data) {
 
     /* Increase the size if necessary */
 
+    if (ustr->length == INT_MAX) return 0;
     if (ustr->length + 1 > ustr->_alloced) {
         if (!_utf8_space_require(ustr, 1)) {
             return 0;
@@ -499,7 +508,8 @@ int utf8_pushfront(Utf8String *ustr, utf8_char data) {
 void utf8_remove_range(Utf8String *ustr, int index, int length) {
     /* Check this is a valid range */
 
-    if (index < 0 || length < 0 || index + length > ustr->length) {
+    if (index < 0 || length < 0 || index > ustr->length ||
+        length > ustr->length-index) {
         return;
     }
 
