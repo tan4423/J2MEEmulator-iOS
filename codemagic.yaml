@@ -404,6 +404,7 @@ workflows:
             "OTHER_LDFLAGS=\$(inherited) $RUNNER_TEMP/TreoSLJIT.o $RUNNER_TEMP/TreoJITProbe.o -framework UIKit -framework Foundation -framework Metal" \
             "TREO_GAME_JIT_CFLAGS=-DTREO_IOS_GAME_JIT=1 -I$sljit $vm_dispatch_flag $vm_paint_bridge_flag $paint_sample_flag $utf16_flag $image_cache_flag $array_lookup_flag $array_lookup_diagnostic_flag" \
             PRODUCT_BUNDLE_IDENTIFIER=app.j2metreo.personal \
+            DEBUG_INFORMATION_FORMAT=dwarf-with-dsym \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build
           
           products="$RUNNER_TEMP/jarbox-build/Build/Products/Release-iphoneos"
@@ -440,5 +441,26 @@ workflows:
           test "$(/usr/libexec/PlistBuddy -c 'Print :JarBoxBuildCommit' "$ipa_plist")" = "$build_commit"
           test "$(/usr/libexec/PlistBuddy -c 'Print :JarBoxBootPatch' "$ipa_plist")" = "java8_stringjoiner_profile_v10"
           echo "[JarBoxNET][BUILD] stamped IPA archive verified"
+
+          # Preserve exact-build symbols outside the IPA. A later rebuild
+          # of the same commit is not a substitute for a matching UUID.
+          executable="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$app/Info.plist")"
+          dsym="$app.dSYM"
+          test -f "$app/$executable"
+          test -f "$dsym/Contents/Resources/DWARF/$executable"
+          symbol_stage="$(mktemp -d)"
+          xcrun dwarfdump --uuid "$app/$executable" > "$symbol_stage/executable-uuid.txt"
+          xcrun dwarfdump --uuid "$dsym/Contents/Resources/DWARF/$executable" > "$symbol_stage/dsym-uuid.txt"
+          awk '/^UUID: / {print $2, $3}' "$symbol_stage/executable-uuid.txt" | sort > "$symbol_stage/executable-uuid.normalized"
+          awk '/^UUID: / {print $2, $3}' "$symbol_stage/dsym-uuid.txt" | sort > "$symbol_stage/dsym-uuid.normalized"
+          test -s "$symbol_stage/executable-uuid.normalized"
+          cmp "$symbol_stage/executable-uuid.normalized" "$symbol_stage/dsym-uuid.normalized"
+          printf '%s\n' "$build_commit" > "$symbol_stage/build-commit.txt"
+          ditto "$dsym" "$symbol_stage/$(basename "$dsym")"
+          (cd "$symbol_stage" && /usr/bin/zip -qry "$GITHUB_WORKSPACE/JarBox-symbols.zip" .)
+          /usr/bin/unzip -tq "$GITHUB_WORKSPACE/JarBox-symbols.zip"
+          cat "$symbol_stage/executable-uuid.txt"
+          echo "[JarBoxVM][BUILD] matching dSYM archive verified"
     artifacts: &jarbox_ipa_shared_artifacts
       - J2ME-Treo-jar-cpu-audit-unsigned.ipa
+      - JarBox-symbols.zip

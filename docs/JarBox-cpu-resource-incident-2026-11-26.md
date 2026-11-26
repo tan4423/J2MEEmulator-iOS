@@ -1,0 +1,7 @@
+# CPU resource termination: 26 November 2026
+
+The supplied iOS microstackshot report for JarBox at 10:23:10 +0700 is bug_type 206, Event cpu usage, Action taken Process killed. iOS reports 48 CPU seconds over 48 elapsed seconds, exceeding its reported 48 CPU seconds in a 60-second window. The sampled footprint is 134.89 MB; this report is a CPU-resource termination, not a jetsam diagnosis. All eight sampled stacks contain a common worker/dispatch prefix and JarBox offsets, but no symbols. User also reports occasional persistent >100% CPU during stuck startup; this is a hypothesis to investigate, not evidence of a particular method or infinite loop.
+
+Original binary UUID 6E97E363-10EC-3F54-897B-DE54DA920959, arm64, image base 0x100e70000. Obtain the original IPA from the actual build, not a later rebuild. With matching symbols on macOS, verify `xcrun dwarfdump --uuid <DWARF-file>`, then use `xcrun atos -arch arm64 -o <DWARF-file> -l 0x100e70000 0x100e99cfc 0x100ec54a4 0x100ed131c 0x100e95cac`. Decode the entire common stack before selecting a fix. If only the original binary is available, inspect its symbol table/disassembly; source-level resolution may be unavailable.
+
+CI now saves a separate JarBox-symbols.zip with matching dSYM, executable and dSYM UUID records, and exact commit. The dSYM is not packaged in IPA. UUID matching is enforced during the iOS build. No CPU throttling, changes to game ticks, GC, interpreter or startup policies in this diagnostic change. The older incident cannot be symbolicated using a different UUID.
