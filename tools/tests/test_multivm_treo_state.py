@@ -182,7 +182,8 @@ class MultiVMTreoStateTest(unittest.TestCase):
         self.assertIn("treo_nso_init_for_runtime(runtime)", interpreter)
         self.assertIn("treo_direct_graphics_enabled_for_runtime(runtime) &&", interpreter)
         self.assertIn("treo_runtime_mode(runtime) == TreoAFKFastCanvas", renderer)
-        self.assertIn("treo_afk_elide_graphics(pruntime, method->_this_class, args->ins)", interpreter)
+        self.assertIn("treo_afk_elide_graphics(pruntime, method->_this_class, args->ins,core_sink)", interpreter)
+        self.assertIn("jarbox_ninja_core_active(&pruntime->jvm->session->treo_state.ninja_core,treo_paint_mode)", interpreter)
         self.assertIn("g_afk_canvas_owner_key == callerKey", renderer)
         self.assertIn("caller_key != g_afk_canvas_owner_key", renderer)
 
