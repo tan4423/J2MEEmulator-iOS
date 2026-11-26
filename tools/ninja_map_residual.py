@@ -75,7 +75,12 @@ def lower(ins):
             if '.' not in name:name=OWNER+'.'+name
             if not re.fullmatch(r'Class_h(?:ii|ac|xb)\.\w+',name) or t not in ('I','B','[C','Ljavax/microedition/lcdui/Image;'):raise ValueError('field '+ref)
             fields.add((name,t))
-            if op=='getstatic':code=push('I' if t in ('I','B') else 'R',name)
+            if op=='getstatic':
+                kind='I' if t in ('I','B') else 'R'
+                code=push(kind,name)
+                slot=('s' if kind=='I' else 'r')+str(len(stack)-1)
+                code+=f'Trace.read({slot},"{name}");'
+                effect=True # preserve every read, including linkage/init/volatile effects
             else:
                 if t!='I' or name.split('.')[0]!=OWNER or name.split('.')[1] not in WRITE_FIELDS:raise ValueError('unexpected write')
                 writes.append((pc,name));v=pop('I');code=f'Trace.write({v},"{name.split(".")[1]}");{name}={v};';effect=True
@@ -225,6 +230,7 @@ public final class Instrument {
      public void visitFieldInsn(int op,String o,String n,String d){
       step();if(op==Opcodes.PUTSTATIC){if(!o.equals("Class_hii")||!d.equals("I"))throw new AssertionError();super.visitInsn(Opcodes.DUP);super.visitLdcInsn(n);super.visitMethodInsn(Opcodes.INVOKESTATIC,"Trace","write","(ILjava/lang/String;)V",false);}
       super.visitFieldInsn(op,o,n,d);
+      if(op==Opcodes.GETSTATIC){super.visitInsn(Opcodes.DUP);super.visitLdcInsn(o+"."+n);super.visitMethodInsn(Opcodes.INVOKESTATIC,"Trace","read",(d.equals("I")||d.equals("B"))?"(ILjava/lang/String;)V":"(Ljava/lang/Object;Ljava/lang/String;)V",false);}
      }
     };
    }
@@ -235,10 +241,12 @@ public final class Instrument {
 '''
 TRACE=r'''import java.util.*;
 public final class Trace {
- static long steps; static ArrayList<Long> events=new ArrayList<>();
+ static boolean enabled; static long steps,reads,writes; static ArrayList<Object> events=new ArrayList<>();
+ public static void read(int v,String n){if(!enabled)return;reads++;events.add("R:"+n);events.add(v);}
+ public static void read(Object v,String n){if(!enabled)return;reads++;events.add("R:"+n);events.add(v);}
  public static void step(){steps++;}
- public static void write(int v,String n){int k=switch(n){case "a2"->1;case "b2"->2;case "d2"->3;case "c2"->4;default->throw new AssertionError(n);};events.add(((long)k<<32)|(v&0xffffffffL));}
- static void reset(){steps=0;events.clear();}
+ public static void write(int v,String n){if(!enabled)return;int k=switch(n){case "a2"->1;case "b2"->2;case "d2"->3;case "c2"->4;default->throw new AssertionError(n);};writes++;events.add(((long)k<<32)|(v&0xffffffffL));}
+ static void reset(){steps=reads=writes=0;events.clear();}
 }
 '''
 HARNESS=r'''import java.util.*;
@@ -253,8 +261,8 @@ public class Check {
  }
  static void reset(int a,int b,int c,int d){Class_hii.a2=a;Class_hii.b2=b;Class_hii.c2=c;Class_hii.d2=d;}
  public static void main(String[] args){
-  int count=0, faults=0, changed=0; long draws=0, originalSteps=0,residualSteps=0,writes=0; boolean traced=args.length>0;
-  for(int n=0;n<12000;n++){
+  int count=0, faults=0, changed=0; long draws=0, originalSteps=0,residualSteps=0,writes=0,reads=0; boolean traced=args.length>0;Trace.enabled=traced;
+  for(int n=0;n<(traced?2000:12000);n++){
    int w=1+r.nextInt(12),h=1+r.nextInt(12);Class_hii.j1=w;Class_hii.r3=n%10;
    Class_hii.u3=new char[w*h];Class_hii.x3=new int[w*h];
    for(int j=0;j<w*h;j++){Class_hii.u3[j]=(char)r.nextInt(100);Class_hii.x3[j]=bits[r.nextInt(bits.length)];}
@@ -263,14 +271,14 @@ public class Check {
    if(n%31==0)Class_hii.u3=null;if(n%41==0)Class_hii.x3=null;
    if(n%43==0)Class_hac.y26=w+1;if(n%47==0)Class_hac.b28=h+1;
    int a=r.nextInt(),b=r.nextInt(),c=r.nextInt(),d=r.nextInt();reset(a,b,c,d);
-   Class_hvi.draws=0;Trace.reset();String x=run(false);draws+=Class_hvi.draws;originalSteps+=Trace.steps;ArrayList<Long> expected=new ArrayList<>(Trace.events);writes+=expected.size();
+   Class_hvi.draws=0;Trace.reset();String x=run(false);draws+=Class_hvi.draws;originalSteps+=Trace.steps;ArrayList<Object> expected=new ArrayList<>(Trace.events);writes+=Trace.writes;reads+=Trace.reads;
    if(!x.startsWith("ok:"))faults++;if(!x.equals("ok:"+a+":"+b+":"+d+":"+c))changed++;
    reset(a,b,c,d);Trace.reset();String y=run(true);residualSteps+=Trace.steps;
-   if(traced&&!expected.equals(Trace.events))throw new AssertionError("write order "+n);
+   if(traced&&!expected.equals(Trace.events))throw new AssertionError("read/write order or value "+n);
    if(!x.equals(y))throw new AssertionError(n+" "+x+" != "+y);
    count++;
   }
-  System.out.println("PASS cases="+count+" faults="+faults+" changed_or_fault="+changed+" original_draws="+draws+" original_steps="+originalSteps+" residual_steps="+residualSteps+" traced_writes="+writes);
+  System.out.println("PASS cases="+count+" faults="+faults+" changed_or_fault="+changed+" original_draws="+draws+" original_steps="+originalSteps+" residual_steps="+residualSteps+" traced_reads="+reads+" traced_writes="+writes);
  }
 }
 '''
@@ -280,7 +288,7 @@ def main():
     digest=hashlib.sha256(a.jar.read_bytes()).hexdigest()
     if digest!=SHA:raise ValueError('unrecognized corpus SHA')
     ins=disassemble(a.jar);ops,fields,writes=lower(ins);entry,residual=reduce(ops)
-    report={'sha256':digest,'original_ops':len(ops),'residual_ops':sum(bool(o.code) for o in residual.values()),'writes':writes,'runtime_authorized':False}
+    report={'sha256':digest,'original_ops':len(ops),'residual_ops':sum(bool(o.code) for o in residual.values()),'writes':writes,'static_read_sites':sum(op=='getstatic' for _,op,_ in ins),'runtime_authorized':False}
     print(json.dumps(report),flush=True)
     with tempfile.TemporaryDirectory() as td:
         root=Path(td);pkg=root/'javax/microedition/lcdui';pkg.mkdir(parents=True)
