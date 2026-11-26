@@ -17,6 +17,8 @@ jobs:
         with:
           distribution: temurin
           java-version: '21'
+      - name: JIT flag hot path contract
+        run: python3 -m unittest discover -s tools/tests -p test_jit_flag_hot_path.py
       - name: Focused CPU log analyzer
         run: python3 -m unittest discover -s tools/tests -p test_focused_cpu.py
       - name: Binary sprite host differential

@@ -49,13 +49,17 @@ int main(void) {
             ("const u8 int_leaf = method->treo_int_leaf_kind;", "#endif"),
             ("CodeAttribute *decoded = method->converted_code;", "#endif"),
             ("if (method->treo_ref_leaf &&", "#endif"),
+            ("#if JARBOX_CHAR_LEAF", "#endif"),
+            ("const int lookup_mode1=", "#if TREO_VM_ARRAY_LOOKUP_DIAG"),
         ):
             with self.subTest(tier=start):
                 block = i.split(start, 1)[1].split(end, 1)[0]
                 self.assertIn("!treo_game_jit_enabled_fast()", block)
                 self.assertEqual(block.count("treo_game_jit_enabled_fast()"), 1)
         self.assertIn("const int treo_enabled = !jvm->jdwp_enable && treo_game_jit_enabled_fast();", i)
-        self.assertEqual(i.count("treo_game_jit_enabled_fast()"), 4)
+        # Five interpreter-only tiers plus the ordinary JIT dispatch above.
+        # Keep the total check: an accidental extra hot-path read still fails.
+        self.assertEqual(i.count("treo_game_jit_enabled_fast()"), 6)
         self.assertNotIn("treo_game_jit_is_enabled()",i)
         self.assertEqual(j.count("int treo_jit_enabled_state;"),1)
         self.assertIn("int treo_game_jit_is_enabled(void) { return treo_game_jit_enabled_fast(); }",j)
