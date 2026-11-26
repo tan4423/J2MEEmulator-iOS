@@ -88,6 +88,21 @@ int main(int argc, char **argv) {
     }
 #if defined(__APPLE__) || defined(__linux__)
     CHECK(jarbox_classpath_cache[0].path != NULL);
+    JarBoxClasspathReader *reader=&jarbox_classpath_cache[0];
+    CHECK(reader->names.count==mz_zip_reader_get_num_files(&reader->archive));
+    // Exact differential comparison: every original ordinal, duplicate
+    // name, long name, case collision and absent name against miniz.
+    for (unsigned i=0;i<reader->names.count;++i) {
+        unsigned n=mz_zip_reader_get_filename(&reader->archive,i,NULL,0);
+        char *name=malloc(n);
+        CHECK(name && mz_zip_reader_get_filename(&reader->archive,i,name,n)==n);
+        CHECK(jarbox_name_index_find(&reader->names,name)==mz_zip_reader_locate_file(&reader->archive,name,NULL,MZ_ZIP_FLAG_CASE_SENSITIVE));
+        free(name);
+    }
+    CHECK(jarbox_name_index_find(&reader->names,"not-present")==-1);
+    CHECK(jarbox_name_index_find(&reader->names,"A.CLASS")==-1);
+    CHECK(jarbox_name_index_find(&reader->names,"a.class")==0);
+    CHECK(jarbox_name_index_find(&reader->names,"dup.class")==mz_zip_reader_locate_file(&reader->archive,"dup.class",NULL,MZ_ZIP_FLAG_CASE_SENSITIVE));
     CHECK(jarbox_classpath_cache[1].path == NULL);
     CHECK(jarbox_classpath_data_count == 2);
     CHECK(jarbox_classpath_miss_count == 1);
@@ -163,7 +178,9 @@ int main(int argc, char **argv) {
     zip_classpath_cache_trim();
 #if defined(__APPLE__) || defined(__linux__)
     for (unsigned n = 0; n < JARBOX_CLASSPATH_CACHE_SLOTS; ++n)
-        CHECK(jarbox_classpath_cache[n].path == NULL);
+        CHECK(jarbox_classpath_cache[n].path == NULL &&
+              !jarbox_classpath_cache[n].names.entries &&
+              !jarbox_classpath_cache[n].names.names);
     CHECK(jarbox_classpath_data_bytes == 0 && jarbox_classpath_data_count == 0);
     CHECK(jarbox_classpath_miss_bytes == 0 && jarbox_classpath_miss_count == 0);
 #endif
@@ -204,6 +221,14 @@ class ZipCaseSensitiveTest(unittest.TestCase):
                                    ("large", b"x" * 1024)):
                     archive.writestr(name, data)
                 archive.writestr("too-large", b"x" * (256 * 1024 + 1))
+                import warnings
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore", UserWarning)
+                    archive.writestr("dup.class", b"first")
+                    archive.writestr("dup.class", b"second")
+                archive.writestr("long/" + "x" * 2048, b"long")
+                for i in range(1024):
+                    archive.writestr(f"classes/p{i:04d}.class", b"synthetic")
                 for i in range(30):
                     archive.writestr(f"resource/{i}.bin", bytes([i]) * (256 * 1024))
             replacement = path / "replacement.jar"

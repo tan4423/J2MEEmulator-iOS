@@ -124,11 +124,86 @@ typedef struct JarBoxClasspathData {
 } JarBoxClasspathData;
 static size_t jarbox_classpath_data_bytes;
 static unsigned jarbox_classpath_data_count;
+// Optional exact-name index; immutable archive metadata only. A separate
+// 512 KiB per-reader cap limits four readers to 2 MiB extra.
+#define JARBOX_NAME_INDEX_BUDGET (512u * 1024u)
+typedef struct {
+    uint32_t hash, ordinal, offset;
+} JarBoxNameEntry;
+typedef struct {
+    JarBoxNameEntry *entries;
+    char *names;
+    unsigned count;
+} JarBoxNameIndex;
+
+static uint32_t jarbox_name_hash(const char *name) {
+    uint32_t h=2166136261u;
+    for (; *name; ++name) h=(h^(unsigned char)*name)*16777619u;
+    return h;
+}
+static int jarbox_name_compare(const void *a,const void *b) {
+    const JarBoxNameEntry *x=a,*y=b;
+    if (x->hash != y->hash) return x->hash < y->hash ? -1 : 1;
+    return (x->ordinal > y->ordinal) - (x->ordinal < y->ordinal);
+}
+static void jarbox_name_index_clear(JarBoxNameIndex *index) {
+    free(index->entries);
+    free(index->names);
+    memset(index,0,sizeof(*index));
+}
+static void jarbox_name_index_build(JarBoxNameIndex *index,mz_zip_archive *archive) {
+    const unsigned count=mz_zip_reader_get_num_files(archive);
+    if (count<32 || count>20000 || count>JARBOX_NAME_INDEX_BUDGET/sizeof(JarBoxNameEntry)) return;
+    size_t remaining=JARBOX_NAME_INDEX_BUDGET-count*sizeof(JarBoxNameEntry);
+    size_t bytes=0;
+    for (unsigned i=0;i<count;++i) {
+        unsigned n=mz_zip_reader_get_filename(archive,i,NULL,0);
+        if (!n || n>remaining-bytes) return;
+        bytes+=n;
+    }
+    JarBoxNameEntry *entries=malloc(count*sizeof(*entries));
+    char *names=malloc(bytes);
+    if (!entries || !names) { free(entries); free(names); return; }
+    size_t offset=0;
+    for (unsigned i=0;i<count;++i) {
+        unsigned n=mz_zip_reader_get_filename(archive,i,NULL,0);
+        if (!n || n>bytes-offset ||
+            mz_zip_reader_get_filename(archive,i,names+offset,n)!=n ||
+            memchr(names+offset,0,n-1)!=NULL || names[offset+n-1]!=0) {
+            free(entries); free(names); return;
+        }
+        entries[i]=(JarBoxNameEntry){jarbox_name_hash(names+offset),i,(uint32_t)offset};
+        offset+=n;
+    }
+    qsort(entries,count,sizeof(*entries),jarbox_name_compare);
+    index->entries=entries;
+    index->names=names;
+    index->count=count;
+}
+// -2 means no index (or unsupported name); -1 means definite absence.
+// Hash collisions require byte equality; identical names choose the original
+// first archive ordinal, matching miniz's case-sensitive linear scan.
+static int jarbox_name_index_find(const JarBoxNameIndex *index,const char *name) {
+    if (!index->count || strlen(name)>UINT16_MAX) return -2;
+    uint32_t hash=jarbox_name_hash(name);
+    unsigned lo=0,hi=index->count;
+    while (lo<hi) {
+        unsigned mid=lo+(hi-lo)/2;
+        if (index->entries[mid].hash<hash) lo=mid+1; else hi=mid;
+    }
+    for (;lo<index->count && index->entries[lo].hash==hash;++lo) {
+        const JarBoxNameEntry *entry=&index->entries[lo];
+        if (!strcmp(index->names+entry->offset,name)) return (int)entry->ordinal;
+    }
+    return -1;
+}
+
 typedef struct {
     char *path;
     struct stat identity;
     uint64_t last_used;
     mz_zip_archive archive;
+    JarBoxNameIndex names;
     JarBoxClasspathData *data[JARBOX_CLASSPATH_DATA_BUCKETS];
     JarBoxClasspathMiss *misses[JARBOX_CLASSPATH_DATA_BUCKETS];
 } JarBoxClasspathReader;
@@ -249,6 +324,7 @@ static void jarbox_classpath_data_clear(JarBoxClasspathReader *reader) {
     }
 }
 static void jarbox_classpath_close(JarBoxClasspathReader *reader) {
+    jarbox_name_index_clear(&reader->names);
     jarbox_classpath_data_clear(reader);
     jarbox_classpath_miss_clear(reader);
     if (reader->path) {
@@ -340,6 +416,7 @@ s32 zip_classpath_loadfile_profiled(const char *jarpath, const char *filename, B
             jarbox_classpath_close(reader);
             goto done;
         }
+        jarbox_name_index_build(&reader->names,&reader->archive);
     }
 
     // Cache hits avoid both the ZIP name lookup and decompression. A
@@ -351,10 +428,13 @@ s32 zip_classpath_loadfile_profiled(const char *jarpath, const char *filename, B
     if (cached) {
         ret = jarbox_classpath_data_copy(cached, buf);
     } else if ((cached_miss = jarbox_classpath_miss_find(reader, entry)) == 0) {
-        int index = mz_zip_reader_locate_file(&reader->archive, entry, NULL,
+        int index = jarbox_name_index_find(&reader->names,entry);
+        if (index == -2) {
+            index = mz_zip_reader_locate_file(&reader->archive, entry, NULL,
                                              MZ_ZIP_FLAG_CASE_SENSITIVE);
-        if (index < 0)
-            definitive_miss = mz_zip_get_last_error(&reader->archive) == MZ_ZIP_FILE_NOT_FOUND;
+            if (index < 0)
+                definitive_miss = mz_zip_get_last_error(&reader->archive) == MZ_ZIP_FILE_NOT_FOUND;
+        } else if (index == -1) definitive_miss = 1;
         mz_zip_archive_file_stat info = {0};
         if (index >= 0 && mz_zip_reader_file_stat(&reader->archive, (mz_uint)index, &info) &&
             info.m_uncomp_size <= INT32_MAX) {
