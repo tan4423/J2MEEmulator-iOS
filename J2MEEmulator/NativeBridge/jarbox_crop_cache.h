@@ -1,5 +1,8 @@
 #ifndef JARBOX_CROP_CACHE_H
 #define JARBOX_CROP_CACHE_H
+#if defined(TREO_CROP_CACHE_V2) && TREO_CROP_CACHE_V2
+#include "jarbox_crop_cache_v2.h"
+#else
 #include <stdint.h>
 #include <stddef.h>
 
@@ -71,4 +74,5 @@ static inline CGImageRef jarbox_crop_get(JarBoxCropCache *c,CGImageRef source,
     c->bytes+=charge;
     return crop;
 }
+#endif // candidate switch
 #endif

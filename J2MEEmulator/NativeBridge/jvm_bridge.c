@@ -1037,6 +1037,13 @@ int jvm_bridge_flight_sample(JarBoxFlightProcess *process, JarBoxFlightSlot *slo
         out->afk_profile_paint_cpu_ns=__atomic_load_n(&session->treo_state.afk_profile_paint_cpu_ns,__ATOMIC_RELAXED);
         out->compatible_font_reuses=__atomic_load_n(&session->treo_state.compatible_font_reuses,__ATOMIC_RELAXED);
         out->compatible_crop_hits=__atomic_load_n(&session->treo_state.compatible_crop_hits,__ATOMIC_RELAXED);
+        out->region_stage_seen=__atomic_load_n(&session->treo_state.region_stage_seen,__ATOMIC_RELAXED);
+        out->region_stage_samples=__atomic_load_n(&session->treo_state.region_stage_samples,__ATOMIC_RELAXED);
+        out->region_stage_hit_samples=__atomic_load_n(&session->treo_state.region_stage_hit_samples,__ATOMIC_RELAXED);
+        out->region_stage_hit_ns=__atomic_load_n(&session->treo_state.region_stage_hit_ns,__ATOMIC_RELAXED);
+        out->region_stage_miss_ns=__atomic_load_n(&session->treo_state.region_stage_miss_ns,__ATOMIC_RELAXED);
+        out->region_stage_draw_ns=__atomic_load_n(&session->treo_state.region_stage_draw_ns,__ATOMIC_RELAXED);
+        out->region_stage_invalid=__atomic_load_n(&session->treo_state.region_stage_invalid,__ATOMIC_RELAXED);
         out->compatible_crop_misses=__atomic_load_n(&session->treo_state.compatible_crop_misses,__ATOMIC_RELAXED);
         out->compatible_state_reuses=__atomic_load_n(&session->treo_state.compatible_state_reuses,__ATOMIC_RELAXED);
         out->compatible_region_culls=__atomic_load_n(&session->treo_state.compatible_region_culls,__ATOMIC_RELAXED);

@@ -22,6 +22,7 @@
 #include "jarbox_flush_routes.h"
 #include "jarbox_scene_gpu_gate.h"
 #include "jarbox_crop_cache.h"
+#include "jarbox_region_stage.h"
 #include "jarbox_paint_qos_policy.h"
 #include "jvm_bridge.h"
 #include "j2me_input.h"
@@ -125,6 +126,10 @@ typedef struct RenderContext {
     TreoLiveRun *liveRun;
     TreoCPUCache *cpuCache;
     JarBoxCropCache *cropCache; // only immutable sources, owned by this Canvas
+#if defined(TREO_REGION_STAGE_DIAG) && TREO_REGION_STAGE_DIAG
+    JarBoxRegionStage regionStage;
+    uint64_t regionStageSequence;
+#endif
     uint64_t compatible_crop_hits, compatible_crop_misses, compatible_state_reuses, compatible_region_culls;
     uint64_t compatible_text_attr_reuses;
     uint32_t *softwarePixels;
@@ -2743,6 +2748,18 @@ static s32 n_flushToScreen(Runtime *runtime, JClass *clazz) {
         if (state && rc->compatible_text_attr_reuses)
             __atomic_fetch_add(&state->compatible_text_attr_reuses,rc->compatible_text_attr_reuses,__ATOMIC_RELAXED);
         rc->compatible_text_attr_reuses=0;
+#if defined(TREO_REGION_STAGE_DIAG) && TREO_REGION_STAGE_DIAG
+        if (state) {
+            if (rc->regionStage.seen) __atomic_fetch_add(&state->region_stage_seen,rc->regionStage.seen,__ATOMIC_RELAXED);
+            if (rc->regionStage.samples) __atomic_fetch_add(&state->region_stage_samples,rc->regionStage.samples,__ATOMIC_RELAXED);
+            if (rc->regionStage.hit_samples) __atomic_fetch_add(&state->region_stage_hit_samples,rc->regionStage.hit_samples,__ATOMIC_RELAXED);
+            if (rc->regionStage.hit_ns) __atomic_fetch_add(&state->region_stage_hit_ns,rc->regionStage.hit_ns,__ATOMIC_RELAXED);
+            if (rc->regionStage.miss_ns) __atomic_fetch_add(&state->region_stage_miss_ns,rc->regionStage.miss_ns,__ATOMIC_RELAXED);
+            if (rc->regionStage.draw_ns) __atomic_fetch_add(&state->region_stage_draw_ns,rc->regionStage.draw_ns,__ATOMIC_RELAXED);
+            if (rc->regionStage.invalid) __atomic_fetch_add(&state->region_stage_invalid,rc->regionStage.invalid,__ATOMIC_RELAXED);
+        }
+        rc->regionStage=(JarBoxRegionStage){0};
+#endif
         rc->compatible_crop_hits=rc->compatible_crop_misses=0;
         rc->compatible_state_reuses=rc->compatible_region_culls=0;
     }
@@ -4753,15 +4770,45 @@ static s32 treo_draw_region(const TreoRegionArgs *p, int direct) {
         img_release(img); rc_release(rc);
         return RUNTIME_STATUS_NORMAL;
     }
+#if defined(TREO_REGION_STAGE_DIAG) && TREO_REGION_STAGE_DIAG
+    // Sparse eligible-region tail timing, after handle acquisition, barriers and culling.
+    int stageSelected=0;
+    uint64_t stageStart=0, stageHits=0;
+    if (compatible) {
+        ++rc->regionStage.seen;
+        stageSelected=jarbox_region_stage_selected(rc->regionStageSequence++);
+        if (stageSelected) {
+            stageHits=rc->compatible_crop_hits;
+            stageStart=treo_thread_cpu_ns();
+        }
+    }
+#endif
     CGImageRef fullImage = copyImageSnapshot(img);
-    if (!fullImage) { img_release(img); rc_release(rc); return RUNTIME_STATUS_NORMAL; }
+    if (!fullImage) {
+#if defined(TREO_REGION_STAGE_DIAG) && TREO_REGION_STAGE_DIAG
+        if (stageSelected) ++rc->regionStage.invalid;
+#endif
+        img_release(img); rc_release(rc); return RUNTIME_STATUS_NORMAL;
+    }
     CGImageRef subImage = compatible ? treo_compatible_crop(rc,fullImage,xSrc,ySrc,wSrc,hSrc)
         : CGImageCreateWithImageInRect(fullImage, CGRectMake(xSrc, ySrc, wSrc, hSrc));
     if (subImage) treo_replay_capture(rc, fullImage, xDst, yDst, xSrc, ySrc, wSrc, hSrc, transform);
     CGImageRelease(fullImage);
-    if (!subImage) { img_release(img); rc_release(rc); return RUNTIME_STATUS_NORMAL; }
-
+    if (!subImage) {
+#if defined(TREO_REGION_STAGE_DIAG) && TREO_REGION_STAGE_DIAG
+        if (stageSelected) ++rc->regionStage.invalid;
+#endif
+        img_release(img); rc_release(rc); return RUNTIME_STATUS_NORMAL;
+    }
+#if defined(TREO_REGION_STAGE_DIAG) && TREO_REGION_STAGE_DIAG
+    uint64_t stageMiddle=stageSelected ? treo_thread_cpu_ns() : 0;
+#endif
     treo_draw_region_cg(rctx, subImage, xDst, yDst, wSrc, hSrc, transform);
+#if defined(TREO_REGION_STAGE_DIAG) && TREO_REGION_STAGE_DIAG
+    if (stageSelected)
+        jarbox_region_stage_record(&rc->regionStage,stageStart,stageMiddle,treo_thread_cpu_ns(),
+                                   rc->compatible_crop_hits!=stageHits);
+#endif
     CGImageRelease(subImage);
     img_release(img);
     rc_release(rc);
