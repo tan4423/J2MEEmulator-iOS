@@ -1,0 +1,7 @@
+# Terminal GC / worker follow-up
+
+Parent 2e1f85a (CI unconfirmed at review). Found a regression in c702b4e: GC wait checked collector NORMAL before NEW/ZOMBIE, but gc_destroy joins the GC worker and calls synchronous _garbage_clear under DEAD. Its while(_garbage_collect(...)) loops could repeat -1 forever for a terminal runtime. Restore terminal-runtime check before status, retain STOP/DEAD rejection for live blocked/suspended workers. No permission to collect live workers after shutdown. The teardown barrier remains mandatory; this does not guarantee recovery if it is violated.
+
+jthread_run had reset is_stop=0 before executing Java Thread.exit, undoing host stop or Runtime.exitInternal. Preserve terminal stop; normal Thread.exit remains, with interrupt reset protected by the thread-info lock, and no Java execution under that lock. Initial GC acknowledgement before run-method resolution closes a startup window. Stop racing after the exit decision remains cooperative via interpreter stop checks; arbitrary native callbacks are not forcibly interrupted.
+
+Add existing per-session GC abort/cycle counters and whole-process CPU to background boundary log. Process CPU is overlapping across tokens; never sum it. No extra polling or gameplay changes. Source assertions for worker exit are not native execution tests. Host fixture tests terminal status and contention with mocked GC. Root-snapshot allocation failure and final cleanup loop handling for unexpected live runtimes need a separate design; no claim of exhaustive safety. CI and iPhone stress pending.

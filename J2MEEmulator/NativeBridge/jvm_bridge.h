@@ -82,6 +82,7 @@ int jvm_bridge_cpu_snapshot_for_token(uint64_t token,JarBoxCpuSnapshot *out);
 typedef struct {
     JarBoxCpuPoint cpu;
     JarBoxBackgroundProgress progress;
+    uint64_t gc_aborts;
     int mode, family, canvas, trace_ok;
 } JarBoxBackgroundSample;
 int jvm_bridge_background_tokens(uint64_t *out,int capacity);

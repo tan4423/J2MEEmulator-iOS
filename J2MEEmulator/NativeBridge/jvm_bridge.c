@@ -961,6 +961,7 @@ static void bridge_background_sample_visitor(MiniJVM *vm,void *arg) {
     pthread_mutex_unlock(&bridge_cpu_lock);
     // Unlike the CPU mode history, this window spans device sleep and mode changes.
     out->cpu.wall_ns=now;
+    out->gc_aborts=__atomic_load_n(&s->treo_state.gc_worker_aborts,__ATOMIC_RELAXED);
     out->mode=jarbox_treo_mode_get(&s->treo_state);
     out->family=jarbox_treo_nso_family_verified(&s->treo_state);
     out->canvas=jarbox_treo_nso_canvas_recognized(&s->treo_state);

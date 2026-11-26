@@ -964,12 +964,15 @@ s32 _gc_wait_thread_suspend(MiniJVM *jvm, Runtime *runtime) {
     const s64 started = nanoTime();
     unsigned waits = 0;
     for (;;) {
+        // Terminal runtimes need no acknowledgement, including during
+        // synchronous heap cleanup after gc_destroy has joined the collector.
+        // Never treat a live blocked/suspended worker as safe on STOP.
+        if (runtime->thrd_info->thread_status == THREAD_STATUS_NEW ||
+            runtime->thrd_info->thread_status == THREAD_STATUS_ZOMBIE)
+            return 0;
         if (gc_thread_status(jvm->collector) != GARBAGE_THREAD_NORMAL)
             return -1;
-        // A worker may exit while GC is waiting, not just before it starts.
-        if (runtime->thrd_info->thread_status == THREAD_STATUS_NEW ||
-            runtime->thrd_info->thread_status == THREAD_STATUS_ZOMBIE ||
-            runtime->thrd_info->is_suspend || runtime->thrd_info->is_blocking)
+        if (runtime->thrd_info->is_suspend || runtime->thrd_info->is_blocking)
             return 0;
         const s64 now = nanoTime();
         if ((now >= started && now - started >= INT64_C(2000000000)) ||

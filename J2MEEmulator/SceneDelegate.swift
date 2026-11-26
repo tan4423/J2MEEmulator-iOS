@@ -221,6 +221,9 @@ struct JarBoxPowerEvidence {
             lines.append("token=\(token),status=\(status),mode_before=\(before.mode),mode_after=\(after.mode),family=\(after.family),canvas=\(after.canvas)")
             lines.append("elapsed_ns=\(valid ? delta(p.start_ns,p.end_ns) : "unavailable"),samples=\(p.samples),first_offset_ns=\(first),last_offset_ns=\(last),max_observed_gap_ns=\(valid ? String(p.max_gap_ns) : "unavailable")")
             lines.append("requests_delta=\(delta(before.cpu.requests,after.cpu.requests)),skips_delta=\(delta(before.cpu.skips,after.cpu.skips)),cpu_valid=\(cpu.threads_ok),runner_cpu_ns=\(cpu.runner_ns),java_cpu_ns=\(cpu.java_ns),gc_cpu_ns=\(cpu.gc_ns),sample_errors=\(cpu.sample_errors)")
+            // Process CPU includes every JVM and app/audio/UI overhead.
+            // It overlaps across token windows: never sum these values.
+            lines.append("gc_cycles_delta=\(delta(before.cpu.gc_cycles,after.cpu.gc_cycles)),gc_aborts_delta=\(delta(before.gc_aborts,after.gc_aborts)),process_cpu_valid=\(cpu.process_ok),process_cpu_ns=\(cpu.process_ns)")
         }
         starts.removeAll()
         save(lines.joined(separator: "\n"))

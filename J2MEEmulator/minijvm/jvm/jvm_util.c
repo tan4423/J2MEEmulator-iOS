@@ -812,10 +812,14 @@ s32 jthread_run(void *para) {
 #endif
     s32 ret = 0;
     runtime->thrd_info->pthread = thrd_current();
+    // A newly published Runtime can already be in the GC suspend snapshot.
+    // Acknowledge before resolving run(), which may load classes or allocate.
+    check_suspend_and_pause(runtime);
     // A start that races teardown (after thread_stop_all traversed the list)
     // must not execute Java code without the stop signal. The reservation
     // still guarantees that the JVM stays allocated until we return.
-    if (jarbox_session_phase(held_session) >= JARBOX_SESSION_STOPPING) {
+    if (jarbox_session_phase(held_session) >= JARBOX_SESSION_STOPPING ||
+        runtime->thrd_info->is_stop) {
         runtime->thrd_info->thread_status = THREAD_STATUS_ZOMBIE;
 #if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__
         jvm_bridge_pop_java_thread_token(previous_token);
@@ -856,19 +860,26 @@ s32 jthread_run(void *para) {
         print_exception(runtime);
     }
 
-    //run Thread.exit()
-    utf8_clear(methodName);
-    utf8_clear(methodType);
-    utf8_append_c(methodName, "exit");
-    utf8_append_c(methodType, "()V");
-    runtime->thrd_info->thread_status = THREAD_STATUS_RUNNING;
-    runtime->thrd_info->is_interrupt = 0;
-    runtime->thrd_info->is_stop = 0;
-    runtime->thrd_info->is_suspend = 0;
-    runtime->thrd_info->is_blocking = 0;
-    method = find_instance_methodInfo_by_name(jthread, methodName, methodType, runtime);
-    push_ref(runtime->stack, (__refer) jthread);
-    execute_method_impl(method, runtime);
+    // Normal Java Thread.exit still executes. Host/VM-wide stop is terminal:
+    // do not clear is_stop and accidentally re-enter Java during teardown.
+    // Serialize interrupt reset with thread_stop_all; do not hold this lock
+    // while resolving or executing Java code.
+    check_suspend_and_pause(runtime);
+    spin_lock(&runtime->thrd_info->lock);
+    const int run_exit = !runtime->thrd_info->is_stop &&
+        jarbox_session_phase(held_session) < JARBOX_SESSION_STOPPING;
+    if (run_exit) runtime->thrd_info->is_interrupt = 0;
+    spin_unlock(&runtime->thrd_info->lock);
+    if (run_exit) {
+        utf8_clear(methodName);
+        utf8_clear(methodType);
+        utf8_append_c(methodName, "exit");
+        utf8_append_c(methodType, "()V");
+        runtime->thrd_info->thread_status = THREAD_STATUS_RUNNING;
+        method = find_instance_methodInfo_by_name(jthread, methodName, methodType, runtime);
+        push_ref(runtime->stack, (__refer) jthread);
+        execute_method_impl(method, runtime);
+    }
 
     // The worker is still native-live during monitor/UTF8 cleanup. Do not
     // publish ZOMBIE yet: GC may finalize the Java Runtime on that status.

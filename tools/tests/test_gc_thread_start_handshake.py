@@ -27,7 +27,7 @@ enum { JARBOX_SESSION_STOPPING=3 };
 static int jarbox_session_phase(Session *s) { return atomic_load(&s->phase); }
 typedef struct { MiniJVM *jvm; Info *thrd_info; } Runtime;
 enum { THREAD_STATUS_NEW=0, THREAD_STATUS_RUNNING=1, THREAD_STATUS_ZOMBIE=2,
-       GARBAGE_THREAD_NORMAL=1 };
+       GARBAGE_THREAD_NORMAL=1, GARBAGE_THREAD_STOP=2, GARBAGE_THREAD_DEAD=3 };
 static int spin_trylock(pthread_mutex_t *m) { return pthread_mutex_trylock(m); }
 static void thrd_sleep(const struct timespec *t, void *unused) {
     (void)unused; nanosleep(t,NULL);
@@ -47,7 +47,7 @@ static void vm_share_notifyall(MiniJVM *v) { (void)v; }
 static void vm_share_timedwait(MiniJVM *v, int ms) {
     ++wait_calls; clock_ns += (s64)ms*1000000;
     if (wait_behavior==1) waiting_info->thread_status=THREAD_STATUS_ZOMBIE;
-    if (wait_behavior==2) v->collector->status=0;
+    if (wait_behavior==2) v->collector->status=GARBAGE_THREAD_STOP;
 }
 """
 MAIN=r"""
@@ -93,6 +93,20 @@ int main(void) {
     info.thread_status=THREAD_STATUS_RUNNING;
     wait_behavior=2; wait_calls=0; clock_ns=0;
     assert(_gc_wait_thread_suspend(&vm,&parent)==-1 && wait_calls==1);
+    // The stopped GC worker is joined before synchronous final collection.
+    // NEW and ZOMBIE runtimes require no wait, even under DEAD.
+    for(int i=0;i<10000;++i) {
+        gc.status=GARBAGE_THREAD_DEAD; wait_calls=0;
+        info.thread_status=THREAD_STATUS_ZOMBIE;
+        assert(_gc_wait_thread_suspend(&vm,&parent)==0 && wait_calls==0);
+        info.thread_status=THREAD_STATUS_NEW;
+        assert(_gc_wait_thread_suspend(&vm,&parent)==0 && wait_calls==0);
+        info.thread_status=THREAD_STATUS_RUNNING; info.is_blocking=1;
+        assert(_gc_wait_thread_suspend(&vm,&parent)==-1 && wait_calls==0);
+        info.is_blocking=0; info.is_suspend=1;
+        assert(_gc_wait_thread_suspend(&vm,&parent)==-1 && wait_calls==0);
+        info.is_suspend=0;
+    }
     pthread_mutex_destroy(&list.spinlock);
     puts("GC/start forced contention, timeout, exit and STOP: PASS");
 }
