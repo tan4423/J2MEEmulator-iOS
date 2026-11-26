@@ -4,6 +4,8 @@
 #include "garbage.h"
 #include "jarbox_int_leaf.h"
 #include "jarbox_decoded_int.h"
+#include "jarbox_array_index.h"
+#include <string.h>
 
 // Keep the legacy map in baseline builds. Ordinary iOS dispatch uses two
 // immutable receiver identity slots without allocating or reading a map.
@@ -340,7 +342,19 @@ uint64_t treo_vm_utf16_fast_calls(void) { return 0; }
  * Disabled in all production and existing diagnostic workflows until A/B
  * confirms both behavior and CPU benefit.
  */
-#if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__ && defined(TREO_VM_ARRAY_LOOKUP_EXPERIMENT)
+// Keep the historical mode-8 flag independent. The new candidate never
+// changes mode or paint policy, and is disabled by default.
+#if defined(TREO_VM_ARRAY_LOOKUP_EXPERIMENT)
+#define TREO_VM_ARRAY_LOOKUP_LEGACY 1
+#else
+#define TREO_VM_ARRAY_LOOKUP_LEGACY 0
+#endif
+#if defined(TREO_VM_ARRAY_LOOKUP_MODE1_EXPERIMENT) && TREO_VM_ARRAY_LOOKUP_MODE1_EXPERIMENT && !_JVM_DEBUG_PROFILE && _JVM_DEBUG_LOG_LEVEL == 0 && !TREO_VM_PAINT_SAMPLE && !defined(__JVM_DEBUG__)
+#define TREO_VM_ARRAY_LOOKUP_MODE1 1
+#else
+#define TREO_VM_ARRAY_LOOKUP_MODE1 0
+#endif
+#if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__ && (TREO_VM_ARRAY_LOOKUP_LEGACY || TREO_VM_ARRAY_LOOKUP_MODE1)
 #define TREO_VM_ARRAY_LOOKUP 1
 #else
 #define TREO_VM_ARRAY_LOOKUP 0
@@ -364,6 +378,7 @@ static inline int treo_vm_matches_array_lookup(MethodInfo *m) {
     CodeAttribute *ca = m->converted_code;
     int match = 0;
     if (ca && ca->code_length == 17 && ca->code &&
+        utf8_equals_c(m->descriptor,"(II)I") &&
         ca->exception_table_length == 1 && ca->exception_table) {
         const u8 *c = ca->code;
         const ExceptionTable *e = ca->exception_table;
@@ -1969,19 +1984,23 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
     // Only a fully initialized, resolved, in-bounds int[] read takes the fast
     // path. Null/OOB, uninitialized fields, debugger, suspension and other
     // rare conditions retain the original exception and Java semantics.
-    if (treo_paint_mode == 8 && method->para_slots == 2 &&
-        method->return_slots == 1 && method->is_static &&
+    const int lookup_mode1=TREO_VM_ARRAY_LOOKUP_MODE1 && treo_paint_mode==1 &&
+        jarbox_treo_nso_family_verified(&pruntime->jvm->session->treo_state);
+    if ((lookup_mode1 || (TREO_VM_ARRAY_LOOKUP_LEGACY && treo_paint_mode == 8)) &&
+        method->para_slots == 2 && method->return_slots == 1 && method->is_static &&
         !method->is_native && !method->is_sync && method->breakpoint == NULL &&
         method->_this_class->status >= CLASS_STATUS_CLINITED &&
         !pruntime->jvm->jdwp_enable && !pruntime->thrd_info->is_stop &&
-        !pruntime->thrd_info->suspend_count &&
+        !pruntime->thrd_info->suspend_count && !treo_game_jit_enabled_fast() &&
         treo_vm_matches_array_lookup(method)) {
 #if TREO_VM_ARRAY_LOOKUP_DIAG
         treo_array_diag_note(3); // exact candidate plus debugger/thread safety
 #endif
         const u8 *code = method->converted_code->code;
-        const u16 array_cp = *((const u16 *)(code + 1));
-        const u16 width_cp = *((const u16 *)(code + 5));
+        // Converted constant-pool operands are host endian, potentially unaligned.
+        u16 array_cp, width_cp;
+        memcpy(&array_cp,code+1,sizeof(array_cp));
+        memcpy(&width_cp,code+5,sizeof(width_cp));
         ConstantFieldRef *array_ref =
             class_get_constant_fieldref(method->_this_class, array_cp);
         ConstantFieldRef *width_ref =
@@ -1996,6 +2015,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
         if (array_field && width_field &&
             array_field->_this_class == method->_this_class &&
             width_field->_this_class == method->_this_class &&
+            (array_field->access_flags & ACC_STATIC) && (width_field->access_flags & ACC_STATIC) &&
             array_field->isrefer && !array_field->isvolatile &&
             !width_field->isrefer && !width_field->isvolatile &&
             width_field->datatype_bytes == 4 &&
@@ -2005,25 +2025,36 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
             treo_array_diag_note(5);
 #endif
             Instance *array = *((__refer *)getStaticFieldPtr(array_field));
-            if (array && (array->mb.type & MEM_TYPE_ARR)) {
+            if (array && (array->mb.type & MEM_TYPE_ARR) &&
+                array->mb.arr_type_index==DATATYPE_INT && array->arr_body) {
 #if TREO_VM_ARRAY_LOOKUP_DIAG
                 treo_array_diag_note(6);
 #endif
                 const s32 width = *((s32 *)getStaticFieldPtr(width_field));
                 RuntimeStack *caller = pruntime->stack;
-                StackEntry *args = caller->sp - 2;
-                const u32 bits = (u32)args[1].ivalue * (u32)width +
-                                 (u32)args[0].ivalue;
-                const s32 index = (s32)bits;
-                if (index >= 0 && index < array->arr_length) {
+                const s32 used=(s32)(caller->sp-caller->store);
+                // Match the ordinary interpreter's operand capacity check.
+                // Do not mutate the caller stack on any rejected condition.
+                if (used>=2 && used<=caller->max_size &&
+                    method->converted_code->max_stack<=caller->max_size-used) {
+                    StackEntry *args = caller->sp - 2;
+                    uint32_t index;
+                    if (jarbox_array_index(args[0].ivalue,args[1].ivalue,width,array->arr_length,&index)) {
 #if TREO_VM_ARRAY_LOOKUP_DIAG
                     treo_array_diag_note(7);
 #endif
-                    const s32 value = ((s32 *)array->arr_body)[index];
-                    caller->sp = args;
-                    push_int(caller, value);
-                    treo_vm_array_lookup_note();
-                    return RUNTIME_STATUS_NORMAL;
+                        const s32 value = ((s32 *)array->arr_body)[index];
+                        caller->sp = args;
+                        push_int(caller, value);
+                        if (lookup_mode1) {
+                            if (++pruntime->thrd_info->jarbox_array_lookup_pending==64) {
+                                pruntime->thrd_info->jarbox_array_lookup_pending=0;
+                                __atomic_fetch_add(&pruntime->jvm->session->treo_state.array_lookup_mode1_calls,
+                                                   64,__ATOMIC_RELAXED);
+                            }
+                        } else treo_vm_array_lookup_note();
+                        return RUNTIME_STATUS_NORMAL;
+                    }
                 }
             }
         }

@@ -1076,6 +1076,7 @@ int jvm_bridge_flight_sample(JarBoxFlightProcess *process, JarBoxFlightSlot *slo
         }
 #endif
         out->repaint_requests=__atomic_load_n(&session->treo_state.nso_repaint_requests,__ATOMIC_RELAXED);
+        out->array_lookup_mode1_calls=__atomic_load_n(&session->treo_state.array_lookup_mode1_calls,__ATOMIC_RELAXED);
         out->afk_profile_paint_calls=__atomic_load_n(&session->treo_state.afk_profile_paint_calls,__ATOMIC_RELAXED);
         out->afk_profile_paint_cpu_ns=__atomic_load_n(&session->treo_state.afk_profile_paint_cpu_ns,__ATOMIC_RELAXED);
         out->compatible_font_reuses=__atomic_load_n(&session->treo_state.compatible_font_reuses,__ATOMIC_RELAXED);

@@ -12,7 +12,8 @@ workflows:
         JARBOX_PAINT_SAMPLE_DISABLED: "1"
         JARBOX_VM_UTF16_BASELINE: "0"
         JARBOX_VM_IMAGE_CACHE_BASELINE: "1" # OFF by default: measured ~0 hits in 188.7s
-        JARBOX_VM_ARRAY_LOOKUP_EXPERIMENT: "0" # Isolate game-aware Treo
+        JARBOX_VM_ARRAY_LOOKUP_EXPERIMENT: "0" # historical mode-8 experiment stays OFF
+        JARBOX_VM_ARRAY_LOOKUP_MODE1_EXPERIMENT: "0" # guarded candidate; pending integrated VM differential
         JARBOX_VM_ARRAY_LOOKUP_DIAGNOSTIC: "0" # No method observer overhead
         JARBOX_VM_PERF_CANDIDATE: "0" # Matched all-off control for Treo CPU investigation; set 1 to reproduce candidate
         JARBOX_PAINT_QOS_EXPERIMENT: "0" # isolate Ninja Core; QoS trial remains available
@@ -482,7 +483,12 @@ workflows:
             const_fusion_flags="$const_fusion_flags -DTREO_CANVAS_PHASE_DIAG=1"
             perf_canvas_phase=1
           fi
-          perf_profile="const-arith-${perf_arith}_const-branch-${perf_branch}_decoded-int-${perf_decoded}_event-sleep-${perf_sleep}_paint-qos-${perf_qos}_ninja-core-${perf_core}_native-paint-diag-${perf_native_diag}_crop-v2-${perf_crop}_region-stage-${perf_region}_hotspot-${perf_hot}_core-aba-${perf_aba}_gc-phase-${perf_gc_phase}_canvas-phase-${perf_canvas_phase}"
+          perf_array_mode1=0
+          if [[ "${JARBOX_VM_ARRAY_LOOKUP_MODE1_EXPERIMENT:-0}" == "1" ]]; then
+            const_fusion_flags="$const_fusion_flags -DTREO_VM_ARRAY_LOOKUP_MODE1_EXPERIMENT=1"
+            perf_array_mode1=1
+          fi
+          perf_profile="const-arith-${perf_arith}_const-branch-${perf_branch}_decoded-int-${perf_decoded}_event-sleep-${perf_sleep}_paint-qos-${perf_qos}_ninja-core-${perf_core}_native-paint-diag-${perf_native_diag}_crop-v2-${perf_crop}_region-stage-${perf_region}_hotspot-${perf_hot}_core-aba-${perf_aba}_gc-phase-${perf_gc_phase}_canvas-phase-${perf_canvas_phase}_array-mode1-${perf_array_mode1}"
           echo "[JarBoxVM][BUILD] perf_profile=$perf_profile const_fusion_flags=${const_fusion_flags:-off}"
           xcodebuild -list -project "$J2ME_PROJECT"
           xcodebuild -project "$J2ME_PROJECT" \
