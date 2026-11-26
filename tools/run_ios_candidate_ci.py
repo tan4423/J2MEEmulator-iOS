@@ -19,7 +19,7 @@ IPA = 'J2ME-Treo-jar-cpu-audit-unsigned.ipa'
 
 
 def prepare(config, configuration, environ):
-    if configuration not in ('control', 'intrinsics', 'binary'):
+    if configuration not in ('control', 'intrinsics', 'binary', 'binary-trial'):
         raise ValueError('invalid configuration')
     workflow = config['workflows']['jit-probe-unsigned']
     variables = workflow['environment']['vars']
@@ -39,7 +39,10 @@ def prepare(config, configuration, environ):
     env.update(variables)
     for k in CANDIDATES:
         env[k] = '1' if configuration == 'intrinsics' else '0'
-    env[BINARY] = '1' if configuration == 'binary' else '0'
+    env[BINARY] = {'binary': '1', 'binary-trial': '2'}.get(configuration, '0')
+    if configuration == 'binary-trial':
+        for k in ('JARBOX_NATIVE_PAINT_DIAG', 'JARBOX_REGION_STAGE_DIAG', 'JARBOX_HOTSPOT_DIAG'):
+            env[k] = '0'
     return script, env
 
 
@@ -54,7 +57,7 @@ def verify_ipa(path, commit, configuration):
     profile = info.get('JarBoxPerfProfile', '').split('_')
     enabled = '1' if configuration == 'intrinsics' else '0'
     for key, value in [('array-mode1', enabled), ('char-leaf', enabled),
-                       ('binary-sprite', '1' if configuration == 'binary' else '0'),
+                       ('binary-sprite', {'binary': '1', 'binary-trial': '2'}.get(configuration, '0')),
                        ('core-aba', '0'), ('ninja-core', '0'), ('paint-qos', '0'),
                        ('decoded-int', '0'), ('event-sleep', '0'),
                        ('const-arith', '0'), ('const-branch', '0')]:
@@ -66,7 +69,7 @@ def verify_ipa(path, commit, configuration):
 def main():
     import yaml
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument('--configuration', choices=('control', 'intrinsics', 'binary'), default='binary')
+    p.add_argument('--configuration', choices=('control', 'intrinsics', 'binary', 'binary-trial'), default='binary-trial')
     p.add_argument('--plan', action='store_true', help='validate recipe and print switches only')
     a = p.parse_args()
     script, env = prepare(yaml.safe_load((ROOT / 'codemagic.yaml').read_text()), a.configuration, os.environ)

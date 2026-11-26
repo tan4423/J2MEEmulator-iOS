@@ -499,6 +499,13 @@ workflows:
           if [[ "${JARBOX_BINARY_SPRITE_EXPERIMENT:-0}" == "1" ]]; then
             const_fusion_flags="$const_fusion_flags -DTREO_BINARY_SPRITE_EXPERIMENT=1"
             perf_binary=1
+          elif [[ "${JARBOX_BINARY_SPRITE_EXPERIMENT:-0}" == "2" ]]; then
+            if [[ "${JARBOX_CORE_ABA:-0}" != "0" || "${JARBOX_NINJA_CORE_EXPERIMENT:-0}" != "0" ]]; then
+              echo "Binary raster trial must not enable scoped Core" >&2
+              exit 1
+            fi
+            const_fusion_flags="$const_fusion_flags -DTREO_BINARY_SPRITE_EXPERIMENT=1 -DTREO_BINARY_ABA=1"
+            perf_binary=2
           fi
           perf_profile="const-arith-${perf_arith}_const-branch-${perf_branch}_decoded-int-${perf_decoded}_event-sleep-${perf_sleep}_paint-qos-${perf_qos}_ninja-core-${perf_core}_native-paint-diag-${perf_native_diag}_crop-v2-${perf_crop}_region-stage-${perf_region}_hotspot-${perf_hot}_core-aba-${perf_aba}_gc-phase-${perf_gc_phase}_canvas-phase-${perf_canvas_phase}_array-mode1-${perf_array_mode1}_char-leaf-${perf_char_leaf}_binary-sprite-${perf_binary}"
           echo "[JarBoxVM][BUILD] perf_profile=$perf_profile const_fusion_flags=${const_fusion_flags:-off}"
@@ -573,8 +580,8 @@ workflows:
       - J2ME-Treo-jar-cpu-audit-unsigned.ipa
       - JarBox-symbols.zip
 
-  treo-focused-diagnostic:
-    name: JarBox Treo CPU - focused diagnostic
+  treo-optimization-trial:
+    name: JarBox Treo - optimization trial
     instance_type: mac_mini_m2
     max_build_duration: 25
     environment:
@@ -593,14 +600,14 @@ workflows:
         JARBOX_VM_PERF_CANDIDATE: "0" # Matched all-off control for Treo CPU investigation; set 1 to reproduce candidate
         JARBOX_PAINT_QOS_EXPERIMENT: "0" # isolate Ninja Core; QoS trial remains available
         JARBOX_NINJA_CORE_EXPERIMENT: "0" # continuous scoped Core trial is OFF
-        JARBOX_CORE_ABA: "1" # focused short diagnostic only
+        JARBOX_CORE_ABA: "0" # scoped sink rejected twice
         JARBOX_GC_PHASE_DIAG: "1" # coarse GC worker phase attribution; independently switchable
         JARBOX_CANVAS_PHASE_DIAG: "1" # matched Canvas pre/paint/post CPU; independently switchable
-        JARBOX_NATIVE_PAINT_DIAG: "0" # focused short diagnostic only
+        JARBOX_NATIVE_PAINT_DIAG: "0" # keep hot observers off
         JARBOX_CROP_CACHE_V2: "1" # candidate; 0 = old direct-mapped cache
-        JARBOX_BINARY_SPRITE_EXPERIMENT: "0" # strict full-raster mode-1 candidate; pending CG oracle
-        JARBOX_REGION_STAGE_DIAG: "0" # focused short diagnostic only
-        JARBOX_HOTSPOT_DIAG: "0" # focused short diagnostic only
+        JARBOX_BINARY_SPRITE_EXPERIMENT: "2" # actual raster optimization trial
+        JARBOX_REGION_STAGE_DIAG: "0" # keep hot observers off
+        JARBOX_HOTSPOT_DIAG: "0" # keep hot observers off
         JARBOX_VM_DECODED_INT_EXPERIMENT: "0"
         JARBOX_VM_EVENT_SLEEP_EXPERIMENT: "0"
         JARBOX_VM_CONST_ARITH_FUSION_EXPERIMENT: "0"

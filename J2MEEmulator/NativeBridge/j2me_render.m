@@ -24,6 +24,7 @@
 #include "jarbox_crop_cache.h"
 #include "jarbox_region_stage.h"
 #include "jarbox_binary_sprite.h"
+#include "jarbox_binary_trial.h"
 #include "jarbox_paint_qos_policy.h"
 #include "jvm_bridge.h"
 #include "j2me_input.h"
@@ -841,6 +842,9 @@ void treo_afk_mark_gc_thread(void) {
     atomic_store_explicit(&g_afk_gc_tid, tid, memory_order_relaxed);
 }
 static _Thread_local uint64_t g_afk_draw_count;
+#if defined(TREO_BINARY_ABA) && TREO_BINARY_ABA
+static _Thread_local JarBoxBinaryTrialScope binary_trial_scope;
+#endif
 uint64_t treo_afk_skipped_draws(void) { return atomic_load_explicit(&g_afk_skipped_draws, memory_order_relaxed); }
 uint64_t treo_afk_skipped_paints(void) { return atomic_load_explicit(&g_afk_skipped_paints, memory_order_relaxed); }
 
@@ -877,6 +881,16 @@ static s32 n_beginAfkPaint(Runtime *runtime, JClass *clazz) {
     }
     s64 previous = g_afk_canvas;
     const int headless = runtime->jnienv->localvar_getInt(runtime->localvar, 2);
+#if defined(TREO_BINARY_ABA) && TREO_BINARY_ABA
+    JarBoxTreoState *trial=treo_runtime_state(runtime);
+    uint64_t epoch=trial?__atomic_load_n(&trial->core_aba_start_ns,__ATOMIC_ACQUIRE):0;
+    uint64_t now=epoch?clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW):0;
+    int64_t canvas=runtime->jnienv->localvar_getLong_2slot(runtime->localvar,0);
+    jarbox_binary_trial_begin(&binary_trial_scope,key,canvas,treo_runtime_mode(runtime),
+                              headless,epoch,now);
+    if (epoch && epoch!=__atomic_load_n(&trial->core_aba_start_ns,__ATOMIC_ACQUIRE))
+        jarbox_binary_trial_end(&binary_trial_scope);
+#endif
     if (key && (headless ||
         jarbox_treo_mode_get(&runtime->jvm->session->treo_state) == 2)) {
         s64 canvas = runtime->jnienv->localvar_getLong_2slot(runtime->localvar, 0);
@@ -890,6 +904,9 @@ static s32 n_beginAfkPaint(Runtime *runtime, JClass *clazz) {
     return RUNTIME_STATUS_NORMAL;
 }
 static s32 n_endAfkPaint(Runtime *runtime, JClass *clazz) {
+#if defined(TREO_BINARY_ABA) && TREO_BINARY_ABA
+    jarbox_binary_trial_end(&binary_trial_scope);
+#endif
     const uint64_t key = jarbox_native_heap_key_for_runtime(runtime);
     const int same_owner=key && key==g_afk_canvas_owner_key;
     g_afk_canvas = same_owner ?
@@ -969,7 +986,16 @@ static void treo_park_transition_visitor(MiniJVM *vm, void *arg) {
         jarbox_treo_smart_force_safe(state);
     treo_display_wait_set_for_vm(vm, 0);
     treo_apply_mode_locked(vm, mode, treo_afk_now_ns());
-#if defined(TREO_CORE_ABA) && TREO_CORE_ABA
+#if defined(TREO_BINARY_ABA) && TREO_BINARY_ABA
+    // Same monotonic one-shot schedule, no scoped Core admission.
+    if (change->entering && mode==1 && !state->core_aba_used) {
+        uint64_t epoch=clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW);
+        if (epoch) {
+            state->core_aba_used=1;
+            __atomic_store_n(&state->core_aba_start_ns,epoch,__ATOMIC_RELEASE);
+        }
+    }
+#elif defined(TREO_CORE_ABA) && TREO_CORE_ABA
     // One eligible automatic park per owner lifetime. The existing core
     // admission, rejection and Java Canvas guards remain authoritative.
     if (change->entering && !change->compatible_only && !state->core_aba_used &&
@@ -4799,6 +4825,7 @@ static int treo_binary_mode1_draw(RenderContext *rc,RenderImage *img,int64_t x,i
     if (check) {
         CGAffineTransform ctm=CGContextGetCTM(rc->ctx);
         if (ctm.a!=1 || ctm.b!=0 || ctm.c!=0 || ctm.d!=-1 || ctm.tx!=0 || ctm.ty!=rc->height ||
+            !CGRectEqualToRect(CGContextGetClipBoundingBox(rc->ctx),clip) ||
             CGBitmapContextGetData(rc->ctx)!=rc->softwarePixels ||
             CGBitmapContextGetBytesPerRow(rc->ctx)!=(size_t)rc->width*4) {
             rc->binaryRejected=true; ++rc->binaryMismatch; return 0;
@@ -4904,6 +4931,9 @@ static s32 treo_draw_region(const TreoRegionArgs *p, int direct) {
     }
 #if defined(TREO_BINARY_SPRITE_EXPERIMENT) && TREO_BINARY_SPRITE_EXPERIMENT
     if (compatible && transform==TRANS_NONE &&
+#if defined(TREO_BINARY_ABA) && TREO_BINARY_ABA
+        jarbox_binary_trial_allowed(&binary_trial_scope,p->owner_key,ctxHandle) &&
+#endif
         treo_binary_mode1_draw(rc,img,xDst,yDst,xSrc,ySrc,wSrc,hSrc)) {
         img_release(img); rc_release(rc); return RUNTIME_STATUS_NORMAL;
     }

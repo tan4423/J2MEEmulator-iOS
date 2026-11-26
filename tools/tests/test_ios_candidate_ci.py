@@ -26,6 +26,10 @@ class IOSCandidateTest(unittest.TestCase):
         self.assertEqual(e[BINARY], '0')
         binary=prepare(c, 'binary', {})[1]
         self.assertEqual(binary[BINARY], '1')
+        trial=prepare(c, 'binary-trial', {})[1]
+        self.assertEqual(trial[BINARY], '2')
+        self.assertTrue(all(trial[k]=='0' for k in CANDIDATES+OFF))
+        self.assertTrue(all(trial[k]=='0' for k in ('JARBOX_NATIVE_PAINT_DIAG','JARBOX_REGION_STAGE_DIAG','JARBOX_HOTSPOT_DIAG')))
         self.assertTrue(all(binary[k]=='0' for k in CANDIDATES+OFF))
         self.assertTrue(all(prepare(c, 'control', {})[1][k] == '0' for k in CANDIDATES + OFF))
         self.assertEqual(c['workflows']['jit-probe-unsigned']['environment']['vars'][CANDIDATES[0]], '0')

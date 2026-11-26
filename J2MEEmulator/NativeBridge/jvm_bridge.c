@@ -1117,7 +1117,7 @@ int jvm_bridge_flight_sample(JarBoxFlightProcess *process, JarBoxFlightSlot *slo
         out->qos_paint_normal_completed=__atomic_load_n(&session->treo_state.qos_paint_normal_completed,__ATOMIC_RELAXED);
         out->qos_paint_normal_wall_ns=__atomic_load_n(&session->treo_state.qos_paint_normal_wall_ns,__ATOMIC_RELAXED);
         out->compatible_text_attr_reuses=__atomic_load_n(&session->treo_state.compatible_text_attr_reuses,__ATOMIC_RELAXED);
-#if defined(TREO_CORE_ABA) && TREO_CORE_ABA
+#if (defined(TREO_CORE_ABA) && TREO_CORE_ABA) || (defined(TREO_BINARY_ABA) && TREO_BINARY_ABA)
         uint64_t aba_epoch=__atomic_load_n(&session->treo_state.core_aba_start_ns,__ATOMIC_ACQUIRE);
         uint64_t aba_now=clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW);
         if (aba_epoch && aba_now>=aba_epoch &&

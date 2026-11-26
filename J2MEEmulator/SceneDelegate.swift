@@ -167,7 +167,8 @@ nonisolated final class JarBoxFlightRecorder: @unchecked Sendable {
     func event(_ name: String, token: UInt64 = 0) {
         queue.async {
             self.write("event=\(name) token=\(token)")
-            if self.perf.split(separator: "_").contains("core-aba-1") {
+            let switches = self.perf.split(separator: "_")
+            if switches.contains("core-aba-1") || switches.contains("binary-sprite-2") {
                 if name == "park_entered" {
                     self.abaSaveOwner = token
                     self.abaSaveUntil = DispatchTime.now().uptimeNanoseconds &+ 240_000_000_000

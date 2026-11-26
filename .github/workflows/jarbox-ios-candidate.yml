@@ -10,8 +10,8 @@ on:
       configuration:
         description: 'Isolated binary raster, intrinsic candidate or matched control'
         type: choice
-        options: [binary, intrinsics, control]
-        default: binary
+        options: [binary-trial, binary, intrinsics, control]
+        default: binary-trial
 permissions:
   contents: read
 jobs:
@@ -20,7 +20,7 @@ jobs:
     timeout-minutes: 40
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
-      CONFIGURATION: ${{ inputs.configuration || 'binary' }}
+      CONFIGURATION: ${{ inputs.configuration || 'binary-trial' }}
     steps:
       - uses: actions/checkout@v4
         with:
