@@ -75,6 +75,7 @@ int jvm_bridge_treo_snapshot_for_token(uint64_t token, JarBoxTreoSnapshot *out);
 struct JarBoxSession;
 void jvm_bridge_cpu_worker_begin(struct JarBoxSession *session,int kind);
 void jvm_bridge_cpu_worker_end(struct JarBoxSession *session);
+int jvm_bridge_cpu_is_java_worker(struct JarBoxSession *session);
 void jvm_bridge_cpu_mode_changed(struct JarBoxSession *session);
 int jvm_bridge_cpu_snapshot_for_token(uint64_t token,JarBoxCpuSnapshot *out);
 // Scene-boundary diagnostics: immutable tokens only, including parked owners.
@@ -96,6 +97,9 @@ typedef struct {
     uint64_t event_sleep_handled, event_sleep_fallbacks;
     uint64_t afk_profile_paint_calls, afk_profile_paint_cpu_ns, compatible_font_reuses;
     uint64_t compatible_crop_hits, compatible_crop_misses, compatible_state_reuses, compatible_region_culls;
+    uint64_t qos_paint_attempts, qos_paint_applied, qos_paint_already_utility, qos_paint_unrestorable, qos_paint_errors, qos_paint_restore_errors;
+    uint64_t qos_paint_completed, qos_paint_cpu_ns, qos_paint_wall_ns, qos_paint_over_budget, qos_paint_backoff, qos_original_class;
+    uint64_t qos_observed_class, qos_paint_normal_completed, qos_paint_normal_wall_ns, compatible_text_attr_reuses;
     uint64_t nso_repaint_skips, nso_service_skips, nso_paint_skips;
     uint64_t shared_zip_probes, shared_zip_hits, shared_zip_negative_hits;
     uint64_t shared_prepared_candidates, shared_prepared_hits;

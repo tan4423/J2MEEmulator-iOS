@@ -22,6 +22,7 @@
 #include "jarbox_flush_routes.h"
 #include "jarbox_scene_gpu_gate.h"
 #include "jarbox_crop_cache.h"
+#include "jarbox_paint_qos_policy.h"
 #include "jvm_bridge.h"
 #include "j2me_input.h"
 #include "jvm.h"
@@ -114,6 +115,8 @@ typedef struct RenderContext {
     int width;
     int height;
     CTFontRef font;
+    CFDictionaryRef textAttrs; // immutable attributes, Canvas-owned
+    CTFontRef textAttrsFont; // retained identity while attributes exist
     float fontSize;
     int fontStyle;
     int clipSaved;
@@ -123,6 +126,7 @@ typedef struct RenderContext {
     TreoCPUCache *cpuCache;
     JarBoxCropCache *cropCache; // only immutable sources, owned by this Canvas
     uint64_t compatible_crop_hits, compatible_crop_misses, compatible_state_reuses, compatible_region_culls;
+    uint64_t compatible_text_attr_reuses;
     uint32_t *softwarePixels;
     uint64_t swRegions, swFast, swChecked, swMismatch, swDirect;
     unsigned swSequence;
@@ -1723,6 +1727,110 @@ void treo_jar_audit_tick(int active) {
 uint64_t treo_jar_audit_ticks(int active) {
     return atomic_load_explicit(active ? &treo_jar_ticks_on : &treo_jar_ticks_off, memory_order_relaxed);
 }
+#if defined(TREO_PAINT_QOS_EXPERIMENT) && TREO_PAINT_QOS_EXPERIMENT
+// Only a registered Java pthread may enter. Never change UIKit, a GCD runner,
+// GC, or another VM. Scope has no reference to a freed Runtime or session.
+typedef struct {
+    uint64_t owner, wall_start;
+    unsigned depth;
+    int changed, utility;
+    qos_class_t original;
+    int relative;
+} TreoPaintQoSScope;
+static _Thread_local TreoPaintQoSScope treo_paint_qos;
+#define QOS_NOTE(s,f,n) __atomic_fetch_add(&(s)->f,(uint64_t)(n),__ATOMIC_RELAXED)
+static int treo_qos_restore(JarBoxTreoState *s) {
+    TreoPaintQoSScope *q=&treo_paint_qos;
+    if (!q->changed) return 1;
+    qos_class_t actual=QOS_CLASS_UNSPECIFIED; int relative=0;
+    if (pthread_set_qos_class_self_np(q->original,q->relative) ||
+        pthread_get_qos_class_np(pthread_self(),&actual,&relative) ||
+        actual!=q->original || relative!=q->relative) {
+        QOS_NOTE(s,qos_paint_restore_errors,1);
+        __atomic_store_n(&s->qos_paint_backoff,1,__ATOMIC_RELAXED);
+        return 0; // retry at next paint boundary; never start another trial
+    }
+    q->changed=0;
+    return 1;
+}
+static void treo_paint_qos_begin(Runtime *runtime,s64 stamp) {
+    JarBoxTreoState *s=treo_runtime_state(runtime);
+    if (!s || !runtime->jvm->session ||
+        !jvm_bridge_cpu_is_java_worker(runtime->jvm->session) || pthread_main_np()) return;
+    TreoPaintQoSScope *q=&treo_paint_qos;
+    const uint64_t owner=jarbox_native_heap_key_for_runtime(runtime);
+    if (!owner) return;
+    if (q->depth) { if (q->owner==owner && stamp<0) ++q->depth; return; }
+    if (q->changed) {
+        if (q->owner!=owner || !treo_qos_restore(s)) return;
+    }
+    if (stamp>=0 || treo_runtime_mode(runtime)!=1) return;
+    *q=(TreoPaintQoSScope){.owner=owner,.depth=1,.wall_start=treo_afk_now_ns()};
+    if (__atomic_load_n(&s->qos_paint_backoff,__ATOMIC_RELAXED)) return;
+    QOS_NOTE(s,qos_paint_attempts,1);
+    qos_class_t before=QOS_CLASS_UNSPECIFIED; int relative=0;
+    if (pthread_get_qos_class_np(pthread_self(),&before,&relative)) {
+        QOS_NOTE(s,qos_paint_errors,1);
+        __atomic_store_n(&s->qos_paint_backoff,1,__ATOMIC_RELAXED);
+        return;
+    }
+    __atomic_store_n(&s->qos_original_class,(uint64_t)before,__ATOMIC_RELAXED);
+    __atomic_store_n(&s->qos_observed_class,(uint64_t)before,__ATOMIC_RELAXED);
+    if (before==QOS_CLASS_UTILITY) {
+        q->utility=1; QOS_NOTE(s,qos_paint_already_utility,1); return;
+    }
+    // Do not promote Background, demote interactive, or change UNSPECIFIED:
+    // the public API cannot restore an unspecified class exactly.
+    if (before!=QOS_CLASS_DEFAULT && before!=QOS_CLASS_USER_INITIATED) {
+        QOS_NOTE(s,qos_paint_unrestorable,1);
+        return;
+    }
+    q->original=before; q->relative=relative;
+    if (pthread_set_qos_class_self_np(QOS_CLASS_UTILITY,0)) {
+        QOS_NOTE(s,qos_paint_errors,1);
+        __atomic_store_n(&s->qos_paint_backoff,1,__ATOMIC_RELAXED);
+        return;
+    }
+    q->changed=1;
+    qos_class_t actual=QOS_CLASS_UNSPECIFIED; int rel=0;
+    int error=pthread_get_qos_class_np(pthread_self(),&actual,&rel);
+    __atomic_store_n(&s->qos_observed_class,(uint64_t)actual,__ATOMIC_RELAXED);
+    if (error || actual!=QOS_CLASS_UTILITY || rel!=0) {
+        QOS_NOTE(s,qos_paint_errors,1);
+        __atomic_store_n(&s->qos_paint_backoff,1,__ATOMIC_RELAXED);
+        (void)treo_qos_restore(s);
+        return;
+    }
+    q->utility=1; QOS_NOTE(s,qos_paint_applied,1);
+}
+static void treo_paint_qos_end(Runtime *runtime,uint64_t cpu_ns,int cpu_valid) {
+    TreoPaintQoSScope *q=&treo_paint_qos;
+    JarBoxTreoState *s=treo_runtime_state(runtime);
+    if (!s || !q->depth || q->owner!=jarbox_native_heap_key_for_runtime(runtime)) return;
+    if (--q->depth) return;
+    uint64_t end=treo_afk_now_ns();
+    if (q->wall_start && end>=q->wall_start) {
+        uint64_t wall=end-q->wall_start;
+        if (q->utility && cpu_valid) {
+            QOS_NOTE(s,qos_paint_completed,1);
+            QOS_NOTE(s,qos_paint_cpu_ns,cpu_ns);
+            QOS_NOTE(s,qos_paint_wall_ns,wall);
+            if (jarbox_paint_qos_over_budget(wall)) {
+                uint64_t strikes=__atomic_add_fetch(&s->qos_paint_over_budget,1,__ATOMIC_RELAXED);
+                if (jarbox_paint_qos_backoff(strikes))
+                    __atomic_store_n(&s->qos_paint_backoff,1,__ATOMIC_RELAXED);
+            }
+        } else {
+            QOS_NOTE(s,qos_paint_normal_completed,1);
+            QOS_NOTE(s,qos_paint_normal_wall_ns,wall);
+        }
+    }
+    (void)treo_qos_restore(s);
+    q->utility=0;
+}
+#undef QOS_NOTE
+#endif
+
 static s32 n_profilePaintBegin(Runtime *runtime, JClass *clazz) {
     s64 start = 0;
     if (treo_runtime_mode(runtime) != 0 || treo_jar_audit_enabled()) {
@@ -1732,6 +1840,9 @@ static s32 n_profilePaintBegin(Runtime *runtime, JClass *clazz) {
         treo_vm_paint_sample_begin();
     }
     else if (treo_profile_active()) start = (s64)treo_thread_cpu_ns();
+#if defined(TREO_PAINT_QOS_EXPERIMENT) && TREO_PAINT_QOS_EXPERIMENT
+    treo_paint_qos_begin(runtime,start);
+#endif
     runtime->jnienv->push_long(runtime->stack, start);
     return RUNTIME_STATUS_NORMAL;
 }
@@ -1740,6 +1851,9 @@ static s32 n_profilePaintEnd(Runtime *runtime, JClass *clazz) {
     if (stamp < 0) {
         const int sampled = treo_vm_paint_sample_end();
         const uint64_t end = treo_thread_cpu_ns(), begin = (uint64_t)(-stamp);
+#if defined(TREO_PAINT_QOS_EXPERIMENT) && TREO_PAINT_QOS_EXPERIMENT
+        treo_paint_qos_end(runtime,end>=begin ? end-begin : 0,end>=begin);
+#endif
         if (end >= begin) {
             const uint64_t elapsed = end - begin;
             atomic_fetch_add_explicit(&g_afk_paint_cpu_ns, elapsed, memory_order_relaxed);
@@ -2587,6 +2701,9 @@ static s32 n_flushToScreen(Runtime *runtime, JClass *clazz) {
             if (rc->compatible_state_reuses) __atomic_fetch_add(&state->compatible_state_reuses,rc->compatible_state_reuses,__ATOMIC_RELAXED);
             if (rc->compatible_region_culls) __atomic_fetch_add(&state->compatible_region_culls,rc->compatible_region_culls,__ATOMIC_RELAXED);
         }
+        if (state && rc->compatible_text_attr_reuses)
+            __atomic_fetch_add(&state->compatible_text_attr_reuses,rc->compatible_text_attr_reuses,__ATOMIC_RELAXED);
+        rc->compatible_text_attr_reuses=0;
         rc->compatible_crop_hits=rc->compatible_crop_misses=0;
         rc->compatible_state_reuses=rc->compatible_region_culls=0;
     }
@@ -3061,13 +3178,33 @@ static s32 n_drawString(Runtime *runtime, JClass *clazz) {
     utf8_destroy(ustr);
     if (!str) { rc_release(rc); return RUNTIME_STATUS_NORMAL; }
 
-    CFMutableDictionaryRef attrs = CFDictionaryCreateMutable(NULL, 3,
-        &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
-    CFDictionarySetValue(attrs, kCTFontAttributeName, rc->font);
-    CFDictionarySetValue(attrs, kCTForegroundColorFromContextAttributeName, kCFBooleanTrue);
-
+    // Keep immutable attributes for the exact same font. CTLine is still
+    // created and used on the calling thread; never cache a mutable layout.
+    const int cacheAttrs=rc->ownsPixels && treo_rc_mode(rc)==1;
+    CFDictionaryRef attrs=NULL;
+    if (cacheAttrs && rc->textAttrs && rc->textAttrsFont==rc->font && rc->font) {
+        attrs=(CFDictionaryRef)CFRetain(rc->textAttrs);
+        ++rc->compatible_text_attr_reuses;
+    } else if (rc->font) {
+        const void *keys[]={kCTFontAttributeName,kCTForegroundColorFromContextAttributeName};
+        const void *values[]={rc->font,kCFBooleanTrue};
+        attrs=CFDictionaryCreate(NULL,keys,values,2,
+            &kCFTypeDictionaryKeyCallBacks,&kCFTypeDictionaryValueCallBacks);
+        if (attrs && cacheAttrs) {
+            if (rc->textAttrs) CFRelease(rc->textAttrs);
+            if (rc->textAttrsFont) CFRelease(rc->textAttrsFont);
+            rc->textAttrs=(CFDictionaryRef)CFRetain(attrs);
+            rc->textAttrsFont=(CTFontRef)CFRetain(rc->font);
+        }
+    }
+    if (!attrs) { CFRelease(str); rc_release(rc); return RUNTIME_STATUS_NORMAL; }
     CFAttributedStringRef attrStr = CFAttributedStringCreate(NULL, str, attrs);
-    CTLineRef line = CTLineCreateWithAttributedString(attrStr);
+    CTLineRef line = attrStr ? CTLineCreateWithAttributedString(attrStr) : NULL;
+    if (!line) {
+        if (attrStr) CFRelease(attrStr);
+        CFRelease(attrs); CFRelease(str); rc_release(rc);
+        return RUNTIME_STATUS_NORMAL;
+    }
 
     CGFloat ascent, descent, leading;
     double textWidth = CTLineGetTypographicBounds(line, &ascent, &descent, &leading);
@@ -3740,6 +3877,8 @@ static void treo_live_clear(TreoLiveRun *run) {
 }
 
 static void treo_live_discard(RenderContext *rc) {
+    if (rc->textAttrs) { CFRelease(rc->textAttrs); rc->textAttrs=NULL; }
+    if (rc->textAttrsFont) { CFRelease(rc->textAttrsFont); rc->textAttrsFont=NULL; }
     if (rc->cropCache) {
         native_heap_sub(rc->heap_key,(s32)(sizeof(*rc->cropCache)+rc->cropCache->bytes));
         jarbox_crop_clear(rc->cropCache);

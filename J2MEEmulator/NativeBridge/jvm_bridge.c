@@ -829,6 +829,9 @@ typedef struct JarBoxCpuThread {
 } JarBoxCpuThread;
 static pthread_mutex_t bridge_cpu_lock=PTHREAD_MUTEX_INITIALIZER;
 static _Thread_local JarBoxCpuThread bridge_cpu_thread;
+int jvm_bridge_cpu_is_java_worker(JarBoxSession *s) {
+    return s && bridge_cpu_thread.owner==s && bridge_cpu_thread.kind==JARBOX_CPU_JAVA;
+}
 static int bridge_cpu_read_thread(thread_t port,uint64_t *out) {
     thread_basic_info_data_t info;
     mach_msg_type_number_t count=THREAD_BASIC_INFO_COUNT;
@@ -920,6 +923,7 @@ static void bridge_cpu_snapshot(MiniJVM *vm,void *arg) {
 #else
 void jvm_bridge_cpu_worker_begin(JarBoxSession *s,int kind) {(void)s;(void)kind;}
 void jvm_bridge_cpu_worker_end(JarBoxSession *s) {(void)s;}
+int jvm_bridge_cpu_is_java_worker(JarBoxSession *s) {(void)s;return 0;}
 void jvm_bridge_cpu_mode_changed(JarBoxSession *s) {(void)s;}
 #endif
 int jvm_bridge_cpu_snapshot_for_token(uint64_t token,JarBoxCpuSnapshot *out) {
@@ -992,6 +996,22 @@ int jvm_bridge_flight_sample(JarBoxFlightProcess *process, JarBoxFlightSlot *slo
         out->compatible_crop_misses=__atomic_load_n(&session->treo_state.compatible_crop_misses,__ATOMIC_RELAXED);
         out->compatible_state_reuses=__atomic_load_n(&session->treo_state.compatible_state_reuses,__ATOMIC_RELAXED);
         out->compatible_region_culls=__atomic_load_n(&session->treo_state.compatible_region_culls,__ATOMIC_RELAXED);
+        out->qos_paint_attempts=__atomic_load_n(&session->treo_state.qos_paint_attempts,__ATOMIC_RELAXED);
+        out->qos_paint_applied=__atomic_load_n(&session->treo_state.qos_paint_applied,__ATOMIC_RELAXED);
+        out->qos_paint_already_utility=__atomic_load_n(&session->treo_state.qos_paint_already_utility,__ATOMIC_RELAXED);
+        out->qos_paint_unrestorable=__atomic_load_n(&session->treo_state.qos_paint_unrestorable,__ATOMIC_RELAXED);
+        out->qos_paint_errors=__atomic_load_n(&session->treo_state.qos_paint_errors,__ATOMIC_RELAXED);
+        out->qos_paint_restore_errors=__atomic_load_n(&session->treo_state.qos_paint_restore_errors,__ATOMIC_RELAXED);
+        out->qos_paint_completed=__atomic_load_n(&session->treo_state.qos_paint_completed,__ATOMIC_RELAXED);
+        out->qos_paint_cpu_ns=__atomic_load_n(&session->treo_state.qos_paint_cpu_ns,__ATOMIC_RELAXED);
+        out->qos_paint_wall_ns=__atomic_load_n(&session->treo_state.qos_paint_wall_ns,__ATOMIC_RELAXED);
+        out->qos_paint_over_budget=__atomic_load_n(&session->treo_state.qos_paint_over_budget,__ATOMIC_RELAXED);
+        out->qos_paint_backoff=__atomic_load_n(&session->treo_state.qos_paint_backoff,__ATOMIC_RELAXED);
+        out->qos_original_class=__atomic_load_n(&session->treo_state.qos_original_class,__ATOMIC_RELAXED);
+        out->qos_observed_class=__atomic_load_n(&session->treo_state.qos_observed_class,__ATOMIC_RELAXED);
+        out->qos_paint_normal_completed=__atomic_load_n(&session->treo_state.qos_paint_normal_completed,__ATOMIC_RELAXED);
+        out->qos_paint_normal_wall_ns=__atomic_load_n(&session->treo_state.qos_paint_normal_wall_ns,__ATOMIC_RELAXED);
+        out->compatible_text_attr_reuses=__atomic_load_n(&session->treo_state.compatible_text_attr_reuses,__ATOMIC_RELAXED);
         out->nso_repaint_skips=jarbox_treo_nso_skip_count(&session->treo_state,0);
         out->nso_service_skips=jarbox_treo_nso_skip_count(&session->treo_state,1);
         out->nso_paint_skips=jarbox_treo_nso_skip_count(&session->treo_state,2);
