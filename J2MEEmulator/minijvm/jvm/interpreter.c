@@ -5684,16 +5684,27 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                                 spent = nanoTime() - start_at;
 #endif
                                 if (!m) {
-                                    *runtime->pc = op_invokevirtual;
-                                } else {
+#if JARBOX_VM_INLINE_DISPATCH
+                                    // Resolve a new receiver without rewriting shared code.
+                                    // A full cache is not an error and must not re-dispatch.
                                     stack->sp = sp;
-                                    ret = execute_method_impl(m, runtime);
+                                    m = find_instance_methodInfo_by_name(ins, cmr->name, cmr->descriptor, runtime);
                                     sp = stack->sp;
-                                    if (ret) {
-                                        goto label_exception_handle;
+                                    if (!m) {
+                                        err_msg = utf8_cstr(cmr->name);
+                                        goto label_nosuchmethod_throw;
                                     }
-                                    runtime->pc += 3;
+                                    jarbox_virtual_publish(jvm, cmr, ins, m);
+#else
+                                    *runtime->pc = op_invokevirtual;
+                                    break;
+#endif
                                 }
+                                stack->sp = sp;
+                                ret = execute_method_impl(m, runtime);
+                                sp = stack->sp;
+                                if (ret) goto label_exception_handle;
+                                runtime->pc += 3;
                             }
 
                             break;
@@ -5766,16 +5777,27 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                                 spent = nanoTime() - start_at;
 #endif
                                 if (!m) {
-                                    *runtime->pc = op_invokeinterface;
-                                } else {
+#if JARBOX_VM_INLINE_DISPATCH
+                                    // Resolve a new receiver without rewriting shared code.
+                                    // A full cache is not an error and must not re-dispatch.
                                     stack->sp = sp;
-                                    ret = execute_method_impl(m, runtime);
+                                    m = find_instance_methodInfo_by_name(ins, cmr->name, cmr->descriptor, runtime);
                                     sp = stack->sp;
-                                    if (ret) {
-                                        goto label_exception_handle;
+                                    if (!m) {
+                                        err_msg = utf8_cstr(cmr->name);
+                                        goto label_nosuchmethod_throw;
                                     }
-                                    runtime->pc += 5;
+                                    jarbox_virtual_publish(jvm, cmr, ins, m);
+#else
+                                    *runtime->pc = op_invokeinterface;
+                                    break;
+#endif
                                 }
+                                stack->sp = sp;
+                                ret = execute_method_impl(m, runtime);
+                                sp = stack->sp;
+                                if (ret) goto label_exception_handle;
+                                runtime->pc += 5;
                             }
                             break;
                         }

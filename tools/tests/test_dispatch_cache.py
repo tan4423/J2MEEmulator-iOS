@@ -76,6 +76,12 @@ class DispatchCacheTest(unittest.TestCase):
         self.assertIn("if (retained) {\n                                            *runtime->pc = op_invokevirtual_fast;",src)
         self.assertIn("} else if (retained) {\n                                    *runtime->pc = op_invokeinterface_fast;",src)
         self.assertIn("receiver->mb.type!=MEM_TYPE_INS",src)
+        for op,width in (("op_invokevirtual_fast",3),("op_invokeinterface_fast",5)):
+            body=src.split("case "+op+": TREO_VM_HANDLER("+op+") {",1)[1].split("case op_",1)[0]
+            self.assertIn("jarbox_virtual_publish(jvm, cmr, ins, m);",body)
+            self.assertIn("goto label_nosuchmethod_throw;",body)
+            self.assertIn("runtime->pc += "+str(width)+";",body)
+            self.assertEqual(body.count("ret = execute_method_impl(m, runtime);"),1)
         cl=(JVM/"class.c").read_text()
         self.assertIn("jarbox_dispatch_next_id(&runtime->jvm->dispatch_id_counter)",cl)
         self.assertEqual(cl.count("#if !JARBOX_VM_INLINE_DISPATCH\n            cmr->virtual_methods = pairlist_create(0);"),2)
