@@ -504,6 +504,7 @@ s32 zip_is_directory(char *jarpath, int index) {
 }
 
 s32 zip_extract(char *zip_data, int size, ByteBuf *data) {
+    if (!zip_data || size <= 0 || !data || !data->buf) return -1;
     mz_zip_archive zipArchive = {0};
     mz_zip_archive_file_stat file_stat = {0};
     int ret = 0;
@@ -513,13 +514,19 @@ s32 zip_extract(char *zip_data, int size, ByteBuf *data) {
         if (!mz_zip_reader_file_stat(&zipArchive, 0, &file_stat)) {
             ret = -1;
         } else {
-            size_t uncompressed_size = (size_t) file_stat.m_uncomp_size;
-            bytebuf_expand(data, (s32) uncompressed_size);
-            mz_bool p = mz_zip_reader_extract_to_mem(&zipArchive, 0, data->buf, uncompressed_size, 0);
-            if (p == MZ_FALSE) {
-                ret = -1;
-            } else {
-                data->wp = uncompressed_size;
+            ret = -1;
+            if (file_stat.m_uncomp_size <= INT32_MAX) {
+                const u32 uncompressed_size = (u32)file_stat.m_uncomp_size;
+                if (uncompressed_size > data->_alloc_size)
+                    bytebuf_expand(data, uncompressed_size);
+                // Growth can fail. Never hand miniz a larger capacity than
+                // the actual allocation, even on the non-classpath path.
+                if (uncompressed_size <= data->_alloc_size &&
+                    mz_zip_reader_extract_to_mem(&zipArchive, 0, data->buf, uncompressed_size, 0)) {
+                    data->rp = 0;
+                    data->wp = uncompressed_size;
+                    ret = 0;
+                }
             }
         }
         mz_zip_reader_end(&zipArchive);
@@ -528,6 +535,7 @@ s32 zip_extract(char *zip_data, int size, ByteBuf *data) {
 }
 
 s32 zip_compress(char *data, int size, ByteBuf *zip_data) {
+    if (size < 0 || (size && !data) || !zip_data || !zip_data->buf) return -1;
     mz_zip_archive zipArchive = {0};
     int ret = 0;
     if (mz_zip_writer_init_heap(&zipArchive, 0, 0) == MZ_FALSE) {//
@@ -541,7 +549,11 @@ s32 zip_compress(char *data, int size, ByteBuf *zip_data) {
             if (mz_zip_writer_finalize_heap_archive(&zipArchive, &buf, &outSize) == MZ_FALSE) {//
                 ret = -1;
             } else {
-                bytebuf_write_batch(zip_data, buf, (s32) outSize);
+                if (outSize > INT32_MAX ||
+                    bytebuf_write_batch(zip_data, buf, (s32)outSize) != (s32)outSize)
+                    ret = -1;
+                // finalize_heap_archive transfers ownership to the caller.
+                mz_free(buf);
             }
         }
         mz_zip_writer_end(&zipArchive);
@@ -550,13 +562,26 @@ s32 zip_compress(char *data, int size, ByteBuf *zip_data) {
 }
 
 // 修改gzip_compress函数，生成完整的GZIP格式
+// GZIP footer integers are little endian and need not be aligned.
+static void jarbox_gzip_put_le32(unsigned char *p, uint32_t v) {
+    for (unsigned i=0; i<4; ++i) p[i]=(unsigned char)(v >> (8*i));
+}
+static uint32_t jarbox_gzip_get_le32(const unsigned char *p) {
+    uint32_t v=0;
+    for (unsigned i=0; i<4; ++i) v |= (uint32_t)p[i] << (8*i);
+    return v;
+}
+
 s32 gzip_compress(char *data, int size, ByteBuf *gzip_data) {
+    if (size < 0 || (size && !data) || !gzip_data || !gzip_data->buf) return -1;
     mz_stream stream = {0};
     int status;
     mz_ulong crc = mz_crc32(MZ_CRC32_INIT, (const unsigned char *) data, size);
 
     // 分配压缩缓冲区 - 预留头部(10字节)和尾部(8字节)的空间
-    mz_ulong compressed_size = mz_compressBound(size) + 18;
+    mz_ulong bound = mz_compressBound(size);
+    if (bound > INT32_MAX - 18) return -1;
+    mz_ulong compressed_size = bound + 18;
     unsigned char *compressed_data = (unsigned char *) MZ_MALLOC(compressed_size);
     if (!compressed_data) {
         return -1;
@@ -601,19 +626,19 @@ s32 gzip_compress(char *data, int size, ByteBuf *gzip_data) {
 
     // 写入CRC32和原始大小(8字节尾部)
     unsigned char *footer = compressed_data + 10 + compressed_len;
-    *(mz_uint32 *) footer = crc;
-    *(mz_uint32 *) (footer + 4) = size;
+    jarbox_gzip_put_le32(footer, (uint32_t)crc);
+    jarbox_gzip_put_le32(footer + 4, (uint32_t)size);
 
     // 写入到输出缓冲区
-    bytebuf_write_batch(gzip_data, (char *) compressed_data, compressed_len + 18);
+    s32 written = bytebuf_write_batch(gzip_data, (char *)compressed_data, (s32)(compressed_len + 18));
     MZ_FREE(compressed_data);
 
-    return 0;
+    return written == (s32)(compressed_len + 18) ? 0 : -1;
 }
 
 // 修改gzip_extract函数，解析标准GZIP格式
 s32 gzip_extract(char *gzip_data, int size, ByteBuf *data) {
-    if (size < 18 ||
+    if (!gzip_data || !data || !data->buf || size < 18 ||
         (unsigned char) gzip_data[0] != 0x1F ||
         (unsigned char) gzip_data[1] != 0x8B ||
         (unsigned char) gzip_data[2] != 0x08) {
@@ -624,11 +649,12 @@ s32 gzip_extract(char *gzip_data, int size, ByteBuf *data) {
     int status;
 
     // 读取原始大小(从尾部)
-    mz_uint32 original_size = *(mz_uint32 *) (gzip_data + size - 4);
-    mz_uint32 expected_crc = *(mz_uint32 *) (gzip_data + size - 8);
+    mz_uint32 original_size = jarbox_gzip_get_le32((const unsigned char *)gzip_data + size - 4);
+    mz_uint32 expected_crc = jarbox_gzip_get_le32((const unsigned char *)gzip_data + size - 8);
+    if (original_size > INT32_MAX) return -1;
 
     // 分配解压缓冲区
-    unsigned char *uncompressed_data = (unsigned char *) MZ_MALLOC(original_size);
+    unsigned char *uncompressed_data = (unsigned char *) MZ_MALLOC(original_size ? original_size : 1);
     if (!uncompressed_data) {
         return -1;
     }
@@ -637,7 +663,7 @@ s32 gzip_extract(char *gzip_data, int size, ByteBuf *data) {
     stream.next_in = (unsigned char *) gzip_data + 10;  // 跳过GZIP头
     stream.avail_in = size - 18;  // 减去头和尾的大小
     stream.next_out = uncompressed_data;
-    stream.avail_out = original_size;
+    stream.avail_out = original_size ? original_size : 1;
 
     // 初始化inflate
     status = mz_inflateInit2(&stream, -MZ_DEFAULT_WINDOW_BITS);
@@ -663,10 +689,10 @@ s32 gzip_extract(char *gzip_data, int size, ByteBuf *data) {
     }
 
     // 写入到输出缓冲区
-    bytebuf_write_batch(data, (char *) uncompressed_data, original_size);
+    s32 written = bytebuf_write_batch(data, (char *)uncompressed_data, (s32)original_size);
     MZ_FREE(uncompressed_data);
 
-    return 0;
+    return written == (s32)original_size ? 0 : -1;
 }
 
 //

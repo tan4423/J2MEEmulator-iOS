@@ -1799,14 +1799,16 @@ s32 org_mini_zip_ZipFile_extract0(Runtime *runtime, JClass *clazz) {
     Instance *zip_data = localvar_getRefer(runtime->localvar, 0);
     s32 ret = 0;
     ByteBuf *data = bytebuf_create(0);
-    if (zip_data) {
+    if (!data) ret = -1;
+    else if (zip_data) {
         ret = zip_extract(zip_data->arr_body, zip_data->arr_length, data);
     }
-    if (ret == -1) {
+    if (ret != 0 || !data || data->wp > INT32_MAX) {
         push_ref(runtime->stack, NULL);
     } else {
         Instance *byte_arr = jarray_create_by_type_index(runtime, data->wp, DATATYPE_BYTE);
-        bytebuf_read_batch(data, byte_arr->arr_body, data->wp);
+        if (byte_arr && data->wp)
+            bytebuf_read_batch(data, byte_arr->arr_body, (s32)data->wp);
         push_ref(runtime->stack, byte_arr);
     }
     bytebuf_destroy(data);
@@ -1821,14 +1823,16 @@ s32 org_mini_zip_ZipFile_compress0(Runtime *runtime, JClass *clazz) {
     Instance *data = localvar_getRefer(runtime->localvar, 0);
     s32 ret = 0;
     ByteBuf *zip_data = bytebuf_create(0);
-    if (data) {
+    if (!zip_data) ret = -1;
+    else if (data) {
         ret = zip_compress(data->arr_body, data->arr_length, zip_data);
     }
-    if (ret == -1) {
+    if (ret != 0 || !zip_data || zip_data->wp > INT32_MAX) {
         push_ref(runtime->stack, NULL);
     } else {
         Instance *byte_arr = jarray_create_by_type_index(runtime, zip_data->wp, DATATYPE_BYTE);
-        bytebuf_read_batch(zip_data, byte_arr->arr_body, zip_data->wp);
+        if (byte_arr && zip_data->wp)
+            bytebuf_read_batch(zip_data, byte_arr->arr_body, (s32)zip_data->wp);
         push_ref(runtime->stack, byte_arr);
     }
     bytebuf_destroy(zip_data);
@@ -1843,14 +1847,16 @@ s32 org_mini_zip_ZipFile_gzipExtract0(Runtime *runtime, JClass *clazz) {
     Instance *gzip_data = localvar_getRefer(runtime->localvar, 0);
     s32 ret = 0;
     ByteBuf *data = bytebuf_create(0);
-    if (gzip_data) {
+    if (!data) ret = -1;
+    else if (gzip_data) {
         ret = gzip_extract(gzip_data->arr_body, gzip_data->arr_length, data);
     }
-    if (ret == -1) {
+    if (ret != 0 || !data || data->wp > INT32_MAX) {
         push_ref(runtime->stack, NULL);
     } else {
         Instance *byte_arr = jarray_create_by_type_index(runtime, data->wp, DATATYPE_BYTE);
-        bytebuf_read_batch(data, byte_arr->arr_body, data->wp);
+        if (byte_arr && data->wp)
+            bytebuf_read_batch(data, byte_arr->arr_body, (s32)data->wp);
         push_ref(runtime->stack, byte_arr);
     }
     bytebuf_destroy(data);
@@ -1865,14 +1871,16 @@ s32 org_mini_zip_ZipFile_gzipCompress0(Runtime *runtime, JClass *clazz) {
     Instance *data = localvar_getRefer(runtime->localvar, 0);
     s32 ret = 0;
     ByteBuf *gzip_data = bytebuf_create(0);
-    if (data) {
+    if (!gzip_data) ret = -1;
+    else if (data) {
         ret = gzip_compress(data->arr_body, data->arr_length, gzip_data);
     }
-    if (ret == -1) {
+    if (ret != 0 || !gzip_data || gzip_data->wp > INT32_MAX) {
         push_ref(runtime->stack, NULL);
     } else {
         Instance *byte_arr = jarray_create_by_type_index(runtime, gzip_data->wp, DATATYPE_BYTE);
-        bytebuf_read_batch(gzip_data, byte_arr->arr_body, gzip_data->wp);
+        if (byte_arr && gzip_data->wp)
+            bytebuf_read_batch(gzip_data, byte_arr->arr_body, (s32)gzip_data->wp);
         push_ref(runtime->stack, byte_arr);
     }
     bytebuf_destroy(gzip_data);
