@@ -1,0 +1,7 @@
+# Root snapshot allocation audit
+
+Parent 84fba82. GC previously ignored arraylist_push_back_unsafe failures while recording shutdown hooks, Java thread objects, stack references and temporary holders. An incomplete root set could reach mark/sweep. Now propagate failure, release snapshot locks, discard partial roots, resume the world and return -1 before mark generation changes or sweeping. Existing GC abort counter observes this. Keep membership locked during stack snapshot to prevent removal/free between lookup and copy. No change to successful reachability traversal. During terminal cleanup a failed collection retains the heap and retries with 100ms wait instead of busy looping; persistent failures can still leave that session STOPPING. This is deliberately not force-free recovery.
+
+ArrayList allocation sizes are bounded by the u32 allocator interface and signed count; invalid insert and range arithmetic cannot overflow. Successful growth policy remains doubling up to representable capacity. General startup allocation failure handling, JDWP runtime lifetime and complete cross-VM stress still need verification. No JAR, tick, network, RMS, audio or JIT changes.
+
+Regression fixture injects root append failure at each of five positions with a modeled heap and verifies lock release plus successful retry; checks abort wiring before mark/sweep. Actual production bodies are extracted by CI. CI/device validation pending.

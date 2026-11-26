@@ -20,6 +20,8 @@ CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
 #include <stdlib.h>
 #include <string.h>
+#include <limits.h>
+#include <stdint.h>
 
 #include "d_type.h"
 #include "arraylist.h"
@@ -37,6 +39,13 @@ CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  *
  * */
 
+// The VM allocation wrapper accepts u32 bytes; also keep the signed
+// entry count representable. Check before multiplication or doubling.
+static inline int arraylist_capacity_limit(void) {
+    size_t max_entries = UINT32_MAX / sizeof(ArrayListValue);
+    return max_entries > INT_MAX ? INT_MAX : (int)max_entries;
+}
+
 ArrayList *arraylist_create(int length) {
     ArrayList *new_arraylist;
 
@@ -45,6 +54,8 @@ ArrayList *arraylist_create(int length) {
     if (length <= 0) {
         length = 16;
     }
+
+    if (length > arraylist_capacity_limit()) return NULL;
 
     /* Allocate the new ArrayList and fill in the obj_fields.  There are
      * initially no entries. */
@@ -87,15 +98,18 @@ static inline int arraylist_enlarge(ArrayList *arraylist) {
 
     /* Double the allocated size */
 
-    newsize = arraylist->_alloced * 2;
-    int newBytes = newsize * sizeof(ArrayListValue);
+    const int limit = arraylist_capacity_limit();
+    const int oldsize = arraylist->_alloced;
+    if (oldsize <= 0 || oldsize >= limit) return 0;
+    newsize = oldsize > limit / 2 ? limit : oldsize * 2;
+    const u32 newBytes = (u32)((size_t)newsize * sizeof(ArrayListValue));
 
     /* Reallocate the array to the new size */
 
     data = jvm_calloc(newBytes);
 
     if (data == NULL) {
-        printf("[ERROR]arraylist alloc mem fail, size:%d bytes\n", newBytes);
+        printf("[ERROR]arraylist alloc mem fail, size:%u bytes\n", newBytes);
         return 0;
     } else {
         memcpy(data, arraylist->data, arraylist->_alloced * sizeof(ArrayListValue));
@@ -110,10 +124,11 @@ static inline int arraylist_enlarge(ArrayList *arraylist) {
 static inline int _arraylist_insert_impl(ArrayList *arraylist, int index, ArrayListValue data) {
 
     int doit = 1;
-    if (index < 0 || index > arraylist->length) {
-        doit = 0;
+    if (index < 0 || index > arraylist->length ||
+        arraylist->length >= arraylist_capacity_limit()) {
+        return 0;
     }
-    if (arraylist->length + 1 > arraylist->_alloced) {
+    if (arraylist->length >= arraylist->_alloced) {
         if (!arraylist_enlarge(arraylist)) {
             doit = 0;
         }
@@ -182,7 +197,7 @@ static inline void arraylist_remove_range(ArrayList *arraylist, int index, int l
     /* Check this is a valid range */
 
 
-    if (index < 0 || length < 0 || index + length > arraylist->length) {
+    if (index < 0 || length < 0 || index > arraylist->length || length > arraylist->length - index) {
         return;
     }
 

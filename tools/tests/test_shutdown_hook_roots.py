@@ -22,8 +22,12 @@ static void spin_unlock(int *l) { assert(*l); *l=0; }
 static void *arraylist_get_value_unsafe(ArrayList *l,int i) {
     assert(i>=0 && i<l->length); return l->items[i];
 }
-static void arraylist_push_back_unsafe(ArrayList *l,void *v) {
+static int fail_after=-1;
+static int arraylist_push_back_unsafe(ArrayList *l,void *v) {
+    if (fail_after==0) return 0;
+    if (fail_after>0) --fail_after;
     assert(l->length<8); l->items[l->length++]=v;
+    return 1;
 }
 '''
 MAIN = r'''
@@ -34,14 +38,19 @@ int main(void) {
                   bh={.length=1,.items={&c}},ar={0},br={0};
         GcCollector ac={&ar},bc={&br};
         MiniJVM av={&ac,&ah},bv={&bc,&bh};
-        gc_copy_shutdown_hook_roots(&av);
+        assert(gc_copy_shutdown_hook_roots(&av)==0);
         assert(ar.length==2 && ar.items[0]==&a && ar.items[1]==&b);
         assert(!br.length && !ah.spinlock);
-        gc_copy_shutdown_hook_roots(&bv);
+        assert(gc_copy_shutdown_hook_roots(&bv)==0);
         assert(br.length==1 && br.items[0]==&c && !bh.spinlock);
         ah.length=0; ar.length=0;
-        gc_copy_shutdown_hook_roots(&av);
+        assert(gc_copy_shutdown_hook_roots(&av)==0);
         assert(!ar.length && br.length==1);
+        ah.length=3;
+        fail_after=1;
+        assert(gc_copy_shutdown_hook_roots(&av)==-1);
+        assert(ar.length==1 && !ah.spinlock && br.length==1);
+        fail_after=-1;
     }
     puts("shutdown hook root snapshot: 10000 modeled cycles PASS");
 }
@@ -54,7 +63,7 @@ class ShutdownHookRootsTest(unittest.TestCase):
         if not cc:
             self.skipTest("host C compiler unavailable")
         gc = (JVM / "garbage.c").read_text()
-        a = gc.index("static void gc_copy_shutdown_hook_roots(")
+        a = gc.index("static s32 gc_copy_shutdown_hook_roots(")
         b = gc.index("\n}", a) + 2
         flags = ["-std=c11", "-Wall", "-Wextra", "-Werror"]
         if os.environ.get("JARBOX_HOOK_SANITIZE") == "1":
@@ -73,7 +82,7 @@ class ShutdownHookRootsTest(unittest.TestCase):
 
     def test_root_retention_and_terminal_cleanup(self):
         gc = (JVM / "garbage.c").read_text()
-        copy = gc.split("void _gc_copy_objs(MiniJVM *jvm) {", 1)[1].split("\n}", 1)[0]
+        copy = gc.split("s32 _gc_copy_objs(MiniJVM *jvm) {", 1)[1].split("\n}", 1)[0]
         self.assertLess(copy.index("arraylist_clear("),
                         copy.index("gc_copy_shutdown_hook_roots(jvm)"))
         destroy = (JVM / "jvm.c").read_text().split("void jvm_destroy(", 1)[1]

@@ -16,7 +16,7 @@ void _gc_get_obj_name(GcCollector *collector, void *memblock, Utf8String *name);
 
 void _garbage_clear(GcCollector *collector);
 
-void _gc_copy_objs(MiniJVM *jvm);
+s32 _gc_copy_objs(MiniJVM *jvm);
 
 s32 _gc_big_search(GcCollector *collector);
 
@@ -137,6 +137,16 @@ void gc_destroy(MiniJVM *jvm) {
 }
 
 
+// Negative collection results retain the heap. During terminal cleanup
+// do not busy-loop on a failed snapshot or free an incompletely scanned heap.
+static void gc_clear_until_empty(GcCollector *collector) {
+    for (;;) {
+        s64 result = _garbage_collect(collector);
+        if (result == 0) return;
+        if (result < 0) threadSleep(100);
+    }
+}
+
 void _garbage_clear(GcCollector *collector) {
 #if _JVM_DEBUG_LOG_LEVEL > 1
     jvm_printf("[INFO]garbage clear start\n");
@@ -145,7 +155,7 @@ void _garbage_clear(GcCollector *collector) {
     MiniJVM *jvm = collector->jvm;
 
     //After all references are removed, all objects are collected
-    while (_garbage_collect(collector));//collect instance
+    gc_clear_until_empty(collector);//collect instance
 
 #if _JVM_DEBUG_LOG_LEVEL > 1
     jvm_printf("[INFO]objs size :%lld\n", collector->obj_count);
@@ -153,14 +163,14 @@ void _garbage_clear(GcCollector *collector) {
 #endif
     hashset_clear(collector->objs_holder);
     classloaders_clear_all_static(jvm);
-    while (_garbage_collect(collector));//collect classes
+    gc_clear_until_empty(collector);//collect classes
 
 #if _JVM_DEBUG_LOG_LEVEL > 1
     jvm_printf("[INFO]objs size :%lld\n", collector->obj_count);
     jvm_printf("[INFO]clear boot classes \n");
 #endif
     classloader_remove_all_class(jvm->boot_classloader);
-    while (_garbage_collect(collector));//collect classes
+    gc_clear_until_empty(collector);//collect classes
     classloaders_destroy_all(jvm);
 
     //
@@ -787,7 +797,17 @@ s64 _garbage_collect(GcCollector *collector) {
         jvm_printf("garbage_move_cache %lld\n", (currentTimeMillis() - time));
         time = currentTimeMillis();
 #endif
-        _gc_copy_objs(jvm);
+        if (_gc_copy_objs(jvm) != 0) {
+            // A partial root set is never safe to mark/sweep. Objects
+            // already moved into the collector list remain owned by it.
+            arraylist_clear(collector->runtime_refer_copy);
+            collector->isworldstoped = 0;
+            _gc_resume_the_world(jvm);
+            collector->isgc = 0;
+            vm_share_unlock(jvm);
+            jvm_printf("[WARN] GC canceled - incomplete root snapshot\n");
+            return -1;
+        }
         //
 #if _JVM_DEBUG_GARBAGE
         jvm_printf("garbage_copy_refer %lld\n", (currentTimeMillis() - time));
@@ -1026,37 +1046,41 @@ s32 _gc_big_search(GcCollector *collector) {
 
 // Registered shutdown hooks are strong Java references owned by this JVM.
 // Snapshot them under the queue lock while the collector owns the root copy.
-static void gc_copy_shutdown_hook_roots(MiniJVM *jvm) {
+static s32 gc_copy_shutdown_hook_roots(MiniJVM *jvm) {
     ArrayList *hooks = jvm->shutdown_hook;
     spin_lock(&hooks->spinlock);
     for (s32 i = 0; i < hooks->length; ++i) {
         ArrayListValue hook = arraylist_get_value_unsafe(hooks, i);
-        if (hook) arraylist_push_back_unsafe(jvm->collector->runtime_refer_copy, hook);
+        if (hook && !arraylist_push_back_unsafe(jvm->collector->runtime_refer_copy, hook)) {
+            spin_unlock(&hooks->spinlock);
+            return -1;
+        }
     }
     spin_unlock(&hooks->spinlock);
+    return 0;
 }
 
-void _gc_copy_objs(MiniJVM *jvm) {
+s32 _gc_copy_objs(MiniJVM *jvm) {
     arraylist_clear(jvm->collector->runtime_refer_copy);
-    gc_copy_shutdown_hook_roots(jvm);
-    s32 i;
-    //jvm_printf("thread set size:%d\n", thread_list->length);
-    for (i = 0; i < jvm->thread_list->length; i++) {
-        Runtime *runtime = threadlist_get(jvm, i);
-        if (runtime->thrd_info->thread_status != THREAD_STATUS_ZOMBIE) {//zombie thread is not need to mark
-            _gc_copy_objs_from_thread(runtime);
-        } else {
-            s32 debug = 1;
+    if (gc_copy_shutdown_hook_roots(jvm) != 0) return -1;
+    // Pin list membership during root traversal. A terminating runtime
+    // cannot remove itself and free its stack between lookup and copy.
+    ArrayList *threads = jvm->thread_list;
+    spin_lock(&threads->spinlock);
+    for (s32 i = 0; i < threads->length; ++i) {
+        Runtime *runtime = arraylist_get_value_unsafe(threads, i);
+        if (runtime && runtime->thrd_info->thread_status != THREAD_STATUS_ZOMBIE &&
+            _gc_copy_objs_from_thread(runtime) != 0) {
+            spin_unlock(&threads->spinlock);
+            return -1;
         }
     }
-//    arraylist_iter_safe(thread_list, _list_iter_iter_copy, NULL);
-    // Debug thread
+    spin_unlock(&threads->spinlock);
     if (jvm->jdwp_enable && jvm->jdwpserver) {
         Runtime *runtime = jdwp_get_runtime(jvm->jdwpserver);
-        if (runtime) {
-            _gc_copy_objs_from_thread(runtime);
-        }
+        if (runtime && _gc_copy_objs_from_thread(runtime) != 0) return -1;
     }
+    return 0;
 }
 
 /**
@@ -1076,7 +1100,9 @@ void _gc_copy_objs(MiniJVM *jvm) {
 
 s32 _gc_copy_objs_from_thread(Runtime *pruntime) {
     GcCollector *collector = pruntime->jvm->collector;
-    arraylist_push_back_unsafe(collector->runtime_refer_copy, pruntime->thrd_info->jthread);
+    if (pruntime->thrd_info->jthread &&
+        !arraylist_push_back_unsafe(collector->runtime_refer_copy, pruntime->thrd_info->jthread))
+        return -1;
 
     Runtime *runtime = pruntime;
     RuntimeStack *stack = runtime->stack;
@@ -1099,12 +1125,14 @@ s32 _gc_copy_objs_from_thread(Runtime *pruntime) {
     for (i = 0, imax = stack_size(stack); i < imax; i++) {
         entry = stack->store + i;
         if (entry->rvalue) {
-            arraylist_push_back_unsafe(collector->runtime_refer_copy, entry->rvalue);
+            if (!arraylist_push_back_unsafe(collector->runtime_refer_copy, entry->rvalue))
+                return -1;
         }
     }
     MemoryBlock *next = runtime->thrd_info->tmp_holder;
     for (; next;) {
-        arraylist_push_back_unsafe(collector->runtime_refer_copy, next);
+        if (!arraylist_push_back_unsafe(collector->runtime_refer_copy, next))
+            return -1;
         next = next->hold_next;
     }
 
