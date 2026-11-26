@@ -1,6 +1,7 @@
 #ifndef JVM_BRIDGE_H
 #define JVM_BRIDGE_H
 #include <stdint.h>
+#include <stddef.h>
 #include "../minijvm/jvm/jarbox_cpu_window.h"
 #include "../minijvm/jvm/jarbox_background_trace.h"
 
@@ -101,6 +102,10 @@ typedef struct {
     uint64_t qos_paint_completed, qos_paint_cpu_ns, qos_paint_wall_ns, qos_paint_over_budget, qos_paint_backoff, qos_original_class;
     uint64_t qos_observed_class, qos_paint_normal_completed, qos_paint_normal_wall_ns, compatible_text_attr_reuses;
     uint64_t nso_core_profile, nso_core_armed, nso_core_rejected, nso_core_frames, nso_core_faults, scoped_native_draw_skips, scoped_vm_draw_skips;
+    uint64_t native_diag_seen, native_diag_selected_frames, native_diag_selected_cpu_ns, native_diag_plain_frames;
+    uint64_t native_diag_plain_cpu_ns, native_diag_discarded_frames, native_diag_draw_calls, native_diag_draw_ns;
+    uint64_t native_diag_lcd_other_calls, native_diag_lcd_other_ns, native_diag_other_calls, native_diag_other_ns;
+    uint64_t native_diag_drawrgb_calls, native_diag_drawrgb_pixels, native_diag_getrgb_calls, native_diag_getrgb_pixels;
     uint64_t nso_repaint_skips, nso_service_skips, nso_paint_skips;
     uint64_t shared_zip_probes, shared_zip_hits, shared_zip_negative_hits;
     uint64_t shared_prepared_candidates, shared_prepared_hits;
@@ -109,6 +114,9 @@ typedef struct {
     int phase, stop_requested, mode, counters_ok, cpu_ok;
 } JarBoxFlightSlot;
 int jvm_bridge_flight_sample(JarBoxFlightProcess *process, JarBoxFlightSlot *slots, int capacity, int detail);
+/// Bounded gzip export. Free result using the matching function.
+uint8_t *jvm_bridge_flight_gzip(const uint8_t *input,size_t input_size,size_t *output_size);
+void jvm_bridge_flight_gzip_free(uint8_t *bytes);
 int jvm_bridge_background_tokens(uint64_t *out,int capacity);
 int jvm_bridge_background_sample(uint64_t token,int entering,JarBoxBackgroundSample *out);
 /// Check the actual ownership flag (phase may briefly be idle during start).

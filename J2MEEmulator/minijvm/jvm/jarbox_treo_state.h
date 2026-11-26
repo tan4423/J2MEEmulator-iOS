@@ -37,6 +37,11 @@ typedef struct JarBoxTreoState {
     uint64_t qos_paint_completed, qos_paint_cpu_ns, qos_paint_wall_ns, qos_paint_over_budget, qos_paint_backoff, qos_original_class;
     uint64_t qos_observed_class, qos_paint_normal_completed, qos_paint_normal_wall_ns, compatible_text_attr_reuses;
     JarBoxNinjaCoreState ninja_core;
+    // Sampled mode-1 paint attribution, per owner, cumulative.
+    uint64_t native_diag_seen, native_diag_selected_frames, native_diag_selected_cpu_ns, native_diag_plain_frames;
+    uint64_t native_diag_plain_cpu_ns, native_diag_discarded_frames, native_diag_draw_calls, native_diag_draw_ns;
+    uint64_t native_diag_lcd_other_calls, native_diag_lcd_other_ns, native_diag_other_calls, native_diag_other_ns;
+    uint64_t native_diag_drawrgb_calls, native_diag_drawrgb_pixels, native_diag_getrgb_calls, native_diag_getrgb_pixels;
     JarBoxBackgroundTrace background_trace;
     uint64_t int_leaf_fast_calls; // batched count, all modes, per JVM
     uint64_t ref_leaf_fast_calls;

@@ -19,6 +19,8 @@
 #include <sys/stat.h>
 #include <strings.h>
 #include "miniz.h"
+#include "jarbox_flight_gzip.h"
+#include <stdlib.h>
 #include "miniz_wrapper.h"
 #if defined(__APPLE__) && __JVM_OS_IOS__
 #include <os/proc.h>
@@ -30,6 +32,25 @@
 #include <sys/resource.h>
 #endif
 
+// Called only on the export queue, never from a game worker.
+uint8_t *jvm_bridge_flight_gzip(const uint8_t *input,size_t input_size,size_t *output_size) {
+    if (!output_size) return NULL;
+    *output_size=0;
+    if (!input || !input_size || input_size>2U*1024U*1024U) return NULL;
+    size_t raw_size=0;
+    void *raw=tdefl_compress_mem_to_heap(input,input_size,&raw_size,
+        (int)tdefl_create_comp_flags_from_zip_params(6,-15,MZ_DEFAULT_STRATEGY));
+    if (!raw) return NULL;
+    if (raw_size>SIZE_MAX-18) {mz_free(raw);return NULL;}
+    uint8_t *out=malloc(raw_size+18);
+    if (out) {
+        jarbox_flight_gzip_frame(out,raw,raw_size,(uint32_t)mz_crc32(0,input,input_size),(uint32_t)input_size);
+        *output_size=raw_size+18;
+    }
+    mz_free(raw);
+    return out;
+}
+void jvm_bridge_flight_gzip_free(uint8_t *bytes) {free(bytes);}
 void jvm_bridge_trim_classpath_cache(void) {
     zip_classpath_cache_trim();
     jarbox_prepared_code_cache_trim();
@@ -1042,6 +1063,22 @@ int jvm_bridge_flight_sample(JarBoxFlightProcess *process, JarBoxFlightSlot *slo
         out->nso_core_faults=__atomic_load_n(&session->treo_state.ninja_core.faults,__ATOMIC_RELAXED);
         out->scoped_native_draw_skips=__atomic_load_n(&session->treo_state.ninja_core.scoped_native_draw_skips,__ATOMIC_RELAXED);
         out->scoped_vm_draw_skips=__atomic_load_n(&session->treo_state.ninja_core.scoped_vm_draw_skips,__ATOMIC_RELAXED);
+        out->native_diag_seen=__atomic_load_n(&session->treo_state.native_diag_seen,__ATOMIC_RELAXED);
+        out->native_diag_selected_frames=__atomic_load_n(&session->treo_state.native_diag_selected_frames,__ATOMIC_RELAXED);
+        out->native_diag_selected_cpu_ns=__atomic_load_n(&session->treo_state.native_diag_selected_cpu_ns,__ATOMIC_RELAXED);
+        out->native_diag_plain_frames=__atomic_load_n(&session->treo_state.native_diag_plain_frames,__ATOMIC_RELAXED);
+        out->native_diag_plain_cpu_ns=__atomic_load_n(&session->treo_state.native_diag_plain_cpu_ns,__ATOMIC_RELAXED);
+        out->native_diag_discarded_frames=__atomic_load_n(&session->treo_state.native_diag_discarded_frames,__ATOMIC_RELAXED);
+        out->native_diag_draw_calls=__atomic_load_n(&session->treo_state.native_diag_draw_calls,__ATOMIC_RELAXED);
+        out->native_diag_draw_ns=__atomic_load_n(&session->treo_state.native_diag_draw_ns,__ATOMIC_RELAXED);
+        out->native_diag_lcd_other_calls=__atomic_load_n(&session->treo_state.native_diag_lcd_other_calls,__ATOMIC_RELAXED);
+        out->native_diag_lcd_other_ns=__atomic_load_n(&session->treo_state.native_diag_lcd_other_ns,__ATOMIC_RELAXED);
+        out->native_diag_other_calls=__atomic_load_n(&session->treo_state.native_diag_other_calls,__ATOMIC_RELAXED);
+        out->native_diag_other_ns=__atomic_load_n(&session->treo_state.native_diag_other_ns,__ATOMIC_RELAXED);
+        out->native_diag_drawrgb_calls=__atomic_load_n(&session->treo_state.native_diag_drawrgb_calls,__ATOMIC_RELAXED);
+        out->native_diag_drawrgb_pixels=__atomic_load_n(&session->treo_state.native_diag_drawrgb_pixels,__ATOMIC_RELAXED);
+        out->native_diag_getrgb_calls=__atomic_load_n(&session->treo_state.native_diag_getrgb_calls,__ATOMIC_RELAXED);
+        out->native_diag_getrgb_pixels=__atomic_load_n(&session->treo_state.native_diag_getrgb_pixels,__ATOMIC_RELAXED);
         out->nso_repaint_skips=jarbox_treo_nso_skip_count(&session->treo_state,0);
         out->nso_service_skips=jarbox_treo_nso_skip_count(&session->treo_state,1);
         out->nso_paint_skips=jarbox_treo_nso_skip_count(&session->treo_state,2);

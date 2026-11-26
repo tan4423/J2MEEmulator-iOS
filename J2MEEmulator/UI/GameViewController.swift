@@ -1342,8 +1342,14 @@ class GameViewController: UIViewController {
             UIAction(title: "Log Treo tắt màn hình") { [weak self] _ in
                 if let self { JarBoxBackgroundDiagnostics.show(from: self) }
             },
-            UIAction(title: "Xuất nhật ký sự cố") { [weak self] _ in
+            UIAction(title: "Xuất log phiên hiện tại") { [weak self] _ in
                 if let self { JarBoxBackgroundDiagnostics.showFlight(from: self) }
+            },
+            UIAction(title: "Xuất lịch sử log (.gz)") { [weak self] _ in
+                if let self { JarBoxBackgroundDiagnostics.showFullFlight(from: self) }
+            },
+            UIAction(title: "Xóa lịch sử Flight Recorder", attributes: .destructive) { [weak self] _ in
+                if let self { JarBoxBackgroundDiagnostics.clearFlight(from: self) }
             }
         ]
         if jarAuditID != nil {

@@ -16,7 +16,8 @@ workflows:
         JARBOX_VM_ARRAY_LOOKUP_DIAGNOSTIC: "0" # No method observer overhead
         JARBOX_VM_PERF_CANDIDATE: "0" # Matched all-off control for Treo CPU investigation; set 1 to reproduce candidate
         JARBOX_PAINT_QOS_EXPERIMENT: "0" # isolate Ninja Core; QoS trial remains available
-        JARBOX_NINJA_CORE_EXPERIMENT: "1" # exact-profile scoped Canvas sink device trial; 0 = compatible control
+        JARBOX_NINJA_CORE_EXPERIMENT: "0" # full-raster mode-1 measurement control; 1 = prior Core experiment
+        JARBOX_NATIVE_PAINT_DIAG: "1" # sparse native CPU attribution; 0 = same-source uninstrumented control
         JARBOX_VM_DECODED_INT_EXPERIMENT: "0"
         JARBOX_VM_EVENT_SLEEP_EXPERIMENT: "0"
         JARBOX_VM_CONST_ARITH_FUSION_EXPERIMENT: "0"
@@ -440,7 +441,12 @@ workflows:
             const_fusion_flags="$const_fusion_flags -DTREO_NINJA_CORE_EXPERIMENT=1"
             perf_core=1
           fi
-          perf_profile="const-arith-${perf_arith}_const-branch-${perf_branch}_decoded-int-${perf_decoded}_event-sleep-${perf_sleep}_paint-qos-${perf_qos}_ninja-core-${perf_core}"
+          perf_native_diag=0
+          if [[ "${JARBOX_NATIVE_PAINT_DIAG:-0}" == "1" ]]; then
+            const_fusion_flags="$const_fusion_flags -DTREO_NATIVE_PAINT_DIAG=1"
+            perf_native_diag=1
+          fi
+          perf_profile="const-arith-${perf_arith}_const-branch-${perf_branch}_decoded-int-${perf_decoded}_event-sleep-${perf_sleep}_paint-qos-${perf_qos}_ninja-core-${perf_core}_native-paint-diag-${perf_native_diag}"
           echo "[JarBoxVM][BUILD] perf_profile=$perf_profile const_fusion_flags=${const_fusion_flags:-off}"
           xcodebuild -list -project "$J2ME_PROJECT"
           xcodebuild -project "$J2ME_PROJECT" \

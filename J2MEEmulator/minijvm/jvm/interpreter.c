@@ -45,6 +45,115 @@ static inline int jarbox_virtual_publish(MiniJVM *jvm, ConstantMethodRef *ref, I
 #include <stdint.h>
 #include <stdio.h>
 
+#if defined(TREO_NATIVE_PAINT_DIAG) && TREO_NATIVE_PAINT_DIAG && __JVM_OS_IOS__
+#include <time.h>
+#include "jarbox_native_paint_diag.h"
+// One invoking pthread, one active paint. No other thread inspects this
+// scratch state or dereferences a suspended interpreter frame.
+typedef struct {
+    JarBoxSession *owner;
+    unsigned scope, selected, invalid, in_native, kind;
+    uint64_t start, calls[3], ns[3], rgb_calls[2], rgb_pixels[2];
+} JarBoxNativePaintDiag;
+static _Thread_local JarBoxNativePaintDiag native_paint_diag;
+static inline uint64_t native_paint_clock(void) {
+    struct timespec t;
+    if (clock_gettime(CLOCK_THREAD_CPUTIME_ID,&t)) return 0;
+    return (uint64_t)t.tv_sec*UINT64_C(1000000000)+(uint64_t)t.tv_nsec;
+}
+void treo_native_paint_diag_begin(Runtime *r) {
+    JarBoxNativePaintDiag *d=&native_paint_diag;
+    JarBoxSession *s=r->jvm->session;
+    if (d->scope) {
+        d->invalid=1;
+        ++d->scope;
+        return;
+    }
+    if (!s || jarbox_treo_mode_get(&s->treo_state)!=1) return;
+    *d=(JarBoxNativePaintDiag){.owner=s,.scope=1};
+    uint64_t n=__atomic_fetch_add(&s->treo_state.native_diag_seen,1,__ATOMIC_RELAXED);
+    d->selected=jarbox_native_paint_selected(n);
+}
+#define NATIVE_DIAG_ADD(s,f,n) __atomic_fetch_add(&(s)->f,(uint64_t)(n),__ATOMIC_RELAXED)
+void treo_native_paint_diag_end(Runtime *r,uint64_t total,int valid) {
+    JarBoxNativePaintDiag *d=&native_paint_diag;
+    if (!d->scope) return;
+    if (--d->scope) return;
+    JarBoxSession *s=r->jvm->session;
+    if (s && d->owner==s) {
+        JarBoxTreoState *t=&s->treo_state;
+        if (!valid || !total || d->invalid || d->in_native ||
+            jarbox_treo_mode_get(t)!=1 ||
+            !jarbox_native_paint_valid(total,d->ns[0],d->ns[1],d->ns[2])) {
+            NATIVE_DIAG_ADD(t,native_diag_discarded_frames,1);
+        } else if (d->selected) {
+            NATIVE_DIAG_ADD(t,native_diag_selected_cpu_ns,total);
+            NATIVE_DIAG_ADD(t,native_diag_draw_calls,d->calls[0]);
+            NATIVE_DIAG_ADD(t,native_diag_draw_ns,d->ns[0]);
+            NATIVE_DIAG_ADD(t,native_diag_lcd_other_calls,d->calls[1]);
+            NATIVE_DIAG_ADD(t,native_diag_lcd_other_ns,d->ns[1]);
+            NATIVE_DIAG_ADD(t,native_diag_other_calls,d->calls[2]);
+            NATIVE_DIAG_ADD(t,native_diag_other_ns,d->ns[2]);
+            NATIVE_DIAG_ADD(t,native_diag_drawrgb_calls,d->rgb_calls[0]);
+            NATIVE_DIAG_ADD(t,native_diag_drawrgb_pixels,d->rgb_pixels[0]);
+            NATIVE_DIAG_ADD(t,native_diag_getrgb_calls,d->rgb_calls[1]);
+            NATIVE_DIAG_ADD(t,native_diag_getrgb_pixels,d->rgb_pixels[1]);
+            NATIVE_DIAG_ADD(t,native_diag_selected_frames,1);
+        } else {
+            NATIVE_DIAG_ADD(t,native_diag_plain_cpu_ns,total);
+            NATIVE_DIAG_ADD(t,native_diag_plain_frames,1);
+        }
+    }
+    *d=(JarBoxNativePaintDiag){0};
+}
+#undef NATIVE_DIAG_ADD
+static inline int treo_native_paint_enter(Runtime *r, MethodInfo *m) {
+    JarBoxNativePaintDiag *d=&native_paint_diag;
+    if (!d->scope || !d->selected || d->invalid || d->in_native ||
+        d->owner!=r->jvm->session) return 0;
+    unsigned kind=2;
+    if (utf8_equals_c(m->_this_class->name,"javax/microedition/lcdui/NativeBridge")) {
+        // These two methods own scope transitions; don't time themselves.
+        if (utf8_equals_c(m->name,"profilePaintBegin") ||
+            utf8_equals_c(m->name,"profilePaintEnd")) return 0;
+        kind=1;
+        static const char *const draw[]={"drawLine","fillRect","drawRect",
+            "fillArc","drawArc","fillRoundRect","drawRoundRect","drawString",
+            "drawImage","drawRegion","drawRGB","fillPolygon","drawPolygon","copyArea"};
+        for(unsigned k=0;k<sizeof(draw)/sizeof(draw[0]);k++)
+            if (utf8_equals_c(m->name,draw[k])) {kind=0;break;}
+        int rgb=-1;
+        if (utf8_equals_c(m->name,"drawRGB") &&
+            utf8_equals_c(m->descriptor,"(J[IIIIIIII)V")) rgb=0;
+        else if (utf8_equals_c(m->name,"getImageRGB") &&
+                 utf8_equals_c(m->descriptor,"(J[IIIIIII)V")) rgb=1;
+        if (rgb>=0) {
+            const s32 w=r->jnienv->localvar_getInt(r->localvar,7);
+            const s32 h=r->jnienv->localvar_getInt(r->localvar,8);
+            d->rgb_calls[rgb]++;
+            d->rgb_pixels[rgb]=jarbox_native_paint_add(d->rgb_pixels[rgb],
+                jarbox_native_paint_pixels(w,h));
+        }
+    }
+    d->kind=kind;
+    d->start=native_paint_clock();
+    if (!d->start) {d->invalid=1;return 0;}
+    d->in_native=1;
+    return 1;
+}
+static inline void treo_native_paint_exit(int token) {
+    if (!token) return;
+    JarBoxNativePaintDiag *d=&native_paint_diag;
+    const uint64_t end=native_paint_clock();
+    if (!d->in_native || !end || end<d->start) d->invalid=1;
+    else {
+        d->ns[d->kind]=jarbox_native_paint_add(d->ns[d->kind],end-d->start);
+        ++d->calls[d->kind];
+    }
+    d->in_native=0;
+}
+#endif
+
 /*
  * JarBox no-dynamic-JIT interpreter. Clang's labels-as-values point only
  * to opcode handlers already compiled and code-signed inside the app.
@@ -6079,7 +6188,13 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
             ret = RUNTIME_STATUS_ERROR;
         } else if (method->native_func) {
             if (method->is_sync)_synchronized_lock_method(method, runtime);
+#if defined(TREO_NATIVE_PAINT_DIAG) && TREO_NATIVE_PAINT_DIAG && __JVM_OS_IOS__
+            const int native_paint_token=treo_native_paint_enter(runtime,method);
+#endif
             ret = method->native_func(runtime, clazz);
+#if defined(TREO_NATIVE_PAINT_DIAG) && TREO_NATIVE_PAINT_DIAG && __JVM_OS_IOS__
+            treo_native_paint_exit(native_paint_token);
+#endif
             if (method->is_sync)_synchronized_unlock_method(method, runtime);
             if (ret) {
                 ins = pop_ref(stack);

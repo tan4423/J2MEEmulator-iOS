@@ -1860,6 +1860,10 @@ static void treo_paint_qos_end(Runtime *runtime,uint64_t cpu_ns,int cpu_valid) {
 #undef QOS_NOTE
 #endif
 
+#if defined(TREO_NATIVE_PAINT_DIAG) && TREO_NATIVE_PAINT_DIAG
+extern void treo_native_paint_diag_begin(Runtime *r);
+extern void treo_native_paint_diag_end(Runtime *r,uint64_t total,int valid);
+#endif
 static s32 n_profilePaintBegin(Runtime *runtime, JClass *clazz) {
     s64 start = 0;
     if (treo_runtime_mode(runtime) != 0 || treo_jar_audit_enabled()) {
@@ -1867,6 +1871,9 @@ static s32 n_profilePaintBegin(Runtime *runtime, JClass *clazz) {
         atomic_store_explicit(&g_afk_paint_tid, g_afk_thread_id, memory_order_relaxed);
         start = -(s64)treo_thread_cpu_ns();
         treo_vm_paint_sample_begin();
+#if defined(TREO_NATIVE_PAINT_DIAG) && TREO_NATIVE_PAINT_DIAG
+        if (start<0) treo_native_paint_diag_begin(runtime);
+#endif
     }
     else if (treo_profile_active()) start = (s64)treo_thread_cpu_ns();
 #if defined(TREO_PAINT_QOS_EXPERIMENT) && TREO_PAINT_QOS_EXPERIMENT
@@ -1880,6 +1887,9 @@ static s32 n_profilePaintEnd(Runtime *runtime, JClass *clazz) {
     if (stamp < 0) {
         const int sampled = treo_vm_paint_sample_end();
         const uint64_t end = treo_thread_cpu_ns(), begin = (uint64_t)(-stamp);
+#if defined(TREO_NATIVE_PAINT_DIAG) && TREO_NATIVE_PAINT_DIAG
+        treo_native_paint_diag_end(runtime,end>=begin ? end-begin : 0,end>=begin);
+#endif
 #if defined(TREO_PAINT_QOS_EXPERIMENT) && TREO_PAINT_QOS_EXPERIMENT
         treo_paint_qos_end(runtime,end>=begin ? end-begin : 0,end>=begin);
 #endif

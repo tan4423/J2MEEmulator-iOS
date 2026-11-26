@@ -95,11 +95,21 @@ nonisolated final class JarBoxFlightStore {
         try file.write(contentsOf: data)
         if durable { try file.synchronize() }
     }
-    func report() -> String {
-        [previous, current].compactMap { url in
+    func report(run: String? = nil) -> String {
+        let all = [previous, current].compactMap { url -> String? in
             guard let data = try? Data(contentsOf: url), data.count <= limit else { return nil }
             return String(decoding: data, as: UTF8.self)
         }.joined()
+        guard let run else { return all }
+        let prefix = "run=\(run) "
+        let lines = all.split(separator: "\n").filter { $0.hasPrefix(prefix) }
+        return lines.isEmpty ? "" : lines.joined(separator: "\n") + "\n"
+    }
+    // Only these journal files. Never remove the parent directory or game data.
+    func clear() throws {
+        for url in [previous, current] where fm.fileExists(atPath: url.path) {
+            try fm.removeItem(at: url)
+        }
     }
 }
 
@@ -202,7 +212,7 @@ nonisolated final class JarBoxFlightRecorder: @unchecked Sendable {
                 jvm_bridge_flight_sample(&detailProcess, $0.baseAddress, Int32($0.count), 1)
             }
             let detail = slots.prefix(max(0, min(Int(detailCount), slots.count))).map { slot in
-                "token=\(slot.token),phase=\(slot.phase),stop=\(slot.stop_requested),mode=\(slot.mode),workers=\(slot.workers),counters_ok=\(slot.counters_ok),gc_cycles=\(slot.gc_cycles),gc_aborts=\(slot.gc_aborts),repaints=\(slot.repaint_requests),afk_profile_paint_calls=\(slot.afk_profile_paint_calls),afk_profile_paint_cpu_ns=\(slot.afk_profile_paint_cpu_ns),compatible_font_reuses=\(slot.compatible_font_reuses),compatible_crop_hits=\(slot.compatible_crop_hits),compatible_crop_misses=\(slot.compatible_crop_misses),compatible_state_reuses=\(slot.compatible_state_reuses),compatible_region_culls=\(slot.compatible_region_culls),qos_paint_attempts=\(slot.qos_paint_attempts),qos_paint_applied=\(slot.qos_paint_applied),qos_paint_already_utility=\(slot.qos_paint_already_utility),qos_paint_unrestorable=\(slot.qos_paint_unrestorable),qos_paint_errors=\(slot.qos_paint_errors),qos_paint_restore_errors=\(slot.qos_paint_restore_errors),qos_paint_completed=\(slot.qos_paint_completed),qos_paint_cpu_ns=\(slot.qos_paint_cpu_ns),qos_paint_wall_ns=\(slot.qos_paint_wall_ns),qos_paint_over_budget=\(slot.qos_paint_over_budget),qos_paint_backoff=\(slot.qos_paint_backoff),qos_original_class=\(slot.qos_original_class),qos_observed_class=\(slot.qos_observed_class),qos_paint_normal_completed=\(slot.qos_paint_normal_completed),qos_paint_normal_wall_ns=\(slot.qos_paint_normal_wall_ns),compatible_text_attr_reuses=\(slot.compatible_text_attr_reuses),qos_core_residency=unknown,nso_core_profile=\(slot.nso_core_profile),nso_core_armed=\(slot.nso_core_armed),nso_core_rejected=\(slot.nso_core_rejected),nso_core_frames=\(slot.nso_core_frames),nso_core_faults=\(slot.nso_core_faults),scoped_native_draw_skips=\(slot.scoped_native_draw_skips),scoped_vm_draw_skips=\(slot.scoped_vm_draw_skips),nso_repaint_skips=\(slot.nso_repaint_skips),nso_service_skips=\(slot.nso_service_skips),nso_paint_skips=\(slot.nso_paint_skips),cpu_ok=\(slot.cpu_ok),runner_ns=\(slot.runner_ns),java_ns=\(slot.java_ns),gc_ns=\(slot.gc_ns),const_arith_fusions=\(slot.const_arith_fusions),const_branch_fusions=\(slot.const_branch_fusions),decoded_int_calls=\(slot.decoded_int_calls),event_sleep_handled=\(slot.event_sleep_handled),event_sleep_fallbacks=\(slot.event_sleep_fallbacks),shared_zip_probes=\(slot.shared_zip_probes),shared_zip_hits=\(slot.shared_zip_hits),shared_zip_negative_hits=\(slot.shared_zip_negative_hits),shared_prepared_candidates=\(slot.shared_prepared_candidates),shared_prepared_hits=\(slot.shared_prepared_hits),startup_image_decodes=\(slot.startup_image_decodes),startup_image_hits=\(slot.startup_image_hits),startup_image_decode_ns=\(slot.startup_image_decode_ns)"
+                "token=\(slot.token),phase=\(slot.phase),stop=\(slot.stop_requested),mode=\(slot.mode),workers=\(slot.workers),counters_ok=\(slot.counters_ok),gc_cycles=\(slot.gc_cycles),gc_aborts=\(slot.gc_aborts),repaints=\(slot.repaint_requests),afk_profile_paint_calls=\(slot.afk_profile_paint_calls),afk_profile_paint_cpu_ns=\(slot.afk_profile_paint_cpu_ns),compatible_font_reuses=\(slot.compatible_font_reuses),compatible_crop_hits=\(slot.compatible_crop_hits),compatible_crop_misses=\(slot.compatible_crop_misses),compatible_state_reuses=\(slot.compatible_state_reuses),compatible_region_culls=\(slot.compatible_region_culls),qos_paint_attempts=\(slot.qos_paint_attempts),qos_paint_applied=\(slot.qos_paint_applied),qos_paint_already_utility=\(slot.qos_paint_already_utility),qos_paint_unrestorable=\(slot.qos_paint_unrestorable),qos_paint_errors=\(slot.qos_paint_errors),qos_paint_restore_errors=\(slot.qos_paint_restore_errors),qos_paint_completed=\(slot.qos_paint_completed),qos_paint_cpu_ns=\(slot.qos_paint_cpu_ns),qos_paint_wall_ns=\(slot.qos_paint_wall_ns),qos_paint_over_budget=\(slot.qos_paint_over_budget),qos_paint_backoff=\(slot.qos_paint_backoff),qos_original_class=\(slot.qos_original_class),qos_observed_class=\(slot.qos_observed_class),qos_paint_normal_completed=\(slot.qos_paint_normal_completed),qos_paint_normal_wall_ns=\(slot.qos_paint_normal_wall_ns),compatible_text_attr_reuses=\(slot.compatible_text_attr_reuses),qos_core_residency=unknown,native_diag_seen=\(slot.native_diag_seen),native_diag_selected_frames=\(slot.native_diag_selected_frames),native_diag_selected_cpu_ns=\(slot.native_diag_selected_cpu_ns),native_diag_plain_frames=\(slot.native_diag_plain_frames),native_diag_plain_cpu_ns=\(slot.native_diag_plain_cpu_ns),native_diag_discarded_frames=\(slot.native_diag_discarded_frames),native_diag_draw_calls=\(slot.native_diag_draw_calls),native_diag_draw_ns=\(slot.native_diag_draw_ns),native_diag_lcd_other_calls=\(slot.native_diag_lcd_other_calls),native_diag_lcd_other_ns=\(slot.native_diag_lcd_other_ns),native_diag_other_calls=\(slot.native_diag_other_calls),native_diag_other_ns=\(slot.native_diag_other_ns),native_diag_drawrgb_calls=\(slot.native_diag_drawrgb_calls),native_diag_drawrgb_pixels=\(slot.native_diag_drawrgb_pixels),native_diag_getrgb_calls=\(slot.native_diag_getrgb_calls),native_diag_getrgb_pixels=\(slot.native_diag_getrgb_pixels),nso_core_profile=\(slot.nso_core_profile),nso_core_armed=\(slot.nso_core_armed),nso_core_rejected=\(slot.nso_core_rejected),nso_core_frames=\(slot.nso_core_frames),nso_core_faults=\(slot.nso_core_faults),scoped_native_draw_skips=\(slot.scoped_native_draw_skips),scoped_vm_draw_skips=\(slot.scoped_vm_draw_skips),nso_repaint_skips=\(slot.nso_repaint_skips),nso_service_skips=\(slot.nso_service_skips),nso_paint_skips=\(slot.nso_paint_skips),cpu_ok=\(slot.cpu_ok),runner_ns=\(slot.runner_ns),java_ns=\(slot.java_ns),gc_ns=\(slot.gc_ns),const_arith_fusions=\(slot.const_arith_fusions),const_branch_fusions=\(slot.const_branch_fusions),decoded_int_calls=\(slot.decoded_int_calls),event_sleep_handled=\(slot.event_sleep_handled),event_sleep_fallbacks=\(slot.event_sleep_fallbacks),shared_zip_probes=\(slot.shared_zip_probes),shared_zip_hits=\(slot.shared_zip_hits),shared_zip_negative_hits=\(slot.shared_zip_negative_hits),shared_prepared_candidates=\(slot.shared_prepared_candidates),shared_prepared_hits=\(slot.shared_prepared_hits),startup_image_decodes=\(slot.startup_image_decodes),startup_image_hits=\(slot.startup_image_hits),startup_image_decode_ns=\(slot.startup_image_decode_ns)"
             }.joined(separator: ";")
             write("event=sample mono_ns=\(process.wall_ns) gap_ns=\(decision.gap) process_cpu_ok=\(process.process_ok) process_cpu_ns=\(process.process_ns) cpu_percent=\(percent) headroom_bytes=\(process.headroom_bytes) footprint_ok=\(process.footprint_ok) footprint_bytes=\(process.footprint_bytes) memory_state=\(process.memory_state) thermal=\(ProcessInfo.processInfo.thermalState.rawValue) low_power=\(ProcessInfo.processInfo.isLowPowerModeEnabled ? 1 : 0) registry=\(signature) detail_mono_ns=\(detailProcess.wall_ns) detail_count=\(detailCount) slots=[\(detail)]", durable: forceSave || urgent || (decision.percent ?? 0) >= 60)
         }
@@ -216,11 +226,28 @@ nonisolated final class JarBoxFlightRecorder: @unchecked Sendable {
             write("event=idle_sampling_stopped")
         }
     }
-    func export(extra: String, completion: @escaping @Sendable (String) -> Void) {
+    func export(extra: String, fullHistory: Bool = false, completion: @escaping @Sendable (String) -> Void) {
         queue.async {
             self.tick(forceSave: true)
             self.write("event=manual_export")
-            completion("JarBox Flight Recorder v1\nwrite_failures_this_run=\(self.writeFailures)\nphase: 1 STARTING, 2 RUNNING, 3 CLEANUP; CPU one core=100%; counters cumulative; gaps may be suspension\n\n" + self.store.report() + "\n\n--- Latest background report ---\n" + extra)
+            let scope = fullHistory ? "retained_history" : "current_run"
+            let header = "JarBox Flight Recorder v1\nexport_scope=\(scope) run=\(self.run)\nwrite_failures_this_run=\(self.writeFailures)\nphase: 1 STARTING, 2 RUNNING, 3 CLEANUP; CPU one core=100%; counters cumulative; gaps may be suspension\n\n"
+            let journal = self.store.report(run: fullHistory ? nil : self.run)
+            // The separate background report may belong to another process/build.
+            completion(header + journal + (fullHistory ? "\n\n--- Latest background report ---\n" + extra : ""))
+        }
+    }
+    func clearHistory(completion: @escaping @Sendable (Bool) -> Void) {
+        queue.async {
+            do {
+                try self.store.clear()
+                self.write("event=history_cleared")
+                self.tick(forceSave: true)
+                completion(true)
+            } catch {
+                self.writeFailures += 1
+                completion(false)
+            }
         }
     }
 }
@@ -433,18 +460,71 @@ nonisolated final class JarBoxFlightRecorder: @unchecked Sendable {
         let incidents = defaults.stringArray(forKey: incidentKey) ?? []
         return background + "\n\nRecent lifecycle events (best effort):\n" + incidents.joined(separator: "\n")
     }
+    // Existing export action is the short current-process report.
     static func showFlight(from controller: UIViewController) {
         guard controller.presentedViewController == nil else { return }
-        let extra = report()
-        JarBoxFlightRecorder.shared.export(extra: extra) { [weak controller] text in
+        JarBoxFlightRecorder.shared.export(extra: "") { [weak controller] text in
             DispatchQueue.main.async {
                 guard let controller, controller.presentedViewController == nil else { return }
-                let activity = UIActivityViewController(activityItems: [text], applicationActivities: nil)
-                activity.popoverPresentationController?.sourceView = controller.view
-                activity.popoverPresentationController?.sourceRect = CGRect(x: controller.view.bounds.midX, y: controller.view.bounds.midY, width: 1, height: 1)
-                controller.present(activity, animated: true)
+                presentFlightShare(from: controller, item: text, temporaryFile: nil)
             }
         }
+    }
+    static func showFullFlight(from controller: UIViewController) {
+        guard controller.presentedViewController == nil else { return }
+        let extra = report()
+        JarBoxFlightRecorder.shared.export(extra: extra, fullHistory: true) { [weak controller] text in
+            // All compression and file writing happen on the export queue.
+            let input = Data(text.utf8)
+            var length = 0
+            let bytes = input.withUnsafeBytes {
+                jvm_bridge_flight_gzip($0.bindMemory(to: UInt8.self).baseAddress, input.count, &length)
+            }
+            var file: URL?
+            if let bytes {
+                defer { jvm_bridge_flight_gzip_free(bytes) }
+                let url = FileManager.default.temporaryDirectory.appendingPathComponent("JarBoxFlight-\(UUID().uuidString).txt.gz")
+                do {
+                    try Data(bytes: bytes, count: length).write(to: url, options: .atomic)
+                    file = url
+                } catch { try? FileManager.default.removeItem(at: url) }
+            }
+            let exportedFile = file
+            DispatchQueue.main.async {
+                guard let controller, controller.presentedViewController == nil else {
+                    if let exportedFile { try? FileManager.default.removeItem(at: exportedFile) }
+                    return
+                }
+                if let exportedFile {
+                    presentFlightShare(from: controller, item: exportedFile, temporaryFile: exportedFile)
+                } else {
+                    // Lossless fallback when gzip or temporary file creation fails.
+                    presentFlightShare(from: controller, item: text, temporaryFile: nil)
+                }
+            }
+        }
+    }
+    private static func presentFlightShare(from controller: UIViewController, item: Any, temporaryFile: URL?) {
+        let activity = UIActivityViewController(activityItems: [item], applicationActivities: nil)
+        if let temporaryFile {
+            activity.completionWithItemsHandler = { _, _, _, _ in
+                try? FileManager.default.removeItem(at: temporaryFile)
+            }
+        }
+        activity.popoverPresentationController?.sourceView = controller.view
+        activity.popoverPresentationController?.sourceRect = CGRect(x: controller.view.bounds.midX, y: controller.view.bounds.midY, width: 1, height: 1)
+        controller.present(activity, animated: true)
+    }
+    static func clearFlight(from controller: UIViewController) {
+        guard controller.presentedViewController == nil else { return }
+        let alert = UIAlertController(title: "Xóa lịch sử Flight Recorder?", message: "Chỉ xóa hai tệp nhật ký Flight Recorder; dữ liệu game và báo cáo Treo tắt màn hình riêng vẫn được giữ. Phiên hiện tại tiếp tục ghi mẫu mới.", preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "Hủy", style: .cancel))
+        alert.addAction(UIAlertAction(title: "Xóa log", style: .destructive) { _ in
+            JarBoxFlightRecorder.shared.clearHistory { ok in
+                if !ok { NSLog("[JarBoxFlight] clear history failed") }
+            }
+        })
+        controller.present(alert, animated: true)
     }
     static func show(from controller: UIViewController) {
         guard controller.presentedViewController == nil else { return }
