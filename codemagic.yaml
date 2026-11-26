@@ -14,6 +14,7 @@ workflows:
         JARBOX_VM_IMAGE_CACHE_BASELINE: "1" # OFF by default: measured ~0 hits in 188.7s
         JARBOX_VM_ARRAY_LOOKUP_EXPERIMENT: "0" # Isolate game-aware Treo
         JARBOX_VM_ARRAY_LOOKUP_DIAGNOSTIC: "0" # No method observer overhead
+        JARBOX_VM_PERF_CANDIDATE: "0" # Enable both constant fusions in one device candidate
         JARBOX_VM_CONST_ARITH_FUSION_EXPERIMENT: "0"
         JARBOX_VM_CONST_BRANCH_FUSION_EXPERIMENT: "0"
     scripts: &jarbox_ipa_shared_scripts
@@ -398,14 +399,23 @@ workflows:
             array_lookup_diagnostic_flag="-DTREO_VM_ARRAY_LOOKUP_DIAGNOSTIC=1"
             echo "[JarBoxVM][BUILD] array_lookup_diagnostic=on"
           fi
+          if [[ "${JARBOX_VM_PERF_CANDIDATE:-0}" == "1" ]]; then
+            export JARBOX_VM_CONST_ARITH_FUSION_EXPERIMENT=1
+            export JARBOX_VM_CONST_BRANCH_FUSION_EXPERIMENT=1
+          fi
           const_fusion_flags=""
+          perf_arith=0
+          perf_branch=0
           if [[ "${JARBOX_VM_CONST_ARITH_FUSION_EXPERIMENT:-0}" == "1" ]]; then
             const_fusion_flags="$const_fusion_flags -DTREO_VM_CONST_ARITH_FUSION_EXPERIMENT=1"
+            perf_arith=1
           fi
           if [[ "${JARBOX_VM_CONST_BRANCH_FUSION_EXPERIMENT:-0}" == "1" ]]; then
             const_fusion_flags="$const_fusion_flags -DTREO_VM_CONST_BRANCH_FUSION_EXPERIMENT=1"
+            perf_branch=1
           fi
-          echo "[JarBoxVM][BUILD] const_fusion_flags=${const_fusion_flags:-off}"
+          perf_profile="const-arith-${perf_arith}_const-branch-${perf_branch}"
+          echo "[JarBoxVM][BUILD] perf_profile=$perf_profile const_fusion_flags=${const_fusion_flags:-off}"
           xcodebuild -list -project "$J2ME_PROJECT"
           xcodebuild -project "$J2ME_PROJECT" \
             -scheme J2MEEmulator -configuration Release \
@@ -435,6 +445,7 @@ workflows:
           test "${#build_commit}" -eq 40
           /usr/libexec/PlistBuddy -c "Add :JarBoxBuildCommit string $build_commit" "$app/Info.plist"
           /usr/libexec/PlistBuddy -c 'Add :JarBoxBootPatch string java8_stringjoiner_profile_v10' "$app/Info.plist"
+          /usr/libexec/PlistBuddy -c "Add :JarBoxPerfProfile string $perf_profile" "$app/Info.plist"
           actual_commit="$(/usr/libexec/PlistBuddy -c 'Print :JarBoxBuildCommit' "$app/Info.plist")"
           test "$actual_commit" = "$build_commit"
           echo "[JarBoxNET][BUILD] final_ipa_commit=$build_commit"
@@ -450,6 +461,7 @@ workflows:
           unzip -p "$GITHUB_WORKSPACE/J2ME-Treo-jar-cpu-audit-unsigned.ipa" "Payload/*.app/Info.plist" > "$ipa_plist"
           test "$(/usr/libexec/PlistBuddy -c 'Print :JarBoxBuildCommit' "$ipa_plist")" = "$build_commit"
           test "$(/usr/libexec/PlistBuddy -c 'Print :JarBoxBootPatch' "$ipa_plist")" = "java8_stringjoiner_profile_v10"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :JarBoxPerfProfile' "$ipa_plist")" = "$perf_profile"
           echo "[JarBoxNET][BUILD] stamped IPA archive verified"
 
           # Preserve exact-build symbols outside the IPA. A later rebuild

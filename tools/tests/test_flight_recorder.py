@@ -58,6 +58,8 @@ class FlightRecorderTest(unittest.TestCase):
         scene=(ROOT/"J2MEEmulator/SceneDelegate.swift").read_text()
         for anchor in ("completeUntilFirstUserAuthentication","repeating: .seconds(5)","timer?.cancel()"):
             self.assertIn(anchor,scene)
+        self.assertIn('"JarBoxPerfProfile"',scene)
+        self.assertIn(r"perf=\(perf)",scene)
         for name in ("GameViewController.swift","AppsListViewController.swift"):
             self.assertIn("JarBoxBackgroundDiagnostics.showFlight(from: self)",(ROOT/"J2MEEmulator/UI"/name).read_text())
 if __name__=="__main__":unittest.main()

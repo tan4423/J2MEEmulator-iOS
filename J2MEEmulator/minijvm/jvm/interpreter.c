@@ -26,6 +26,8 @@ static inline int jarbox_virtual_publish(MiniJVM *jvm, ConstantMethodRef *ref, I
     // Do not rely on array marking or unrelated loaders for target lifetime.
     if (!owner || receiver->mb.type!=MEM_TYPE_INS ||
         (owner!=cl && owner->jloader && owner->jloader!=cl->jloader)) return 0;
+    int fixed=jarbox_dispatch_fixed_result(&ref->dispatch_cache,cl->dispatch_id,method);
+    if (fixed>=0) return fixed;
     spin_lock(&jvm->lock_cloader);
     int retained=jarbox_dispatch_publish_locked(&ref->dispatch_cache,cl->dispatch_id,method);
     spin_unlock(&jvm->lock_cloader);

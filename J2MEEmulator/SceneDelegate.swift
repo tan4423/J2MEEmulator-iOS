@@ -140,6 +140,7 @@ nonisolated final class JarBoxFlightRecorder: @unchecked Sendable {
     private var sequence: UInt64 = 0
     private var writeFailures = 0
     private var build = "unknown"
+    private var perf = "unknown"
     private init() {
         let root = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? FileManager.default.temporaryDirectory
@@ -147,7 +148,7 @@ nonisolated final class JarBoxFlightRecorder: @unchecked Sendable {
     }
     private func write(_ content: String, durable: Bool = true) {
         sequence &+= 1
-        let line = "run=\(run) build=\(build) seq=\(sequence) epoch=\(Date().timeIntervalSince1970) " + content
+        let line = "run=\(run) build=\(build) perf=\(perf) seq=\(sequence) epoch=\(Date().timeIntervalSince1970) " + content
         do { try store.append(line, durable: durable) }
         catch { writeFailures += 1 }
     }
@@ -167,6 +168,7 @@ nonisolated final class JarBoxFlightRecorder: @unchecked Sendable {
     func boot(build: String, model: String, os: String) {
         queue.async {
             self.build = build
+            self.perf = Bundle.main.object(forInfoDictionaryKey: "JarBoxPerfProfile") as? String ?? "unknown"
             self.write("event=boot schema=1 device=\(model) ios=\(os) ram=\(ProcessInfo.processInfo.physicalMemory)")
         }
     }

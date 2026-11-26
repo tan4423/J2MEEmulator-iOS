@@ -37,7 +37,8 @@ typedef struct { StackEntry *sp; } RuntimeStack;
 typedef struct { unsigned char *pc; RuntimeStack *stack; MiniJVM *jvm; } Runtime;
 typedef struct { JClass *keys[8]; MethodInfo *values[8]; unsigned count; } Pairlist;
 struct ConstantMethodRef { int para_slots; const char *name,*descriptor; Pairlist *virtual_methods; JarBoxDispatchCache dispatch_cache; };
-static void spin_lock(int *l) { assert(!*l); *l=1; }
+static unsigned lock_acquisitions;
+static void spin_lock(int *l) { assert(!*l); *l=1; ++lock_acquisitions; }
 static void spin_unlock(int *l) { assert(*l); *l=0; }
 #if !JARBOX_VM_INLINE_DISPATCH
 static Pairlist *pairlist_create(int n) { (void)n; return calloc(1,sizeof(Pairlist)); }
@@ -131,8 +132,10 @@ int main(void) {
 #if JARBOX_VM_INLINE_DISPATCH
         verify(&a,&ra,&ib,op,THROWN,1,&mb); // miss: throw at original PC
         verify(&a,&ra,&ib,op,THROWN,0,&mb); // cached throw
+        unsigned before=lock_acquisitions;
         verify(&a,&ra,&ic,op,OK,1,&mc); // full: execute directly, no rewrite
         verify(&a,&ra,&ic,op,OK,1,&mc);
+        assert(lock_acquisitions==before); // full cache never takes loader lock
         assert(!jarbox_virtual_lookup(&a,&ra,&ic));
         assert(jarbox_virtual_lookup(&a,&ra,&ia)==&ma);
         ic.mb.type=MEM_TYPE_ARR;

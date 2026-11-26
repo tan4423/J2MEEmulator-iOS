@@ -22,6 +22,14 @@ static void *reader(void *arg) {
         void *a=jarbox_dispatch_find(&cache,1),*b=jarbox_dispatch_find(&cache,2);
         assert(!a || a==&targets[0]);assert(!b || b==&targets[1]);
         assert(!jarbox_dispatch_find(&cache,3));
+        int fixed_a=jarbox_dispatch_fixed_result(&cache,1,&targets[0]);
+        int fixed_b=jarbox_dispatch_fixed_result(&cache,2,&targets[1]);
+        int fixed_c=jarbox_dispatch_fixed_result(&cache,3,&targets[0]);
+        int mismatch=jarbox_dispatch_fixed_result(&cache,1,&targets[1]);
+        assert(fixed_a==-1 || fixed_a==1);
+        assert(fixed_b==-1 || fixed_b==1);
+        assert(fixed_c==-1 || fixed_c==0);
+        assert(mismatch==-1 || mismatch==0);
     }
     return 0;
 }
@@ -42,6 +50,11 @@ int main(void) {
     assert(jarbox_dispatch_find(&cache,1)==&targets[0]);
     assert(jarbox_dispatch_find(&cache,2)==&targets[1]);
     assert(!jarbox_dispatch_publish_locked(&cache,1,&targets[1]));
+    assert(jarbox_dispatch_fixed_result(&cache,1,&targets[0])==1);
+    assert(jarbox_dispatch_fixed_result(&cache,1,&targets[1])==0);
+    assert(jarbox_dispatch_fixed_result(&cache,3,&targets[0])==0);
+    assert(jarbox_dispatch_fixed_result(&cache,0,&targets[0])==0);
+    assert(jarbox_dispatch_fixed_result(&cache,1,NULL)==0);
     for(unsigned i=0;i<10000;++i){
         JarBoxDispatchCache a={0},b={0};
         uint64_t one=jarbox_dispatch_next_id(&counter),two=jarbox_dispatch_next_id(&counter);
@@ -76,6 +89,7 @@ class DispatchCacheTest(unittest.TestCase):
         self.assertIn("if (retained) {\n                                            *runtime->pc = op_invokevirtual_fast;",src)
         self.assertIn("} else if (retained) {\n                                    *runtime->pc = op_invokeinterface_fast;",src)
         self.assertIn("receiver->mb.type!=MEM_TYPE_INS",src)
+        self.assertIn("if (fixed>=0) return fixed;",src)
         for op,width in (("op_invokevirtual_fast",3),("op_invokeinterface_fast",5)):
             body=src.split("case "+op+": TREO_VM_HANDLER("+op+") {",1)[1].split("case op_",1)[0]
             self.assertIn("jarbox_virtual_publish(jvm, cmr, ins, m);",body)

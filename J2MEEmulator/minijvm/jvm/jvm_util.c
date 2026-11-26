@@ -2202,22 +2202,27 @@ void referarr_2_jlongarr(ReferArr *ref_arr, Instance *jlong_arr) {
  * load file less than 4G bytes
  */
 s32 _loadFileContents(c8 const *file, ByteBuf *buf) {
-    if (!file || !buf) return -1;
+    if (!file || !buf || !buf->buf || buf->rp > buf->wp || buf->wp > buf->_alloc_size) return -1;
     FILE *fp = fopen(file, "rb");
     if (!fp) return -1;
     s32 ret = -1;
-    c8 *buffer = NULL;
     if (fseek(fp, 0, SEEK_END) != 0) goto done;
     long length = ftell(fp);
-    if (length < 0 || (u64)length > INT32_MAX) goto done;
+    if (length < 0 || (u64)length > INT32_MAX || (u64)length > UINT32_MAX - buf->wp) goto done;
     if (fseek(fp, 0, SEEK_SET) != 0) goto done;
     if (!length) { ret = 0; goto done; }
-    buffer = jvm_malloc((u32)length);
-    if (!buffer) goto done;
-    if (fread(buffer, 1, (size_t)length, fp) != (size_t)length) goto done;
-    if (bytebuf_write_batch(buf, buffer, (s32)length) == (s32)length) ret = 0;
+    // Read into the unpublished tail. Only commit wp on a complete read.
+    // Preserve the previously published prefix even when fread is short.
+    const u32 end = buf->wp + (u32)length;
+    if (end > buf->_alloc_size) {
+        u32 grown = buf->_alloc_size <= UINT32_MAX / 2 ? buf->_alloc_size * 2 : UINT32_MAX;
+        bytebuf_expand(buf, grown > end ? grown : end);
+        if (end > buf->_alloc_size) goto done;
+    }
+    if (fread(buf->buf + buf->wp, 1, (size_t)length, fp) != (size_t)length) goto done;
+    buf->wp = end;
+    ret = 0;
 done:
-    jvm_free(buffer);
     fclose(fp);
     return ret;
 }
@@ -2226,41 +2231,36 @@ done:
 ByteBuf *load_file_from_classpath(PeerClassLoader *cloader, Utf8String *path) {
     ByteBuf *bytebuf = NULL;
     s32 i, iret;
+    int found = 0;
     JarBoxSession *session = cloader->jvm ? cloader->jvm->session : NULL;
     uint64_t probes = 0, hits = 0, negative_hits = 0, hit_bytes = 0;
     for (i = 0; i < cloader->classpath->length; i++) {
         Utf8String *pClassPath = arraylist_get_value(cloader->classpath, i);
+        // Reuse one private destination across unsuccessful probes. A
+        // failed read may have touched its contents; reset both cursors
+        // before each probe and publish only the first successful result.
+        if (!bytebuf) bytebuf = bytebuf_create(16);
+        if (!bytebuf) break;
+        bytebuf->rp = bytebuf->wp = 0;
         if (isDir(pClassPath)) { //form file
             Utf8String *filepath = utf8_create_copy(pClassPath);
+            if (!filepath) continue;
             utf8_pushback(filepath, '/');
             utf8_append(filepath, path);
-
-            bytebuf = bytebuf_create(16);
-            iret = bytebuf ? _loadFileContents(utf8_cstr(filepath), bytebuf) : -1;
+            iret = _loadFileContents(utf8_cstr(filepath), bytebuf);
             utf8_destroy(filepath);
-            //回收
-            if (iret != 0) {
-                bytebuf_destroy(bytebuf);
-                bytebuf = NULL;
-            } else {
-                break; // first matching classpath entry wins, as for JARs
-            }
         } else { //from jar
-            bytebuf = bytebuf_create(16);
-            if (!bytebuf) break;
             int hit_kind = 0;
             iret = zip_classpath_loadfile_profiled(utf8_cstr(pClassPath), utf8_cstr(path), bytebuf, &hit_kind);
             ++probes;
             if (hit_kind == 1) { ++hits; hit_bytes += bytebuf->wp; }
             else if (hit_kind == 2) ++negative_hits;
-            //回收
-            if (iret != 0) {
-                bytebuf_destroy(bytebuf);
-                bytebuf = NULL;
-            } else {
-                break;
-            }
         }
+        if (iret == 0) { found = 1; break; }
+    }
+    if (!found) {
+        bytebuf_destroy(bytebuf);
+        bytebuf = NULL;
     }
     if (session && probes) {
         __atomic_fetch_add(&session->shared_zip_probes, probes, __ATOMIC_RELAXED);

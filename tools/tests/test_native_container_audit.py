@@ -126,8 +126,12 @@ static void check_file(const char *path,const char *empty){
     for(int i=0;i<1000;++i){
         ByteBuf *b=bytebuf_create(1);assert(b);
         fail_after=0;assert(_loadFileContents(path,b)==-1&&b->wp==0&&open_count==0);
-        fail_after=1;assert(_loadFileContents(path,b)==-1&&b->wp==0&&open_count==0);
-        fail_after=-1;assert(_loadFileContents(path,b)==0&&b->wp==4&&!memcmp(b->buf,"test",4));
+        // One destination growth is sufficient; no temporary file buffer.
+        fail_after=1;assert(_loadFileContents(path,b)==0&&b->wp==4&&!memcmp(b->buf,"test",4)&&fail_after==0);
+        b->rp=b->wp=0;
+        // Existing capacity needs no allocation at all.
+        assert(_loadFileContents(path,b)==0&&b->wp==4&&!memcmp(b->buf,"test",4));
+        fail_after=-1;
         assert(_loadFileContents(empty,b)==0&&b->wp==4&&open_count==0);
         bytebuf_destroy(b);assert(live==0);
     }

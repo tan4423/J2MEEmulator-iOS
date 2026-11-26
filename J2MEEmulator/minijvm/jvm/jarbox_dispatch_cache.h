@@ -28,6 +28,20 @@ static inline void *jarbox_dispatch_find(const JarBoxDispatchCache *cache,uint64
             return cache->entries[i].target;
     return 0;
 }
+/* A published slot is immutable. A matching target or a completely full
+ * cache is a final answer; only a potentially free slot needs the writer
+ * lock. Acquire before reading target, and never dereference cached pointers.
+ * -1 = retry under lock, 0 = cannot retain, 1 = already retained. */
+static inline int jarbox_dispatch_fixed_result(const JarBoxDispatchCache *cache,uint64_t id,void *target) {
+    if (!id || !target) return 0;
+    for (unsigned i=0;i<2;++i) {
+        const JarBoxDispatchEntry *entry=&cache->entries[i];
+        uint64_t key=__atomic_load_n(&entry->receiver_id,__ATOMIC_ACQUIRE);
+        if (key==id) return entry->target==target;
+        if (!key) return -1;
+    }
+    return 0;
+}
 /* Caller guarantees target lifetime while the exact receiver identity lives. */
 static inline int jarbox_dispatch_publish_locked(JarBoxDispatchCache *cache,uint64_t id,void *target) {
     if (!id || !target) return 0;
