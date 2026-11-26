@@ -1073,6 +1073,16 @@ int jvm_bridge_flight_sample(JarBoxFlightProcess *process, JarBoxFlightSlot *slo
         out->qos_paint_normal_completed=__atomic_load_n(&session->treo_state.qos_paint_normal_completed,__ATOMIC_RELAXED);
         out->qos_paint_normal_wall_ns=__atomic_load_n(&session->treo_state.qos_paint_normal_wall_ns,__ATOMIC_RELAXED);
         out->compatible_text_attr_reuses=__atomic_load_n(&session->treo_state.compatible_text_attr_reuses,__ATOMIC_RELAXED);
+#if defined(TREO_CORE_ABA) && TREO_CORE_ABA
+        uint64_t aba_epoch=__atomic_load_n(&session->treo_state.core_aba_start_ns,__ATOMIC_ACQUIRE);
+        uint64_t aba_now=clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW);
+        if (aba_epoch && aba_now>=aba_epoch &&
+            aba_epoch==__atomic_load_n(&session->treo_state.core_aba_start_ns,__ATOMIC_ACQUIRE)) {
+            out->core_aba_start_ns=aba_epoch;
+            out->core_aba_elapsed_ns=aba_now-aba_epoch;
+            out->core_aba_phase=jarbox_core_aba_phase(aba_epoch,aba_now);
+        }
+#endif
         out->nso_core_profile=__atomic_load_n(&session->treo_state.ninja_core.profile,__ATOMIC_RELAXED);
         out->nso_core_armed=__atomic_load_n(&session->treo_state.ninja_core.armed,__ATOMIC_RELAXED);
         out->nso_core_rejected=__atomic_load_n(&session->treo_state.ninja_core.rejected,__ATOMIC_RELAXED);

@@ -755,6 +755,15 @@ static s32 n_ninjaCorePaint(Runtime *runtime, JClass *clazz) {
     enabled=state && jarbox_ninja_core_active(&state->ninja_core,treo_runtime_mode(runtime)) &&
         ninja_profile_for_runtime(runtime) && canvas &&
         (canvas->mb.type & MEM_TYPE_INS) && treo_nso_simple_canvas_paint(canvas->mb.clazz);
+#if defined(TREO_CORE_ABA) && TREO_CORE_ABA
+    if (enabled) {
+        uint64_t epoch=__atomic_load_n(&state->core_aba_start_ns,__ATOMIC_ACQUIRE);
+        unsigned phase=jarbox_core_aba_phase(epoch,clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW));
+        enabled=jarbox_core_aba_sink(phase) &&
+            epoch==__atomic_load_n(&state->core_aba_start_ns,__ATOMIC_ACQUIRE) &&
+            jarbox_ninja_core_active(&state->ninja_core,treo_runtime_mode(runtime));
+    }
+#endif
 #endif
     push_int(runtime->stack,enabled);
     return RUNTIME_STATUS_NORMAL;
@@ -929,6 +938,18 @@ static void treo_park_transition_visitor(MiniJVM *vm, void *arg) {
         jarbox_treo_smart_force_safe(state);
     treo_display_wait_set_for_vm(vm, 0);
     treo_apply_mode_locked(vm, mode, treo_afk_now_ns());
+#if defined(TREO_CORE_ABA) && TREO_CORE_ABA
+    // One eligible automatic park per owner lifetime. The existing core
+    // admission, rejection and Java Canvas guards remain authoritative.
+    if (change->entering && !change->compatible_only && !state->core_aba_used &&
+        jarbox_ninja_core_active(&state->ninja_core,mode)) {
+        uint64_t epoch=clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW);
+        if (epoch) {
+            state->core_aba_used=1;
+            __atomic_store_n(&state->core_aba_start_ns,epoch,__ATOMIC_RELEASE);
+        }
+    }
+#endif
     if (mode == 8) treo_display_wait_set_for_vm(vm, 1);
     change->mode = mode;
     pthread_mutex_unlock(&g_treo_transition_lock);

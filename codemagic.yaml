@@ -16,7 +16,8 @@ workflows:
         JARBOX_VM_ARRAY_LOOKUP_DIAGNOSTIC: "0" # No method observer overhead
         JARBOX_VM_PERF_CANDIDATE: "0" # Matched all-off control for Treo CPU investigation; set 1 to reproduce candidate
         JARBOX_PAINT_QOS_EXPERIMENT: "0" # isolate Ninja Core; QoS trial remains available
-        JARBOX_NINJA_CORE_EXPERIMENT: "0" # full-raster mode-1 measurement control; 1 = prior Core experiment
+        JARBOX_NINJA_CORE_EXPERIMENT: "0" # continuous scoped Core trial is OFF
+        JARBOX_CORE_ABA: "1" # one-shot 225s A/B/A on an eligible owner; 0 = full raster with above OFF
         JARBOX_NATIVE_PAINT_DIAG: "1" # sparse native CPU attribution; 0 = same-source uninstrumented control
         JARBOX_CROP_CACHE_V2: "1" # candidate; 0 = old direct-mapped cache
         JARBOX_REGION_STAGE_DIAG: "1" # sparse region tail timing, independently switchable
@@ -440,7 +441,7 @@ workflows:
             perf_qos=1
           fi
           perf_core=0
-          if [[ "${JARBOX_NINJA_CORE_EXPERIMENT:-0}" == "1" ]]; then
+          if [[ "${JARBOX_NINJA_CORE_EXPERIMENT:-0}" == "1" || "${JARBOX_CORE_ABA:-0}" == "1" ]]; then
             const_fusion_flags="$const_fusion_flags -DTREO_NINJA_CORE_EXPERIMENT=1"
             perf_core=1
           fi
@@ -464,7 +465,12 @@ workflows:
             const_fusion_flags="$const_fusion_flags -DTREO_HOTSPOT_DIAG=1"
             perf_hot=1
           fi
-          perf_profile="const-arith-${perf_arith}_const-branch-${perf_branch}_decoded-int-${perf_decoded}_event-sleep-${perf_sleep}_paint-qos-${perf_qos}_ninja-core-${perf_core}_native-paint-diag-${perf_native_diag}_crop-v2-${perf_crop}_region-stage-${perf_region}_hotspot-${perf_hot}"
+          perf_aba=0
+          if [[ "${JARBOX_CORE_ABA:-0}" == "1" ]]; then
+            const_fusion_flags="$const_fusion_flags -DTREO_CORE_ABA=1"
+            perf_aba=1
+          fi
+          perf_profile="const-arith-${perf_arith}_const-branch-${perf_branch}_decoded-int-${perf_decoded}_event-sleep-${perf_sleep}_paint-qos-${perf_qos}_ninja-core-${perf_core}_native-paint-diag-${perf_native_diag}_crop-v2-${perf_crop}_region-stage-${perf_region}_hotspot-${perf_hot}_core-aba-${perf_aba}"
           echo "[JarBoxVM][BUILD] perf_profile=$perf_profile const_fusion_flags=${const_fusion_flags:-off}"
           xcodebuild -list -project "$J2ME_PROJECT"
           xcodebuild -project "$J2ME_PROJECT" \

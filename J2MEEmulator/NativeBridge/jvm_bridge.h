@@ -101,6 +101,8 @@ typedef struct {
     uint64_t region_stage_seen, region_stage_samples, region_stage_hit_samples;
     uint64_t region_stage_hit_ns, region_stage_miss_ns, region_stage_draw_ns, region_stage_invalid;
     uint64_t hot_samples, hot_busy, hot_invalid;
+    uint64_t core_aba_start_ns, core_aba_elapsed_ns;
+    unsigned core_aba_phase;
     int hot_ok;
     char hot_rows[1280];
     uint64_t qos_paint_attempts, qos_paint_applied, qos_paint_already_utility, qos_paint_unrestorable, qos_paint_errors, qos_paint_restore_errors;

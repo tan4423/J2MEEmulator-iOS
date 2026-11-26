@@ -5,6 +5,7 @@
 #include "jarbox_background_trace.h"
 #include "jarbox_ninja_core_policy.h"
 #include "jarbox_hotspot.h"
+#include "jarbox_core_aba.h"
 
 // Owned by one MiniJVM allocation and never shared with a different JVM.
 // Atomic builtins allow the collector thread and the UIKit control thread
@@ -40,6 +41,8 @@ typedef struct JarBoxTreoState {
     uint64_t qos_paint_completed, qos_paint_cpu_ns, qos_paint_wall_ns, qos_paint_over_budget, qos_paint_backoff, qos_original_class;
     uint64_t qos_observed_class, qos_paint_normal_completed, qos_paint_normal_wall_ns, compatible_text_attr_reuses;
     JarBoxNinjaCoreState ninja_core;
+    uint64_t core_aba_start_ns; // raw monotonic park epoch; atomic, cleared on mode transition
+    unsigned core_aba_used; // lifetime one-shot; serialized transition lock only
     // Sampled mode-1 paint attribution, per owner, cumulative.
     uint64_t native_diag_seen, native_diag_selected_frames, native_diag_selected_cpu_ns, native_diag_plain_frames;
     uint64_t native_diag_plain_cpu_ns, native_diag_discarded_frames, native_diag_draw_calls, native_diag_draw_ns;
@@ -57,6 +60,7 @@ typedef struct JarBoxTreoState {
 } JarBoxTreoState;
 
 static inline void jarbox_treo_mode_set(JarBoxTreoState *state, int mode) {
+    __atomic_store_n(&state->core_aba_start_ns,0,__ATOMIC_RELEASE);
     __atomic_store_n(&state->afk_mode, mode, __ATOMIC_RELEASE);
 }
 static inline int jarbox_treo_mode_get(const JarBoxTreoState *state) {
@@ -66,6 +70,7 @@ static inline int jarbox_treo_mode_get(const JarBoxTreoState *state) {
 static inline void jarbox_treo_render_mode_set(JarBoxTreoState *s,
                                                 int mode, uint64_t now_ns) {
     if (!s) return;
+    __atomic_store_n(&s->core_aba_start_ns,0,__ATOMIC_RELEASE);
     if (mode == 6 || mode == 7) {
         __atomic_store_n(&s->render_next_paint_ns, 0, __ATOMIC_RELEASE);
         __atomic_store_n(&s->render_bypass_deadline_ns,
