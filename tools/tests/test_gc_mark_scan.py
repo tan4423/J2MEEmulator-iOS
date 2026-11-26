@@ -47,7 +47,7 @@ static PeerClassLoader *classLoaders_find_by_instance(MiniJVM *j,Instance *i){(v
 static c8 *getInstanceFieldPtr(Instance *i,FieldInfo *f){return i->obj_fields+f->offset;}
 static c8 *getStaticFieldPtr(FieldInfo *f){return f->_this_class->field_static+f->offset;}
 static __refer getFieldRefer(c8 *p){return *(__refer *)p;}
-static int isDataReferByIndex(int i){return i==1;}
+enum {DATATYPE_REFERENCE=1,DATATYPE_ARRAY=2};
 static void _gc_mark_object(GcCollector *,__refer,u8);
 """
 MAIN=r"""
@@ -71,7 +71,7 @@ static void old_mark(GcCollector *g,void *p,u8 mark){
         if((in->mb.gcflag&2)&&loader)
             for(int i=0;i<loader->classes->length;i++)old_mark(g,loader->classes->data[i],mark);
     }else if(mb->type==MEM_TYPE_ARR){
-        Instance *in=p;if(in->mb.arr_type_index==1)
+        Instance *in=p;if(in->mb.arr_type_index==1 || in->mb.arr_type_index==2)
             for(int i=0;i<in->arr_length;i++)old_mark(g,((void**)in->arr_body)[i],mark);
     }else if(mb->type==MEM_TYPE_CLASS){
         JClass *cl=p;
@@ -104,16 +104,19 @@ int main(void){
     MemoryBlock *all[15];for(int i=0;i<12;i++)all[i]=&o[i].mb;all[12]=&cl.mb;all[13]=&parent.mb;all[14]=&foreign.mb;
     uint32_t seed=7;
     for(int round=0;round<10000;round++){
+        o[0].mb.arr_type_index=1+round%2;
+        u8 tag=(u8)(1+round%255), previous=(u8)(tag-1);
+        g.mark_cnt=tag;
         for(int i=0;i<12;i++)for(int k=0;k<3;k++){
             seed=seed*1664525u+1013904223u;unsigned n=(seed>>16)%16;
             slots[i][k]=n<12?&o[n]:NULL;
         }
         for(int i=0;i<16;i++){seed=seed*1664525u+1013904223u;unsigned n=(seed>>16)%16;refs[i]=n<12?&o[n]:NULL;}
-        for(int i=0;i<15;i++)all[i]->garbage_mark=0;
-        for(int i=0;i<roots.length;i++)old_mark(&g,roots.data[i],1);
-        for(int i=0;i<holder.length;i++)old_mark(&g,holder.data[i],1);
-        for(int i=0;i<boot.length;i++)old_mark(&g,boot.data[i],1);
-        u8 expected[15];for(int i=0;i<15;i++){expected[i]=all[i]->garbage_mark;all[i]->garbage_mark=0;}
+        for(int i=0;i<15;i++)all[i]->garbage_mark=previous;
+        for(int i=0;i<roots.length;i++)old_mark(&g,roots.data[i],tag);
+        for(int i=0;i<holder.length;i++)old_mark(&g,holder.data[i],tag);
+        for(int i=0;i<boot.length;i++)old_mark(&g,boot.data[i],tag);
+        u8 expected[15];for(int i=0;i<15;i++){expected[i]=all[i]->garbage_mark;all[i]->garbage_mark=previous;}
         _gc_big_search(&g);
         for(int i=0;i<15;i++)CHECK(expected[i]==all[i]->garbage_mark);
     }
@@ -140,7 +143,7 @@ class GCMarkScanTest(unittest.TestCase):
         cc=shutil.which("cc")
         if not cc:self.skipTest("host compiler unavailable")
         s=(JVM/"garbage.c").read_text()
-        a=s.index("static inline void gc_mark_refs(")
+        a=s.index("static void gc_mark_unmarked(GcCollector *collector, MemoryBlock *mb, u8 flag_cnt);")
         b=s.index("// Registered shutdown hooks",a)
         c=s.index("static inline void _gc_instance_mark(")
         d=s.index("//=================================  reg unreg",c)
@@ -158,9 +161,14 @@ class GCMarkScanTest(unittest.TestCase):
         self.assertIn("gc_mark_refs(collector, roots->data, roots->length",mark)
         self.assertNotIn("arraylist_get_value(",mark)
         arr=s.split("static inline void _gc_jarray_mark(",1)[1].split("static inline void _gc_class_mark(",1)[0]
-        self.assertIn("isDataReferByIndex(arr->mb.arr_type_index)",arr)
+        self.assertIn("arr->mb.arr_type_index == DATATYPE_REFERENCE || arr->mb.arr_type_index == DATATYPE_ARRAY",arr)
+        util=(JVM/"jvm_util.c").read_text()
+        self.assertIn("index == DATATYPE_REFERENCE || index == DATATYPE_ARRAY",util)
         self.assertNotIn("jarray_get_field(",arr)
-        self.assertIn("if (fi->_this_class != clazz || clazz->mb.garbage_mark != flag_cnt)",s)
+        self.assertIn("gc_mark_ref_if_needed(collector, fi->_this_class, flag_cnt)",s)
+        self.assertIn("if (mb && mb->garbage_mark != flag_cnt)",s)
+        self.assertIn("gc_mark_unmarked(collector, mb, flag_cnt);",s)
+        self.assertIn("mb->garbage_mark = flag_cnt;",s)
         self.assertIn("GCFLAG_WEAKREFERENCE_GET(ins->mb.gcflag)",s)
         worker=s.split("s32 _gc_thread_run(void *para) {",1)[1].split("static void gc_process_deferred_objects",1)[0]
         self.assertIn("gc_worker_cpu_ns",worker)

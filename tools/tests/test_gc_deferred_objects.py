@@ -87,6 +87,8 @@ class GCDeferredObjectsTest(unittest.TestCase):
         self.assertLess(collect.index("gc_process_deferred_objects(collector);"),
                         collect.index("memoryblock_destroy(curmb);"))
         self.assertNotIn("instance_finalize(", collect.split("static void _list_iter_thread_pause", 1)[0])
+        deferred=gc.split("static void gc_process_deferred_objects(",1)[1].split("\n}",1)[0]
+        self.assertLess(deferred.index("curmb->garbage_mark != collector->mark_cnt"),deferred.index("curmb->clazz->finalizeMethod"))
 
 
 if __name__ == "__main__":

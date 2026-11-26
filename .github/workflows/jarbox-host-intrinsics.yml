@@ -17,6 +17,10 @@ jobs:
         with:
           distribution: temurin
           java-version: '21'
+      - name: GC mark and deferred differential with sanitizers
+        run: |
+          JARBOX_GC_SCAN_SANITIZE=1 python3 -m unittest discover -s tools/tests -p test_gc_mark_scan.py
+          JARBOX_GC_DEFER_SANITIZE=1 python3 -m unittest discover -s tools/tests -p test_gc_deferred_objects.py
       - name: JIT flag hot path contract
         run: python3 -m unittest discover -s tools/tests -p test_jit_flag_hot_path.py
       - name: Focused CPU log analyzer

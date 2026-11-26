@@ -738,9 +738,11 @@ static void gc_process_deferred_objects(GcCollector *collector) {
         if (gc_thread_status(collector) >= GARBAGE_THREAD_STOP) break;
         if (curmb->type == MEM_TYPE_INS) {
             int defer = 0;
-            if (curmb->clazz->finalizeMethod &&
-                curmb->garbage_mark != collector->mark_cnt &&
-                !GCFLAG_FINALIZED_GET(curmb->gcflag)) {
+            // Most objects are already marked. Do not chase a class pointer
+            // for those, or for instances already finalized.
+            if (curmb->garbage_mark != collector->mark_cnt &&
+                !GCFLAG_FINALIZED_GET(curmb->gcflag) &&
+                curmb->clazz->finalizeMethod) {
                 instance_finalize((Instance *)curmb, collector->runtime);
                 GCFLAG_FINALIZED_SET(curmb->gcflag);
                 defer = 1;
@@ -1057,12 +1059,21 @@ s32 _gc_wait_thread_suspend(MiniJVM *jvm, Runtime *runtime) {
 // The collector owns its root snapshot and the stopped-world reference
 // arrays. Their contents/length cannot change while this traversal runs.
 // Do not acquire a list lock or decode an array element type per reference.
+static void gc_mark_unmarked(GcCollector *collector, MemoryBlock *mb, u8 flag_cnt);
+
+// The collector is the sole writer of the mark tag. Keep duplicate/null
+// edges in the caller's scan loop instead of dispatching a recursive
+// function for each of them. First-visit DFS order is unchanged.
+static inline void gc_mark_ref_if_needed(GcCollector *collector, __refer ref, u8 flag_cnt) {
+    MemoryBlock *mb = (MemoryBlock *)ref;
+    if (mb && mb->garbage_mark != flag_cnt)
+        gc_mark_unmarked(collector, mb, flag_cnt);
+}
+
 static inline void gc_mark_refs(GcCollector *collector, const __refer *refs,
                                 s32 length, u8 flag_cnt) {
-    for (s32 i = 0; i < length; ++i) {
-        __refer ref = refs[i];
-        if (ref) _gc_mark_object(collector, ref, flag_cnt);
-    }
+    for (s32 i = 0; i < length; ++i)
+        gc_mark_ref_if_needed(collector, refs[i], flag_cnt);
 }
 
 s32 _gc_big_search(GcCollector *collector) {
@@ -1075,14 +1086,14 @@ s32 _gc_big_search(GcCollector *collector) {
     hashset_iterate(collector->objs_holder, &hi);
     while (hashset_iter_has_more(&hi)) {
         HashsetKey k = hashset_iter_next_key(&hi);
-        _gc_mark_object(collector, k, collector->mark_cnt);
+        gc_mark_ref_if_needed(collector, k, collector->mark_cnt);
     }
     //bootclassloader mark
     HashtableIterator hti;
     hashtable_iterate(collector->jvm->boot_classloader->classes, &hti);
     while (hashtable_iter_has_more(&hti)) {
         HashtableValue v = hashtable_iter_next_value(&hti);
-        _gc_mark_object(collector, v, collector->mark_cnt);
+        gc_mark_ref_if_needed(collector, v, collector->mark_cnt);
     }
 
     return 0;
@@ -1197,15 +1208,13 @@ static inline void _gc_instance_mark(GcCollector *collector, Instance *ins, u8 f
             c8 *ptr = getInstanceFieldPtr(ins, fi);
             if (ptr) {
                 __refer ref = getFieldRefer(ptr);
-                if (ref)_gc_mark_object(collector, ref, flag_cnt);
+                gc_mark_ref_if_needed(collector, ref, flag_cnt);
             }
             // Preserve the original first-visit order (and recursion depth
             // behavior); avoid repeated calls once this owner is marked.
-            if (fi->_this_class != clazz || clazz->mb.garbage_mark != flag_cnt)
-                _gc_mark_object(collector, fi->_this_class, flag_cnt);
+            gc_mark_ref_if_needed(collector, fi->_this_class, flag_cnt);
         }
-        if (clazz->mb.garbage_mark != flag_cnt)
-            _gc_mark_object(collector, clazz, flag_cnt);//keep class and classloader alive
+        gc_mark_ref_if_needed(collector, clazz, flag_cnt);//keep class and classloader alive
         clazz = getSuperClass(clazz);
     }
 
@@ -1216,7 +1225,7 @@ static inline void _gc_instance_mark(GcCollector *collector, Instance *ins, u8 f
             hashtable_iterate(pcl->classes, &hi);
             while (hashtable_iter_has_more(&hi)) {
                 HashtableValue v = hashtable_iter_next_value(&hi);
-                _gc_mark_object(collector, v, flag_cnt);
+                gc_mark_ref_if_needed(collector, v, flag_cnt);
             }
         }
     }
@@ -1228,7 +1237,9 @@ static inline void _gc_jarray_mark(GcCollector *collector, Instance *arr, u8 fla
 //        if (utf8_equals_c(arr->mb.clazz->name, "[[D")) {
 //            jvm_printf("check %llx\n", (s64) (intptr_t) arr);
 //        }
-        if (isDataReferByIndex(arr->mb.arr_type_index)) {
+        // Identical to isDataReferByIndex in jvm_util.c; avoid an external
+        // call for every array, including primitive leaf arrays.
+        if (arr->mb.arr_type_index == DATATYPE_REFERENCE || arr->mb.arr_type_index == DATATYPE_ARRAY) {
             gc_mark_refs(collector, (const __refer *)arr->arr_body,
                          arr->arr_length, flag_cnt);
         }
@@ -1249,15 +1260,15 @@ static inline void _gc_class_mark(GcCollector *collector, JClass *clazz, u8 flag
             c8 *ptr = getStaticFieldPtr(fi);
             if (ptr) {
                 __refer ref = getFieldRefer(ptr);
-                _gc_mark_object(collector, ref, flag_cnt);
+                gc_mark_ref_if_needed(collector, ref, flag_cnt);
             }
         }
     }
     if (clazz->ins_class) {
-        _gc_mark_object(collector, clazz->ins_class, flag_cnt);
+        gc_mark_ref_if_needed(collector, clazz->ins_class, flag_cnt);
     }
     if (clazz->jloader) {
-        _gc_mark_object(collector, clazz->jloader, flag_cnt);
+        gc_mark_ref_if_needed(collector, clazz->jloader, flag_cnt);
     }
 }
 
@@ -1267,29 +1278,26 @@ static inline void _gc_class_mark(GcCollector *collector, JClass *clazz, u8 flag
  * @param ref Address of the object
  */
 
-void _gc_mark_object(GcCollector *collector, __refer ref, u8 flag_cnt) {
-    if (ref) {
-        MemoryBlock *mb = (MemoryBlock *) ref;
-        if (flag_cnt != mb->garbage_mark) {
-
+static void gc_mark_unmarked(GcCollector *collector, MemoryBlock *mb, u8 flag_cnt) {
 #if _JVM_DEBUG_GARBAGE_DUMP > 0
-            _gc_add_obj_count(collector, mb);
+    _gc_add_obj_count(collector, mb);
 #endif
-
-            mb->garbage_mark = flag_cnt;
-            switch (mb->type) {
-                case MEM_TYPE_INS:
-                    _gc_instance_mark(collector, (Instance *) mb, flag_cnt);
-                    break;
-                case MEM_TYPE_ARR:
-                    _gc_jarray_mark(collector, (Instance *) mb, flag_cnt);
-                    break;
-                case MEM_TYPE_CLASS:
-                    _gc_class_mark(collector, (JClass *) mb, flag_cnt);
-                    break;
-            }
-        }
+    mb->garbage_mark = flag_cnt;
+    switch (mb->type) {
+        case MEM_TYPE_INS:
+            _gc_instance_mark(collector, (Instance *)mb, flag_cnt);
+            break;
+        case MEM_TYPE_ARR:
+            _gc_jarray_mark(collector, (Instance *)mb, flag_cnt);
+            break;
+        case MEM_TYPE_CLASS:
+            _gc_class_mark(collector, (JClass *)mb, flag_cnt);
+            break;
     }
+}
+
+void _gc_mark_object(GcCollector *collector, __refer ref, u8 flag_cnt) {
+    gc_mark_ref_if_needed(collector, ref, flag_cnt);
 }
 //=================================  reg unreg ==================================
 
