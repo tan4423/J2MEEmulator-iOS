@@ -66,7 +66,7 @@ class FlightRecorderTest(unittest.TestCase):
             self.assertIn(f"out->{field}=__atomic_load_n(&session->{field},__ATOMIC_RELAXED);",sampler)
             self.assertIn(field + r"=\(slot." + field + ")",scene)
         # Existing AFK paint timing is attributed to the invoking owner.
-        for field in ("afk_profile_paint_calls", "afk_profile_paint_cpu_ns"):
+        for field in ("afk_profile_paint_calls", "afk_profile_paint_cpu_ns", "compatible_font_reuses"):
             self.assertIn(f"out->{field}=__atomic_load_n(&session->treo_state.{field},__ATOMIC_RELAXED);",sampler)
             self.assertIn(field + r"=\(slot." + field + ")",scene)
         for stage, field in enumerate(("nso_repaint_skips", "nso_service_skips", "nso_paint_skips")):
@@ -79,6 +79,23 @@ class FlightRecorderTest(unittest.TestCase):
         self.assertIn("__atomic_fetch_add(&state->afk_profile_paint_calls, 1, __ATOMIC_RELAXED);",afk)
         self.assertIn("__atomic_fetch_add(&state->afk_profile_paint_cpu_ns, elapsed, __ATOMIC_RELAXED);",afk)
         self.assertEqual(end.count("treo_thread_cpu_ns()"),2) # no extra clock reads
+        # Manual export and park transitions force a sample even below 60%.
+        export=scene.split("func export(extra:",1)[1].split("\n    }",1)[0]
+        self.assertLess(export.index("self.tick(forceSave: true)"),export.index('self.write("event=manual_export")'))
+        self.assertIn('case "park_entered", "park_exited":\n                self.tick(forceSave: true)',scene)
+        self.assertIn("urgent: urgent || forceSave",scene)
+        self.assertIn("if forceSave { return }",scene)
+        ui=(ROOT/"J2MEEmulator/UI/GameViewController.swift").read_text()
+        self.assertIn('JarBoxFlightRecorder.shared.event("park_entered", token: gameSessionToken)',ui)
+        self.assertIn('JarBoxFlightRecorder.shared.event("park_exited", token: gameSessionToken)',ui)
+        # Compatible mode only gains exact immutable font reuse, not mode-9 raster.
+        font=renderer.split("static s32 n_setFont(",1)[1].split("\n}",1)[0]
+        self.assertIn("rc->ownsPixels && (mode == 1 || mode == TreoAFKFastCanvas)",font)
+        self.assertIn("rc->font && rc->fastFontValid",font)
+        self.assertIn("rc->fastFontFace == face && rc->fastFontStyle == style && rc->fastFontSize == size",font)
+        self.assertIn("rc->fastFontValid = newFont != NULL;",font)
+        self.assertIn("__atomic_fetch_add(&state->compatible_font_reuses, 1, __ATOMIC_RELAXED)",font)
+        self.assertIn("return treo_rc_mode(rc) == TreoAFKFastCanvas;",renderer)
         for name in ("GameViewController.swift","AppsListViewController.swift"):
             self.assertIn("JarBoxBackgroundDiagnostics.showFlight(from: self)",(ROOT/"J2MEEmulator/UI"/name).read_text())
 if __name__=="__main__":unittest.main()

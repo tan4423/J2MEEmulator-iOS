@@ -4436,6 +4436,7 @@ class GameViewController: UIViewController {
             return
         }
         parkedTreoActive = true
+        JarBoxFlightRecorder.shared.event("park_entered", token: gameSessionToken)
         parkedNSODeepIdle = mode == 8
         parkedStartedAt = ProcessInfo.processInfo.systemUptime
         parkedCPUStart = treo_process_cpu_seconds()
@@ -4496,6 +4497,7 @@ class GameViewController: UIViewController {
         // One owner transaction disables the guard, restores normal GC,
         // wakes Display, and requests a redraw before the next frame.
         _ = treo_park_end_for_token(gameSessionToken)
+        JarBoxFlightRecorder.shared.event("park_exited", token: gameSessionToken)
         parkedNSODeepIdle = false
         NSLog("[JarBoxVM][ParkTreo] disabled elapsed=%.1fs process_CPU=%@%% canvas_fallback=%d",
               elapsed, percent, fallback ? 1 : 0)

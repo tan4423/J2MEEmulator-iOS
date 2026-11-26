@@ -161,6 +161,8 @@ nonisolated final class JarBoxFlightRecorder: @unchecked Sendable {
                 self.start()
             case "first_surface", "worker_failed", "worker_returned":
                 self.pending.remove(token)
+            case "park_entered", "park_exited":
+                self.tick(forceSave: true)
             default: break
             }
         }
@@ -182,7 +184,7 @@ nonisolated final class JarBoxFlightRecorder: @unchecked Sendable {
         timer = source
         source.resume()
     }
-    private func tick() {
+    private func tick(forceSave: Bool = false) {
         var process = JarBoxFlightProcess()
         var slots = [JarBoxFlightSlot](repeating: JarBoxFlightSlot(), count: 64)
         let count = slots.withUnsafeMutableBufferPointer {
@@ -192,7 +194,7 @@ nonisolated final class JarBoxFlightRecorder: @unchecked Sendable {
         let signature = count < 0 ? "busy" : rows.map { "\($0.token):\($0.phase):\($0.stop_requested)" }.joined(separator: ",")
         let urgent = !pending.isEmpty || count < 0 || rows.contains { $0.phase != 2 || $0.stop_requested != 0 }
         let decision = policy.observe(wall: process.wall_ns, cpu: process.process_ns,
-                                      valid: process.process_ok != 0, signature: signature, urgent: urgent)
+                                      valid: process.process_ok != 0, signature: signature, urgent: urgent || forceSave)
         if decision.save {
             let percent = decision.percent.map { String(format: "%.2f", $0) } ?? "unavailable"
             var detailProcess = JarBoxFlightProcess()
@@ -200,10 +202,12 @@ nonisolated final class JarBoxFlightRecorder: @unchecked Sendable {
                 jvm_bridge_flight_sample(&detailProcess, $0.baseAddress, Int32($0.count), 1)
             }
             let detail = slots.prefix(max(0, min(Int(detailCount), slots.count))).map { slot in
-                "token=\(slot.token),phase=\(slot.phase),stop=\(slot.stop_requested),mode=\(slot.mode),workers=\(slot.workers),counters_ok=\(slot.counters_ok),gc_cycles=\(slot.gc_cycles),gc_aborts=\(slot.gc_aborts),repaints=\(slot.repaint_requests),afk_profile_paint_calls=\(slot.afk_profile_paint_calls),afk_profile_paint_cpu_ns=\(slot.afk_profile_paint_cpu_ns),nso_repaint_skips=\(slot.nso_repaint_skips),nso_service_skips=\(slot.nso_service_skips),nso_paint_skips=\(slot.nso_paint_skips),cpu_ok=\(slot.cpu_ok),runner_ns=\(slot.runner_ns),java_ns=\(slot.java_ns),gc_ns=\(slot.gc_ns),const_arith_fusions=\(slot.const_arith_fusions),const_branch_fusions=\(slot.const_branch_fusions),decoded_int_calls=\(slot.decoded_int_calls),event_sleep_handled=\(slot.event_sleep_handled),event_sleep_fallbacks=\(slot.event_sleep_fallbacks),shared_zip_probes=\(slot.shared_zip_probes),shared_zip_hits=\(slot.shared_zip_hits),shared_zip_negative_hits=\(slot.shared_zip_negative_hits),shared_prepared_candidates=\(slot.shared_prepared_candidates),shared_prepared_hits=\(slot.shared_prepared_hits),startup_image_decodes=\(slot.startup_image_decodes),startup_image_hits=\(slot.startup_image_hits),startup_image_decode_ns=\(slot.startup_image_decode_ns)"
+                "token=\(slot.token),phase=\(slot.phase),stop=\(slot.stop_requested),mode=\(slot.mode),workers=\(slot.workers),counters_ok=\(slot.counters_ok),gc_cycles=\(slot.gc_cycles),gc_aborts=\(slot.gc_aborts),repaints=\(slot.repaint_requests),afk_profile_paint_calls=\(slot.afk_profile_paint_calls),afk_profile_paint_cpu_ns=\(slot.afk_profile_paint_cpu_ns),compatible_font_reuses=\(slot.compatible_font_reuses),nso_repaint_skips=\(slot.nso_repaint_skips),nso_service_skips=\(slot.nso_service_skips),nso_paint_skips=\(slot.nso_paint_skips),cpu_ok=\(slot.cpu_ok),runner_ns=\(slot.runner_ns),java_ns=\(slot.java_ns),gc_ns=\(slot.gc_ns),const_arith_fusions=\(slot.const_arith_fusions),const_branch_fusions=\(slot.const_branch_fusions),decoded_int_calls=\(slot.decoded_int_calls),event_sleep_handled=\(slot.event_sleep_handled),event_sleep_fallbacks=\(slot.event_sleep_fallbacks),shared_zip_probes=\(slot.shared_zip_probes),shared_zip_hits=\(slot.shared_zip_hits),shared_zip_negative_hits=\(slot.shared_zip_negative_hits),shared_prepared_candidates=\(slot.shared_prepared_candidates),shared_prepared_hits=\(slot.shared_prepared_hits),startup_image_decodes=\(slot.startup_image_decodes),startup_image_hits=\(slot.startup_image_hits),startup_image_decode_ns=\(slot.startup_image_decode_ns)"
             }.joined(separator: ";")
-            write("event=sample mono_ns=\(process.wall_ns) gap_ns=\(decision.gap) process_cpu_ok=\(process.process_ok) process_cpu_ns=\(process.process_ns) cpu_percent=\(percent) headroom_bytes=\(process.headroom_bytes) footprint_ok=\(process.footprint_ok) footprint_bytes=\(process.footprint_bytes) memory_state=\(process.memory_state) thermal=\(ProcessInfo.processInfo.thermalState.rawValue) low_power=\(ProcessInfo.processInfo.isLowPowerModeEnabled ? 1 : 0) registry=\(signature) detail_mono_ns=\(detailProcess.wall_ns) detail_count=\(detailCount) slots=[\(detail)]", durable: urgent || (decision.percent ?? 0) >= 60)
+            write("event=sample mono_ns=\(process.wall_ns) gap_ns=\(decision.gap) process_cpu_ok=\(process.process_ok) process_cpu_ns=\(process.process_ns) cpu_percent=\(percent) headroom_bytes=\(process.headroom_bytes) footprint_ok=\(process.footprint_ok) footprint_bytes=\(process.footprint_bytes) memory_state=\(process.memory_state) thermal=\(ProcessInfo.processInfo.thermalState.rawValue) low_power=\(ProcessInfo.processInfo.isLowPowerModeEnabled ? 1 : 0) registry=\(signature) detail_mono_ns=\(detailProcess.wall_ns) detail_count=\(detailCount) slots=[\(detail)]", durable: forceSave || urgent || (decision.percent ?? 0) >= 60)
         }
+        // Explicit samples are not periodic timer ticks for idle shutdown.
+        if forceSave { return }
         emptyTicks = count == 0 ? emptyTicks + 1 : 0
         if emptyTicks >= 3 {
             timer?.cancel()
@@ -214,6 +218,7 @@ nonisolated final class JarBoxFlightRecorder: @unchecked Sendable {
     }
     func export(extra: String, completion: @escaping @Sendable (String) -> Void) {
         queue.async {
+            self.tick(forceSave: true)
             self.write("event=manual_export")
             completion("JarBox Flight Recorder v1\nwrite_failures_this_run=\(self.writeFailures)\nphase: 1 STARTING, 2 RUNNING, 3 CLEANUP; CPU one core=100%; counters cumulative; gaps may be suspension\n\n" + self.store.report() + "\n\n--- Latest background report ---\n" + extra)
         }

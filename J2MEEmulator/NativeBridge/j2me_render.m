@@ -2970,9 +2970,18 @@ static s32 n_setFont(Runtime *runtime, JClass *clazz) {
     s32 size = env->localvar_getInt(runtime->localvar, 4);
     RenderContext *rc = rc_acquire(handle, jarbox_native_heap_key_for_runtime(runtime));
     if (rc) {
-        if (rc->ownsPixels && treo_rc_fast_canvas(rc) && rc->font && rc->fastFontValid &&
+        // Reuse an identical, successfully created immutable CoreText font
+        // in compatible parking too. The Canvas paint lock serializes its
+        // graphics state; do not extend the other mode-9 raster shortcuts.
+        const int mode = treo_rc_mode(rc);
+        if (rc->ownsPixels && (mode == 1 || mode == TreoAFKFastCanvas) &&
+            rc->font && rc->fastFontValid &&
             rc->fastFontFace == face && rc->fastFontStyle == style && rc->fastFontSize == size) {
             ++rc->fastState;
+            if (mode == 1) {
+                JarBoxTreoState *state = treo_runtime_state(runtime);
+                if (state) __atomic_fetch_add(&state->compatible_font_reuses, 1, __ATOMIC_RELAXED);
+            }
             rc_release(rc);
             return RUNTIME_STATUS_NORMAL;
         }
