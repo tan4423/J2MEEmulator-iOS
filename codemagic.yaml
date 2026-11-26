@@ -572,3 +572,38 @@ workflows:
     artifacts: &jarbox_ipa_shared_artifacts
       - J2ME-Treo-jar-cpu-audit-unsigned.ipa
       - JarBox-symbols.zip
+
+  treo-focused-diagnostic:
+    name: JarBox Treo CPU - focused diagnostic
+    instance_type: mac_mini_m2
+    max_build_duration: 25
+    environment:
+      xcode: "26.3"
+      vars:
+        # Ready-to-build defaults. No settings need to be entered in Codemagic.
+        JARBOX_VM_SWITCH_BASELINE: "0"
+        JARBOX_VM_PAINT_BRIDGE_BASELINE: "0"
+        JARBOX_PAINT_SAMPLE_DISABLED: "1"
+        JARBOX_VM_UTF16_BASELINE: "0"
+        JARBOX_VM_IMAGE_CACHE_BASELINE: "1" # OFF by default: measured ~0 hits in 188.7s
+        JARBOX_VM_ARRAY_LOOKUP_EXPERIMENT: "0" # historical mode-8 experiment stays OFF
+        JARBOX_VM_ARRAY_LOOKUP_MODE1_EXPERIMENT: "0" # guarded candidate; pending integrated VM differential
+        JARBOX_VM_CHAR_LEAF_EXPERIMENT: "0" # bound charAt0 leaf; pending integrated VM differential
+        JARBOX_VM_ARRAY_LOOKUP_DIAGNOSTIC: "0" # No method observer overhead
+        JARBOX_VM_PERF_CANDIDATE: "0" # Matched all-off control for Treo CPU investigation; set 1 to reproduce candidate
+        JARBOX_PAINT_QOS_EXPERIMENT: "0" # isolate Ninja Core; QoS trial remains available
+        JARBOX_NINJA_CORE_EXPERIMENT: "0" # continuous scoped Core trial is OFF
+        JARBOX_CORE_ABA: "1" # focused short diagnostic only
+        JARBOX_GC_PHASE_DIAG: "1" # coarse GC worker phase attribution; independently switchable
+        JARBOX_CANVAS_PHASE_DIAG: "1" # matched Canvas pre/paint/post CPU; independently switchable
+        JARBOX_NATIVE_PAINT_DIAG: "0" # focused short diagnostic only
+        JARBOX_CROP_CACHE_V2: "1" # candidate; 0 = old direct-mapped cache
+        JARBOX_BINARY_SPRITE_EXPERIMENT: "0" # strict full-raster mode-1 candidate; pending CG oracle
+        JARBOX_REGION_STAGE_DIAG: "0" # focused short diagnostic only
+        JARBOX_HOTSPOT_DIAG: "0" # focused short diagnostic only
+        JARBOX_VM_DECODED_INT_EXPERIMENT: "0"
+        JARBOX_VM_EVENT_SLEEP_EXPERIMENT: "0"
+        JARBOX_VM_CONST_ARITH_FUSION_EXPERIMENT: "0"
+        JARBOX_VM_CONST_BRANCH_FUSION_EXPERIMENT: "0"
+    scripts: *jarbox_ipa_shared_scripts
+    artifacts: *jarbox_ipa_shared_artifacts

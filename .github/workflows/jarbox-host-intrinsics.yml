@@ -17,6 +17,8 @@ jobs:
         with:
           distribution: temurin
           java-version: '21'
+      - name: Focused CPU log analyzer
+        run: python3 -m unittest discover -s tools/tests -p test_focused_cpu.py
       - name: Binary sprite host differential
         run: python3 -m unittest discover -s tools/tests -p test_binary_sprite.py
       - name: Actual two-VM differential with ASan and UBSan
