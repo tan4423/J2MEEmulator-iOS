@@ -2023,7 +2023,7 @@ struct _MiniJVM {
 #endif
 #if defined(JARBOX_RENDER_ISLAND_EXPERIMENT) && JARBOX_RENDER_ISLAND_EXPERIMENT && __JVM_OS_IOS__
     uint32_t render_island_bytes;
-    uint64_t render_island_plans,render_island_skips,render_island_ops;
+    uint64_t render_island_plans,render_island_skips,render_island_ops,render_wrapper_skips;
 #endif
 #if defined(JARBOX_HOST_RENDER_ISLAND_TEST)
     int host_render_island_enabled;

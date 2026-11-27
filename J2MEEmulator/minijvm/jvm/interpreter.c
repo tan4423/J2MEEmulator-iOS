@@ -439,19 +439,26 @@ static int jbr_live_target_ready(MiniJVM *vm,ConstantMethodRef *mr,Instance *rec
     return mr&&expected&&(!mr->methodInfo||mr->methodInfo==expected)&&
            (mr->methodInfo==expected||jarbox_virtual_lookup(vm,mr,receiver)==expected);
 }
-// Variant 0 region, 1 image, 2 drawRect, 3 fillRect. Keep actual Graphics
-// state operations as ordinary effects; only these four sinks may vanish.
+// Variant 0 region, 1 image, 2 drawRect, 3 fillRect; generic tiers also
+// use 4 line, 5 roundRect, 6 fillRoundRect, 7 arc. Graphics state
+// operations (clip, translation, color and queries) remain ordinary.
 static int jbr_live_wrapper_ready(MiniJVM *vm,Instance *w,const JarBoxResidualScope *scope,unsigned variant) {
     static const unsigned char digest[32]={0x13,0xca,0x49,0xde,0x94,0x27,0xbe,0x04,0xff,0xe4,0xb4,0xe0,0xe3,0xa9,0x6a,0xf0,0x0e,0x0d,0x16,0x56,0x20,0x93,0xf8,0x93,0x6a,0x1c,0xa1,0x18,0xf3,0xa8,0x7f,0xa1};
     static const unsigned char image_digest[32]={0x1e,0xe7,0x75,0x00,0xc0,0x72,0xc0,0x94,0xc3,0x87,0x4f,0x28,0xef,0x0f,0xc4,0x48,0x0a,0xd9,0xac,0x0c,0xa2,0xce,0x1e,0x6b,0x52,0x8e,0x21,0x71,0x77,0x09,0x64,0xcc};
     static const unsigned char rect_digest[32]={0x73,0xb1,0xc9,0xbe,0xf7,0x6d,0x1b,0x44,0x57,0x75,0x35,0x26,0x5e,0xf2,0xe1,0x06,0xc9,0x8c,0xb3,0x9a,0xb0,0xb9,0x82,0x7c,0x0e,0x49,0x8d,0x9d,0xf5,0x73,0x40,0x91};
     static const unsigned char fill_digest[32]={0xf9,0x70,0x36,0x5c,0x2b,0x2f,0x1a,0xb0,0x24,0x5b,0x63,0xff,0x3e,0x12,0xfc,0xe6,0xd4,0x8d,0x70,0xb3,0x86,0x13,0xbe,0x9c,0x21,0x33,0x6a,0xfa,0xf7,0x75,0xd7,0xa1};
-    static const char *names[]={"drawRegion","drawImage","drawRect","fillRect"};
-    static const char *wrappers[]={"a","a","b","c"};
-    static const unsigned lengths[]={67,25,39,39},scale_pc[]={3,2,2,2},field_pc[]={46,14,28,28},call_pc[]={64,22,36,36};
-    if(variant>3||!w||!scope||!scope->graphics)return 0;
-    const unsigned char *digests[]={digest,image_digest,rect_digest,fill_digest};
-    const char *desc=variant>=2?"(IIII)V":variant==1?"(Ljavax/microedition/lcdui/Image;III)V":"(Ljavax/microedition/lcdui/Image;IIIIIIII)V";
+    static const unsigned char line_digest[32]={0x16,0xef,0x10,0x49,0xc6,0xb5,0xff,0xe2,0x97,0x21,0x69,0xd9,0x21,0xf1,0x57,0xda,0xbb,0x04,0x88,0x5f,0x43,0xfa,0xd8,0x76,0xc3,0x7c,0xc1,0x4c,0x35,0x58,0xf7,0xe3};
+    static const unsigned char round_digest[32]={0x5b,0xfa,0xa7,0x10,0x35,0xf9,0x0a,0xa9,0x74,0x61,0x23,0x53,0x31,0xad,0xde,0x12,0xe7,0xd2,0xc0,0xd5,0xf2,0xcd,0x2d,0xa4,0xd1,0xcd,0xd1,0x69,0x13,0x60,0xd7,0x04};
+    static const unsigned char fill_round_digest[32]={0x2b,0x83,0xae,0xf0,0xf9,0x87,0x02,0x6c,0xac,0x48,0xf7,0x7a,0xbd,0x50,0xb6,0x88,0xea,0xdf,0x25,0xb1,0xd2,0x72,0x50,0x28,0x2c,0x7b,0xb8,0x70,0x45,0x05,0xd0,0x1a};
+    static const unsigned char arc_digest[32]={0xf2,0x74,0x7b,0xfb,0xb7,0x74,0x0f,0xe8,0x75,0xdf,0xb8,0x6d,0x7a,0xaf,0xc2,0x6a,0x0f,0x75,0x17,0xc7,0x38,0x7b,0xd5,0x67,0x8d,0x28,0x11,0x68,0x03,0x1f,0xa9,0xaf};
+    static const char *names[]={"drawRegion","drawImage","drawRect","fillRect","drawLine","drawRoundRect","fillRoundRect","drawArc"};
+    static const char *wrappers[]={"a","a","b","c","a","a","b","c"};
+    static const unsigned lengths[]={67,25,39,39,39,59,59,43},
+        scale_pc[]={3,2,2,2,2,2,2,2},field_pc[]={46,14,28,28,28,44,44,28},
+        call_pc[]={64,22,36,36,36,56,56,40};
+    if(variant>7||!w||!scope||!scope->graphics)return 0;
+    const unsigned char *digests[]={digest,image_digest,rect_digest,fill_digest,line_digest,round_digest,fill_round_digest,arc_digest};
+    const char *desc=variant>=5?"(IIIIII)V":variant>=2?"(IIII)V":variant==1?"(Ljavax/microedition/lcdui/Image;III)V":"(Ljavax/microedition/lcdui/Image;IIIIIIII)V";
     const char *name=names[variant];
     JClass *wc=w->mb.clazz;
     Instance *g=(Instance *)scope->graphics;
@@ -493,7 +500,7 @@ extern int treo_render_island_scope_capture(Runtime *,Instance *,JarBoxResidualS
 static int treo_headless_eligible(MethodInfo *);
 typedef struct {
     JarBoxResidualScope scope;
-    MethodInfo *wrapper[4],*graphics[4];
+    MethodInfo *wrapper[8],*graphics[8];
 } JriLiveFrame;
 
 static ConstantItem *jri_live_item(JClass *cl,unsigned ix){
@@ -509,9 +516,16 @@ static int jri_live_variant(ConstantMethodRef *m){
     if(jbr_eq(m->descriptor,"(IIII)V")){
         if(jbr_eq(m->name,"b"))return 2;
         if(jbr_eq(m->name,"c"))return 3;
+        if(jbr_eq(m->name,"a"))return 4;
+    }
+    if(jbr_eq(m->descriptor,"(IIIIII)V")){
+        if(jbr_eq(m->name,"a"))return 5;
+        if(jbr_eq(m->name,"b"))return 6;
+        if(jbr_eq(m->name,"c"))return 7;
     }
     return -1;
 }
+static unsigned jri_live_argc(int v){return v==0?10:v>=5?7:5;}
 static unsigned jri_live_cp(void *ctx,unsigned raw,unsigned ix){
     ConstantItem *item=jri_live_item(ctx,ix);
     if(!item)return 0;
@@ -523,11 +537,12 @@ static unsigned jri_live_cp(void *ctx,unsigned raw,unsigned ix){
     }
     if(raw==0xb6&&item->tag==CONSTANT_METHOD_REF){
         int v=jri_live_variant((ConstantMethodRef *)item);
-        return v==0?jri_shape(10,3):v==1?jri_shape(5,3):v>=2?jri_shape(5,1):0;
+        return v>=0?jri_shape(jri_live_argc(v),v<2?3:1):0;
     }
     return 0;
 }
-static const JriPlan *jri_live_plan(Runtime *r,MethodInfo *m,CodeAttribute *ca){
+static const JriPlan *jri_live_plan(Runtime *r,MethodInfo *m,CodeAttribute *ca,int *eligible){
+    *eligible=0;
     JarBoxSession *owner=r->jvm->session;
     if(!owner||!r->thrd_info->jarbox_headless_scope||r->jvm->jdwp_enable||
        r->thrd_info->is_stop||r->thrd_info->suspend_count||m->breakpoint||
@@ -537,7 +552,9 @@ static const JriPlan *jri_live_plan(Runtime *r,MethodInfo *m,CodeAttribute *ca){
        __atomic_load_n(&owner->treo_state.residual_faults,__ATOMIC_RELAXED)||
        jarbox_session_phase(owner)!=JARBOX_SESSION_PARKED||
        !jarbox_ninja_core_active(&owner->treo_state.ninja_core,jarbox_treo_mode_get(&owner->treo_state))||
-       treo_game_jit_enabled_fast()||!ca->bytecode_for_jit||ca->code_length<5||
+       treo_game_jit_enabled_fast())return NULL;
+    *eligible=1; // also allow exact wrapper contraction after ordinary arguments
+    if(!ca->bytecode_for_jit||ca->code_length<5||
        ca->code_length>JBI_MAX_CODE||ca->exception_table_length>JBI_MAX_HANDLERS)return NULL;
     unsigned state=__atomic_load_n(&ca->render_island_state,__ATOMIC_ACQUIRE);
     if(state==2)return ca->render_island_plan;
@@ -593,18 +610,12 @@ static int jri_live_static(JClass *cl,unsigned ix,Instance **image){
 /* No new renderer mode. Reuse the existing paired, owner-local Canvas
  * sink, but eliminate the certified argument expression AND wrapper
  * execution before dispatch. All proof obligations precede any writes. */
-static int jri_live_skip(Runtime *r,const JriIsland *s,JriLiveFrame *f,
-                         StackEntry *locals,StackEntry *sp){
-    static const char *const names[]={"drawRegion","drawImage","drawRect","fillRect"};
-    JClass *cl=r->method->_this_class;
-    ConstantItem *item=jri_live_item(cl,s->cp);
-    if(!item||item->tag!=CONSTANT_METHOD_REF)return 0;
-    ConstantMethodRef *mr=(ConstantMethodRef *)item;
-    int variant=jri_live_variant(mr);
-    if(variant<0||s->argc!=(variant==0?10:5)||
-       (variant<2)!=(s->ref_kind!=JRI_REF_NONE))return 0;
-    Instance *w=locals[s->receiver].rvalue,*image=NULL;
-    if(!w||!jbr_bname(w->mb.clazz,"Class_hvi")||!jbr_bobject(w,w->mb.clazz))return 0;
+static int jri_live_wrapper_proof(Runtime *r,ConstantMethodRef *mr,Instance *w,
+                                  JriLiveFrame *f,int variant,MethodInfo *resolved){
+    static const char *const names[]={"drawRegion","drawImage","drawRect","fillRect","drawLine","drawRoundRect","fillRoundRect","drawArc"};
+    unsigned argc=jri_live_argc(variant);
+    if(variant<0||variant>7||!w||!jbr_bname(w->mb.clazz,"Class_hvi")||!jbr_bobject(w,w->mb.clazz))return 0;
+    if(__atomic_load_n(&r->jvm->session->treo_state.residual_faults,__ATOMIC_RELAXED))return 0;
     if(!f->scope.serial&&!treo_render_island_scope_capture(r,w,&f->scope))return 0;
     if(!treo_residual_scope_valid(r,w,&f->scope))return 0;
     Instance *g=(Instance *)f->scope.graphics;
@@ -613,27 +624,61 @@ static int jri_live_skip(Runtime *r,const JriIsland *s,JriLiveFrame *f,
         const char *desc=utf8_cstr(mr->descriptor);
         MethodInfo *wm=jbr_live_declared(w->mb.clazz,utf8_cstr(mr->name),desc);
         MethodInfo *gm=jbr_live_declared(g->mb.clazz,names[variant],desc);
-        if(!wm||!gm||wm->para_slots!=s->argc||gm->para_slots!=s->argc||
-           wm->return_slots||gm->return_slots||wm->converted_code->max_locals!=s->argc||
-           wm->converted_code->max_stack!=s->argc||!treo_headless_eligible(gm)||
+        if(!wm||!gm||wm->para_slots!=argc||gm->para_slots!=argc||
+           wm->return_slots||gm->return_slots||wm->converted_code->max_locals!=argc||
+           wm->converted_code->max_stack!=argc||!treo_headless_eligible(gm)||
            __atomic_load_n(&gm->treo_afk_kind,__ATOMIC_RELAXED)!=3)return 0;
         f->wrapper[variant]=wm;f->graphics[variant]=gm;
     }
     MethodInfo *wm=f->wrapper[variant],*gm=f->graphics[variant];
-    if(wm->breakpoint||gm->breakpoint||wm->converted_code->jit.state==JIT_GEN_SUCCESS||
-       !jbr_live_target_ready(r->jvm,mr,w,wm))return 0;
+    return (!resolved||resolved==wm)&&!wm->breakpoint&&!gm->breakpoint&&
+       wm->converted_code->jit.state!=JIT_GEN_SUCCESS&&
+       jbr_live_target_ready(r->jvm,mr,w,wm);
+}
+static int jri_live_skip(Runtime *r,const JriIsland *s,JriLiveFrame *f,
+                         StackEntry *locals,StackEntry *sp){
+    JClass *cl=r->method->_this_class;
+    ConstantItem *item=jri_live_item(cl,s->cp);
+    if(!item||item->tag!=CONSTANT_METHOD_REF)return 0;
+    ConstantMethodRef *mr=(ConstantMethodRef *)item;
+    int variant=jri_live_variant(mr);
+    if(variant<0||s->argc!=jri_live_argc(variant)||
+       (variant<2)!=(s->ref_kind!=JRI_REF_NONE))return 0;
+    Instance *w=locals[s->receiver].rvalue,*image=NULL;
+    if(!jri_live_wrapper_proof(r,mr,w,f,variant,NULL))return 0;
     for(unsigned i=0;i<s->nreads;++i){
         unsigned ix=s->reads[i];
         if(!jri_live_static(cl,ix,s->ref_kind==JRI_REF_STATIC&&ix==s->ref_index?&image:NULL))
             return 0;
     }
     if(s->ref_kind==JRI_REF_LOCAL)image=locals[s->ref_index].rvalue;
-    /* No Java execution, allocation or fault after this final check. The
-     * exact wrappers only write receiver, image and Graphics ref lanes;
-     * the bundled VM sink returns before a Graphics frame is allocated. */
     if(!treo_residual_scope_valid(r,w,&f->scope))return 0;
-    jri_replay_wrapper_refs(sp,s,w,g,image);
+    jri_replay_wrapper_refs(sp,s,w,(Instance *)f->scope.graphics,image);
     return 1;
+}
+
+/* Second tier: all source arguments (including array reads, allocation,
+ * arbitrary calls, exceptions and their safepoints) have already executed.
+ * Only contract the exact known wrapper, including its scratch ref writes.
+ * Thus glyph/skill callers outside the closed-island grammar still benefit.
+ * This is an original resolved invokevirtual continuation, not a new sink. */
+static unsigned jri_live_call_skip(Runtime *r,ConstantMethodRef *mr,MethodInfo *m,
+        JriLiveFrame *f,StackEntry *sp,StackEntry *operand_base){
+    int variant=jri_live_variant(mr);
+    if(variant<0||!m||!m->_this_class||!jbr_bname(m->_this_class,"Class_hvi"))return 0;
+    unsigned argc=jri_live_argc(variant);
+    RuntimeStack *stack=r->stack;
+    if(sp<operand_base||sp>stack->store+stack->max_size||
+       sp-operand_base<(ptrdiff_t)argc||
+       stack->store+stack->max_size-sp<(ptrdiff_t)(argc+2))return 0;
+    StackEntry *args=sp-argc;
+    Instance *w=args[0].rvalue;
+    if(!jri_live_wrapper_proof(r,mr,w,f,variant,m)||
+       !treo_residual_scope_valid(r,w,&f->scope))return 0;
+    JriIsland shape={.argc=(uint16_t)argc,.ref_kind=variant<2?JRI_REF_LOCAL:JRI_REF_NONE};
+    jri_replay_wrapper_refs(args,&shape,w,(Instance *)f->scope.graphics,
+                            variant<2?args[1].rvalue:NULL);
+    return argc;
 }
 #endif
 
@@ -3116,7 +3161,8 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
 #if defined(JARBOX_HOST_RENDER_ISLAND_TEST)
                 const JriPlan *render_island=jri_fixture_plan(runtime,method,ca);
 #elif defined(JARBOX_LIVE_RENDER_ISLAND) && !_JVM_DEBUG_PROFILE && _JVM_DEBUG_LOG_LEVEL <= 1 && !defined(__JVM_DEBUG__)
-                const JriPlan *render_island=!jbr_active?jri_live_plan(runtime,method,ca):NULL;
+                int render_eligible=0;
+                const JriPlan *render_island=!jbr_active?jri_live_plan(runtime,method,ca,&render_eligible):NULL;
                 JriLiveFrame render_frame={0};
 #endif
                 do {
@@ -6997,6 +7043,23 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                                     break;
 #endif
                                 }
+#if defined(JARBOX_LIVE_RENDER_ISLAND) && !_JVM_DEBUG_PROFILE && _JVM_DEBUG_LOG_LEVEL <= 1 && !defined(__JVM_DEBUG__)
+                                // All original argument effects are complete and m is
+                                // the actual resolved target. Do not bypass a cold call.
+                                if(render_eligible&&jri_live_variant(cmr)>=0){
+                                    stack->sp=sp;
+                                    check_suspend_and_pause(runtime);
+                                    sp=stack->sp;
+                                    if(!thrd_info->is_stop&&!thrd_info->suspend_count){
+                                        unsigned argc=jri_live_call_skip(runtime,cmr,m,&render_frame,sp,localvar+ca->max_locals);
+                                        if(argc){
+                                            sp-=argc;runtime->pc+=3;
+                                            __atomic_fetch_add(&jvm->render_wrapper_skips,1,__ATOMIC_RELAXED);
+                                            break;
+                                        }
+                                    }
+                                }
+#endif
                                 stack->sp = sp;
                                 ret = execute_method_impl(m, runtime);
                                 sp = stack->sp;

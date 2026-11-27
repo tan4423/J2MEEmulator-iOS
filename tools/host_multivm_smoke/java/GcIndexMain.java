@@ -48,19 +48,51 @@ public final class GcIndexMain {
     static void checkStrong() {
         for (int i=0; i<N; ++i) check(weak[i].get() == strong[i]);
     }
-    static boolean cleared() {
-        for (int i=0; i<N; ++i) if (weak[i].get() != null) return false;
-        return true;
+    // No referent is inspected from the long-lived main stack. MiniJVM's
+    // conservative reference lanes can retain a value after get() returns.
+    // The producer and each observer retire before the next GC request.
+    static volatile int clearedCount, produced;
+    static void produce(final int round) throws Exception {
+        produced=0;
+        Thread producer = new Thread() {
+            public void run() {
+                makeRound(round);
+                try { Thread.sleep(400); }
+                catch (InterruptedException ex) { invalid=1; }
+                checkStrong();
+                check(completed == round*N && invalid == 0);
+                pending=null; strong=null;
+                produced=1;
+            }
+        };
+        producer.start(); producer.join();
+        check(produced == 1 && invalid == 0);
+    }
+    static int countCleared() throws Exception {
+        clearedCount=-1;
+        Thread observer=new Thread() {
+            public void run() {
+                int count=0;
+                for (int i=0; i<N; ++i) if (weak[i].get() == null) ++count;
+                clearedCount=count;
+            }
+        };
+        observer.start(); observer.join();
+        check(clearedCount>=0);
+        return clearedCount;
     }
     static void awaitRound(int expected) throws Exception {
+        int count=0;
         for (int retry=0; retry<40; ++retry) {
-            // Let the real periodic worker collect, not a synchronous host mock.
             if (retry % 4 == 0) System.gc();
             Thread.sleep(250);
             check(invalid == 0 && completed <= expected);
-            if (completed == expected && cleared()) return;
+            if (retry % 4 == 3 && completed == expected) {
+                count=countCleared();
+                if(count==N)return;
+            }
         }
-        throw new IllegalStateException("callback timeout: completed="+completed+" expected="+expected);
+        throw new IllegalStateException("callback timeout: completed="+completed+" expected="+expected+" cleared="+count);
     }
     public static void main(String[] args) throws Exception {
         salt = args[0].charAt(0)*100000;
@@ -68,12 +100,7 @@ public final class GcIndexMain {
         for (int i=0; i<LIVE; ++i) live[i] = new Cell(salt+i);
         long digest=0;
         for (int round=0; round<ROUNDS; ++round) {
-            makeRound(round);
-            Thread.sleep(400);
-            checkStrong();
-            check(completed == round*N && invalid == 0);
-            pending = null;
-            strong = null;
+            produce(round);
             awaitRound((round+1)*N);
             weak = null;
             for (int i=0;i<LIVE;++i) {

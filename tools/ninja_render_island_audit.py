@@ -84,11 +84,14 @@ def scan(path,audit):
                 def classify(_,op,ix):
                     t,cl,m,d=syms.get(ix,(0,b'',b'',b''))
                     if op==0xb2 and t==9:
+                        if family=='Nick':
+                            return 1 if d in (b'I',b'B',b'S',b'Z') else 2 if d==b'Ljavax/microedition/lcdui/Image;' else 0
                         return 1 if d in (b'I',b'B',b'C',b'S',b'Z') else 2 if d.startswith((b'L',b'[')) else 0
                     if op!=0xb6 or t!=10 or cl!=wrapper.encode():return 0
                     if m==b'a' and d==b'(Ljavax/microedition/lcdui/Image;III)V':return 5|(3<<4)
                     if m==b'a' and d==b'(Ljavax/microedition/lcdui/Image;IIIIIIII)V':return 10|(3<<4)
                     if m in [bytes([x]) for x in rects.encode()] and d==b'(IIII)V':return 5|(1<<4)
+                    if family=='Nick' and m in (b'a',b'b',b'c') and d==b'(IIIIII)V':return 7|(1<<4)
                     return 0
                 out=(C.c_uint*3)()
                 audit(code,len(code),locals,stack,(H*len(hs))(*hs),len(hs),classify,out)

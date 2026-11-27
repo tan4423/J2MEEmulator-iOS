@@ -492,10 +492,11 @@ void jvm_destroy(MiniJVM *jvm) {
        __atomic_load_n(&jvm->block_ir_bytes,__ATOMIC_RELAXED));
 #endif
 #if defined(JARBOX_RENDER_ISLAND_EXPERIMENT) && JARBOX_RENDER_ISLAND_EXPERIMENT && __JVM_OS_IOS__
-    jvm_printf("[JarBoxVM][RenderIsland] plans=%llu skips=%llu source_ops=%llu bytes=%u\n",
+    jvm_printf("[JarBoxVM][RenderIsland] plans=%llu skips=%llu source_ops=%llu wrapper_only=%llu bytes=%u\n",
        (unsigned long long)__atomic_load_n(&jvm->render_island_plans,__ATOMIC_RELAXED),
        (unsigned long long)__atomic_load_n(&jvm->render_island_skips,__ATOMIC_RELAXED),
        (unsigned long long)__atomic_load_n(&jvm->render_island_ops,__ATOMIC_RELAXED),
+       (unsigned long long)__atomic_load_n(&jvm->render_wrapper_skips,__ATOMIC_RELAXED),
        __atomic_load_n(&jvm->render_island_bytes,__ATOMIC_RELAXED));
 #endif
     close_log();

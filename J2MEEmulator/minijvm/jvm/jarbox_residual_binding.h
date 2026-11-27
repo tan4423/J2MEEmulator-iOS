@@ -198,7 +198,6 @@ static inline int jbr_binding_paint_tail(Runtime *r,Runtime *p,Instance *wrapper
 }
 static inline int jbr_binding_route(Runtime *r,Instance *wrapper,JarBoxResidualBinding *out,
                                  unsigned map_pc,unsigned delegate_pc,unsigned paint_pc,unsigned route_pc) {
-    static const char *gd="(Ljavax/microedition/lcdui/Graphics;)V";
     static const char *wd="(LClass_hvi;)V";
     if(out)memset(out,0,sizeof(*out));
     if(!out||!r||!r->jvm||!r->thrd_info||!r->stack)return 0;
