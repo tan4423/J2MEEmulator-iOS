@@ -50,6 +50,7 @@ static int sink_admitted,sink_fixture,map_fixture;
 static _Atomic int sink_requested,sink_invalid;
 static _Atomic uint64_t sink_paints,sink_draws,sink_faults;
 static _Thread_local s64 sink_context;
+static _Thread_local uint64_t sink_draw_pending;
 static _Atomic uint64_t deep_counts[18];
 static _Thread_local uint64_t deep_pending[18];
 static _Atomic int vector_requested;
@@ -81,7 +82,9 @@ void jarbox_lab_residual_fault(void){
 }
 static int sink_draw(s64 id){
     if(id>0&&id==sink_context){
-        atomic_fetch_add_explicit(&sink_draws,1,memory_order_relaxed);
+        /* Batch this per-thread paint-local count; avoid one global atomic per
+         * discarded draw. labEndPaint flushes it before publishing the paint. */
+        sink_draw_pending++;
         return 1;
     }
     return 0;
@@ -416,7 +419,18 @@ FN(labBeginPaint){
     }
     PJ(previous);OK;
 }
-FN(labEndPaint){flush_deep_counts();if(sink_context)atomic_fetch_add(&sink_paints,1);sink_context=J(0);OK;}
+FN(labEndPaint){
+    flush_deep_counts();
+    if(sink_context){
+        uint64_t draws=sink_draw_pending;
+        if(draws){
+            atomic_fetch_add_explicit(&sink_draws,draws,memory_order_relaxed);
+            sink_draw_pending=0;
+        }
+        atomic_fetch_add(&sink_paints,1);
+    }
+    sink_context=J(0);OK;
+}
 FN(labCoreResult){
     if(I(0)!=0){atomic_store(&sink_invalid,1);atomic_store(&sink_requested,0);atomic_fetch_add(&sink_faults,1);}
     OK;
