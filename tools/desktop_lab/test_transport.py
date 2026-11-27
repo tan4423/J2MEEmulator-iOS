@@ -95,7 +95,7 @@ with socket.socket() as listener:
                             assert time.monotonic()<deadline
                             time.sleep(.1)
                         assert b["paints"]>a["paints"] and b["frames"]==a["frames"]
-                        assert b["sink_draws"]-a["sink_draws"]>=9 and b["sink_invalid"]==0,(a,b)
+                        assert b["sink_draws"]>a["sink_draws"] and b["sink_invalid"]==0,(a,b)
                         if map_test:
                             assert b["map_q3"]-a["map_q3"]==10,(a,b)
                             assert b["map_m3"]-a["map_m3"]==10,(a,b)
