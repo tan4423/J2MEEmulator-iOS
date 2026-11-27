@@ -35,6 +35,10 @@ matched plain-mode windows, never use graph-mode CPU as release evidence.
 GC cycles and CPU are sampled live under the VM lifecycle lock. The call graph is exported atomically every five seconds. Run `python3 tools/desktop_lab/inspect.py /absolute/path/trace.csv --watch` for rolling CPU and graph summaries. Surface and trace storage are bounded
 except the one-row-per-second CSV written until stop.
 
+## Experimental q3 array lookup (desktop lab only)
+
+The build includes a separately gated q3 array-lookup experiment, disabled by default. It is admitted only for the exact Nick t5 archive and matching packaged API/runtime while the level-1 headless sink is active. Use the session-local controller command `labctl.py <session> lookup on` to opt in and `lookup off` to disable. Turning the sink off or changing its level also disables it. Status exposes `lookup_requested` and the batched successful q3 count as `map_q3`. Invalid/null/out-of-bounds reads and the char-array m3 method remain on the original interpreter. This desktop-only test does not enable the iOS production macro.
+
 ## Known limitations and next gates
 
 - Linux SDL/Cairo 2D renderer, not CoreGraphics/Metal. Font metrics and pixels
