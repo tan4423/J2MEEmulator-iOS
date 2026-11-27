@@ -87,6 +87,21 @@ static void ctl_poll(int physical){
         else if(!strcmp(req,"stop")){atomic_store(&stop_requested,1);state="stopping";}
         else if(physical)state="physical_input_active";
         else if(atomic_load(&stop_requested))state="stopping";
+        else if(!strncmp(req,"chat ",5)){
+            /* Only the three explicitly requested research commands, into
+             * an empty, non-password chat TextBox. Never edit credentials. */
+            const char *value=req+5;
+            if(!strcmp(value,"gm37")||!strcmp(value,"k27")||!strcmp(value,"ts")){
+                LOCK;
+                if(!show_canvas&&!strcasecmp(ui_title,"chat")&&ui_count==1&&ui_focus==0&&
+                   ui_items[0].type==1&&!(ui_items[0].constraints&0x30000)&&
+                   ui_items[0].text[0]==0){
+                    ui_edit_locked(value);
+                    if(!strcmp(ui_items[0].text,value)){ui_render_locked();state="queued";}
+                }
+                UNLOCK;
+            }
+        }
         else if(sscanf(req,"tap %4d %4d%n",&x,&y,&end)==2&&end==n){
             if(x>=0&&x<width&&y>=0&&y<height&&atomic_load(&frames)&&canvas)
                 state=ctl_pair((Event){0,x,y,0},(Event){2,x,y,0})?"queued":"busy";

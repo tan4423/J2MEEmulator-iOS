@@ -139,3 +139,7 @@ it may show private information. Keep it local, inspect before sharing.
 A queued response is not proof that a game action completed. Verify screen
 and state transitions, allowing for login/load delays. Control is separate
 from gameplay timing and is never enabled in default plain CPU baselines.
+
+For the exact research workflow, `labctl.py SESSION chat gm37|k27|ts`
+only fills an empty non-password TextBox titled `chat`. Use `key f1`
+separately to submit, then verify the map and zone. Other strings are refused.

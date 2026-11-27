@@ -519,10 +519,12 @@ int main(int argc,char**argv){
         LOCK;int modal=!show_canvas;UNLOCK;
         if(fixture_ui&&modal){
             fixture_ui=0;
+            if(!getenv("JARBOX_LAB_TEST_CONTROL")){
             SDL_Event input={0};input.type=SDL_TEXTINPUT;strcpy(input.text.text,"b");
             if(SDL_PushEvent(&input)!=1)unsupported("fixture text injection");
             input=(SDL_Event){0};input.type=SDL_KEYDOWN;input.key.keysym.sym=SDLK_F1;
             if(SDL_PushEvent(&input)!=1)unsupported("fixture command injection");
+            }
         }
         if(modal&&!SDL_IsTextInputActive())SDL_StartTextInput();
         else if(!modal&&SDL_IsTextInputActive())SDL_StopTextInput();

@@ -33,12 +33,13 @@ public final class LabFixture extends MIDlet {
             // Real GC worker must run before the fixture stops.
             Thread.sleep(1250);
         }catch(Exception ex){throw new RuntimeException(ex.toString());}
-        final TextBox text=new TextBox("Lab input","a",8,TextField.ANY);
+        final boolean controlled="1".equals(System.getProperty("jarbox.lab.test.control"));
+        final TextBox text=new TextBox(controlled?"chat":"Lab input",controlled?"":"a",8,TextField.ANY);
         final Command done=new Command("Done",Command.OK,1);
         text.addCommand(done);
         text.setCommandListener(new CommandListener(){
             public void commandAction(Command c,Displayable d){
-                if(c!=done||!"ab".equals(text.getString()))throw new RuntimeException("desktop text/command roundtrip");
+                if(c!=done||!(controlled?"gm37":"ab").equals(text.getString()))throw new RuntimeException("desktop text/command roundtrip");
                 System.out.println("LAB_FIXTURE_UI_PASS");
                 Display.getDisplay(LabFixture.this).setCurrent(new Probe());
             }

@@ -53,6 +53,15 @@ with socket.socket() as listener:
                         return json.loads(c.recv(4096))
                     while True:
                         v=cmd("status")
+                        if not v["canvas"]:break
+                        assert result.poll() is None and time.monotonic()<deadline
+                        time.sleep(.1)
+                    assert cmd("chat invalid")["state"]=="refused"
+                    assert cmd("chat gm37")["state"]=="queued"
+                    assert cmd("chat ts")["state"]=="refused"
+                    assert cmd("key f1")["state"]=="queued"
+                    while True:
+                        v=cmd("status")
                         if v["canvas"] and v["frames"]>0:break
                         assert result.poll() is None and time.monotonic()<deadline
                         time.sleep(.1)
