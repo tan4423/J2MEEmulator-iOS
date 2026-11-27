@@ -1996,6 +1996,9 @@ struct _MiniJVM {
     Hashtable *sys_prop;
 
     GcCollector *collector;
+#if defined(JARBOX_HOST_GC_INDEX_TEST)
+    int host_gc_index_enabled; // selected by the host owner before jvm_init
+#endif
     ArrayList *shutdown_hook;//shutdown hook ,it contains thread instance
 
     ShortCut shortcut;

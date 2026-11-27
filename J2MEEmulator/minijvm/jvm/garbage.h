@@ -9,6 +9,9 @@
 #include "jvm.h"
 #include "jvm_util.h"
 #include "jarbox_runtime_generation.h"
+#if defined(JARBOX_GC_DEFERRED_INDEX_EXPERIMENT) && JARBOX_GC_DEFERRED_INDEX_EXPERIMENT
+#include "jarbox_gc_deferred_index.h"
+#endif
 
 
 #ifdef __cplusplus
@@ -47,6 +50,12 @@ struct _GcCollectorType {
     //
     u8 _garbage_thread_status;
     u8 mark_cnt;
+#if defined(JARBOX_GC_DEFERRED_INDEX_EXPERIMENT) && JARBOX_GC_DEFERRED_INDEX_EXPERIMENT
+    JarBoxGCDeferredIndex deferred_index;
+#if defined(JARBOX_HOST_GC_INDEX_TEST)
+    uint64_t host_gc_index_passes;
+#endif
+#endif
     volatile u8 isgc;
     volatile u8 isworldstoped;
     s16 exit_flag;

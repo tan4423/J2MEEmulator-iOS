@@ -72,6 +72,11 @@ s32 gc_create(MiniJVM *jvm) {
     GcCollector *collector = jvm_calloc(sizeof(GcCollector));
     jvm->collector = collector;
     collector->jvm = jvm;
+#if defined(JARBOX_GC_DEFERRED_INDEX_EXPERIMENT) && JARBOX_GC_DEFERRED_INDEX_EXPERIMENT
+#if defined(JARBOX_HOST_GC_INDEX_TEST)
+    collector->deferred_index.disabled = !jvm->host_gc_index_enabled;
+#endif
+#endif
     collector->objs_holder = hashset_create();
     collector->objs_2_count = hashtable_create(UNICODE_STR_HASH_FUNC, UNICODE_STR_EQUALS_FUNC);
 
@@ -122,6 +127,10 @@ void gc_destroy(MiniJVM *jvm) {
         __atomic_store_n(&collector->_garbage_thread_status, GARBAGE_THREAD_DEAD, __ATOMIC_RELEASE);
     }
     //
+#if defined(JARBOX_GC_DEFERRED_INDEX_EXPERIMENT) && JARBOX_GC_DEFERRED_INDEX_EXPERIMENT
+    // Worker joined (or never started); terminal cleanup uses the old path.
+    gc_deferred_index_disable(&collector->deferred_index);
+#endif
     _garbage_clear(collector);
     //
     hashset_destroy(collector->objs_holder);
@@ -731,8 +740,23 @@ static void gc_process_deferred_objects(GcCollector *collector) {
     MiniJVM *jvm = collector->jvm;
     MemoryBlock *head = NULL;
     if (gc_thread_status(collector) != GARBAGE_THREAD_NORMAL) return;
-    for (MemoryBlock *curmb = collector->header; curmb;) {
+#if defined(JARBOX_GC_DEFERRED_INDEX_EXPERIMENT) && JARBOX_GC_DEFERRED_INDEX_EXPERIMENT
+    JarBoxGCDeferredIndex *index = &collector->deferred_index;
+    const int indexed = !index->disabled;
+    size_t cursor = index->count;
+    MemoryBlock *curmb = indexed ? (cursor ? index->items[--cursor] : NULL) : collector->header;
+#if defined(JARBOX_HOST_GC_INDEX_TEST)
+    if (indexed) __atomic_fetch_add(&collector->host_gc_index_passes, 1, __ATOMIC_RELAXED);
+#endif
+#else
+    MemoryBlock *curmb = collector->header;
+#endif
+    for (; curmb;) {
+#if defined(JARBOX_GC_DEFERRED_INDEX_EXPERIMENT) && JARBOX_GC_DEFERRED_INDEX_EXPERIMENT
+        MemoryBlock *nextmb = indexed ? (cursor ? index->items[--cursor] : NULL) : curmb->next;
+#else
         MemoryBlock *nextmb = curmb->next;
+#endif
         // STOP is terminal. Finish remarking already dispatched objects,
         // but do not begin another Java callback after observing STOP.
         if (gc_thread_status(collector) >= GARBAGE_THREAD_STOP) break;
@@ -821,11 +845,22 @@ s64 _garbage_collect(GcCollector *collector) {
         jvm_printf("garbage_move_cache %lld\n", (currentTimeMillis() - time));
         time = currentTimeMillis();
 #endif
+#if defined(JARBOX_GC_DEFERRED_INDEX_EXPERIMENT) && JARBOX_GC_DEFERRED_INDEX_EXPERIMENT
+        // No metadata certificate is assumed under debugger or terminal GC.
+        if (jvm->jdwp_enable || gc_thread_status(collector) != GARBAGE_THREAD_NORMAL)
+            gc_deferred_index_disable(&collector->deferred_index);
+        MemoryBlock *old_head = collector->header;
+#endif
         if (collector->tmp_header) {
             collector->tmp_tailer->next = collector->header;//接起来
             collector->header = collector->tmp_header;
             collector->tmp_header = NULL;
             collector->tmp_tailer = NULL;
+#if defined(JARBOX_GC_DEFERRED_INDEX_EXPERIMENT) && JARBOX_GC_DEFERRED_INDEX_EXPERIMENT
+            // Publish the index together with the merged list, even if the
+            // subsequent root snapshot aborts this collection.
+            gc_deferred_index_add(&collector->deferred_index, collector->header, old_head);
+#endif
         }
 #if _JVM_DEBUG_GARBAGE
         jvm_printf("garbage_move_cache %lld\n", (currentTimeMillis() - time));
@@ -884,6 +919,9 @@ s64 _garbage_collect(GcCollector *collector) {
 
 
     gc_process_deferred_objects(collector);
+#if defined(JARBOX_GC_DEFERRED_INDEX_EXPERIMENT) && JARBOX_GC_DEFERRED_INDEX_EXPERIMENT
+    gc_deferred_index_prune(&collector->deferred_index, collector->mark_cnt);
+#endif
     JARBOX_GC_BOUNDARY(5);
     MemoryBlock *nextmb, *curmb, *prevmb = NULL;
 

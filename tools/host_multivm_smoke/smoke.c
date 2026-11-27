@@ -16,6 +16,9 @@ typedef struct { const char *rt, *api, *app, *tag, *mode; char save[512]; int po
     MiniJVM *jvm; pthread_t th; pthread_mutex_t lock; atomic_int finished;
     int stop_requested, rc;
     uint64_t char_calls, array_calls, gc_cycles;
+#if defined(JARBOX_HOST_GC_INDEX_TEST)
+    uint64_t gc_index_passes;
+#endif
     uint64_t thread_cpu_ns, process_cpu_ns, residual_calls, residual_compiles, residual_deopts,residual_skipped,residual_cold_deopts,residual_suspended;
     uint64_t binding_good,binding_bad,binding_mismatch; } Job;
 
@@ -49,6 +52,9 @@ static void *job_main(void *p) {
     const uint64_t key = jarbox_native_heap_key_for_vm(vm);
     vm->jdwp_enable = 0; vm->max_heap_size = 64 * 1024 * 1024;
     vm->garbage_collect_period_ms = 200; vm->heap_overload_percent = 70;
+#if defined(JARBOX_HOST_GC_INDEX_TEST)
+    vm->host_gc_index_enabled=!strcmp(j->mode,"intrinsic-gc-on");
+#endif
     if (jvm_init(vm, (char *)j->rt, cp)) { j->rc = -3; goto cleanup; }
     pthread_mutex_lock(&j->lock);
     j->jvm = vm;
@@ -78,6 +84,9 @@ static void *job_main(void *p) {
     j->char_calls=__atomic_load_n(&vm->session->treo_state.char_leaf_calls,__ATOMIC_RELAXED);
     j->array_calls=__atomic_load_n(&vm->session->treo_state.array_lookup_mode1_calls,__ATOMIC_RELAXED);
     j->gc_cycles=__atomic_load_n(&vm->session->treo_state.gc_worker_cycles,__ATOMIC_RELAXED);
+#if defined(JARBOX_HOST_GC_INDEX_TEST)
+    j->gc_index_passes=__atomic_load_n(&vm->collector->host_gc_index_passes,__ATOMIC_RELAXED);
+#endif
 #else
     j->rc = call_main(vm, !strncmp(j->mode,"residual",8)?"ResidualMain":(!strcmp(j->mode,"binding")?"BindingMain":"SmokeMain"), args);
 #endif
@@ -193,6 +202,19 @@ int main(int argc, char **argv) {
     printf("save roots: %s\n", base);
     int bport = 20000 + (getpid() % 20000); Job a, b, a2;
 #if defined(JARBOX_HOST_INTRINSIC_TEST) && !__JVM_OS_IOS__
+#if defined(JARBOX_HOST_GC_INDEX_TEST)
+    if (!strcmp(scenario,"gc_index_diff")) {
+        init_job(&a,argv,"A","intrinsic-gc-off",bport,base);
+        init_job(&b,argv,"B","intrinsic-gc-on",bport+1,base);
+        start_job(&a); start_job(&b); join_job(&a); join_job(&b);
+        REQUIRE(!a.rc && !b.rc && intrinsic_ok(&a) && intrinsic_ok(&b));
+        REQUIRE(a.gc_cycles>0 && b.gc_cycles>0 && a.gc_index_passes==0 && b.gc_index_passes>0);
+        REQUIRE(!a.char_calls && !b.char_calls && !a.array_calls && !b.array_calls);
+        printf("gc index A=%llu/%llu B=%llu/%llu\n",
+            (unsigned long long)a.gc_index_passes,(unsigned long long)a.gc_cycles,
+            (unsigned long long)b.gc_index_passes,(unsigned long long)b.gc_cycles);
+    } else
+#endif
     if (!strcmp(scenario,"intrinsic_bench")) {
         const char *modes[]={"intrinsic-off","intrinsic-array","intrinsic-char","intrinsic-on"};
         // Each leg owns a fresh VM, no other live VM, same Java fixture and
