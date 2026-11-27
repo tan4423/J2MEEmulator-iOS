@@ -57,7 +57,7 @@ def emit(ins,entry,plan):
             if node.effect or node.branch or len(node.successors)!=1:raise ValueError('empty effect')
             kind='JBR_NOP'
         elif node.effect:
-            if op not in ('getstatic','putstatic','caload','invokestatic','idiv','irem','return'):raise ValueError('effect op')
+            if op not in ('getstatic','putstatic','caload','invokestatic','invokevirtual','idiv','irem','return'):raise ValueError('effect op')
             kind='JBR_EFFECT';length=3 if op in CP_OPS else 1
             imm=OP['return_' if op=='return' else op]
         elif op.startswith('iconst_') or op in ('bipush','sipush'):
@@ -73,13 +73,14 @@ def emit(ins,entry,plan):
     code=encode(ins,'<')
     if len(code)>=65535:raise ValueError('code too large')
     return ('/* Generated host fixture only; no pointer or mutable VM state. */\n'
+            f'static const int jbr_draw_effects = {int(any(o.effect and table[p][0]=="invokevirtual" for p,o in plan.items()))};\n'+
             'static const unsigned char jbr_expected_code[] = {\n'+
             '\n'.join('    '+','.join(str(x) for x in code[i:i+24])+',' for i in range(0,len(code),24))+
             '\n};\nstatic const JarBoxResidualOp jbr_plan[] = {\n'+'\n'.join(rows)+'\n};\n')
 
 
 def main():
-    p=argparse.ArgumentParser(description=__doc__);p.add_argument('original',type=Path);p.add_argument('header',type=Path);a=p.parse_args()
-    ins=ir.disassemble(a.original);ops,_,_=ir.lower(ins);entry,plan=ir.reduce(ops)
+    p=argparse.ArgumentParser(description=__doc__);p.add_argument('original',type=Path);p.add_argument('header',type=Path);p.add_argument('--draw-effects',action='store_true');a=p.parse_args()
+    ins=ir.disassemble(a.original);ops,_,_=ir.lower(ins,draw_effects=a.draw_effects);entry,plan=ir.reduce(ops)
     a.header.write_text(emit(ins,entry,plan));print('native residual plan:',len(plan),'nodes')
 if __name__=='__main__':main()

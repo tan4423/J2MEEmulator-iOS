@@ -48,6 +48,7 @@ static inline int jbr_validate(const JarBoxResidualOp *plan,unsigned count,
                 case 0xb3:if(o->length!=3||!jbr_int_slot(a)||b!=JBR_NONE||d!=JBR_NONE)return 0;break;
                 case 0x34:if(o->length!=1||!jbr_ref_slot(a)||!jbr_int_slot(b)||!jbr_int_slot(d))return 0;break;
                 case 0xb8:if(o->length!=3||!jbr_int_slot(a)||!jbr_int_slot(b)||!jbr_int_slot(d))return 0;break;
+                case 0xb6:if(o->length!=3||!jbr_ref_slot(a)||!jbr_ref_slot(b)||d!=JBR_NONE)return 0;break;
                 case 0x6c:case 0x70:if(o->length!=1||!jbr_int_slot(a)||!jbr_int_slot(b)||!jbr_int_slot(d))return 0;break;
                 default:return 0;
             }

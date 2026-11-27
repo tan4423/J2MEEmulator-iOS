@@ -33,7 +33,9 @@ static uint64_t cpu_now(clockid_t clock) {
 #endif
 static void *job_main(void *p) {
     Job *j = p; char cp[2048], portbuf[16];
-    snprintf(cp, sizeof cp, "%s:%s", j->api, j->app);
+    if(!strncmp(j->mode,"residual",8))
+        snprintf(cp,sizeof cp,"%s:%s",j->app,j->api); // controlled LCDUI doubles only
+    else snprintf(cp, sizeof cp, "%s:%s", j->api, j->app);
     snprintf(portbuf, sizeof portbuf, "%d", j->port);
     MiniJVM *vm = jvm_create();
     if (!vm) { j->rc = -2; goto done; }
@@ -119,7 +121,7 @@ static int intrinsic_ok(const Job *j) {
 }
 #endif
 static int residual_equal(const Job *a,const Job *b) {
-    char p[1024],q[1024],x[256],y[256];
+    char p[1024],q[1024],x[1024],y[1024];
     snprintf(p,sizeof p,"%s/residual.txt",a->save);
     snprintf(q,sizeof q,"%s/residual.txt",b->save);
     FILE *f=fopen(p,"r"),*g=fopen(q,"r");

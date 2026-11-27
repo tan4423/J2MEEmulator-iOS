@@ -88,6 +88,13 @@ def emit_bytecode(ins, entry, residual):
             elif op == 'putstatic':
                 access(single(o.uses)); pc_map.append((len(out), pc))
                 out.append(0xb3); out.extend(cp(arg))
+            elif op == 'invokevirtual':
+                operands=stack_slots(o.uses)
+                if len(operands)!=2 or any(not v.startswith('r') for v in operands) or o.defs:
+                    raise ValueError('draw effect operands')
+                for v in operands: access(v)
+                out.extend((3,)*8)
+                pc_map.append((len(out),pc));out.append(0xb6);out.extend(cp(arg))
             elif op in binary or op == 'invokestatic':
                 operands = stack_slots(o.uses)
                 if len(operands) != 2:
@@ -127,7 +134,7 @@ def emit_bytecode(ins, entry, residual):
     return bytes(out), max_local, pc_map
 
 
-def replace_fixture_code(data, code, max_locals, name='k1', desc='(LClass_hvi;)V'):
+def replace_fixture_code(data, code, max_locals, name='k1', desc='(LClass_hvi;)V', max_stack=2):
     """Replace Code in a *temporary fixture* (classfile <=49, no handlers).
 
     Keep all CP entries and other methods byte-identical. No StackMapTable
@@ -158,7 +165,7 @@ def replace_fixture_code(data, code, max_locals, name='k1', desc='(LClass_hvi;)V
                 if methods and key==(name,desc) and attr=='Code':
                     if flags&0x520 or not flags&8 or u2(p+14+u4(p+10)):
                         raise ValueError('unsupported fixture method')
-                    body=struct.pack('>HHI',2,max_locals,len(code))+code+b'\0\0\0\0'
+                    body=struct.pack('>HHI',max_stack,max_locals,len(code))+code+b'\0\0\0\0'
                     matches.append((p,end,data[p:p+2]+struct.pack('>I',len(body))+body))
                 p=end
     if len(matches)!=1: raise ValueError('fixture method identity')

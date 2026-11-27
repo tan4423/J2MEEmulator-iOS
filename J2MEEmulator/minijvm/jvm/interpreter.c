@@ -31,7 +31,7 @@ static int jbr_fixture_admit(Runtime *r,MethodInfo *m,CodeAttribute *ca) {
         ca->jit.state!=JIT_GEN_SUCCESS &&
         stack_size(s)>=1 && stack_size(s)<=s->max_size &&
         JBR_SLOTS-1+ca->max_stack+2<=s->max_size-stack_size(s) &&
-        (s->sp-1)->rvalue &&
+        (jbr_draw_effects || (s->sp-1)->rvalue) &&
         !memcmp(ca->bytecode_for_jit,jbr_expected_code,sizeof(jbr_expected_code)) &&
         jbr_validate(jbr_plan,JBR_COUNT,jbr_expected_code,sizeof(jbr_expected_code));
 }
@@ -2410,6 +2410,15 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                                         jbr_copy_slot(sp,localvar+o->b,o->b);
                                         ++sp;
                                     }
+                                    if(o->imm==op_invokevirtual) {
+                                        // Fixture-only sink ignores primitive
+                                        // coordinates; original call and null
+                                        // checks run at the original PC.
+                                        for(unsigned k=0;k<8;k++) {
+                                            memset(sp,0,sizeof(*sp));
+                                            ++sp;
+                                        }
+                                    }
                                     stack->sp=sp;
                                     jbr_pending=jbr_index;
                                     break;
@@ -2424,7 +2433,8 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                            !(o->imm==op_getstatic &&
                              (actual==op_getstatic_int||actual==op_getstatic_byte||actual==op_getstatic_ref)) &&
                            !(o->imm==op_putstatic && actual==op_putstatic_int) &&
-                           !(o->imm==op_invokestatic && actual==op_invokestatic_fast))abort();
+                           !(o->imm==op_invokestatic && actual==op_invokestatic_fast) &&
+                           !(o->imm==op_invokevirtual && actual==op_invokevirtual_fast))abort();
                     }
 #endif
                     // Avoid a cross-unit function call on every interpreted

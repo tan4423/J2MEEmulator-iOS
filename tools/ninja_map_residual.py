@@ -42,7 +42,7 @@ def disassemble(jar):
     return [(int(m[1]),m[2],m[3]) for line in body.splitlines() if (m:=re.match(r'^\s+(\d+):\s+(\w+)\s*(.*)$',line))]
 
 
-def lower(ins):
+def lower(ins, draw_effects=False):
     """Typed stack-to-slot CFG. Only accepted observed operations; fail closed."""
     todo=deque([(ins[0][0],())]);seen={};ops={};fields=set();writes=[];pcs=[i[0] for i in ins]
     table={pc:(op,arg,pcs[i+1] if i+1<len(pcs) else None) for i,(pc,op,arg) in enumerate(ins)}
@@ -96,7 +96,14 @@ def lower(ins):
         elif op=='invokevirtual':
             if arg.split('// Method ',1)[1]!=DRAW:raise ValueError('unknown draw')
             for _ in range(8):pop('I')
-            pop('R');pop('R');uses.clear();code='' # only in admitted no-op screen model
+            if draw_effects:
+                # Retain the actual receiver, source and invocation effects.
+                # Primitive arguments are dead only in the controlled
+                # coordinate-independent sink model; never authorize live use.
+                uses.clear();image,receiver=pop('R'),pop('R');effect=True
+                code=f'((Class_hvi){receiver}).a((javax.microedition.lcdui.Image){image},0,0,0,0,0,0,0,0);'
+            else:
+                pop('R');pop('R');uses.clear();code='' # only in admitted no-op screen model
         elif op.startswith('if_icmp'):
             sym={'if_icmpeq':'==','if_icmpne':'!=','if_icmpge':'>='}.get(op)
             if sym is None:raise ValueError(op)

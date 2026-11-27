@@ -12,6 +12,7 @@ import zipfile
 
 import ninja_map_residual as ir
 from ninja_residual_bytecode import emit_bytecode, replace_fixture_code
+import ninja_residual_wrapper_fixture as wrapped
 
 SYNTHETIC = '''public class Class_hii {
     static int a2,b2,c2,d2,j1,r3; static byte d4;
@@ -90,14 +91,15 @@ public class ResidualMain {
 }'''
 
 
-def build(root, archive=None, bootclasspath=None):
+def build(root, archive=None, bootclasspath=None, draw_effects=False):
     root=Path(root).resolve()
     src=root/'src'; original=root/'original'; residual=root/'residual'
     for d in (src,original,residual): d.mkdir(parents=True,exist_ok=False)
-    (src/'Class_hvi.java').write_text(WRAPPER)
+    (src/'Class_hvi.java').write_text(wrapped.WRAPPER if draw_effects else WRAPPER)
     pkg=src/'javax/microedition/lcdui';pkg.mkdir(parents=True)
     # Test double, deliberately not the real LCDUI Image. Never packaged.
-    (pkg/'Image.java').write_text('package javax.microedition.lcdui; public class Image {}')
+    (pkg/'Image.java').write_text(wrapped.IMAGE if draw_effects else 'package javax.microedition.lcdui; public class Image {}')
+    if draw_effects: (pkg/'Graphics.java').write_text(wrapped.GRAPHICS)
     if archive is None:
         (src/'Class_hii.java').write_text(SYNTHETIC)
         (src/'Class_hac.java').write_text(EXTERNAL)
@@ -108,23 +110,26 @@ def build(root, archive=None, bootclasspath=None):
         # Only the synthetic, simple legacy-CP class; no modern CP entries are
         # admitted by replace_fixture_code. Original game fixture already v47.
         data=data[:6]+b'\x00\x31'+data[8:]
-        ops,fields,_=ir.lower(ins)
+        ops,fields,_=ir.lower(ins,draw_effects=draw_effects)
         data=ir.fixture(data,fields)
     else:
         archive=Path(archive)
         if hashlib.sha256(archive.read_bytes()).hexdigest()!=ir.SHA:raise ValueError('unknown archive')
-        ins=ir.disassemble(archive);ops,fields,_=ir.lower(ins)
+        ins=ir.disassemble(archive);ops,fields,_=ir.lower(ins,draw_effects=draw_effects)
         with zipfile.ZipFile(archive) as z:data=ir.fixture(z.read(ir.OWNER+'.class'),fields)
         for owner in ('Class_hac','Class_hxb'):
             names={name.split('.')[1] for name,t in fields if name.startswith(owner+'.') and t=='I'}
             names|=set(('r24','v25','y26','b28','b20','e10') if owner=='Class_hac' else ('s5',))
             (src/(owner+'.java')).write_text('public final class '+owner+' {public static int '+','.join(sorted(names))+';}')
         subprocess.run(['javac','--release','8','-d',str(original),*map(str,src.rglob('*.java'))],check=True)
+    if archive is not None and draw_effects:
+        with zipfile.ZipFile(archive) as z:
+            (original/'Class_hvi.class').write_bytes(wrapped.copy_wrapper(z.read('Class_hvi.class')))
     entry,plan=ir.reduce(ops)
     code,locals_count,pc_map=emit_bytecode(ins,entry,plan)
-    reduced=replace_fixture_code(data,code,locals_count)
+    reduced=replace_fixture_code(data,code,locals_count,max_stack=10 if draw_effects else 2)
     (original/'Class_hii.class').write_bytes(data)
-    (src/'ResidualMain.java').write_text(HARNESS)
+    (src/'ResidualMain.java').write_text(wrapped.harness(HARNESS,fields) if draw_effects else HARNESS)
     flags=['-source','8','-target','8','-bootclasspath',str(bootclasspath)] if bootclasspath else ['--release','8']
     subprocess.run(['javac',*flags,'-classpath',str(original),'-d',str(original),str(src/'ResidualMain.java')],check=True)
     for file in original.rglob('*.class'):
@@ -136,6 +141,6 @@ def build(root, archive=None, bootclasspath=None):
 
 
 def main():
-    p=argparse.ArgumentParser(description=__doc__);p.add_argument('root',type=Path);p.add_argument('--archive',type=Path);p.add_argument('--bootclasspath',type=Path);a=p.parse_args()
-    build(a.root,a.archive,a.bootclasspath)
+    p=argparse.ArgumentParser(description=__doc__);p.add_argument('root',type=Path);p.add_argument('--archive',type=Path);p.add_argument('--bootclasspath',type=Path);p.add_argument('--draw-effects',action='store_true');a=p.parse_args()
+    build(a.root,a.archive,a.bootclasspath,a.draw_effects)
 if __name__=='__main__':main()
