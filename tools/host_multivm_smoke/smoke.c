@@ -65,7 +65,7 @@ static void *job_main(void *p) {
         jarbox_treo_mode_set(&vm->session->treo_state,1);
     }
     uint64_t p0=cpu_now(CLOCK_PROCESS_CPUTIME_ID),t0=cpu_now(CLOCK_THREAD_CPUTIME_ID);
-    j->rc=call_main(vm,intrinsic?"IntrinsicMain":"SmokeMain",args);
+    j->rc=call_main(vm,intrinsic?"IntrinsicMain":(!strcmp(j->mode,"residual")?"ResidualMain":"SmokeMain"),args);
     uint64_t t1=cpu_now(CLOCK_THREAD_CPUTIME_ID),p1=cpu_now(CLOCK_PROCESS_CPUTIME_ID);
     if (t0 && t1>t0) j->thread_cpu_ns=t1-t0;
     if (p0 && p1>p0) j->process_cpu_ns=p1-p0;
@@ -73,7 +73,7 @@ static void *job_main(void *p) {
     j->array_calls=__atomic_load_n(&vm->session->treo_state.array_lookup_mode1_calls,__ATOMIC_RELAXED);
     j->gc_cycles=__atomic_load_n(&vm->session->treo_state.gc_worker_cycles,__ATOMIC_RELAXED);
 #else
-    j->rc = call_main(vm, "SmokeMain", args);
+    j->rc = call_main(vm, !strcmp(j->mode,"residual")?"ResidualMain":"SmokeMain", args);
 #endif
     arraylist_destroy(args);
     pthread_mutex_lock(&j->lock);
@@ -112,6 +112,29 @@ static int intrinsic_ok(const Job *j) {
     return n==strlen(expected)&&!memcmp(buf,expected,n);
 }
 #endif
+static int residual_equal(const Job *a,const Job *b) {
+    char p[1024],q[1024],x[256],y[256];
+    snprintf(p,sizeof p,"%s/residual.txt",a->save);
+    snprintf(q,sizeof q,"%s/residual.txt",b->save);
+    FILE *f=fopen(p,"r"),*g=fopen(q,"r");
+    int ok=0;
+    if(f && g) {
+        int n=0,faults=0,changed=0;
+        for(;n<2000;n++) {
+            int index=-1,fault=-1;
+            if(!fgets(x,sizeof x,f)||!fgets(y,sizeof y,g)||strcmp(x,y)||
+               !strchr(x,'\n')||sscanf(x,"%d:%d:",&index,&fault)!=2||index!=n||
+               fault<0||fault>3)break;
+        }
+        if(n==2000 && fgets(x,sizeof x,f)&&fgets(y,sizeof y,g)&&!strcmp(x,y)&&
+           sscanf(x,"PASS 2000 %d %d",&faults,&changed)==2&&
+           faults>0&&faults<=2000&&changed>0&&changed<=2000&&
+           fgetc(f)==EOF&&fgetc(g)==EOF&&!ferror(f)&&!ferror(g))ok=1;
+    }
+    if(f)fclose(f);
+    if(g)fclose(g);
+    return ok;
+}
 static long heartbeat(const Job *j) {
     char path[1024]; snprintf(path, sizeof path, "%s/heartbeat.txt", j->save);
     FILE *f = fopen(path, "r"); if (!f) return -1;
@@ -184,7 +207,16 @@ int main(int argc, char **argv) {
         REQUIRE(a.gc_cycles>0 && b.gc_cycles>0);
     } else
 #endif
-    if (!strcmp(scenario, "pair")) {
+    if (!strcmp(scenario,"residual_diff")) {
+        char residual_app[2048];
+        int len=snprintf(residual_app,sizeof residual_app,"%s/../residual",argv[3]);
+        REQUIRE(len>0&&(size_t)len<sizeof residual_app);
+        init_job(&a,argv,"A","residual",bport,base);
+        init_job(&b,argv,"B","residual",bport+1,base);
+        b.app=residual_app;
+        start_job(&a); start_job(&b); join_job(&a); join_job(&b);
+        REQUIRE(!a.rc&&!b.rc&&residual_equal(&a,&b));
+    } else if (!strcmp(scenario, "pair")) {
         init_job(&a, argv, "A", "short", bport, base); init_job(&b, argv, "B", "short", bport+1, base);
         start_job(&a); start_job(&b); join_job(&a); join_job(&b);
         REQUIRE(!a.rc && !b.rc && result_ok(&a) && result_ok(&b));

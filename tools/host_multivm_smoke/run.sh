@@ -5,6 +5,7 @@ SAN=${1:-asan}; ITER=${2:-5}; SUITE=${3:-lifecycle}
 OPT=-O1; LIMIT=120
 case "$SUITE" in
   lifecycle) EXTRA=""; SCENARIOS="pair stop_a restart";;
+  residual) EXTRA=""; SCENARIOS="residual_diff";;
   intrinsics|benchmark)
     EXTRA="-DJARBOX_HOST_INTRINSIC_TEST=1 -DTREO_VM_CHAR_LEAF_EXPERIMENT=1 -DTREO_VM_ARRAY_LOOKUP_MODE1_EXPERIMENT=1"
     SCENARIOS=intrinsic_diff
@@ -27,18 +28,27 @@ mkdir -p $OUT/app
 JAVAC="java -m jdk.compiler/com.sun.tools.javac.Main"
 $JAVAC -nowarn -source 8 -target 8 -bootclasspath "$ROOT/J2MEEmulator/Resources/jars/minijvm_rt.jar" -d "$OUT/app" "$HERE/java/SmokeMain.java"
 test -s "$OUT/app/SmokeMain.class"
-if [[ "$SUITE" != lifecycle ]]; then
+if [[ "$SUITE" == intrinsics || "$SUITE" == benchmark ]]; then
   $JAVAC -nowarn -source 8 -target 8 -bootclasspath "$ROOT/J2MEEmulator/Resources/jars/minijvm_rt.jar" -d "$OUT/app" "$HERE/java/IntrinsicMain.java"
   test -s "$OUT/app/IntrinsicMain.class"
   export UBSAN_OPTIONS=halt_on_error=1
   export ASAN_OPTIONS=halt_on_error=1
 fi
 RT=$ROOT/J2MEEmulator/Resources/jars/minijvm_rt.jar; API=$ROOT/J2MEEmulator/Resources/jars/j2me_api.jar
+APP="$OUT/app"
+if [[ "$SUITE" == residual ]]; then
+  python3 "$ROOT/tools/ninja_residual_fixture.py" "$OUT/fixtures" --bootclasspath "$RT"
+  APP="$OUT/fixtures/original"
+  export UBSAN_OPTIONS=halt_on_error=1
+  export ASAN_OPTIONS=halt_on_error=1
+fi
 pass=0; fail=0
 for sc in $SCENARIOS; do for i in $(seq 1 $ITER); do
-  if timeout "$LIMIT" "$OUT/smoke" "$RT" "$API" "$OUT/app" "$sc" >"$OUT/$sc.$i.log" 2>&1; then
+  if timeout "$LIMIT" "$OUT/smoke" "$RT" "$API" "$APP" "$sc" >"$OUT/$sc.$i.log" 2>&1; then
     pass=$((pass+1))
-    if [[ "$SUITE" == intrinsics ]]; then
+    if [[ "$SUITE" == residual ]]; then
+      grep -E "^residual_diff: PASS" "$OUT/$sc.$i.log"
+    elif [[ "$SUITE" == intrinsics ]]; then
       grep -E '^intrinsics A:|^intrinsic_diff: PASS' "$OUT/$sc.$i.log"
     elif [[ "$SUITE" == benchmark ]]; then
       grep -E '^bench |^intrinsic_bench: PASS' "$OUT/$sc.$i.log"

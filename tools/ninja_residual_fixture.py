@@ -1,0 +1,123 @@
+#!/usr/bin/env python3
+"""Build isolated original/residual class fixtures for the real VM host gate.
+No proprietary binaries are needed for the synthetic CI fixture. Optional
+local Nick archive uses the already verified exact map-loop compiler profile.
+"""
+import argparse
+import hashlib
+import json
+from pathlib import Path
+import subprocess
+import zipfile
+
+import ninja_map_residual as ir
+from ninja_residual_bytecode import emit_bytecode, replace_fixture_code
+
+SYNTHETIC = '''public class Class_hii {
+    static int a2,b2,c2,d2,j1,r3; static byte d4;
+    static char[] u3; static int[] x3;
+    static javax.microedition.lcdui.Image sprite;
+    public static int q3(int x,int y){return x3[y*j1+x];}
+    public static int m3(int x,int y){return x3[y*j1+x];}
+    public static final void k1(Class_hvi g){
+        for(int x=Class_hac.r24;x<Class_hac.y26;x++){
+            for(int y=Class_hac.v25;y<Class_hac.b28;y++){
+                int tile=u3[y*j1+x]-1;
+                if(r3==4 && (q3(x,y)&16)==16){
+                    g.a(sprite,x*24,y*24,tile*24,24,0,x+Class_hac.b20,y+Class_hac.e10,0);
+                }
+                a2=x; b2=y; c2=tile/d4; d2=m3(x,y);
+                g.a(sprite,x*24,y*24,tile*24,24,0,x,y,0);
+            }
+        }
+    }
+}'''
+EXTERNAL = '''public class Class_hac {public static int r24,v25,y26,b28,b20,e10;}'''
+WRAPPER = '''public final class Class_hvi {
+    public final void a(javax.microedition.lcdui.Image i,int a,int b,int c,int d,int e,int f,int g,int h){}
+}'''
+HARNESS = '''import java.io.FileOutputStream;
+public class ResidualMain {
+    static int rng=1289;
+    static int next(){rng=rng*1664525+1013904223;return rng;}
+    public static void main(String[] args)throws Exception{
+        FileOutputStream out=new FileOutputStream(args[1]+"/residual.txt");
+        Class_hvi receiver=new Class_hvi();
+        int faults=0,changed=0;
+        for(int n=0;n<2000;n++){
+            int w=1+(next()&7),h=1+(next()&7);
+            Class_hii.j1=w;Class_hii.r3=n%10;Class_hii.d4=(byte)(n%37==0?0:24);
+            Class_hii.u3=new char[w*h];Class_hii.x3=new int[w*h];
+            for(int i=0;i<w*h;i++){Class_hii.u3[i]=(char)(next()&127);Class_hii.x3[i]=next()&2047;}
+            Class_hac.r24=0;Class_hac.v25=0;Class_hac.y26=w;Class_hac.b28=h;
+            Class_hac.b20=next();Class_hac.e10=next();Class_hxb.s5=next();
+            if(n%31==0)Class_hii.u3=null;if(n%41==0)Class_hii.x3=null;
+            if(n%43==0)Class_hac.y26=w+1;if(n%47==0)Class_hac.b28=h+1;
+            int a=next(),b=next(),c=next(),d=next();
+            Class_hii.a2=a;Class_hii.b2=b;Class_hii.c2=c;Class_hii.d2=d;
+            int fault=0;
+            try {Class_hii.k1(receiver);}
+            catch(NullPointerException e){fault=1;}
+            catch(ArrayIndexOutOfBoundsException e){fault=2;}
+            catch(ArithmeticException e){fault=3;}
+            if(fault!=0)faults++;
+            if(a!=Class_hii.a2||b!=Class_hii.b2||c!=Class_hii.c2||d!=Class_hii.d2)changed++;
+            String line=n+":"+fault+":"+Class_hii.a2+":"+Class_hii.b2+":"+Class_hii.c2+":"+Class_hii.d2+"\\n";
+            out.write(line.getBytes());
+            if(n%100==0){System.gc();Thread.sleep(10);}
+        }
+        if(faults==0||changed==0)throw new IllegalStateException("vacuous fixture");
+        out.write(("PASS 2000 "+faults+" "+changed+"\\n").getBytes());out.close();
+    }
+}'''
+
+
+def build(root, archive=None, bootclasspath=None):
+    root=Path(root).resolve()
+    src=root/'src'; original=root/'original'; residual=root/'residual'
+    for d in (src,original,residual): d.mkdir(parents=True,exist_ok=False)
+    (src/'Class_hvi.java').write_text(WRAPPER)
+    pkg=src/'javax/microedition/lcdui';pkg.mkdir(parents=True)
+    # Test double, deliberately not the real LCDUI Image. Never packaged.
+    (pkg/'Image.java').write_text('package javax.microedition.lcdui; public class Image {}')
+    if archive is None:
+        (src/'Class_hii.java').write_text(SYNTHETIC)
+        (src/'Class_hac.java').write_text(EXTERNAL)
+        (src/'Class_hxb.java').write_text('public class Class_hxb {public static int s5;}')
+        subprocess.run(['javac','--release','8','-d',str(original),*map(str,src.rglob('*.java'))],check=True)
+        ins=ir.disassemble(original)
+        data=(original/'Class_hii.class').read_bytes()
+        # Only the synthetic, simple legacy-CP class; no modern CP entries are
+        # admitted by replace_fixture_code. Original game fixture already v47.
+        data=data[:6]+b'\x00\x31'+data[8:]
+        ops,fields,_=ir.lower(ins)
+        data=ir.fixture(data,fields)
+    else:
+        archive=Path(archive)
+        if hashlib.sha256(archive.read_bytes()).hexdigest()!=ir.SHA:raise ValueError('unknown archive')
+        ins=ir.disassemble(archive);ops,fields,_=ir.lower(ins)
+        with zipfile.ZipFile(archive) as z:data=ir.fixture(z.read(ir.OWNER+'.class'),fields)
+        for owner in ('Class_hac','Class_hxb'):
+            names={name.split('.')[1] for name,t in fields if name.startswith(owner+'.') and t=='I'}
+            names|=set(('r24','v25','y26','b28','b20','e10') if owner=='Class_hac' else ('s5',))
+            (src/(owner+'.java')).write_text('public final class '+owner+' {public static int '+','.join(sorted(names))+';}')
+        subprocess.run(['javac','--release','8','-d',str(original),*map(str,src.rglob('*.java'))],check=True)
+    entry,plan=ir.reduce(ops)
+    code,locals_count,pc_map=emit_bytecode(ins,entry,plan)
+    reduced=replace_fixture_code(data,code,locals_count)
+    (original/'Class_hii.class').write_bytes(data)
+    (src/'ResidualMain.java').write_text(HARNESS)
+    flags=['-source','8','-target','8','-bootclasspath',str(bootclasspath)] if bootclasspath else ['--release','8']
+    subprocess.run(['javac',*flags,'-classpath',str(original),'-d',str(original),str(src/'ResidualMain.java')],check=True)
+    for file in original.rglob('*.class'):
+        dest=residual/file.relative_to(original);dest.parent.mkdir(parents=True,exist_ok=True)
+        dest.write_bytes(reduced if file.name=='Class_hii.class' else file.read_bytes())
+    report={'runtime_authorized':False,'original_ops':len(ops),'residual_ops':sum(bool(o.code) for o in plan.values()),'fixture_bytecode_bytes':len(code),'effect_pc_map':pc_map}
+    (root/'plan.json').write_text(json.dumps(report,indent=2)+'\n')
+    print({k:v for k,v in report.items() if k!='effect_pc_map'})
+
+
+def main():
+    p=argparse.ArgumentParser(description=__doc__);p.add_argument('root',type=Path);p.add_argument('--archive',type=Path);p.add_argument('--bootclasspath',type=Path);a=p.parse_args()
+    build(a.root,a.archive,a.bootclasspath)
+if __name__=='__main__':main()
