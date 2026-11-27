@@ -214,10 +214,19 @@ static int desktop_vector_body(Runtime *r,StackEntry *sp){
     if(cl->jloader||cl->status!=CLASS_STATUS_CLINITED){jarbox_lab_vector_probe(4);return 0;}
     if(!l||sp!=l+2||s->store+s->max_size-sp<4){jarbox_lab_vector_probe(5);return 0;}
     Instance *v=l[0].rvalue;
-    if(!v||v->mb.type!=MEM_TYPE_INS||!v->mb.clazz||!v->obj_fields||
-       r->lock!=(MemoryBlock *)v||
-       (v->mb.clazz!=cl&&(v->mb.clazz->superclass!=cl||
-          !jbr_eq(v->mb.clazz->name,"Class_hjf")))){jarbox_lab_vector_probe(6);return 0;}
+    if(!v||v->mb.type!=MEM_TYPE_INS||!v->mb.clazz||!v->obj_fields){
+        if(jarbox_lab_vector_fixture())fprintf(stderr,"VECTOR receiver invalid ptr=%p type=%u clazz=%p fields=%p\\n",(void*)v,v?v->mb.type:0,v?(void*)v->mb.clazz:NULL,v?(void*)v->obj_fields:NULL);
+        jarbox_lab_vector_probe(6);return 0;
+    }
+    if(r->lock!=(MemoryBlock *)v){
+        if(jarbox_lab_vector_fixture())fprintf(stderr,"VECTOR monitor mismatch lock=%p receiver=%p sync=%u jdwp=%d\\n",(void*)r->lock,(void*)v,m->is_sync,r->jvm->jdwp_enable);
+        jarbox_lab_vector_probe(6);return 0;
+    }
+    if(v->mb.clazz!=cl&&(v->mb.clazz->superclass!=cl||
+          !jbr_eq(v->mb.clazz->name,"Class_hjf"))){
+        if(jarbox_lab_vector_fixture())fprintf(stderr,"VECTOR class mismatch receiver=%s super=%s method=%s\\n",utf8_cstr(v->mb.clazz->name),v->mb.clazz->superclass?utf8_cstr(v->mb.clazz->superclass->name):"(null)",utf8_cstr(cl->name));
+        jarbox_lab_vector_probe(6);return 0;
+    }
     uint64_t layout=__atomic_load_n(&ca->desktop_vector_layout,__ATOMIC_ACQUIRE);
     if(!layout){
         const u8 *c=ca->bytecode_for_jit;
