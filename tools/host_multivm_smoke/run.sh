@@ -80,9 +80,9 @@ for sc in $SCENARIOS; do for i in $(seq 1 $ITER); do
   if timeout "$LIMIT" "$OUT/smoke" "$RT" "$API" "$APP" "$sc" >"$OUT/$sc.$i.log" 2>&1; then
     pass=$((pass+1))
     if [[ "$SUITE" == residual || "$SUITE" == residual_draw || "$SUITE" == residual_resume || "$SUITE" == residual_read || "$SUITE" == residual_closed ]]; then
-      grep -E "^residual_((native|resume|closed)_)?diff: PASS|^residual native (calls|compiles|deopts|skipped):" "$OUT/$sc.$i.log"
+      grep -E "^residual_((native|resume|closed)_)?diff: PASS|^residual native (calls|compiles|deopts|skipped|suspended):" "$OUT/$sc.$i.log"
     elif [[ "$SUITE" == residual_extended || "$SUITE" == residual_wide || "$SUITE" == residual_background ]]; then
-      grep -E "^residual_(extended|wide|background)_diff: PASS|^residual native (calls|compiles|deopts|skipped):|^residual cold deopts:" "$OUT/$sc.$i.log"
+      grep -E "^residual_(extended|wide|background)_diff: PASS|^residual native (calls|compiles|deopts|skipped|suspended):|^residual cold deopts:" "$OUT/$sc.$i.log"
     elif [[ "$SUITE" == binding ]]; then
       grep -E "^binding (A|B):|^binding_diff: PASS" "$OUT/$sc.$i.log"
     elif [[ "$SUITE" == intrinsics ]]; then

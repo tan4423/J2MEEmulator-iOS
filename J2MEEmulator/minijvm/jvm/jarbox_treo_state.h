@@ -63,7 +63,7 @@ typedef struct JarBoxTreoState {
 #if defined(JARBOX_HOST_RESIDUAL_TEST) || (defined(TREO_RESIDUAL_EXPERIMENT) && TREO_RESIDUAL_EXPERIMENT)
     unsigned host_residual_enabled,host_residual_warmed;
     uint64_t host_residual_calls;
-    uint64_t host_residual_compiles;
+    uint64_t host_residual_compiles,host_residual_suspended;
     uint64_t host_residual_deopts,host_residual_skipped,host_residual_cold_deopts;
     unsigned residual_archive_verified,residual_plan_ready;
     uint64_t residual_faults;

@@ -16,7 +16,7 @@ typedef struct { const char *rt, *api, *app, *tag, *mode; char save[512]; int po
     MiniJVM *jvm; pthread_t th; pthread_mutex_t lock; atomic_int finished;
     int stop_requested, rc;
     uint64_t char_calls, array_calls, gc_cycles;
-    uint64_t thread_cpu_ns, process_cpu_ns, residual_calls, residual_compiles, residual_deopts,residual_skipped,residual_cold_deopts;
+    uint64_t thread_cpu_ns, process_cpu_ns, residual_calls, residual_compiles, residual_deopts,residual_skipped,residual_cold_deopts,residual_suspended;
     uint64_t binding_good,binding_bad,binding_mismatch; } Job;
 
 static void request_vm_stop(MiniJVM *vm) {
@@ -84,6 +84,7 @@ static void *job_main(void *p) {
 #if defined(JARBOX_HOST_RESIDUAL_TEST)
     j->residual_calls=__atomic_load_n(&vm->session->treo_state.host_residual_calls,__ATOMIC_RELAXED);
     j->residual_compiles=__atomic_load_n(&vm->session->treo_state.host_residual_compiles,__ATOMIC_RELAXED);
+    j->residual_suspended=__atomic_load_n(&vm->session->treo_state.host_residual_suspended,__ATOMIC_RELAXED);
     j->residual_deopts=__atomic_load_n(&vm->session->treo_state.host_residual_deopts,__ATOMIC_RELAXED);
     j->residual_skipped=__atomic_load_n(&vm->session->treo_state.host_residual_skipped,__ATOMIC_RELAXED);
     j->residual_cold_deopts=__atomic_load_n(&vm->session->treo_state.host_residual_cold_deopts,__ATOMIC_RELAXED);
@@ -262,7 +263,12 @@ int main(int argc, char **argv) {
         unsigned admitted=2000;
         if(closed){admitted=0;for(unsigned i=0;i<2000;i++)if(i%53&&i%59)++admitted;}
         printf("residual native skipped: A=%llu B=%llu\n",(unsigned long long)a.residual_skipped,(unsigned long long)b.residual_skipped);
-        REQUIRE(!a.rc&&!b.rc&&a.residual_calls==0&&b.residual_calls==admitted&&
+        printf("residual native suspended: A=%llu B=%llu\n",(unsigned long long)a.residual_suspended,(unsigned long long)b.residual_suspended);
+        // Every missing eligible invocation must be explicitly attributed
+        // to the suspend guard, and all outputs still must match exactly.
+        // Refuse a vacuous run dominated by suspension or fallback.
+        REQUIRE(!a.rc&&!b.rc&&a.residual_calls==0&&a.residual_suspended==0&&
+                b.residual_calls+b.residual_suspended==admitted&&b.residual_calls>=admitted*95u/100u&&
                 a.residual_compiles==0&&b.residual_compiles==1&&residual_equal(&a,&b));
         REQUIRE(a.residual_deopts==0&&((closed||!strcmp(scenario,"residual_resume_diff"))?
                 (b.residual_deopts>0&&b.residual_deopts<admitted):b.residual_deopts==0));

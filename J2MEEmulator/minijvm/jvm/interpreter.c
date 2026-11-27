@@ -66,9 +66,9 @@ static int jbr_fixture_admit(Runtime *r,MethodInfo *m,CodeAttribute *ca) {
     const uint16_t endian=1;
     // Only this trusted test fixture. In production exact JAR/API/CP and
     // resolved effect/sink identities must be proved; a name is insufficient.
-    return *(const unsigned char *)&endian==1 &&
+    const int eligible=*(const unsigned char *)&endian==1 &&
         r->jvm->session && r->jvm->session->treo_state.host_residual_enabled &&
-        !r->jvm->jdwp_enable && !r->thrd_info->is_stop && !r->thrd_info->suspend_count &&
+        !r->jvm->jdwp_enable && !r->thrd_info->is_stop &&
         !m->breakpoint && m->is_static && !m->is_sync && !m->is_native &&
         m->para_slots==1 && !m->return_slots &&
         utf8_equals_c(m->_this_class->name,"Class_hii") &&
@@ -82,6 +82,13 @@ static int jbr_fixture_admit(Runtime *r,MethodInfo *m,CodeAttribute *ca) {
             (jbr_draw_effects || (s->sp-1)->rvalue)) &&
         !memcmp(ca->bytecode_for_jit,jbr_expected_code,sizeof(jbr_expected_code)) &&
         (JBR_EXTENDED_FIXTURE||jbr_validate(jbr_plan,JBR_COUNT,jbr_expected_code,sizeof(jbr_expected_code)));
+    // GC may request suspension just as an otherwise eligible invocation
+    // arrives. Count this specific refusal; never hide missing admissions.
+    if(eligible&&r->thrd_info->suspend_count){
+        __atomic_fetch_add(&r->jvm->session->treo_state.host_residual_suspended,1,__ATOMIC_RELAXED);
+        return 0;
+    }
+    return eligible;
 }
 #endif // host-only generated fixture and admission
 static int jbr_eq(Utf8String *s,const char *str) { return s && utf8_equals_c(s,str); }
