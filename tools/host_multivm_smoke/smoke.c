@@ -16,7 +16,7 @@ typedef struct { const char *rt, *api, *app, *tag, *mode; char save[512]; int po
     MiniJVM *jvm; pthread_t th; pthread_mutex_t lock; atomic_int finished;
     int stop_requested, rc;
     uint64_t char_calls, array_calls, gc_cycles;
-    uint64_t thread_cpu_ns, process_cpu_ns, residual_calls, residual_compiles; } Job;
+    uint64_t thread_cpu_ns, process_cpu_ns, residual_calls, residual_compiles, residual_deopts; } Job;
 
 static void request_vm_stop(MiniJVM *vm) {
     vm->collector->exit_flag = 1;
@@ -83,6 +83,7 @@ static void *job_main(void *p) {
 #if defined(JARBOX_HOST_RESIDUAL_TEST)
     j->residual_calls=__atomic_load_n(&vm->session->treo_state.host_residual_calls,__ATOMIC_RELAXED);
     j->residual_compiles=__atomic_load_n(&vm->session->treo_state.host_residual_compiles,__ATOMIC_RELAXED);
+    j->residual_deopts=__atomic_load_n(&vm->session->treo_state.host_residual_deopts,__ATOMIC_RELAXED);
 #endif
     arraylist_destroy(args);
     pthread_mutex_lock(&j->lock);
@@ -122,7 +123,7 @@ static int intrinsic_ok(const Job *j) {
 }
 #endif
 static int residual_equal(const Job *a,const Job *b) {
-    char p[1024],q[1024],x[1024],y[1024];
+    char p[1024],q[1024],x[65536],y[65536];
     snprintf(p,sizeof p,"%s/residual.txt",a->save);
     snprintf(q,sizeof q,"%s/residual.txt",b->save);
     FILE *f=fopen(p,"r"),*g=fopen(q,"r");
@@ -227,7 +228,7 @@ int main(int argc, char **argv) {
         REQUIRE(!a.rc&&!b.rc&&residual_equal(&a,&b));
     }
 #if defined(JARBOX_HOST_RESIDUAL_TEST)
-    else if (!strcmp(scenario,"residual_native_diff")) {
+    else if (!strcmp(scenario,"residual_native_diff") || !strcmp(scenario,"residual_resume_diff")) {
         // Both VMs load the original fixture, only B admits the native plan.
         init_job(&a,argv,"A","residual",bport,base);
         init_job(&b,argv,"B","residual-native",bport+1,base);
@@ -236,8 +237,11 @@ int main(int argc, char **argv) {
                (unsigned long long)a.residual_calls,(unsigned long long)b.residual_calls);
         printf("residual native compiles: A=%llu B=%llu\n",
                (unsigned long long)a.residual_compiles,(unsigned long long)b.residual_compiles);
+        printf("residual native deopts: A=%llu B=%llu\n",(unsigned long long)a.residual_deopts,(unsigned long long)b.residual_deopts);
         REQUIRE(!a.rc&&!b.rc&&a.residual_calls==0&&b.residual_calls==2000&&
                 a.residual_compiles==0&&b.residual_compiles==1&&residual_equal(&a,&b));
+        REQUIRE(a.residual_deopts==0&&(!strcmp(scenario,"residual_resume_diff")?
+                (b.residual_deopts>0&&b.residual_deopts<2000):b.residual_deopts==0));
     }
 #endif
     else if (!strcmp(scenario, "pair")) {

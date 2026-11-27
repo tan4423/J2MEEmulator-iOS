@@ -56,7 +56,7 @@ static inline int jbr_merge(JbrCompileNode *n,const JbrTypes *t,int *changed) {
 }
 static inline void jbr_empty(JbrCompileNode *n) {
     n->op.kind=JBR_NOP;n->op.a=n->op.b=n->op.dst=JBR_NONE;
-    n->op.alt=JBR_END;n->op.length=0;n->op.imm=0;n->uses=n->defs=0;
+    n->op.alt=JBR_END;n->op.length=0;n->op.checkpoint=0;n->op.imm=0;n->uses=n->defs=0;
 }
 static inline unsigned jbr_chase(const JbrCompileNode *n,unsigned count,unsigned at) {
     for(unsigned k=0;k<count;k++) {
@@ -72,7 +72,7 @@ static inline unsigned jbr_chase(const JbrCompileNode *n,unsigned count,unsigned
 // the dummy primitive args are valid solely for the trusted sink fixture.
 static inline unsigned jbr_compile(const unsigned char *code,unsigned size,
     JarBoxResidualCPKind cp,void *ctx,int draw_effects,JarBoxResidualOp *out,unsigned capacity) {
-    if(!code||!cp||!out||!size||size>JBR_MAX_CODE||!capacity)return 0;
+    if(!code||!cp||!out||!size||size>JBR_MAX_CODE||!capacity||draw_effects<0||draw_effects>2)return 0;
     JbrCompileScratch *sc=calloc(1,sizeof(*sc));if(!sc)return 0;
     JbrCompileNode *n=sc->nodes;unsigned count=0,result=0;
     memset(sc->at,0xff,sizeof(sc->at));memset(sc->remap,0xff,sizeof(sc->remap));
@@ -106,7 +106,16 @@ static inline unsigned jbr_compile(const unsigned char *code,unsigned size,
             else if(raw==0x10||raw==0x11){kind=JBR_CONST;imm=raw==0x10?(int8_t)code[pc0+1]:jbr_i16(code+pc0+1);d=jbr_push(&t,0);}
             else if(raw>=0x1b&&raw<=0x1d){kind=JBR_MOVE;a=raw-0x1a;if(!(t.initialized&(1u<<a)))goto done;d=jbr_push(&t,0);}
             else if(raw>=0x3c&&raw<=0x3e){kind=JBR_MOVE;a=jbr_pop(&t,0);d=raw-0x3b;t.initialized|=1u<<d;}
-            else if(raw==0x2a){kind=JBR_MOVE;a=0;d=jbr_push(&t,1);}
+            else if(raw==0x2a){
+                // Resume is allowed only before the first operand of a draw
+                // block, with the ordinary locals definitely initialized.
+                // This narrow contract rejects unsupported stack shapes.
+                if(draw_effects==2){
+                    if(t.depth || (t.initialized&14u)!=14u)goto done;
+                    o->checkpoint=1;
+                }
+                kind=JBR_MOVE;a=0;d=jbr_push(&t,1);
+            }
             else if(raw==0x59){if(!t.depth||(t.refs&(1u<<(t.depth-1))))goto done;kind=JBR_MOVE;a=4+t.depth-1;d=jbr_push(&t,0);}
             else if(raw==0x84){kind=JBR_INC;a=d=code[pc0+1];if(a<1||a>3||!(t.initialized&(1u<<a)))goto done;imm=(int8_t)code[pc0+2];}
             else if(raw==0xb2||raw==0xb3||raw==0xb8||raw==0xb6){
@@ -147,7 +156,9 @@ static inline unsigned jbr_compile(const unsigned char *code,unsigned size,
             for(unsigned i=count;i--;) {
                 JarBoxResidualOp *o=&n[i].op;
                 uint32_t live=(o->next==JBR_END?0:n[o->next].live)|(o->alt==JBR_END?0:n[o->alt].live);
-                live=n[i].uses|(live&~n[i].defs);
+                // A possible continuation to the original interpreter is
+                // an observer of all ordinary initialized integer locals.
+                live=n[i].uses|(live&~n[i].defs)|(o->checkpoint?14u:0u);
                 if(live!=n[i].live){n[i].live=live;changed=1;}
             }
             if(!changed)break;
@@ -155,7 +166,7 @@ static inline unsigned jbr_compile(const unsigned char *code,unsigned size,
         for(unsigned i=0;i<count;i++) {
             JarBoxResidualOp *o=&n[i].op;
             uint32_t live=(o->next==JBR_END?0:n[o->next].live)|(o->alt==JBR_END?0:n[o->alt].live);
-            if(o->kind!=JBR_EFFECT&&n[i].defs&&!(n[i].defs&live)){jbr_empty(n+i);altered=1;}
+            if(o->kind!=JBR_EFFECT&&!o->checkpoint&&n[i].defs&&!(n[i].defs&live)){jbr_empty(n+i);altered=1;}
         }
         for(unsigned i=0;i<count;i++) {
             JarBoxResidualOp *o=&n[i].op;

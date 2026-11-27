@@ -12,7 +12,7 @@ enum { JBR_SLOTS=28, JBR_NONE=255, JBR_END=65535 };
 typedef struct {
     uint8_t kind,a,b,dst;
     uint16_t pc,next,alt;
-    uint8_t length;
+    uint8_t length, checkpoint;
     int32_t imm;
 } JarBoxResidualOp;
 static inline int jbr_ref_slot(unsigned n) { return n==0 || (n>=16 && n<JBR_SLOTS); }
@@ -30,6 +30,8 @@ static inline int jbr_validate(const JarBoxResidualOp *plan,unsigned count,
         const JarBoxResidualOp *o=plan+i;
         unsigned a=o->a,b=o->b,d=o->dst;
         if(o->pc>=size)return 0;
+        if(o->checkpoint>1 || (o->checkpoint &&
+           (o->kind!=JBR_MOVE || o->a!=0 || o->dst!=16 || code[o->pc]!=0x2a)))return 0;
         if(o->kind==JBR_EFFECT && o->imm==0xb1) {
             if(code[o->pc]!=0xb1||o->length!=1||a!=JBR_NONE||b!=JBR_NONE||
                d!=JBR_NONE||o->next!=JBR_END||o->alt!=JBR_END)return 0;

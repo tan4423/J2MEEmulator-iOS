@@ -41,7 +41,7 @@ def slot(v):
     return (16 if v[0]=='r' else 4)+int(v[1:])
 
 
-def emit(ins,entry,plan):
+def emit(ins,entry,plan,resume=False):
     """One node per retained IR operation. Effects delegate at original PC."""
     table={p:(o,a) for p,o,a in ins}
     order=[entry]+sorted(set(plan)-{entry});index={p:i for i,p in enumerate(order)}
@@ -69,18 +69,29 @@ def emit(ins,entry,plan):
             kind='JBR_'+op.upper()
         else:raise ValueError('unsupported node '+op)
         if kind!='JBR_EFFECT' and len(node.successors)!=(2 if node.branch else 1):raise ValueError('successor shape')
-        rows.append(f'    {{{kind},{a},{b},{dst},{pc},{nxt},{alt},{length},{imm}}},')
+        checkpoint=int(resume and op=='aload_0')
+        rows.append(f'    {{{kind},{a},{b},{dst},{pc},{nxt},{alt},{length},{checkpoint},{imm}}},')
     code=encode(ins,'<')
     if len(code)>=65535:raise ValueError('code too large')
     return ('/* Generated host fixture only; no pointer or mutable VM state. */\n'
             f'static const int jbr_draw_effects = {int(any(o.effect and table[p][0]=="invokevirtual" for p,o in plan.items()))};\n'+
+            f'static const int jbr_resume = {int(resume)};\n'+
             'static const unsigned char jbr_expected_code[] = {\n'+
             '\n'.join('    '+','.join(str(x) for x in code[i:i+24])+',' for i in range(0,len(code),24))+
             '\n};\nstatic const JarBoxResidualOp jbr_plan[] = {\n'+'\n'.join(rows)+'\n};\n')
 
 
 def main():
-    p=argparse.ArgumentParser(description=__doc__);p.add_argument('original',type=Path);p.add_argument('header',type=Path);p.add_argument('--draw-effects',action='store_true');a=p.parse_args()
-    ins=ir.disassemble(a.original);ops,_,_=ir.lower(ins,draw_effects=a.draw_effects);entry,plan=ir.reduce(ops)
-    a.header.write_text(emit(ins,entry,plan));print('native residual plan:',len(plan),'nodes')
+    p=argparse.ArgumentParser(description=__doc__);p.add_argument('original',type=Path);p.add_argument('header',type=Path);p.add_argument('--draw-effects',action='store_true');p.add_argument('--resume',action='store_true');a=p.parse_args()
+    if a.resume and not a.draw_effects:raise ValueError('resume requires draw effects')
+    ins=ir.disassemble(a.original);ops,_,_=ir.lower(ins,draw_effects=a.draw_effects)
+    checkpoints={pc for pc,op,_ in ins if op=='aload_0'} if a.resume else set()
+    # Test oracle: every admitted draw block starts with aload_0 on an
+    # empty stack and all three original int locals are initialized.
+    # C independently verifies this before compiling any checkpoint.
+    for pc in checkpoints:ops[pc].uses.update(('l1','l2','l3'))
+    entry,plan=ir.reduce(ops)
+    if not checkpoints<=set(plan):raise ValueError('lost resume checkpoint')
+    for pc in checkpoints:plan[pc].uses.difference_update(('l1','l2','l3'))
+    a.header.write_text(emit(ins,entry,plan,a.resume));print('native residual plan:',len(plan),'nodes; checkpoints:',len(checkpoints))
 if __name__=='__main__':main()

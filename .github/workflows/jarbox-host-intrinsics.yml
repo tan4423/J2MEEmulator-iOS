@@ -37,6 +37,8 @@ jobs:
         run: bash tools/host_multivm_smoke/run.sh asan 1 residual
       - name: Residual keeps draw wrapper invocation and null faults
         run: bash tools/host_multivm_smoke/run.sh asan 1 residual_draw
+      - name: Resume original interpreter mid-loop without replay
+        run: bash tools/host_multivm_smoke/run.sh asan 1 residual_resume
       - name: Four-way matched-mode host CPU benchmark
         run: |
           python3 -m unittest discover -s tools/tests -p test_host_intrinsic_benchmark.py

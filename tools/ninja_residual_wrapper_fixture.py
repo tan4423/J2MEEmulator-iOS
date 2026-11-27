@@ -53,7 +53,21 @@ def copy_wrapper(data):
     return head+fields+methods+b'\0\0'
 
 
-def harness(base, fields):
+def graphics_source(resume):
+    if not resume:return GRAPHICS
+    # Model a scope ending BETWEEN draw calls. Before the limit the sink
+    # ignores coordinates; after it, every original integer is observable.
+    return GRAPHICS.replace('public static int calls;', 'public static int calls,limit,count; public static int[] coords=new int[4096];').replace(
+        'order[calls++]=(char)(65+(src==null?0:src.id));',
+        '''order[calls++]=(char)(65+(src==null?0:src.id));
+        if(calls>limit){
+            if(count+8>coords.length)throw new IllegalStateException("coord trace overflow");
+            coords[count++]=x;coords[count++]=y;coords[count++]=w;coords[count++]=h;
+            coords[count++]=t;coords[count++]=dx;coords[count++]=dy;coords[count++]=anchor;
+        }''')
+
+
+def harness(base, fields, resume=False):
     # Preserve original receiver and source-image identity. Exercise null
     # wrapper and null graphics target; the controlled sink ignores int args.
     base=base.replace('Class_hvi receiver=new Class_hvi();','javax.microedition.lcdui.Graphics target=new javax.microedition.lcdui.Graphics();')
@@ -65,4 +79,16 @@ def harness(base, fields):
             javax.microedition.lcdui.Graphics.calls=0;
             int fault=0;''')
     base=base.replace('Class_hii.d2+"\\n"','Class_hii.d2+":"+javax.microedition.lcdui.Graphics.calls+":"+new String(javax.microedition.lcdui.Graphics.order,0,javax.microedition.lcdui.Graphics.calls)+"\\n"')
+    if resume:
+        base=base.replace('javax.microedition.lcdui.Graphics.calls=0;', '''javax.microedition.lcdui.Graphics.calls=0;
+            javax.microedition.lcdui.Graphics.count=0;
+            javax.microedition.lcdui.Graphics.limit=n%4;''')
+        # Compare exact ordered coordinates (not merely a collision-prone
+        # digest) after leaving the modeled scope, along with fault/state.
+        base=base.replace('out.write(line.getBytes());', '''StringBuilder trace=new StringBuilder(line.substring(0,line.length()-1));
+            for(int i=0;i<javax.microedition.lcdui.Graphics.count;i++){
+                trace.append(':');trace.append(javax.microedition.lcdui.Graphics.coords[i]);
+            }
+            trace.append((char)10);
+            out.write(trace.toString().getBytes());''')
     return base

@@ -66,7 +66,7 @@ static int jbr_fixture_cp(void *ctx,unsigned op,unsigned ix) {
 static int jbr_same_op(const JarBoxResidualOp *a,const JarBoxResidualOp *b) {
     return a->kind==b->kind&&a->a==b->a&&a->b==b->b&&a->dst==b->dst&&
            a->pc==b->pc&&a->next==b->next&&a->alt==b->alt&&
-           a->length==b->length&&a->imm==b->imm;
+           a->length==b->length&&a->checkpoint==b->checkpoint&&a->imm==b->imm;
 }
 static const JarBoxResidualOp *jbr_fixture_compile(Runtime *r,MethodInfo *m,CodeAttribute *ca) {
     if(!jbr_fixture_admit(r,m,ca))return NULL;
@@ -80,7 +80,7 @@ static const JarBoxResidualOp *jbr_fixture_compile(Runtime *r,MethodInfo *m,Code
         JarBoxResidualOp *candidate=calloc(JBR_COUNT,sizeof(*candidate));
         if(candidate) {
             unsigned count=jbr_compile(ca->bytecode_for_jit,ca->code_length,
-                jbr_fixture_cp,m->_this_class,jbr_draw_effects,candidate,JBR_COUNT);
+                jbr_fixture_cp,m->_this_class,jbr_draw_effects+jbr_resume,candidate,JBR_COUNT);
             int valid=count==JBR_COUNT&&jbr_validate(candidate,count,ca->bytecode_for_jit,ca->code_length);
             for(unsigned i=0;valid&&i<count;i++)valid=jbr_same_op(candidate+i,jbr_plan+i);
             if(valid) {
@@ -2305,14 +2305,15 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
 
 #if defined(JARBOX_HOST_RESIDUAL_TEST)
             const JarBoxResidualOp *jbr_compiled=jbr_fixture_compile(runtime,method,ca);
-            const int jbr_active=jbr_compiled!=NULL;
-            unsigned jbr_index=0,jbr_pending=JBR_END;
+            int jbr_active=jbr_compiled!=NULL;
+            unsigned jbr_index=0,jbr_pending=JBR_END,jbr_draws=0,jbr_limit=0;
             if(jbr_active) {
                 localvar_init(runtime,JBR_SLOTS,method->para_slots);
                 // Real VM stack storage, visible to GC. Reference lifetime may
                 // extend to frame end in this prototype (not live admission).
                 memset(runtime->localvar+1,0,(JBR_SLOTS-1)*sizeof(StackEntry));
-                __atomic_fetch_add(&jvm->session->treo_state.host_residual_calls,1,__ATOMIC_RELAXED);
+                const uint64_t ordinal=__atomic_fetch_add(&jvm->session->treo_state.host_residual_calls,1,__ATOMIC_RELAXED);
+                jbr_limit=(unsigned)(ordinal%4); // deterministic fixture scope schedule
             } else
 #endif
             localvar_init(runtime, ca->max_locals, method->para_slots);
@@ -2438,6 +2439,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                                     jbr_copy_slot(localvar+o->dst,base,o->dst);
                                 sp=base;
                                 stack->sp=sp;
+                                if(o->imm==op_invokevirtual)++jbr_draws;
                                 jbr_index=o->next;
                                 jbr_pending=JBR_END;
                             }
@@ -2459,6 +2461,21 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                                     localvar_dispose(runtime);
                                     ret=RUNTIME_STATUS_ERROR;
                                     goto label_exit_while;
+                                }
+                                if(jbr_resume && o->checkpoint && jbr_draws>=jbr_limit) {
+                                    // Resume exactly at the original empty-stack
+                                    // aload_0 PC, BEFORE any effect of this draw.
+                                    // The compiler retains all original locals
+                                    // at each checkpoint, even draw-only values.
+                                    // No previous writes, calls or reads replay.
+                                    memset(localvar+ca->max_locals,0,
+                                        (JBR_SLOTS-ca->max_locals)*sizeof(StackEntry));
+                                    runtime->localvar_slots=ca->max_locals;
+                                    sp=localvar+ca->max_locals;
+                                    stack->sp=sp;
+                                    jbr_active=0;
+                                    __atomic_fetch_add(&jvm->session->treo_state.host_residual_deopts,1,__ATOMIC_RELAXED);
+                                    break;
                                 }
                                 if(o->kind==JBR_EFFECT) {
                                     if(o->a!=JBR_NONE) {
@@ -2485,6 +2502,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                                 jbr_index=jbr_pure_step(o,localvar);
                             }
                         }
+                        if(jbr_active) {
                         const JarBoxResidualOp *o=jbr_compiled+jbr_pending;
                         const unsigned actual=*runtime->pc;
                         // Allow only known quickening variants of this effect.
@@ -2494,6 +2512,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                            !(o->imm==op_putstatic && actual==op_putstatic_int) &&
                            !(o->imm==op_invokestatic && actual==op_invokestatic_fast) &&
                            !(o->imm==op_invokevirtual && actual==op_invokevirtual_fast))abort();
+                        }
                     }
 #endif
                     // Avoid a cross-unit function call on every interpreted

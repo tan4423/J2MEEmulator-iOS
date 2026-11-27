@@ -91,7 +91,8 @@ public class ResidualMain {
 }'''
 
 
-def build(root, archive=None, bootclasspath=None, draw_effects=False):
+def build(root, archive=None, bootclasspath=None, draw_effects=False, resume=False):
+    if resume and not draw_effects:raise ValueError('resume requires draw effects')
     root=Path(root).resolve()
     src=root/'src'; original=root/'original'; residual=root/'residual'
     for d in (src,original,residual): d.mkdir(parents=True,exist_ok=False)
@@ -99,7 +100,7 @@ def build(root, archive=None, bootclasspath=None, draw_effects=False):
     pkg=src/'javax/microedition/lcdui';pkg.mkdir(parents=True)
     # Test double, deliberately not the real LCDUI Image. Never packaged.
     (pkg/'Image.java').write_text(wrapped.IMAGE if draw_effects else 'package javax.microedition.lcdui; public class Image {}')
-    if draw_effects: (pkg/'Graphics.java').write_text(wrapped.GRAPHICS)
+    if draw_effects: (pkg/'Graphics.java').write_text(wrapped.graphics_source(resume))
     if archive is None:
         (src/'Class_hii.java').write_text(SYNTHETIC)
         (src/'Class_hac.java').write_text(EXTERNAL)
@@ -129,7 +130,7 @@ def build(root, archive=None, bootclasspath=None, draw_effects=False):
     code,locals_count,pc_map=emit_bytecode(ins,entry,plan)
     reduced=replace_fixture_code(data,code,locals_count,max_stack=10 if draw_effects else 2)
     (original/'Class_hii.class').write_bytes(data)
-    (src/'ResidualMain.java').write_text(wrapped.harness(HARNESS,fields) if draw_effects else HARNESS)
+    (src/'ResidualMain.java').write_text(wrapped.harness(HARNESS,fields,resume) if draw_effects else HARNESS)
     flags=['-source','8','-target','8','-bootclasspath',str(bootclasspath)] if bootclasspath else ['--release','8']
     subprocess.run(['javac',*flags,'-classpath',str(original),'-d',str(original),str(src/'ResidualMain.java')],check=True)
     for file in original.rglob('*.class'):
@@ -141,6 +142,6 @@ def build(root, archive=None, bootclasspath=None, draw_effects=False):
 
 
 def main():
-    p=argparse.ArgumentParser(description=__doc__);p.add_argument('root',type=Path);p.add_argument('--archive',type=Path);p.add_argument('--bootclasspath',type=Path);p.add_argument('--draw-effects',action='store_true');a=p.parse_args()
-    build(a.root,a.archive,a.bootclasspath,a.draw_effects)
+    p=argparse.ArgumentParser(description=__doc__);p.add_argument('root',type=Path);p.add_argument('--archive',type=Path);p.add_argument('--bootclasspath',type=Path);p.add_argument('--draw-effects',action='store_true');p.add_argument('--resume',action='store_true');a=p.parse_args()
+    build(a.root,a.archive,a.bootclasspath,a.draw_effects,a.resume)
 if __name__=='__main__':main()
