@@ -13,7 +13,9 @@ case "$SUITE" in
   residual_wide) EXTRA="-DJARBOX_HOST_RESIDUAL_TEST=1 -DJARBOX_HOST_RESIDUAL_EXTENDED_TEST=1 -DJARBOX_HOST_RESIDUAL_WIDE_TEST=1"; SCENARIOS="residual_wide_diff";;
   residual_background) EXTRA="-DJARBOX_HOST_RESIDUAL_TEST=1 -DJARBOX_HOST_RESIDUAL_EXTENDED_TEST=1 -DJARBOX_HOST_RESIDUAL_WIDE_TEST=1 -DJARBOX_HOST_RESIDUAL_BACKGROUND_TEST=1"; SCENARIOS="residual_background_diff";;
   binding) EXTRA="-DJARBOX_HOST_BINDING_TEST=1"; SCENARIOS="binding_diff";;
-  gc_index) EXTRA="-DJARBOX_HOST_INTRINSIC_TEST=1 -DJARBOX_GC_DEFERRED_INDEX_EXPERIMENT=1 -DJARBOX_HOST_GC_INDEX_TEST=1"; SCENARIOS="gc_index_diff gc_index_callbacks";;
+  gc_index|gc_callbacks) EXTRA="-DJARBOX_HOST_INTRINSIC_TEST=1 -DJARBOX_GC_DEFERRED_INDEX_EXPERIMENT=1 -DJARBOX_HOST_GC_INDEX_TEST=1"; SCENARIOS="gc_index_diff";
+    if [[ "$SUITE" == gc_callbacks ]]; then SCENARIOS="gc_index_callbacks"; fi;;
+  block_ir) EXTRA="-DJARBOX_HOST_INTRINSIC_TEST=1 -DJARBOX_BLOCK_IR_EXPERIMENT=1 -DJARBOX_HOST_BLOCK_IR_TEST=1"; SCENARIOS="block_ir_diff";;
   intrinsics|benchmark)
     EXTRA="-DJARBOX_HOST_INTRINSIC_TEST=1 -DTREO_VM_CHAR_LEAF_EXPERIMENT=1 -DTREO_VM_ARRAY_LOOKUP_MODE1_EXPERIMENT=1"
     SCENARIOS=intrinsic_diff
@@ -70,12 +72,16 @@ mkdir -p $OUT/app
 JAVAC="java -m jdk.compiler/com.sun.tools.javac.Main"
 $JAVAC -nowarn -source 8 -target 8 -bootclasspath "$ROOT/J2MEEmulator/Resources/jars/minijvm_rt.jar" -d "$OUT/app" "$HERE/java/SmokeMain.java"
 test -s "$OUT/app/SmokeMain.class"
-if [[ "$SUITE" == intrinsics || "$SUITE" == benchmark || "$SUITE" == gc_index ]]; then
+if [[ "$SUITE" == intrinsics || "$SUITE" == benchmark || "$SUITE" == gc_index || "$SUITE" == gc_callbacks || "$SUITE" == block_ir ]]; then
   $JAVAC -nowarn -source 8 -target 8 -bootclasspath "$ROOT/J2MEEmulator/Resources/jars/minijvm_rt.jar" -d "$OUT/app" "$HERE/java/IntrinsicMain.java"
   test -s "$OUT/app/IntrinsicMain.class"
-  if [[ "$SUITE" == gc_index ]]; then
+  if [[ "$SUITE" == gc_callbacks ]]; then
     $JAVAC -nowarn -source 8 -target 8 -bootclasspath "$RT" -d "$OUT/app" "$HERE/java/GcIndexMain.java"
     test -s "$OUT/app/GcIndexMain.class"
+  fi
+  if [[ "$SUITE" == block_ir ]]; then
+    $JAVAC -nowarn -source 8 -target 8 -bootclasspath "$RT" -d "$OUT/app" "$HERE/java/BlockMain.java"
+    test -s "$OUT/app/BlockMain.class"
   fi
   export UBSAN_OPTIONS=halt_on_error=1
   export ASAN_OPTIONS=halt_on_error=1
@@ -92,7 +98,9 @@ for sc in $SCENARIOS; do for i in $(seq 1 $ITER); do
       grep -E "^binding (A|B):|^binding_diff: PASS" "$OUT/$sc.$i.log"
     elif [[ "$SUITE" == intrinsics ]]; then
       grep -E '^intrinsics A:|^intrinsic_diff: PASS' "$OUT/$sc.$i.log"
-    elif [[ "$SUITE" == gc_index ]]; then
+    elif [[ "$SUITE" == block_ir ]]; then
+      grep -E '^block IR A=|^block_ir_diff: PASS' "$OUT/$sc.$i.log"
+    elif [[ "$SUITE" == gc_index || "$SUITE" == gc_callbacks ]]; then
       grep -E '^gc index A=|^gc callbacks [AB] |^gc_index_(diff|callbacks): PASS' "$OUT/$sc.$i.log"
     elif [[ "$SUITE" == benchmark ]]; then
       grep -E '^bench |^intrinsic_bench: PASS' "$OUT/$sc.$i.log"

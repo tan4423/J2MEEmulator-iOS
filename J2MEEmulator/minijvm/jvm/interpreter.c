@@ -6,6 +6,55 @@
 #include "jarbox_decoded_int.h"
 #include "jarbox_array_index.h"
 #include "jarbox_java_integer.h"
+#if defined(JARBOX_BLOCK_IR_EXPERIMENT) && JARBOX_BLOCK_IR_EXPERIMENT
+#include "jarbox_block_ir.h"
+#include <stddef.h>
+#if defined(JARBOX_HOST_BLOCK_IR_TEST) && (__JVM_OS_IOS__ || defined(TREO_IOS_GAME_JIT))
+#error Host block IR selection must never be used on iOS
+#endif
+/* A single builder per CodeAttribute; competing threads interpret instead
+ * of spinning. Plans contain no class/heap pointers. A 1 MiB lifetime
+ * publication budget bounds total per-owner allocation even with unloads. */
+static const JbiPlan *jbi_method_plan(Runtime *r,MethodInfo *m,CodeAttribute *ca) {
+#if defined(JARBOX_HOST_BLOCK_IR_TEST)
+    if(!r->jvm->host_block_ir_enabled||
+       !utf8_equals_c(m->_this_class->name,"BlockMain"))return NULL;
+#else
+    // Production admission deliberately absent until the real host gate and
+    // exact archive/build policy are established. Unknown JARs stay ordinary.
+    return NULL;
+#endif
+    if(r->jvm->jdwp_enable||m->breakpoint||r->thrd_info->is_stop||
+       r->thrd_info->suspend_count||ca->jit.state==JIT_GEN_SUCCESS||
+       !ca->bytecode_for_jit||ca->code_length<5||ca->code_length>JBI_MAX_CODE||
+       ca->exception_table_length>JBI_MAX_HANDLERS)return NULL;
+    unsigned state=__atomic_load_n(&ca->block_ir_state,__ATOMIC_ACQUIRE);
+    if(state==2)return (const JbiPlan *)ca->block_ir_plan;
+    if(state||__atomic_load_n(&r->jvm->block_ir_bytes,__ATOMIC_RELAXED)>=1048576u)return NULL;
+    if(!__atomic_compare_exchange_n(&ca->block_ir_state,&state,1,0,__ATOMIC_ACQ_REL,__ATOMIC_ACQUIRE))return NULL;
+    JbiHandler handlers[JBI_MAX_HANDLERS];
+    for(unsigned i=0;i<ca->exception_table_length;++i){
+        ExceptionTable *h=ca->exception_table+i;
+        handlers[i]=(JbiHandler){h->start_pc,h->end_pc,h->handler_pc};
+    }
+    JbiPlan *p=jbi_build(ca->bytecode_for_jit,ca->code_length,ca->max_locals,ca->max_stack,
+                       handlers,ca->exception_table_length,0);
+    if(p){
+        uint32_t used=__atomic_load_n(&r->jvm->block_ir_bytes,__ATOMIC_RELAXED);
+        for(;;){
+            if(used>1048576u||p->bytes>1048576u-used){free(p);p=NULL;break;}
+            if(__atomic_compare_exchange_n(&r->jvm->block_ir_bytes,&used,used+p->bytes,0,
+                                           __ATOMIC_RELAXED,__ATOMIC_RELAXED))break;
+        }
+    }
+    ca->block_ir_plan=p;
+#if defined(JARBOX_HOST_BLOCK_IR_TEST)
+    if(p)__atomic_fetch_add(&r->jvm->host_block_ir_compiles,1,__ATOMIC_RELAXED);
+#endif
+    __atomic_store_n(&ca->block_ir_state,p?2u:3u,__ATOMIC_RELEASE);
+    return p;
+}
+#endif
 #if defined(JARBOX_HOST_BINDING_TEST)
 #if __JVM_OS_IOS__ || defined(TREO_IOS_GAME_JIT)
 #error Host binding fixture cannot be used for iOS admission
@@ -2795,6 +2844,13 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
 #endif
 #endif
 
+#if defined(JARBOX_BLOCK_IR_EXPERIMENT) && JARBOX_BLOCK_IR_EXPERIMENT && !_JVM_DEBUG_PROFILE && _JVM_DEBUG_LOG_LEVEL <= 1 && !defined(__JVM_DEBUG__)
+                const JbiPlan *block_ir=NULL;
+#if defined(JARBOX_RESIDUAL_EXECUTOR)
+                if(!jbr_active)
+#endif
+                    block_ir=jbi_method_plan(runtime,method,ca);
+#endif
                 do {
 #if defined(JARBOX_RESIDUAL_EXECUTOR)
                     if(jbr_active) {
@@ -2925,6 +2981,29 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
                     }
 #undef JBR_INVARIANT_FAIL
+#endif
+#if defined(JARBOX_BLOCK_IR_EXPERIMENT) && JARBOX_BLOCK_IR_EXPERIMENT && !_JVM_DEBUG_PROFILE && _JVM_DEBUG_LOG_LEVEL <= 1 && !defined(__JVM_DEBUG__)
+                    // Never execute a tape inside a render residual frame.
+                    // The original stack storage stays authoritative. All
+                    // effect/branch handlers and their safepoints run normally.
+                    if(block_ir&&!thrd_info->suspend_count&&!thrd_info->is_stop){
+                        const JbiSpan *span=jbi_find(block_ir,(unsigned)(runtime->pc-ca->code));
+                        if(span){
+                            ptrdiff_t depth=sp-(localvar+ca->max_locals);
+                            ptrdiff_t room=(stack->store+stack->max_size)-sp;
+                            if(depth>=span->need&&depth<=ca->max_stack&&room>=span->peak&&
+                               ca->max_stack-depth>=span->peak){
+                                jbi_execute(block_ir,span,sp,localvar);
+                                sp+=span->delta;
+                                runtime->pc=ca->code+span->end;
+#if defined(JARBOX_HOST_BLOCK_IR_TEST)
+                                __atomic_fetch_add(&jvm->host_block_ir_spans,1,__ATOMIC_RELAXED);
+                                __atomic_fetch_add(&jvm->host_block_ir_ops,span->count,__ATOMIC_RELAXED);
+#endif
+                                continue;
+                            }
+                        }
+                    }
 #endif
                     // Avoid a cross-unit function call on every interpreted
                     // bytecode when this JVM has disabled JDWP at startup.

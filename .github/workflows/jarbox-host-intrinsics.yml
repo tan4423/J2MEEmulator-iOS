@@ -25,6 +25,11 @@ jobs:
         run: |
           JARBOX_GC_DEFER_SANITIZE=1 python3 -m unittest discover -s tools/tests -p test_gc_deferred_index.py
           bash tools/host_multivm_smoke/run.sh asan 1 gc_index
+      - name: Generic block IR execution differential
+        run: |
+          gcc -std=c11 -Wall -Wextra -Werror -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -no-pie -I J2MEEmulator/minijvm/jvm tools/tests/block_ir_host.c -o /tmp/jarbox-block-ir
+          /tmp/jarbox-block-ir
+          bash tools/host_multivm_smoke/run.sh asan 1 block_ir
       - name: JIT flag hot path contract
         run: python3 -m unittest discover -s tools/tests -p test_jit_flag_hot_path.py
       - name: Focused CPU log analyzer
@@ -61,3 +66,19 @@ jobs:
         run: |
           python3 -m unittest discover -s tools/tests -p test_host_intrinsic_benchmark.py
           bash tools/host_multivm_smoke/run.sh plain 1 benchmark
+
+  # Keep the strict failing compatibility gate visible and mandatory, but do
+  # not prevent the independent engine and residual jobs from being exercised.
+  gc-weak-compatibility:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Strict real MiniJVM weak/finalizer contract
+        run: bash tools/host_multivm_smoke/run.sh asan 1 gc_callbacks

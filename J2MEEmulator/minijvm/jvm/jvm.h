@@ -914,6 +914,10 @@ struct _CodeAttribute {
     s32 code_length;
     u8 *code; // [code_length];
     u8 *bytecode_for_jit; // [code_length];
+#if defined(JARBOX_BLOCK_IR_EXPERIMENT) && JARBOX_BLOCK_IR_EXPERIMENT
+    void *block_ir_plan; // published once, immutable, owned by CodeAttribute
+    unsigned block_ir_state; // 0 cold, 1 building, 2 ready, 3 rejected
+#endif
 #if (defined(JARBOX_HOST_RESIDUAL_TEST) && !__JVM_OS_IOS__) || (defined(TREO_RESIDUAL_EXPERIMENT) && TREO_RESIDUAL_EXPERIMENT && __JVM_OS_IOS__)
     void *host_residual_plan; // owned by this CodeAttribute, immutable after publication
     unsigned residual_plan_count;
@@ -1998,6 +2002,13 @@ struct _MiniJVM {
     GcCollector *collector;
 #if defined(JARBOX_HOST_GC_INDEX_TEST)
     int host_gc_index_enabled; // selected by the host owner before jvm_init
+#endif
+#if defined(JARBOX_BLOCK_IR_EXPERIMENT) && JARBOX_BLOCK_IR_EXPERIMENT
+    uint32_t block_ir_bytes; // lifetime publication budget, per VM
+#if defined(JARBOX_HOST_BLOCK_IR_TEST)
+    int host_block_ir_enabled;
+    uint64_t host_block_ir_spans, host_block_ir_ops, host_block_ir_compiles;
+#endif
 #endif
     ArrayList *shutdown_hook;//shutdown hook ,it contains thread instance
 

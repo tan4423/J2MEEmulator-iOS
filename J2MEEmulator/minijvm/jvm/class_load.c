@@ -601,6 +601,10 @@ s32 _class_method_info_destroy(JClass *clazz) {
             ca->code = NULL;
             jvm_free(ca->bytecode_for_jit);//
             ca->bytecode_for_jit = NULL;
+#if defined(JARBOX_BLOCK_IR_EXPERIMENT) && JARBOX_BLOCK_IR_EXPERIMENT
+            free(ca->block_ir_plan);
+            ca->block_ir_plan = NULL;
+#endif
 #if (defined(JARBOX_HOST_RESIDUAL_TEST) && !__JVM_OS_IOS__) || (defined(TREO_RESIDUAL_EXPERIMENT) && TREO_RESIDUAL_EXPERIMENT && __JVM_OS_IOS__)
             free(ca->host_residual_plan);
             ca->host_residual_plan = NULL;

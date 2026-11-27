@@ -16,6 +16,9 @@ typedef struct { const char *rt, *api, *app, *tag, *mode; char save[512]; int po
     MiniJVM *jvm; pthread_t th; pthread_mutex_t lock; atomic_int finished;
     int stop_requested, rc;
     uint64_t char_calls, array_calls, gc_cycles;
+#if defined(JARBOX_HOST_BLOCK_IR_TEST)
+    uint64_t block_spans, block_ops, block_compiles;
+#endif
 #if defined(JARBOX_HOST_GC_INDEX_TEST)
     uint64_t gc_index_passes, gc_index_large_snapshots, gc_index_omitted;
     uint64_t gc_deferred_visits, gc_finalizers, gc_weak_callbacks;
@@ -57,6 +60,9 @@ static void *job_main(void *p) {
     vm->host_gc_index_enabled=!strcmp(j->mode,"intrinsic-gc-on") ||
                               !strcmp(j->mode,"intrinsic-gc-callbacks-on");
 #endif
+#if defined(JARBOX_HOST_BLOCK_IR_TEST)
+    vm->host_block_ir_enabled=!strcmp(j->mode,"intrinsic-block-on");
+#endif
     if (jvm_init(vm, (char *)j->rt, cp)) { j->rc = -3; goto cleanup; }
     pthread_mutex_lock(&j->lock);
     j->jvm = vm;
@@ -83,6 +89,9 @@ static void *job_main(void *p) {
 #if defined(JARBOX_HOST_GC_INDEX_TEST)
     if (!strncmp(j->mode,"intrinsic-gc-callbacks-",23)) main_class="GcIndexMain";
 #endif
+#if defined(JARBOX_HOST_BLOCK_IR_TEST)
+    if(!strncmp(j->mode,"intrinsic-block-",16))main_class="BlockMain";
+#endif
     j->rc=call_main(vm,main_class,args);
     uint64_t t1=cpu_now(CLOCK_THREAD_CPUTIME_ID),p1=cpu_now(CLOCK_PROCESS_CPUTIME_ID);
     if (t0 && t1>t0) j->thread_cpu_ns=t1-t0;
@@ -90,6 +99,11 @@ static void *job_main(void *p) {
     j->char_calls=__atomic_load_n(&vm->session->treo_state.char_leaf_calls,__ATOMIC_RELAXED);
     j->array_calls=__atomic_load_n(&vm->session->treo_state.array_lookup_mode1_calls,__ATOMIC_RELAXED);
     j->gc_cycles=__atomic_load_n(&vm->session->treo_state.gc_worker_cycles,__ATOMIC_RELAXED);
+#if defined(JARBOX_HOST_BLOCK_IR_TEST)
+    j->block_spans=__atomic_load_n(&vm->host_block_ir_spans,__ATOMIC_RELAXED);
+    j->block_ops=__atomic_load_n(&vm->host_block_ir_ops,__ATOMIC_RELAXED);
+    j->block_compiles=__atomic_load_n(&vm->host_block_ir_compiles,__ATOMIC_RELAXED);
+#endif
 #if defined(JARBOX_HOST_GC_INDEX_TEST)
     j->gc_index_passes=__atomic_load_n(&vm->collector->host_gc_index_passes,__ATOMIC_RELAXED);
     j->gc_index_large_snapshots=__atomic_load_n(&vm->collector->host_gc_index_large_snapshots,__ATOMIC_RELAXED);
@@ -158,6 +172,16 @@ static int gc_callbacks_ok(const Job *j) {
     snprintf(path,sizeof path,"%s/gc-index.txt",j->save);
     FILE *f=fopen(path,"r"); if(!f)return 0;
     size_t n=fread(buf,1,sizeof buf-1,f); fclose(f);
+    return n==strlen(expected)&&!memcmp(buf,expected,n);
+}
+#endif
+#if defined(JARBOX_HOST_BLOCK_IR_TEST)
+static int block_ok(const Job *j) {
+    char path[1024],buf[128]={0};
+    const char *expected="PASS 8000 8966399143674533008\n"; // independent OpenJDK -Xint oracle
+    snprintf(path,sizeof path,"%s/block.txt",j->save);
+    FILE *f=fopen(path,"r");if(!f)return 0;
+    size_t n=fread(buf,1,sizeof buf-1,f);fclose(f);
     return n==strlen(expected)&&!memcmp(buf,expected,n);
 }
 #endif
@@ -254,6 +278,21 @@ int main(int argc, char **argv) {
         printf("gc index A=%llu/%llu B=%llu/%llu\n",
             (unsigned long long)a.gc_index_passes,(unsigned long long)a.gc_cycles,
             (unsigned long long)b.gc_index_passes,(unsigned long long)b.gc_cycles);
+    } else
+#endif
+#if defined(JARBOX_HOST_BLOCK_IR_TEST)
+    if(!strcmp(scenario,"block_ir_diff")){
+        init_job(&a,argv,"A","intrinsic-block-off",bport,base);
+        init_job(&b,argv,"B","intrinsic-block-on",bport+1,base);
+        start_job(&a);start_job(&b);join_job(&a);join_job(&b);
+        REQUIRE(!a.rc&&!b.rc&&block_ok(&a)&&block_ok(&b));
+        REQUIRE(a.gc_cycles>0&&b.gc_cycles>0);
+        REQUIRE(!a.block_spans&&!a.block_ops&&!a.block_compiles);
+        REQUIRE(b.block_compiles>=3&&b.block_spans>=8000&&b.block_ops>=4*b.block_spans);
+        REQUIRE(!a.char_calls&&!b.char_calls&&!a.array_calls&&!b.array_calls);
+        printf("block IR A=%llu/%llu/%llu B=%llu/%llu/%llu (spans/ops/compiles)\n",
+               (unsigned long long)a.block_spans,(unsigned long long)a.block_ops,(unsigned long long)a.block_compiles,
+               (unsigned long long)b.block_spans,(unsigned long long)b.block_ops,(unsigned long long)b.block_compiles);
     } else
 #endif
     if (!strcmp(scenario,"intrinsic_bench")) {
