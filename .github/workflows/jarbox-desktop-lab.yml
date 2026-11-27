@@ -13,7 +13,7 @@ on:
   workflow_dispatch:
 jobs:
   linux-lab:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
@@ -25,7 +25,7 @@ jobs:
       - run: bash tools/desktop_lab/build.sh "$RUNNER_TEMP/lab"
       - run: bash tools/desktop_lab/test.sh "$RUNNER_TEMP/lab"
       - uses: actions/upload-artifact@v4
-        if: always()
+        if: success()
         with:
           name: desktop-lab-linux
           path: |
