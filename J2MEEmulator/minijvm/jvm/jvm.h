@@ -2038,6 +2038,7 @@ struct _MiniJVM {
 #endif
 #if defined(JARBOX_HOST_GLYPH_LOOP_TEST)
     int host_glyph_enabled;
+    uint32_t host_glyph_refusal_mask;
     uint64_t host_glyph_loops,host_glyph_chars,host_glyph_shadow,host_glyph_mismatch;
 #endif
     ArrayList *shutdown_hook;//shutdown hook ,it contains thread instance

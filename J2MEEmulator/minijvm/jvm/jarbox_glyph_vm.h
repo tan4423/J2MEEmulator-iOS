@@ -9,6 +9,15 @@ extern s32 java_lang_String_indexOf(Runtime *,JClass *);
 static inline MethodInfo *jarbox_virtual_lookup(MiniJVM *,ConstantMethodRef *,Instance *);
 
 typedef struct {Instance *font,*wrapper,*row,*image; unsigned count;} JbgProof;
+#if defined(JARBOX_HOST_GLYPH_LOOP_TEST)
+static inline void jbg_host_note(Runtime *r,unsigned bit){
+    uint32_t mask=1u<<bit;
+    if(!(__atomic_fetch_or(&r->jvm->host_glyph_refusal_mask,mask,__ATOMIC_RELAXED)&mask))
+        jvm_printf("glyph host checkpoint=%u\n",bit);
+}
+#else
+#define jbg_host_note(r,bit) ((void)0)
+#endif
 static inline int jbg_obj(Instance *o,JClass *cl){
     return o&&cl&&o->mb.type==MEM_TYPE_INS&&o->mb.clazz==cl&&o->obj_fields&&
            cl->status==CLASS_STATUS_CLINITED;
@@ -103,10 +112,14 @@ static inline int jbg_string_calls(Runtime *r,MethodInfo *m,Instance *text,Insta
 }
 static inline void *jbg_vm_row(void *ctx,unsigned i){
     Instance *a=ctx,*v=NULL;
-    if(!a||a->mb.type!=MEM_TYPE_ARR||a->mb.arr_type_index!=DATATYPE_ARRAY||
+    // getDataTypeIndex('[') maps nested array elements to REFERENCE.
+    // DATATYPE_ARRAY is not the storage tag of int[][] in MiniJVM.
+    if(!a||a->mb.type!=MEM_TYPE_ARR||a->mb.arr_type_index!=DATATYPE_REFERENCE||
+       !a->mb.clazz||!a->mb.clazz->name||!utf8_equals_c(a->mb.clazz->name,"[[I")||
        a->arr_length<0||i>=(unsigned)a->arr_length||!a->arr_body)return NULL;
     memcpy(&v,a->arr_body+(size_t)i*sizeof(v),sizeof v);
     if(!v||v->mb.type!=MEM_TYPE_ARR||v->mb.arr_type_index!=DATATYPE_INT||
+       !v->mb.clazz||!v->mb.clazz->name||!utf8_equals_c(v->mb.clazz->name,"[I")||
        v->arr_length<4||!v->arr_body)return NULL;
     return v;
 }
@@ -116,19 +129,22 @@ static inline int jbg_vm_preflight(Runtime *r,unsigned kind,const char *image_de
     unsigned nslot=kind==1?6:7;
     if(!l||(kind!=1&&kind!=2)||r->localvar_slots<(int)(nslot+2)||
        l[nslot+1].ivalue!=0||l[nslot].ivalue<=0||
-       l[nslot].ivalue>JBG_MAX_TEXT)return 0;
+       l[nslot].ivalue>JBG_MAX_TEXT){jbg_host_note(r,0);return 0;}
     Instance *font=l[0].rvalue,*wrapper=l[1].rvalue,*text=l[2].rvalue;
-    if(!jbg_obj(font,cl)||!wrapper||(kind==2&&!jbg_obj(l[6].rvalue,cl)))return 0;
+    if(!jbg_obj(font,cl)||!wrapper||(kind==2&&!jbg_obj(l[6].rvalue,cl))){jbg_host_note(r,1);return 0;}
     FieldInfo *charset=jbg_field_at(m,57,"c2","Ljava/lang/String;",sizeof(Instance *),1);
     FieldInfo *table=jbg_field_at(m,kind==1?88:89,"d2","[[I",sizeof(Instance *),1);
     FieldInfo *image=jbg_field_at(m,kind==1?84:85,"b2",image_desc,sizeof(Instance *),1);
     FieldInfo *spacing=jbg_field_at(m,kind==1?140:240,"w1","I",4,0);
-    if(!charset||!table||!image||!spacing)return 0;
+    if(!charset||!table||!image||!spacing){jbg_host_note(r,2);return 0;}
     Instance *a=jbg_ref(font,charset),*rows=jbg_ref(font,table);
     JbgText t={0},alphabet={0};void *last=NULL;
     if(!jbg_text(r,text,&t)||!jbg_text(r,a,&alphabet)||
-       t.count!=(unsigned)l[nslot].ivalue||alphabet.count>JBG_MAX_ALPHABET||
-       !jbg_string_calls(r,m,text,a)||!jbg_loop_preflight(t,alphabet,jbg_vm_row,rows,&last))return 0;
+       t.count!=(unsigned)l[nslot].ivalue||alphabet.count>JBG_MAX_ALPHABET){
+        jbg_host_note(r,3);return 0;
+    }
+    if(!jbg_string_calls(r,m,text,a)){jbg_host_note(r,4);return 0;}
+    if(!jbg_loop_preflight(t,alphabet,jbg_vm_row,rows,&last)){jbg_host_note(r,5);return 0;}
     *out=(JbgProof){font,wrapper,(Instance *)last,jbg_ref(font,image),t.count};return 1;
 }
 #endif

@@ -56,14 +56,17 @@ static unsigned jbg_fixture_kind(MethodInfo *m,CodeAttribute *ca){
 }
 static Instance *jbg_fixture_guard(Runtime *r,unsigned kind,JbgProof *proof){
     Instance *w=r->localvar[1].rvalue;
-    if(!jbg_named(w,"GlyphLoopMain$Wrapper"))return NULL;
+    if(!jbg_named(w,"GlyphLoopMain$Wrapper")){jbg_host_note(r,6);return NULL;}
     FieldInfo *f=jbg_fixture_field(w,"sink","LGlyphLoopMain$Sink;",sizeof(Instance *),1);
     Instance *g=f?jbg_ref(w,f):NULL;
-    if(!jbg_fixture_closed(g))return NULL;
+    if(!jbg_fixture_closed(g)){jbg_host_note(r,7);return NULL;}
     MethodInfo *draw=jbg_virtual(r,r->method,kind==1?126:129,w,"draw","(Ljava/lang/Object;IIIIIIII)V");
     if(!draw||draw->is_native||!draw->converted_code||
-       draw->converted_code->max_locals!=10||draw->converted_code->max_stack!=10||
-       !jbg_vm_preflight(r,kind,"Ljava/lang/Object;",proof))return NULL;
+       draw->converted_code->max_locals!=10||draw->converted_code->max_stack!=10){
+        jbg_host_note(r,8);return NULL;
+    }
+    if(!jbg_vm_preflight(r,kind,"Ljava/lang/Object;",proof))return NULL;
+    jbg_host_note(r,9);
     return g;
 }
 typedef struct {unsigned end;StackEntry slots[22];} JbgShadow;

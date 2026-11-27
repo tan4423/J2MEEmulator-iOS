@@ -90,6 +90,10 @@ if [[ "$SUITE" == intrinsics || "$SUITE" == benchmark || "$SUITE" == gc_index ||
     test -s "$OUT/app/RenderIslandMain.class"
   fi
   if [[ "$SUITE" == glyph_loop ]]; then
+    # Record the actual boot class shape, not the upstream String source.
+    # Classfile only, no user/game data; useful if a strict linkage guard refuses.
+    unzip -p "$RT" java/lang/String.class > "$OUT/String.class"
+    javap -p -c "$OUT/String.class" | sed -n '/public char charAt(int);/,+30p;/native.*indexOf(int);/,+1p'
     $JAVAC -nowarn -source 8 -target 8 -bootclasspath "$RT" -d "$OUT/app" "$HERE/java/GlyphLoopMain.java"
     test -s "$OUT/app/GlyphLoopMain.class"
   fi
