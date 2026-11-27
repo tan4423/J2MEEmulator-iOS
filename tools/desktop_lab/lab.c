@@ -53,7 +53,7 @@ static _Thread_local s64 sink_context;
 static _Thread_local uint64_t sink_draw_pending;
 static _Atomic uint64_t deep_counts[18];
 static _Thread_local uint64_t deep_pending[18];
-static _Atomic int vector_requested;
+static _Atomic int vector_requested,array_lookup_requested;
 static _Atomic uint64_t live_counts[3];
 void jarbox_lab_liveness_note(unsigned kind){
     if(kind<3)atomic_fetch_add_explicit(&live_counts[kind],1,memory_order_relaxed);
@@ -63,6 +63,10 @@ int jarbox_lab_vector_enabled(void){return deep_admitted&&atomic_load_explicit(&
 int jarbox_lab_sink_level(int64_t context){
     if(!sink_context||(context&&context!=sink_context)||!deep_admitted||atomic_load(&sink_invalid))return 0;
     return atomic_load_explicit(&sink_requested,memory_order_relaxed);
+}
+int jarbox_lab_array_lookup_enabled(void){
+    return deep_admitted&&atomic_load_explicit(&array_lookup_requested,memory_order_relaxed)&&
+        jarbox_lab_sink_level(0)==1;
 }
 void jarbox_lab_deep_note(unsigned kind,unsigned count){
     if(kind<18){
@@ -77,7 +81,7 @@ static void flush_deep_counts(void){
     }
 }
 void jarbox_lab_residual_fault(void){
-    atomic_store(&sink_invalid,1);atomic_store(&sink_requested,0);
+    atomic_store(&sink_invalid,1);atomic_store(&sink_requested,0);atomic_store(&array_lookup_requested,0);
     atomic_fetch_add(&sink_faults,1);
 }
 static int sink_draw(s64 id){
@@ -432,7 +436,7 @@ FN(labEndPaint){
     sink_context=J(0);OK;
 }
 FN(labCoreResult){
-    if(I(0)!=0){atomic_store(&sink_invalid,1);atomic_store(&sink_requested,0);atomic_fetch_add(&sink_faults,1);}
+    if(I(0)!=0){atomic_store(&sink_invalid,1);atomic_store(&sink_requested,0);atomic_store(&array_lookup_requested,0);atomic_fetch_add(&sink_faults,1);}
     OK;
 }
 #include "lab_ui.h"
