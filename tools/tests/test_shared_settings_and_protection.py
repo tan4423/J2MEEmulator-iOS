@@ -41,6 +41,7 @@ enum JarBoxProtectionPreferences {
 struct AppInfo { let path: String; let name: String }
 enum JarBoxGameStorage {
     static var selected: UUID?
+    static func installId(for path: String) -> String { path }
     static func lastTab(jarPath: String, registered: [UUID]) -> UUID? {
         guard let selected, registered.contains(selected) else { return nil }
         return selected
@@ -74,6 +75,10 @@ class Library {
     var idle = false
     var opens = 0
     var managedGames: [Game] = []
+    private var relaunchDeadlines: [String: TimeInterval] = [:]
+    private static let relaunchInterval: TimeInterval = 31
+    func remaining(_ path: String, _ id: UUID?) -> TimeInterval { relaunchRemaining(path: path, cloneID: id) }
+    func expire(_ path: String, _ id: UUID?) { relaunchDeadlines[relaunchKey(path: path, cloneID: id)] = ProcessInfo.processInfo.systemUptime - 1 }
     var tabs: [(id: UUID?, title: String)] = []
     var launched: [UUID?] = []
     var failLaunch = false
@@ -162,6 +167,17 @@ struct Harness {
         let a = UUID(), b = UUID()
         let ticket = UUID(), app = AppInfo(path: "A.jar", name: "A")
         lib.tabs = [(nil, "Tab gốc"), (a, "Tab 1"), (b, "Tab 2")]
+        let cooldownID = UUID()
+        lib.recordRetiredGame(path: app.path, cloneID: cooldownID)
+        let left = lib.remaining(app.path, cooldownID)
+        precondition(left > 30 && left <= 31)
+        precondition(lib.remaining(app.path, a) == 0)
+        let reopened = Library()
+        precondition(reopened.remaining(app.path, cooldownID) > 30)
+        lib.expire(app.path, cooldownID)
+        precondition(lib.remaining(app.path, cooldownID) == 0)
+        precondition(Library().remaining(app.path, cooldownID) == 0)
+        print("Relaunch: per-tab persistence and monotonic deadline PASS")
         JarBoxGameStorage.selected = b
         lib.pendingTabMutation = ticket
         try await lib.restart(ticket, app, [nil, a])
@@ -195,6 +211,9 @@ class SharedSettingsAndProtectionTest(unittest.TestCase):
             "    private func cancelAutoProtection()",
             "    func libraryInputChanged(",
             "    private func armAutoProtection()",
+            "    private func relaunchKey(",
+            "    func recordRetiredGame(",
+            "    private func relaunchRemaining(",
             "    private func restartConfiguredTabs(",
         )) + MAIN
         with tempfile.TemporaryDirectory() as td:
@@ -206,6 +225,7 @@ class SharedSettingsAndProtectionTest(unittest.TestCase):
             result = subprocess.run([str(exe)], capture_output=True, text=True, timeout=20)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertIn("Idle protection: 100 cycles; restart sequencing: PASS", result.stdout)
+            self.assertIn("Relaunch: per-tab persistence and monotonic deadline PASS", result.stdout)
 
     def test_settings_and_lifecycle_wiring(self):
         source = LIB.read_text(encoding="utf-8")
