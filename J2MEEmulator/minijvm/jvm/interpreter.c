@@ -2709,6 +2709,9 @@ static inline int jarbox_try_ref_leaf(MethodInfo *method, Runtime *caller) {
 #define JARBOX_CHAR_LEAF 0
 #endif
 
+#if defined(JARBOX_DESKTOP_LAB) && JARBOX_DESKTOP_LAB
+#include "jarbox_desktop_headless.h"
+#endif
 s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
 #if defined(JARBOX_DESKTOP_LAB) && JARBOX_DESKTOP_LAB
     extern int jarbox_lab_trace_enabled;
@@ -2716,6 +2719,9 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
     if (jarbox_lab_trace_enabled) jarbox_lab_method_enter(method, pruntime);
 #endif
     JARBOX_HOT_CHECK(pruntime,method,NULL);
+#if defined(JARBOX_DESKTOP_LAB) && JARBOX_DESKTOP_LAB
+    if(desktop_graphics_leaf(method,pruntime))return RUNTIME_STATUS_NORMAL;
+#endif
 #if defined(JARBOX_HOST_GLYPH_LOOP_TEST)
     if(jbg_fixture_sink_return(method,pruntime))return RUNTIME_STATUS_NORMAL;
 #endif
@@ -3325,7 +3331,22 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
 #elif defined(JARBOX_RECONSTRUCT_EXPERIMENT) && JARBOX_RECONSTRUCT_EXPERIMENT && defined(JARBOX_LIVE_RENDER_ISLAND) && !_JVM_DEBUG_PROFILE && _JVM_DEBUG_LOG_LEVEL <= 1 && !defined(__JVM_DEBUG__)
                 unsigned glyph_kind=render_eligible?jbg_live_kind(method,ca):0;
 #endif
+#if defined(JARBOX_DESKTOP_LAB) && JARBOX_DESKTOP_LAB
+                unsigned desktop_glyph=jarbox_lab_sink_level(0)>=3?jbg_live_kind(method,ca):0;
+#endif
                 do {
+#if defined(JARBOX_DESKTOP_LAB) && JARBOX_DESKTOP_LAB
+                    if(desktop_glyph&&runtime->pc==ca->code+49){
+                        unsigned kind=desktop_glyph;desktop_glyph=0;
+                        stack->sp=sp;check_suspend_and_pause(runtime);sp=stack->sp;
+                        if(!thrd_info->is_stop&&!thrd_info->suspend_count&&!jvm->jdwp_enable&&
+                           !method->breakpoint&&sp==localvar+ca->max_locals&&
+                           sp<=stack->store+stack->max_size&&stack->store+stack->max_size-sp>=22&&
+                           desktop_glyph_skip(runtime,kind,sp)){
+                            runtime->pc=ca->code+(kind==1?153:253);continue;
+                        }
+                    }
+#endif
 #if defined(JARBOX_RESIDUAL_EXECUTOR)
                     if(jbr_active) {
 #if (defined(TREO_RESIDUAL_EXPERIMENT) && TREO_RESIDUAL_EXPERIMENT && __JVM_OS_IOS__)

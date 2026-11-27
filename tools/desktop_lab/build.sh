@@ -20,13 +20,14 @@ print("set -euo pipefail\njars="+shlex.quote(sys.argv[1]))
 print("\n".join(line[10:] if line.startswith("          ") else line for line in body.splitlines()))
 PY
 bash "$RUNNER_TEMP/patch.sh"
+python3 tools/generate_residual_build_identity.py "$OUT/jars" "$RUNNER_TEMP/jarbox_residual_build_identity.h"
 CORE="$ROOT/J2MEEmulator/minijvm"
 # Same MiniJVM host build, using the repository's real SSL transport.
 # JIT remains disabled. Compile only the existing host JIT/crash shims.
 # Desktop dependency include paths must not leak into core translation units.
 COMMON=(-g -O2 -fno-pie -Dsignal=smoke_signal -DJARBOX_DESKTOP_LAB=1 -DJARBOX_BLOCK_IR_EXPERIMENT=1 -w -std=gnu11 -pthread
   -I"$CORE/jvm" -I"$CORE/utils" -I"$CORE/utils/https" -I"$CORE/utils/https/mbedtls/include")
-gcc "${COMMON[@]}" $(pkg-config --cflags sdl2 cairo) -c tools/desktop_lab/lab.c -o "$RUNNER_TEMP/lab.o"
+gcc "${COMMON[@]}" -I"$RUNNER_TEMP" $(pkg-config --cflags sdl2 cairo) -c tools/desktop_lab/lab.c -o "$RUNNER_TEMP/lab.o"
 # Keep the identical tested JIT and signal shims, remove only the six TLS stubs.
 sed '/^int sslc_/d' tools/host_multivm_smoke/stubs.c > "$RUNNER_TEMP/host-no-jit.c"
 gcc "${COMMON[@]}" -rdynamic -no-pie \

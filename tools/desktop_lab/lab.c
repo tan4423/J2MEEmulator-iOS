@@ -18,6 +18,7 @@
 #include "garbage.h"
 #include "arraylist.h"
 #include "mbedtls/sha256.h"
+#include "jarbox_residual_build_identity.h"
 
 enum { MAX_SURF=8192, MAX_DIM=8192, MAX_SCREEN=2048, MAX_EVENTS=256, MAX_EDGES=8192 };
 typedef struct { cairo_surface_t *s; cairo_t *c; int image, mutable; uint64_t id; } Surface;
@@ -47,6 +48,15 @@ static int sink_admitted,sink_fixture;
 static _Atomic int sink_requested,sink_invalid;
 static _Atomic uint64_t sink_paints,sink_draws,sink_faults;
 static _Thread_local s64 sink_context;
+static _Atomic uint64_t deep_counts[7];
+static int deep_admitted;
+int jarbox_lab_sink_level(int64_t context){
+    if(!sink_context||(context&&context!=sink_context)||!deep_admitted||atomic_load(&sink_invalid))return 0;
+    return atomic_load_explicit(&sink_requested,memory_order_relaxed);
+}
+void jarbox_lab_deep_note(unsigned kind,unsigned count){
+    if(kind<7)atomic_fetch_add_explicit(&deep_counts[kind],count,memory_order_relaxed);
+}
 static int sink_draw(s64 id){
     if(id>0&&id==sink_context){
         atomic_fetch_add_explicit(&sink_draws,1,memory_order_relaxed);
@@ -426,17 +436,21 @@ static java_native_method methods[]={
 };
 /* Refuse unknown archives rather than applying an experimental profile.
  * The fixture exception is already constrained to SDL dummy and loopback. */
+static int file_digest_matches(const char *path,const unsigned char expected[32]);
 static int nick_archive(const char *path){
     static const unsigned char expected[32]={
         0x11,0xb1,0xd4,0xc1,0x1f,0x90,0x82,0xb9,0xd0,0x7b,0xc7,0xbd,0x92,0xa9,0xad,0x3a,
         0xba,0xd4,0x07,0x64,0x85,0x3e,0x23,0x68,0x6c,0xc8,0x66,0x86,0x86,0x9c,0x96,0x6c};
+    return file_digest_matches(path,expected);
+}
+static int file_digest_matches(const char *path,const unsigned char expected[32]){
     FILE *f=fopen(path,"rb");if(!f)return 0;
     mbedtls_sha256_context ctx;unsigned char buf[16384],digest[32];size_t n;
     mbedtls_sha256_init(&ctx);mbedtls_sha256_starts(&ctx,0);
     while((n=fread(buf,1,sizeof buf,f)))mbedtls_sha256_update(&ctx,buf,n);
     int ok=!ferror(f);fclose(f);
     mbedtls_sha256_finish(&ctx,digest);mbedtls_sha256_free(&ctx);
-    return ok&&!memcmp(expected,digest,sizeof digest);
+    return ok&&!memcmp(expected,digest,32);
 }
 static void sample_vm_gc(MiniJVM *vm){
     if(!vm)return;
@@ -500,13 +514,15 @@ static void sample(void){
     if(active_vm)sample_vm_gc(active_vm);
     pthread_mutex_unlock(&vm_lock);
     LOCK;unsigned long long bytes=native_bytes;UNLOCK;
-    fprintf(trace,"%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%s,%d,%llu,%llu,%llu,%d\n",
+    fprintf(trace,"%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%s,%d,%llu,%llu,%llu,%d",
         (unsigned long long)ns(CLOCK_MONOTONIC),(unsigned long long)ns(CLOCK_PROCESS_CPUTIME_ID),
         (unsigned long long)atomic_load(&paints),(unsigned long long)atomic_load(&paint_cpu),
         (unsigned long long)atomic_load(&frames),(unsigned long long)atomic_load(&draw_calls),
         (unsigned long long)atomic_load(&image_allocs),(unsigned long long)atomic_load(&events_delivered),
         (unsigned long long)atomic_load(&gc_cycles),(unsigned long long)atomic_load(&gc_cpu),
-        bytes,(unsigned long long)atomic_load(&gc_aborts),(unsigned long long)atomic_load(&gc_heap_sample),logic_mode?"logic":trace_graph?"graph":"plain",atomic_load(&sink_requested),(unsigned long long)atomic_load(&sink_paints),(unsigned long long)atomic_load(&sink_draws),(unsigned long long)atomic_load(&sink_faults),atomic_load(&sink_invalid));fflush(trace);
+        bytes,(unsigned long long)atomic_load(&gc_aborts),(unsigned long long)atomic_load(&gc_heap_sample),logic_mode?"logic":trace_graph?"graph":"plain",atomic_load(&sink_requested),(unsigned long long)atomic_load(&sink_paints),(unsigned long long)atomic_load(&sink_draws),(unsigned long long)atomic_load(&sink_faults),atomic_load(&sink_invalid));
+    for(unsigned i=0;i<7;i++)fprintf(trace,",%llu",(unsigned long long)atomic_load(&deep_counts[i]));
+    fputc('\n',trace);fflush(trace);
 }
 static int write_graph(void){
     size_t len=strlen(trace_path)+32;char *p=malloc(len),*tmp=malloc(len);
@@ -530,6 +546,7 @@ int main(int argc,char**argv){
     if(fixture_ui&&(!getenv("SDL_VIDEODRIVER")||strcmp(getenv("SDL_VIDEODRIVER"),"dummy")||!strstr(game_path,"/fixture.jar")))return 2;
     sink_fixture=fixture_ui&&getenv("JARBOX_LAB_TEST_SINK")!=NULL;
     sink_admitted=sink_fixture||nick_archive(game_path);
+    deep_admitted=!sink_fixture&&sink_admitted&&file_digest_matches(api_path,jbr_bundled_api_sha256)&&file_digest_matches(rt_path,jbr_bundled_boot_sha256);
     if(logic_mode&&!fixture_ui&&!sink_admitted){
         fprintf(stderr,"LAB_LOGIC_REFUSED unknown archive\n");return 2;
     }
@@ -539,7 +556,7 @@ int main(int argc,char**argv){
         snprintf(p,n,"%s.effects.csv",trace_path);effect_file=fopen(p,"w");free(p);if(!effect_file)return 2;
         fprintf(effect_file,"sequence,monotonic_ns,worker,method,pc,operation,value,lost_total\n");
     }
-    fprintf(trace,"monotonic_ns,process_cpu_ns,paints,paint_cpu_ns,frames,draw_calls,image_allocs,input_events,gc_cycles,gc_cpu_ns,native_surface_bytes,gc_aborts,gc_heap_sample_bytes,mode,sink_requested,sink_paints,sink_draws,sink_faults,sink_invalid\n");
+    fprintf(trace,"monotonic_ns,process_cpu_ns,paints,paint_cpu_ns,frames,draw_calls,image_allocs,input_events,gc_cycles,gc_cpu_ns,native_surface_bytes,gc_aborts,gc_heap_sample_bytes,mode,sink_requested,sink_paints,sink_draws,sink_faults,sink_invalid,deep_leaves,glyph_attempts,glyph_scope_refusals,glyph_link_refusals,glyph_data_refusals,glyph_loops,glyph_chars\n");
     frame=calloc((size_t)width*height,4);if(!frame)return 2;
     if(SDL_Init(SDL_INIT_VIDEO|SDL_INIT_EVENTS)){fprintf(stderr,"%s\n",SDL_GetError());return 2;}
     SDL_Window *win=SDL_CreateWindow("JarBox Research Lab",SDL_WINDOWPOS_CENTERED,SDL_WINDOWPOS_CENTERED,width*2,height*2,SDL_WINDOW_RESIZABLE);

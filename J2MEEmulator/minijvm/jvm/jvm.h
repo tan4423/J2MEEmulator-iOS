@@ -933,6 +933,9 @@ struct _CodeAttribute {
     unsigned glyph_loop_state; // exact immutable CodeAttribute identity
 #endif
 #endif
+#if defined(JARBOX_DESKTOP_LAB)
+    unsigned desktop_glyph_kind;
+#endif
     spinlock_t compile_lock;
     struct _Jit {
         jit_func func;
