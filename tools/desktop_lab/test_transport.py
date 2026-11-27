@@ -42,7 +42,9 @@ with socket.socket() as listener:
             args[5]=private/"trace.csv"
             env.update(JARBOX_LAB_CONTROL="1",JARBOX_LAB_TEST_CONTROL="1")
             if sink:env["JARBOX_LAB_TEST_SINK"]="1"
-            if map_test:env["JARBOX_LAB_TEST_MAP"]="1"
+            if map_test:
+                env["JARBOX_LAB_TEST_MAP"]="1"
+                env["JARBOX_LAB_TEST_MONITORS"]="1"
             result=subprocess.Popen([str(x) for x in args],env=env)
             try:
                 with socket.socket(socket.AF_UNIX,socket.SOCK_DGRAM) as c:

@@ -191,79 +191,60 @@ static int desktop_map_leaf(MethodInfo *m,Runtime *r){
  * synchronized super wrapper, never caches a receiver/element, and never
  * synthesizes an exception. Leave the ordinary areturn handler in charge. */
 extern int jarbox_lab_vector_enabled(void);
-extern int jarbox_lab_vector_fixture(void);
-extern void jarbox_lab_vector_probe(unsigned reason);
 static int desktop_vector_body(Runtime *r,StackEntry *sp){
     MethodInfo *m=r->method;CodeAttribute *ca=m->converted_code;JClass *cl=m->_this_class;
     StackEntry *l=r->localvar;RuntimeStack *s=r->stack;
-    if(!jarbox_lab_vector_enabled()||
+    if(!jarbox_lab_vector_enabled()||r->jvm->jdwp_enable||
+       r->thrd_info->is_stop||r->thrd_info->suspend_count||m->breakpoint||
        !jbr_eq(cl->name,"java/util/Vector")||!jbr_eq(m->name,"elementAt")||
-       !jbr_eq(m->descriptor,"(I)Ljava/lang/Object;"))return 0;
-    jarbox_lab_vector_probe(0);
-    if(r->jvm->jdwp_enable||r->thrd_info->is_stop||r->thrd_info->suspend_count||m->breakpoint){
-        jarbox_lab_vector_probe(1);return 0;
-    }
-    if(!m->is_sync||m->is_static||m->is_native||m->para_slots!=2||m->return_slots!=1){
-        jarbox_lab_vector_probe(2);return 0;
-    }
-    if(ca->code_length!=49||ca->max_locals!=2||ca->max_stack!=4||
-       ca->exception_table_length||!ca->bytecode_for_jit){
-        if(jarbox_lab_vector_fixture())fprintf(stderr,"VECTOR shape len=%d locals=%d stack=%d handlers=%d\n",ca->code_length,ca->max_locals,ca->max_stack,ca->exception_table_length);
-        jarbox_lab_vector_probe(3);return 0;
-    }
-    if(cl->jloader||cl->status!=CLASS_STATUS_CLINITED){jarbox_lab_vector_probe(4);return 0;}
-    if(!l||sp!=l+2||s->store+s->max_size-sp<4){jarbox_lab_vector_probe(5);return 0;}
+       !jbr_eq(m->descriptor,"(I)Ljava/lang/Object;")||
+       !m->is_sync||m->is_static||m->is_native||m->para_slots!=2||m->return_slots!=1||
+       ca->code_length!=49||ca->max_locals!=2||ca->max_stack!=4||
+       ca->exception_table_length||!ca->bytecode_for_jit||
+       cl->jloader||cl->status!=CLASS_STATUS_CLINITED||
+       !l||sp!=l+2||s->store+s->max_size-sp<4)return 0;
     Instance *v=l[0].rvalue;
-    if(!v||v->mb.type!=MEM_TYPE_INS||!v->mb.clazz||!v->obj_fields){
-        if(jarbox_lab_vector_fixture())fprintf(stderr,"VECTOR receiver invalid ptr=%p type=%u clazz=%p fields=%p\\n",(void*)v,v?v->mb.type:0,v?(void*)v->mb.clazz:NULL,v?(void*)v->obj_fields:NULL);
-        jarbox_lab_vector_probe(6);return 0;
-    }
-    if(r->lock!=(MemoryBlock *)v){
-        if(jarbox_lab_vector_fixture())fprintf(stderr,"VECTOR monitor mismatch lock=%p receiver=%p sync=%u jdwp=%d\\n",(void*)r->lock,(void*)v,m->is_sync,r->jvm->jdwp_enable);
-        jarbox_lab_vector_probe(6);return 0;
-    }
+    if(!v||v->mb.type!=MEM_TYPE_INS||!v->mb.clazz||!v->obj_fields)return 0;
+    // Preserve the VM's existing synchronized-method policy exactly:
+    // when monitor handling is active, this receiver must be locked;
+    // when the VM explicitly ignores sync (e.g. its NULL-server mode), no
+    // lock may be present. Never add, drop, or bypass an acquired monitor.
+    int sync_ignored=jdwp_is_ignore_sync(r->jvm->jdwpserver);
+    if(sync_ignored ? r->lock!=NULL : r->lock!=(MemoryBlock *)v)return 0;
     if(v->mb.clazz!=cl&&(v->mb.clazz->superclass!=cl||
-          !jbr_eq(v->mb.clazz->name,"Class_hjf"))){
-        if(jarbox_lab_vector_fixture())fprintf(stderr,"VECTOR class mismatch receiver=%s super=%s method=%s\\n",utf8_cstr(v->mb.clazz->name),v->mb.clazz->superclass?utf8_cstr(v->mb.clazz->superclass->name):"(null)",utf8_cstr(cl->name));
-        jarbox_lab_vector_probe(6);return 0;
-    }
+       !jbr_eq(v->mb.clazz->name,"Class_hjf")))return 0;
     uint64_t layout=__atomic_load_n(&ca->desktop_vector_layout,__ATOMIC_ACQUIRE);
     if(!layout){
         const u8 *c=ca->bytecode_for_jit;
-        // Successful branch, exact original PCs from the authorized boot
-        // archive. The exceptional branch is left entirely untouched.
+        // Exact original boot-archive bytecode; exceptional path untouched.
         if(c[0]!=0x1b||c[1]!=0x2a||c[2]!=0xb4||c[5]!=0xa1||
            jbg_u16(c+6)!=37||c[42]!=0x2a||c[43]!=0xb4||
-           c[46]!=0x1b||c[47]!=0x32||c[48]!=0xb0){jarbox_lab_vector_probe(7);return 0;}
+           c[46]!=0x1b||c[47]!=0x32||c[48]!=0xb0)return 0;
         FieldInfo *n=jbg_field_at(m,2,"elementCount","I",4,0);
         FieldInfo *a=jbg_field_at(m,43,"elementData","[Ljava/lang/Object;",sizeof(Instance *),1);
         if(!n||!a||(size_t)n->offset_instance>UINT16_MAX||
-           (size_t)a->offset_instance>UINT16_MAX){jarbox_lab_vector_probe(8);return 0;}
+           (size_t)a->offset_instance>UINT16_MAX)return 0;
         layout=(UINT64_C(1)<<32)|((uint64_t)n->offset_instance<<16)|a->offset_instance;
         __atomic_store_n(&ca->desktop_vector_layout,layout,__ATOMIC_RELEASE);
     }
     unsigned no=(uint16_t)(layout>>16),ao=(uint16_t)layout;
     if(v->mb.clazz->field_instance_len<0||
        (size_t)no+sizeof(s32)>(size_t)v->mb.clazz->field_instance_len||
-       (size_t)ao+sizeof(Instance *)>(size_t)v->mb.clazz->field_instance_len){jarbox_lab_vector_probe(9);return 0;}
+       (size_t)ao+sizeof(Instance *)>(size_t)v->mb.clazz->field_instance_len)return 0;
     s32 index=l[1].ivalue,n;
     memcpy(&n,v->obj_fields+no,sizeof(n));
-    // A negative index also reaches aaload in the original implementation;
-    // fallback to reproduce its exact exception and message.
+    // Out-of-range indices fall back to the original VM exception path.
     if(index<0||index>=n){jarbox_lab_deep_note(17,1);return 0;}
     Instance *a=NULL,*result=NULL;
     memcpy(&a,v->obj_fields+ao,sizeof(a));
     if(!a||a->mb.type!=MEM_TYPE_ARR||a->mb.arr_type_index!=DATATYPE_REFERENCE||
        index>=a->arr_length||!a->arr_body){jarbox_lab_deep_note(17,1);return 0;}
     memcpy(&result,a->arr_body+(size_t)index*sizeof(result),sizeof(result));
-    // Replay both operand lanes exactly: iload_1/getfield count/compare
-    // then aload_0/getfield array/iload_1/aaload. Preserve ordinary stale
-    // reference lanes for the VM's conservative collector.
+    // Replay the exact live reference lanes left by the original bytecodes.
     sp[0].ivalue=index;sp[0].rvalue=result;
     sp[1].rvalue=v;sp[1].ivalue=index;
     s->sp=sp+1;
     r->pc=ca->code+48;
-    jarbox_lab_vector_probe(10);
     jarbox_lab_deep_note(16,1);
     return 1;
 }
