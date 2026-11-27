@@ -491,6 +491,13 @@ void jvm_destroy(MiniJVM *jvm) {
        (unsigned long long)__atomic_load_n(&jvm->block_ir_shared_hits,__ATOMIC_RELAXED),
        __atomic_load_n(&jvm->block_ir_bytes,__ATOMIC_RELAXED));
 #endif
+#if defined(JARBOX_RENDER_ISLAND_EXPERIMENT) && JARBOX_RENDER_ISLAND_EXPERIMENT && __JVM_OS_IOS__
+    jvm_printf("[JarBoxVM][RenderIsland] plans=%llu skips=%llu source_ops=%llu bytes=%u\n",
+       (unsigned long long)__atomic_load_n(&jvm->render_island_plans,__ATOMIC_RELAXED),
+       (unsigned long long)__atomic_load_n(&jvm->render_island_skips,__ATOMIC_RELAXED),
+       (unsigned long long)__atomic_load_n(&jvm->render_island_ops,__ATOMIC_RELAXED),
+       __atomic_load_n(&jvm->render_island_bytes,__ATOMIC_RELAXED));
+#endif
     close_log();
 #if _JVM_DEBUG_LOG_LEVEL > 0
     jvm_printf("[INFO]jvm destoried\n");

@@ -21,6 +21,8 @@ typedef struct { const char *rt, *api, *app, *tag, *mode; char save[512]; int po
 #endif
 #if defined(JARBOX_HOST_BLOCK_IR_TEST)
     uint64_t block_spans, block_ops, block_compiles, block_shared_hits;
+    int block_hold;
+    atomic_int block_release;
 #endif
 #if defined(JARBOX_HOST_GC_INDEX_TEST)
     uint64_t gc_index_passes, gc_index_large_snapshots, gc_index_omitted;
@@ -144,6 +146,14 @@ static void *job_main(void *p) {
     j->binding_mismatch=__atomic_load_n(&vm->session->treo_state.host_binding_mismatch,__ATOMIC_RELAXED);
 #endif
     arraylist_destroy(args);
+#if defined(JARBOX_HOST_BLOCK_IR_TEST)
+    // Keep A's owning CodeAttributes alive until B has completed. The
+    // sharing gate must test overlapping leases, not a scheduler lottery.
+    if(j->block_hold){
+        for(unsigned i=0;i<6000&&!atomic_load_explicit(&j->block_release,memory_order_acquire);++i)
+            usleep(10000);
+    }
+#endif
     pthread_mutex_lock(&j->lock);
     j->jvm = NULL; // no controller may touch this heap during destruction
     pthread_mutex_unlock(&j->lock);
@@ -256,6 +266,9 @@ static void init_job(Job *j, char **a, const char *tag, const char *mode, int po
     memset(j, 0, sizeof *j); j->rt = a[1]; j->api = a[2]; j->app = a[3];
     j->tag = tag; j->mode = mode; j->port = port;
     atomic_init(&j->finished, 0);
+#if defined(JARBOX_HOST_BLOCK_IR_TEST)
+    atomic_init(&j->block_release,0);
+#endif
     if (pthread_mutex_init(&j->lock, NULL)) exit(2);
     snprintf(j->save, sizeof j->save, "%s/%s", base, tag);
     if (mkdir(j->save, 0755)) exit(2);
@@ -309,7 +322,17 @@ int main(int argc, char **argv) {
     if(!strcmp(scenario,"block_ir_share")){
         init_job(&a,argv,"A","intrinsic-block-on",bport,base);
         init_job(&b,argv,"B","intrinsic-block-on",bport+1,base);
-        start_job(&a);start_job(&b);join_job(&a);join_job(&b);
+        a.block_hold=1;start_job(&a);
+        int published=0;
+        for(unsigned i=0;i<2000&&!published;++i){
+            pthread_mutex_lock(&a.lock);
+            published=a.jvm&&__atomic_load_n(&a.jvm->block_ir_plans,__ATOMIC_ACQUIRE)>=4;
+            pthread_mutex_unlock(&a.lock);
+            if(!published)usleep(10000);
+        }
+        start_job(&b);join_job(&b);
+        atomic_store_explicit(&a.block_release,1,memory_order_release);join_job(&a);
+        REQUIRE(published);
         REQUIRE(!a.rc&&!b.rc&&block_ok(&a)&&block_ok(&b));
         REQUIRE(a.gc_cycles>0&&b.gc_cycles>0);
         REQUIRE(a.block_spans>=8000&&b.block_spans>=8000);

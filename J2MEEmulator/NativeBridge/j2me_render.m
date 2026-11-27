@@ -5084,7 +5084,7 @@ static int treo_instance_offset(JClass *clazz, const char *name, const char *typ
 // Read-only real renderer preflight. No residual is admitted by this
 // function alone; exact code/API certification is an additional gate.
 // Do not retain the object identities beyond the invoking rooted frame.
-int treo_residual_scope_capture(Runtime *runtime,Instance *wrapper,JarBoxResidualScope *out) {
+static int treo_residual_scope_capture_impl(Runtime *runtime,Instance *wrapper,JarBoxResidualScope *out,int generic) {
     if(!out)return 0;
     memset(out,0,sizeof(*out));
     if(!runtime||!runtime->jvm||!runtime->thrd_info||!runtime->jvm->session||
@@ -5098,7 +5098,8 @@ int treo_residual_scope_capture(Runtime *runtime,Instance *wrapper,JarBoxResidua
     const uint64_t key=jarbox_native_heap_key_for_runtime(runtime);
     if(!key||key!=g_afk_canvas_owner_key||!g_afk_canvas||!g_afk_scope_serial)return 0;
     JarBoxResidualBinding b;
-    if(!jbr_nick_binding(runtime,wrapper,&b)||b.context!=g_afk_canvas)return 0;
+    if(!(generic?jbr_nick_paint_binding_at(runtime,wrapper,&b,30,5):
+                 jbr_nick_binding(runtime,wrapper,&b))||b.context!=g_afk_canvas)return 0;
     RenderContext *rc=rc_acquire(b.context,key);
     int screen=rc&&rc->ownsPixels&&rc->heap_key==key;
     rc_release(rc);
@@ -5113,6 +5114,14 @@ int treo_residual_scope_capture(Runtime *runtime,Instance *wrapper,JarBoxResidua
     if(!jbr_scope_prepare_fields(out)){memset(out,0,sizeof(*out));return 0;}
     return 1;
 }
+int treo_residual_scope_capture(Runtime *runtime,Instance *wrapper,JarBoxResidualScope *out) {
+    return treo_residual_scope_capture_impl(runtime,wrapper,out,0);
+}
+#if defined(JARBOX_RENDER_ISLAND_EXPERIMENT) && JARBOX_RENDER_ISLAND_EXPERIMENT
+int treo_render_island_scope_capture(Runtime *runtime,Instance *wrapper,JarBoxResidualScope *out) {
+    return treo_residual_scope_capture_impl(runtime,wrapper,out,1);
+}
+#endif
 #if (defined(TREO_RESIDUAL_EXPERIMENT) && TREO_RESIDUAL_EXPERIMENT && __JVM_OS_IOS__)
 // Fast checkpoint guard, no registry lock or repeated ancestry walk. The
 // admitted Canvas holds paintLock until endAfkPaint; TLS serial changes on

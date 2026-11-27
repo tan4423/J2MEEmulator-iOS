@@ -482,6 +482,161 @@ static int jbr_live_wrapper_ready(MiniJVM *vm,Instance *w,const JarBoxResidualSc
         jbr_eq(mr->name,name)&&jbr_eq(mr->descriptor,desc)&&
         jbr_live_target_ready(vm,mr,g,gm);
 }
+
+#if defined(JARBOX_RENDER_ISLAND_EXPERIMENT) && JARBOX_RENDER_ISLAND_EXPERIMENT
+#if !defined(TREO_IOS_GAME_JIT) || defined(TREO_VM_PAINT_BRIDGE_DISABLED) || !defined(JARBOX_BLOCK_IR_EXPERIMENT)
+#error Live render islands require the audited Headless candidate and existing paired VM sink
+#endif
+#define JARBOX_LIVE_RENDER_ISLAND 1
+#include "jarbox_render_island.h"
+extern int treo_render_island_scope_capture(Runtime *,Instance *,JarBoxResidualScope *);
+static int treo_headless_eligible(MethodInfo *);
+typedef struct {
+    JarBoxResidualScope scope;
+    MethodInfo *wrapper[4],*graphics[4];
+} JriLiveFrame;
+
+static ConstantItem *jri_live_item(JClass *cl,unsigned ix){
+    return cl&&cl->constant_item_ptr&&ix&&ix<(unsigned)cl->constant_item_count?
+           class_get_constant_item(cl,ix):NULL;
+}
+static int jri_live_variant(ConstantMethodRef *m){
+    if(!m||!jbr_eq(m->clsName,"Class_hvi"))return -1;
+    if(jbr_eq(m->name,"a")){
+        if(jbr_eq(m->descriptor,"(Ljavax/microedition/lcdui/Image;IIIIIIII)V"))return 0;
+        if(jbr_eq(m->descriptor,"(Ljavax/microedition/lcdui/Image;III)V"))return 1;
+    }
+    if(jbr_eq(m->descriptor,"(IIII)V")){
+        if(jbr_eq(m->name,"b"))return 2;
+        if(jbr_eq(m->name,"c"))return 3;
+    }
+    return -1;
+}
+static unsigned jri_live_cp(void *ctx,unsigned raw,unsigned ix){
+    ConstantItem *item=jri_live_item(ctx,ix);
+    if(!item)return 0;
+    if(raw==0xb2&&item->tag==CONSTANT_FIELD_REF){
+        ConstantFieldRef *f=(ConstantFieldRef *)item;
+        if(jbr_eq(f->descriptor,"I")||jbr_eq(f->descriptor,"S")||
+           jbr_eq(f->descriptor,"B")||jbr_eq(f->descriptor,"Z"))return 1;
+        if(jbr_eq(f->descriptor,"Ljavax/microedition/lcdui/Image;"))return 2;
+    }
+    if(raw==0xb6&&item->tag==CONSTANT_METHOD_REF){
+        int v=jri_live_variant((ConstantMethodRef *)item);
+        return v==0?jri_shape(10,3):v==1?jri_shape(5,3):v>=2?jri_shape(5,1):0;
+    }
+    return 0;
+}
+static const JriPlan *jri_live_plan(Runtime *r,MethodInfo *m,CodeAttribute *ca){
+    JarBoxSession *owner=r->jvm->session;
+    if(!owner||!r->thrd_info->jarbox_headless_scope||r->jvm->jdwp_enable||
+       r->thrd_info->is_stop||r->thrd_info->suspend_count||m->breakpoint||
+       m->is_sync||m->is_native||ca->jit.state==JIT_GEN_SUCCESS||
+       strncmp(utf8_cstr(m->_this_class->name),"Class_",6)||
+       !__atomic_load_n(&owner->treo_state.residual_archive_verified,__ATOMIC_ACQUIRE)||
+       __atomic_load_n(&owner->treo_state.residual_faults,__ATOMIC_RELAXED)||
+       jarbox_session_phase(owner)!=JARBOX_SESSION_PARKED||
+       !jarbox_ninja_core_active(&owner->treo_state.ninja_core,jarbox_treo_mode_get(&owner->treo_state))||
+       treo_game_jit_enabled_fast()||!ca->bytecode_for_jit||ca->code_length<5||
+       ca->code_length>JBI_MAX_CODE||ca->exception_table_length>JBI_MAX_HANDLERS)return NULL;
+    unsigned state=__atomic_load_n(&ca->render_island_state,__ATOMIC_ACQUIRE);
+    if(state==2)return ca->render_island_plan;
+    if(state||__atomic_load_n(&r->jvm->render_island_bytes,__ATOMIC_RELAXED)>=262144u||
+       !__atomic_compare_exchange_n(&ca->render_island_state,&state,1,0,
+                                    __ATOMIC_ACQ_REL,__ATOMIC_ACQUIRE))return NULL;
+    JbiHandler handlers[JBI_MAX_HANDLERS];
+    for(unsigned i=0;i<ca->exception_table_length;++i){
+        ExceptionTable *h=ca->exception_table+i;
+        handlers[i]=(JbiHandler){h->start_pc,h->end_pc,h->handler_pc};
+    }
+    JriPlan *p=jri_build(ca->bytecode_for_jit,ca->code_length,ca->max_locals,ca->max_stack,
+                        handlers,ca->exception_table_length,0,jri_live_cp,m->_this_class);
+    if(p){
+        size_t bytes=sizeof(*p)+p->count*sizeof(JriIsland);
+        uint32_t used=__atomic_load_n(&r->jvm->render_island_bytes,__ATOMIC_RELAXED);
+        for(;;){
+            if(used>262144u||bytes>262144u-used){free(p);p=NULL;break;}
+            if(__atomic_compare_exchange_n(&r->jvm->render_island_bytes,&used,used+(uint32_t)bytes,0,
+                                           __ATOMIC_RELAXED,__ATOMIC_RELAXED))break;
+        }
+    }
+    ca->render_island_plan=p;
+    if(p)__atomic_fetch_add(&r->jvm->render_island_plans,1,__ATOMIC_RELAXED);
+    __atomic_store_n(&ca->render_island_state,p?2:3,__ATOMIC_RELEASE);
+    return p;
+}
+
+/* Every removed static read has already been linked by ordinary execution.
+ * An Image source is read once to reproduce the caller and wrapper's
+ * conservative reference lanes. Never evaluate class initialization here. */
+static int jri_live_static(JClass *cl,unsigned ix,Instance **image){
+    ConstantItem *item=jri_live_item(cl,ix);
+    if(!item||item->tag!=CONSTANT_FIELD_REF)return 0;
+    ConstantFieldRef *ref=(ConstantFieldRef *)item;
+    if(jri_live_cp(cl,0xb2,ix)==1)return jbr_plain_int_read(cl,ref);
+    FieldInfo *f=ref->fieldInfo;
+    if(jri_live_cp(cl,0xb2,ix)!=2||!image||!f||!f->_this_class||
+       !f->isrefer||f->isvolatile||!(f->access_flags&ACC_STATIC)||
+       (f->access_flags&ACC_VOLATILE)||f->datatype_bytes!=sizeof(Instance *))return 0;
+    JClass *owner=f->_this_class;
+    if(owner->status!=CLASS_STATUS_CLINITED||owner->jloader!=cl->jloader||
+       !owner->field_static||owner->field_static_len<0||
+       (size_t)f->offset>(size_t)owner->field_static_len||
+       sizeof(Instance *)>(size_t)owner->field_static_len-(size_t)f->offset||
+       !owner->name||!ref->clsName||!utf8_equals(owner->name,ref->clsName)||
+       !f->name||!ref->name||!utf8_equals(f->name,ref->name)||
+       !f->descriptor||!ref->descriptor||!utf8_equals(f->descriptor,ref->descriptor))return 0;
+    memcpy(image,owner->field_static+f->offset,sizeof(*image));
+    return 1;
+}
+
+/* No new renderer mode. Reuse the existing paired, owner-local Canvas
+ * sink, but eliminate the certified argument expression AND wrapper
+ * execution before dispatch. All proof obligations precede any writes. */
+static int jri_live_skip(Runtime *r,const JriIsland *s,JriLiveFrame *f,
+                         StackEntry *locals,StackEntry *sp){
+    static const char *const names[]={"drawRegion","drawImage","drawRect","fillRect"};
+    JClass *cl=r->method->_this_class;
+    ConstantItem *item=jri_live_item(cl,s->cp);
+    if(!item||item->tag!=CONSTANT_METHOD_REF)return 0;
+    ConstantMethodRef *mr=(ConstantMethodRef *)item;
+    int variant=jri_live_variant(mr);
+    if(variant<0||s->argc!=(variant==0?10:5)||
+       (variant<2)!=(s->ref_kind!=JRI_REF_NONE))return 0;
+    Instance *w=locals[s->receiver].rvalue,*image=NULL;
+    if(!w||!jbr_bname(w->mb.clazz,"Class_hvi")||!jbr_bobject(w,w->mb.clazz))return 0;
+    if(!f->scope.serial&&!treo_render_island_scope_capture(r,w,&f->scope))return 0;
+    if(!treo_residual_scope_valid(r,w,&f->scope))return 0;
+    Instance *g=(Instance *)f->scope.graphics;
+    if(!f->wrapper[variant]){
+        if(!jbr_live_wrapper_ready(r->jvm,w,&f->scope,(unsigned)variant))return 0;
+        const char *desc=utf8_cstr(mr->descriptor);
+        MethodInfo *wm=jbr_live_declared(w->mb.clazz,utf8_cstr(mr->name),desc);
+        MethodInfo *gm=jbr_live_declared(g->mb.clazz,names[variant],desc);
+        if(!wm||!gm||wm->para_slots!=s->argc||gm->para_slots!=s->argc||
+           wm->return_slots||gm->return_slots||wm->converted_code->max_locals!=s->argc||
+           wm->converted_code->max_stack!=s->argc||!treo_headless_eligible(gm)||
+           __atomic_load_n(&gm->treo_afk_kind,__ATOMIC_RELAXED)!=3)return 0;
+        f->wrapper[variant]=wm;f->graphics[variant]=gm;
+    }
+    MethodInfo *wm=f->wrapper[variant],*gm=f->graphics[variant];
+    if(wm->breakpoint||gm->breakpoint||wm->converted_code->jit.state==JIT_GEN_SUCCESS||
+       !jbr_live_target_ready(r->jvm,mr,w,wm))return 0;
+    for(unsigned i=0;i<s->nreads;++i){
+        unsigned ix=s->reads[i];
+        if(!jri_live_static(cl,ix,s->ref_kind==JRI_REF_STATIC&&ix==s->ref_index?&image:NULL))
+            return 0;
+    }
+    if(s->ref_kind==JRI_REF_LOCAL)image=locals[s->ref_index].rvalue;
+    /* No Java execution, allocation or fault after this final check. The
+     * exact wrappers only write receiver, image and Graphics ref lanes;
+     * the bundled VM sink returns before a Graphics frame is allocated. */
+    if(!treo_residual_scope_valid(r,w,&f->scope))return 0;
+    jri_replay_wrapper_refs(sp,s,w,g,image);
+    return 1;
+}
+#endif
+
 static const JarBoxResidualOp *jbr_live_compile(Runtime *r,MethodInfo *m,CodeAttribute *ca,
                                                 JarBoxResidualScope *scope,unsigned *count) {
     static const unsigned char digest[32]={0x96,0xd7,0xab,0x33,0x79,0x07,0xcf,0x79,0xd4,0x50,0x14,0x30,0x16,0x8f,0x6f,0x65,0xc2,0x91,0xc6,0xa1,0xba,0x8f,0xe3,0xbd,0x77,0x51,0x56,0x26,0x4c,0xb7,0xd0,0xa5};
@@ -2804,9 +2959,20 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                     binding_background?JBR_TEST_BACKGROUND_PC:binding_overlay?JBR_TEST_OVERLAY_PC:binding_minimap?JBR_TEST_MINIMAP_PC:JBR_TEST_MAP_PC,
                     (binding_background||binding_overlay)?JBR_TEST_OVERLAY_DELEGATE_PC:binding_minimap?JBR_TEST_MINIMAP_DELEGATE_PC:JBR_TEST_DELEGATE_PC,
                     JBR_TEST_PAINT_PC,JBR_TEST_OVERLAY_ROUTE_PC);
-                if(want!=got)__atomic_fetch_add(&state->host_binding_mismatch,1,__ATOMIC_RELAXED);
+                int generic=jbr_nick_paint_binding_at(runtime,wrapper,&b,
+                    (binding_background||binding_overlay)?JBR_TEST_OVERLAY_DELEGATE_PC:binding_minimap?JBR_TEST_MINIMAP_DELEGATE_PC:JBR_TEST_DELEGATE_PC,
+                    JBR_TEST_PAINT_PC);
+                if(want!=got||want!=generic)__atomic_fetch_add(&state->host_binding_mismatch,1,__ATOMIC_RELAXED);
                 if(got)__atomic_fetch_add(&state->host_binding_good,1,__ATOMIC_RELAXED);
                 else __atomic_fetch_add(&state->host_binding_bad,1,__ATOMIC_RELAXED);
+            } else if(jbr_bmethod(method,"Class_hii","extra","(LClass_hvi;)V")){
+                JarBoxTreoState *state=&jvm->session->treo_state;
+                JarBoxResidualBinding b;
+                Instance *wrapper=stack_size(stack)>=1?(stack->sp-1)->rvalue:NULL;
+                const void *expected=jbr_bfield(clazz,NULL,"expected","I",sizeof(s32),0,1);
+                s32 want=-1;if(expected)memcpy(&want,expected,sizeof(want));
+                int got=jbr_nick_paint_binding_at(runtime,wrapper,&b,JBR_TEST_DELEGATE_PC,JBR_TEST_PAINT_PC);
+                if(want!=got)__atomic_fetch_add(&state->host_binding_mismatch,1,__ATOMIC_RELAXED);
             }
 #endif
 
@@ -2949,6 +3115,9 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
 #endif
 #if defined(JARBOX_HOST_RENDER_ISLAND_TEST)
                 const JriPlan *render_island=jri_fixture_plan(runtime,method,ca);
+#elif defined(JARBOX_LIVE_RENDER_ISLAND) && !_JVM_DEBUG_PROFILE && _JVM_DEBUG_LOG_LEVEL <= 1 && !defined(__JVM_DEBUG__)
+                const JriPlan *render_island=!jbr_active?jri_live_plan(runtime,method,ca):NULL;
+                JriLiveFrame render_frame={0};
 #endif
                 do {
 #if defined(JARBOX_RESIDUAL_EXECUTOR)
@@ -3080,6 +3249,29 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
                     }
 #undef JBR_INVARIANT_FAIL
+#endif
+#if defined(JARBOX_LIVE_RENDER_ISLAND) && !_JVM_DEBUG_PROFILE && _JVM_DEBUG_LOG_LEVEL <= 1 && !defined(__JVM_DEBUG__)
+                    // Render plan precedes Block IR: do not let a pure
+                    // arithmetic span consume an island's entry PC.
+                    if(render_island&&!thrd_info->suspend_count&&!thrd_info->is_stop){
+                        const JriIsland *s=jri_find(render_island,(unsigned)(runtime->pc-ca->code));
+                        if(s){
+                            stack->sp=sp;
+                            check_suspend_and_pause(runtime);
+                            sp=stack->sp;
+                            if(!thrd_info->is_stop&&!thrd_info->suspend_count&&
+                               sp>=localvar+ca->max_locals&&sp<=stack->store+stack->max_size&&
+                               2*s->argc+2<=stack->store+stack->max_size-sp&&
+                               s->peak<=stack->store+stack->max_size-sp&&
+                               sp-(localvar+ca->max_locals)+s->peak<=ca->max_stack&&
+                               jri_live_skip(runtime,s,&render_frame,localvar,sp)){
+                                runtime->pc=ca->code+s->end;
+                                __atomic_fetch_add(&jvm->render_island_skips,1,__ATOMIC_RELAXED);
+                                __atomic_fetch_add(&jvm->render_island_ops,s->steps,__ATOMIC_RELAXED);
+                                continue;
+                            }
+                        }
+                    }
 #endif
 #if defined(JARBOX_BLOCK_IR_EXPERIMENT) && JARBOX_BLOCK_IR_EXPERIMENT && !_JVM_DEBUG_PROFILE && _JVM_DEBUG_LOG_LEVEL <= 1 && !defined(__JVM_DEBUG__)
                     // Never execute a tape inside a render residual frame.

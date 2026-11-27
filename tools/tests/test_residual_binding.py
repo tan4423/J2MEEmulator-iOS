@@ -98,6 +98,17 @@ int main(void) {
     #define GOOD() do{assert(jbr_nick_binding(r,&w,&b));assert(b.wrapper==&w&&b.canvas==&c&&b.graphics==&g&&b.context==12345);}while(0)
     #define BAD() do{assert(!jbr_nick_binding(r,&w,&b));assert(!b.wrapper&&!b.context);}while(0)
     GOOD();
+    assert(jbr_nick_paint_binding_at(r,&w,&b,30,5));
+    /* A generic descendant need not have the map method's own signature,
+     * but still needs the exact delegate PC, owner and rooted wrapper. */
+    MethodInfo generic=m[0];generic.name="skillPaint";
+    r[0].method=&generic;
+    assert(!jbr_nick_binding(r,&w,&b));
+    assert(jbr_nick_paint_binding_at(r,&w,&b,30,5));
+    assert(!jbr_nick_paint_binding_at(r,&other,&b,30,5));
+    assert(!jbr_nick_paint_binding_at(r,&w,&b,29,5));
+    r[2].jvm=&foreign;assert(!jbr_nick_paint_binding_at(r,&w,&b,30,5));r[2].jvm=&vm;
+    r[0].method=&m[0];
     for(int i=0;i<10000;i++){
         r[2].jvm=&foreign;BAD();r[2].jvm=&vm;
         r[3].thrd_info=&foreign;BAD();r[3].thrd_info=&thread;

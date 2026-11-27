@@ -65,8 +65,12 @@ int main(void) {
         block_ir=i.split("static const JbiPlan *jbi_method_plan",1)[1].split("unsigned state=",1)[0]
         self.assertEqual(block_ir.count("treo_game_jit_enabled_fast()"),1)
         self.assertIn("jarbox_session_phase(owner)!=JARBOX_SESSION_PARKED",block_ir)
-        # Seven interpreter-only tiers plus ordinary JIT dispatch.
-        self.assertEqual(i.count("treo_game_jit_enabled_fast()"), 8)
+        islands=i.split("static const JriPlan *jri_live_plan",1)[1].split("unsigned state=",1)[0]
+        self.assertEqual(islands.count("treo_game_jit_enabled_fast()"),1)
+        self.assertIn("jarbox_session_phase(owner)!=JARBOX_SESSION_PARKED",islands)
+        self.assertIn("treo_residual_scope_valid(r,w,&f->scope)",i)
+        # Eight interpreter-only tiers plus ordinary JIT dispatch.
+        self.assertEqual(i.count("treo_game_jit_enabled_fast()"), 9)
         self.assertNotIn("treo_game_jit_is_enabled()",i)
         self.assertEqual(j.count("int treo_jit_enabled_state;"),1)
         self.assertIn("int treo_game_jit_is_enabled(void) { return treo_game_jit_enabled_fast(); }",j)

@@ -622,7 +622,7 @@ s32 _class_method_info_destroy(JClass *clazz) {
             ca->code = NULL;
             jvm_free(ca->bytecode_for_jit);//
             ca->bytecode_for_jit = NULL;
-#if defined(JARBOX_HOST_RENDER_ISLAND_TEST)
+#if defined(JARBOX_HOST_RENDER_ISLAND_TEST) || (defined(JARBOX_RENDER_ISLAND_EXPERIMENT) && JARBOX_RENDER_ISLAND_EXPERIMENT && __JVM_OS_IOS__)
             free(ca->render_island_plan);
 #endif
 #if defined(JARBOX_BLOCK_IR_EXPERIMENT) && JARBOX_BLOCK_IR_EXPERIMENT

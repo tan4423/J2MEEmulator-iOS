@@ -7,8 +7,10 @@
  * CP classifier supplies symbolic types, not authority to omit effects.
  * The runtime MUST prove the exact sink and every static read is ready. */
 enum { JRI_MAX_ISLANDS=256,JRI_MAX_STEPS=64,JRI_MAX_READS=16,JRI_MAX_ARGS=12 };
+enum { JRI_REF_NONE,JRI_REF_LOCAL,JRI_REF_STATIC,JRI_REF_NULL };
 typedef struct {
     uint16_t pc,call,end,receiver,cp,steps,peak,nreads;
+    uint16_t argc,ref_kind,ref_index;
     uint16_t reads[JRI_MAX_READS];
 } JriIsland;
 typedef struct {unsigned count;JriIsland island[];} JriPlan;
@@ -55,23 +57,24 @@ static inline JriPlan *jri_build(const uint8_t *c,unsigned size,unsigned locals,
             if(op==0xb6){
                 unsigned ix=jbi_u16(c+p+1,be),shape=cp(ctx,op,ix);
                 if(!shape||(shape&15)!=depth||(shape>>4)!=refs||depth>JRI_MAX_ARGS||p+w>=size)break;
+                x.argc=(uint16_t)depth;
                 x.call=(uint16_t)p;x.end=(uint16_t)(p+w);x.cp=(uint16_t)ix;x.steps=(uint16_t)(steps+1);
                 if(count==JRI_MAX_ISLANDS)return NULL;
                 found[count++]=x;start=x.end-1;break;
             }
             if(jri_load(c+p,locals,be,&l,&r)){
                 if(depth==JRI_MAX_ARGS)break;
-                if(r)refs|=1u<<depth;
+                if(r){if(depth!=1)break;refs|=1u<<depth;x.ref_kind=JRI_REF_LOCAL;x.ref_index=(uint16_t)l;}
                 ++depth;
             }else if(op==0xb2){
                 unsigned ix=jbi_u16(c+p+1,be),t=cp(ctx,op,ix);
                 if((t!=1&&t!=2)||x.nreads==JRI_MAX_READS||depth==JRI_MAX_ARGS)break;
                 x.reads[x.nreads++]=(uint16_t)ix;
-                if(t==2)refs|=1u<<depth;
+                if(t==2){if(depth!=1)break;refs|=1u<<depth;x.ref_kind=JRI_REF_STATIC;x.ref_index=(uint16_t)ix;}
                 ++depth;
             }else if(op==0x01||(op>=2&&op<=8)||op==0x10||op==0x11){
                 if(depth==JRI_MAX_ARGS)break;
-                if(op==1)refs|=1u<<depth;
+                if(op==1){if(depth!=1)break;refs|=1u<<depth;x.ref_kind=JRI_REF_NULL;}
                 ++depth;
             }else if(op==0x60||op==0x64||op==0x68||op==0x78||op==0x7a||op==0x7c||op==0x7e||op==0x80||op==0x82){
                 if(depth<3||(refs&(3u<<(depth-2))))break;
@@ -94,5 +97,14 @@ static inline const JriIsland *jri_find(const JriPlan *p,unsigned pc){
     unsigned l=0,r=p->count;
     while(l<r){unsigned m=l+(r-l)/2;if(p->island[m].pc<pc)l=m+1;else r=m;}
     return l<p->count&&p->island[l].pc==pc?p->island+l:NULL;
+}
+/* The audited Nick wrapper has max_locals=argc; its only extra reference
+ * writes before the bundled Graphics early-return are Graphics at argc
+ * and (for image sinks) the source at argc+1. Integer lanes are dead.
+ * Caller must check exact wrapper, sink, scope, and 2*argc physical room. */
+static inline void jri_replay_wrapper_refs(StackEntry *sp,const JriIsland *s,
+        void *wrapper,void *graphics,void *image){
+    sp[0].rvalue=wrapper;sp[s->argc].rvalue=graphics;
+    if(s->ref_kind!=JRI_REF_NONE){sp[1].rvalue=image;sp[s->argc+1].rvalue=image;}
 }
 #endif

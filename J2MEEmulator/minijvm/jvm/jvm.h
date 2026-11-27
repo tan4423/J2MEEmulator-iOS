@@ -926,7 +926,7 @@ struct _CodeAttribute {
 #if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__ && defined(TREO_VM_DECODED_INT_EXPERIMENT) && TREO_VM_DECODED_INT_EXPERIMENT
     uint64_t jarbox_decoded_int_plan; // immutable, pointer-free, zero = fallback
 #endif
-#if defined(JARBOX_HOST_RENDER_ISLAND_TEST)
+#if defined(JARBOX_HOST_RENDER_ISLAND_TEST) || (defined(JARBOX_RENDER_ISLAND_EXPERIMENT) && JARBOX_RENDER_ISLAND_EXPERIMENT && __JVM_OS_IOS__)
     void *render_island_plan;
     unsigned render_island_state;
 #endif
@@ -2020,6 +2020,10 @@ struct _MiniJVM {
     int host_block_ir_enabled;
     uint64_t host_block_ir_spans, host_block_ir_ops, host_block_ir_compiles;
 #endif
+#endif
+#if defined(JARBOX_RENDER_ISLAND_EXPERIMENT) && JARBOX_RENDER_ISLAND_EXPERIMENT && __JVM_OS_IOS__
+    uint32_t render_island_bytes;
+    uint64_t render_island_plans,render_island_skips,render_island_ops;
 #endif
 #if defined(JARBOX_HOST_RENDER_ISLAND_TEST)
     int host_render_island_enabled;

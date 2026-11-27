@@ -53,7 +53,7 @@ public abstract class Canvas {
     }
 }''',
 "Class_hmi.java":'''public final class Class_hmi {
-    public static void m(Class_hvi w){Class_hii.k1(w);}
+    public static void m(Class_hvi w){Class_hii.k1(w);Class_hii.extra(w);}
     public static void k(Class_hvi w){Class_hii.r2(w);}
     public static void i(Class_hac c,Class_hvi w){c.a0(w);}
 }''',
@@ -63,6 +63,8 @@ public abstract class Canvas {
 }''',
 "Class_hii.java":'''public final class Class_hii {
     public static int expected,touch;
+    public static int extraTouch;
+    public static final void extra(Class_hvi w){extraTouch++;}
     public static final void k1(Class_hvi w){touch++;}
     public static final void i3(Class_hvi w){touch++;}
     public static final void r2(Class_hvi w){touch++;}
@@ -93,7 +95,7 @@ public abstract class Canvas {
             d.wrongBinding=true;c.doPaint();d.wrongBinding=false;
             if(i%100==0)System.gc();
         }
-        if(Class_hii.touch!=31000||Class_hxb.touch!=11000)throw new IllegalStateException("missing invocation");
+        if(Class_hii.touch!=31000||Class_hxb.touch!=11000||Class_hii.extraTouch!=9000)throw new IllegalStateException("missing invocation");
     }
 }'''
 }

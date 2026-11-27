@@ -7,6 +7,8 @@ static unsigned cp(void *ctx,unsigned op,unsigned ix){
     (void)ctx;
     if(op==0xb6&&ix==1)return jri_shape(5,1);
     if(op==0xb2&&ix==2)return 1;
+    if(op==0xb2&&ix==3)return 2;
+    if(op==0xb6&&ix==4)return jri_shape(5,3);
     return 0;
 }
 int main(void){
@@ -23,5 +25,20 @@ int main(void){
     code[11]=9;assert(!jri_build(code,sizeof code,2,5,NULL,0,1,cp,NULL));code[11]=1;
     code[8]=0x2a;assert(!jri_build(code,sizeof code,2,5,NULL,0,1,cp,NULL));code[8]=6;
     for(unsigned n=0;n<sizeof code;++n){p=jri_build(code,n,2,5,NULL,0,1,cp,NULL);assert(!p);}
+    uint8_t image_code[]={0x2a,0xb2,0,3,0x03,0x04,0x05,0xb6,0,4,0xb1};
+    p=jri_build(image_code,sizeof image_code,1,5,NULL,0,1,cp,NULL);
+    assert(p&&p->count==1&&p->island[0].argc==5&&p->island[0].ref_kind==JRI_REF_STATIC&&p->island[0].ref_index==3);
+    StackEntry a[24],b[24];int wrapper,graphics,image,old;
+    for(unsigned i=0;i<24;++i){a[i].ulvalue=UINT64_C(0x123456789)+i;a[i].rvalue=&old;}
+    memcpy(b,a,sizeof a);a[2].rvalue=&wrapper;a[3].rvalue=&image;a[7].rvalue=&graphics;a[8].rvalue=&image;
+    jri_replay_wrapper_refs(b+2,p->island,&wrapper,&graphics,&image);
+    assert(!memcmp(a,b,sizeof a));free(p);
+    image_code[1]=0x01;image_code[2]=0x00;image_code[3]=0x00;
+    assert(!jri_build(image_code,sizeof image_code,1,5,NULL,0,1,cp,NULL)); /* NOP is a boundary */
+    uint8_t local_image[]={0x2a,0x2b,0x03,0x04,0x05,0xb6,0,4,0xb1};
+    p=jri_build(local_image,sizeof local_image,2,5,NULL,0,1,cp,NULL);
+    assert(p&&p->island[0].ref_kind==JRI_REF_LOCAL&&p->island[0].ref_index==1);free(p);
+    local_image[1]=0x01;p=jri_build(local_image,sizeof local_image,1,5,NULL,0,1,cp,NULL);
+    assert(p&&p->island[0].ref_kind==JRI_REF_NULL);free(p);
     puts("render islands: exact typed arguments, branch/handler/unknown/fault refusal PASS");
 }
