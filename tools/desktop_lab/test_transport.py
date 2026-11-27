@@ -48,7 +48,7 @@ with socket.socket() as listener:
                 env["JARBOX_LAB_TEST_MONITORS"]="1"
             result=subprocess.Popen([str(x) for x in args],env=env)
             try:
-                with socket.socket(socket.AF_UNIX,socket.SOCK_DGRAM) as c:
+                with socket.socket(socket.AF_UNIX,socket.SOCK_DGRAM) as control_sock:
                     c.bind("\0jb-test-"+uuid.uuid4().hex)
                     c.settimeout(2)
                     deadline=time.monotonic()+25
@@ -56,8 +56,8 @@ with socket.socket() as listener:
                         assert result.poll() is None and time.monotonic()<deadline
                         time.sleep(.05)
                     def cmd(s):
-                        c.sendto(s.encode(),str(private/"control.sock"))
-                        return json.loads(c.recv(4096))
+                        control_sock.sendto(s.encode(),str(private/"control.sock"))
+                        return json.loads(control_sock.recv(4096))
                     while True:
                         v=cmd("status")
                         if not v["canvas"]:break
