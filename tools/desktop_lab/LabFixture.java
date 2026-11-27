@@ -51,12 +51,15 @@ public final class LabFixture extends MIDlet {
     final class Probe extends Canvas {
         private int s6;
         private boolean touched;
+        private final boolean sink="1".equals(System.getProperty("jarbox.lab.test.sink"));
+        protected void keyPressed(int key){if(sink&&key==-5)repaint();}
         private final boolean control="1".equals(System.getProperty("jarbox.lab.test.control"));
         protected void pointerPressed(int x,int y){if(control&&x==120&&y==137)touched=true;}
         protected void pointerReleased(int x,int y){if(control&&touched&&x==120&&y==137){System.out.println("LAB_FIXTURE_BACKGROUND_INPUT_PASS");notifyDestroyed();}}
         protected void paint(Graphics g) {
             s6++;
-            if(s6!=1)throw new RuntimeException("fixture state");
+            if(!sink&&s6!=1)throw new RuntimeException("fixture state");
+            if(sink)System.out.println("LAB_SINK_PAINT "+s6);
 
             Image im=Image.createImage(8,8);
             Graphics ig=im.getGraphics();

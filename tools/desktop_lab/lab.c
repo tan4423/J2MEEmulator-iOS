@@ -43,6 +43,23 @@ static _Atomic unsigned next_worker;
 static _Thread_local unsigned worker_id;
 static FILE *effect_file;
 static int fixture_ui, logic_mode;
+static int sink_admitted,sink_fixture;
+static _Atomic int sink_requested,sink_invalid;
+static _Atomic uint64_t sink_paints,sink_draws,sink_faults;
+static _Thread_local s64 sink_context;
+static int sink_draw(s64 id){
+    if(id>0&&id==sink_context){
+        atomic_fetch_add_explicit(&sink_draws,1,memory_order_relaxed);
+        return 1;
+    }
+    return 0;
+}
+static void sink_read(s64 id){
+    if(id>0&&id==sink_context){
+        atomic_store(&sink_invalid,1);atomic_store(&sink_requested,0);
+        atomic_fetch_add(&sink_faults,1);
+    }
+}
 static _Atomic uint64_t logic_plans, logic_spans, logic_ops;
 static char *rt_path,*api_path,*game_path,*save_path;
 static int width,height;
@@ -248,14 +265,14 @@ FN(getImageContext){LOCK;Surface*s=get(J(0));s64 v=s&&s->image&&s->mutable?J(0):
 FN(setColor){LOCK;Surface*s=get(J(0));uint32_t v=I(2);if(s)cairo_set_source_rgb(s->c,((v>>16)&255)/255.,((v>>8)&255)/255.,(v&255)/255.);UNLOCK;OK;}
 FN(setClip){LOCK;Surface*s=get(J(0));if(s){cairo_reset_clip(s->c);cairo_rectangle(s->c,I(2),I(3),I(4)>0?I(4):0,I(5)>0?I(5):0);cairo_clip(s->c);}UNLOCK;OK;}
 FN(setStrokeStyle){LOCK;Surface*s=get(J(0));if(s){double d[]={1,1};cairo_set_dash(s->c,d,I(2)==1?2:0,0);}UNLOCK;OK;}
-FN(fillRect){LOCK;Surface*s=get(J(0));if(s&&I(4)>0&&I(5)>0){cairo_rectangle(s->c,I(2),I(3),I(4),I(5));cairo_fill(s->c);atomic_fetch_add(&draw_calls,1);}UNLOCK;OK;}
-FN(drawRect){LOCK;Surface*s=get(J(0));if(s&&I(4)>=0&&I(5)>=0){cairo_rectangle(s->c,I(2)+.5,I(3)+.5,I(4),I(5));cairo_stroke(s->c);atomic_fetch_add(&draw_calls,1);}UNLOCK;OK;}
-FN(drawLine){LOCK;Surface*s=get(J(0));if(s){cairo_move_to(s->c,I(2)+.5,I(3)+.5);cairo_line_to(s->c,I(4)+.5,I(5)+.5);cairo_stroke(s->c);atomic_fetch_add(&draw_calls,1);}UNLOCK;OK;}
+FN(fillRect){if(sink_draw(J(0)))OK;LOCK;Surface*s=get(J(0));if(s&&I(4)>0&&I(5)>0){cairo_rectangle(s->c,I(2),I(3),I(4),I(5));cairo_fill(s->c);atomic_fetch_add(&draw_calls,1);}UNLOCK;OK;}
+FN(drawRect){if(sink_draw(J(0)))OK;LOCK;Surface*s=get(J(0));if(s&&I(4)>=0&&I(5)>=0){cairo_rectangle(s->c,I(2)+.5,I(3)+.5,I(4),I(5));cairo_stroke(s->c);atomic_fetch_add(&draw_calls,1);}UNLOCK;OK;}
+FN(drawLine){if(sink_draw(J(0)))OK;LOCK;Surface*s=get(J(0));if(s){cairo_move_to(s->c,I(2)+.5,I(3)+.5);cairo_line_to(s->c,I(4)+.5,I(5)+.5);cairo_stroke(s->c);atomic_fetch_add(&draw_calls,1);}UNLOCK;OK;}
 FN(setFont){LOCK;Surface*s=get(J(0));if(s){int style=I(3),size=I(4);cairo_select_font_face(s->c,I(2)==32?"monospace":"sans",style&2?CAIRO_FONT_SLANT_ITALIC:CAIRO_FONT_SLANT_NORMAL,style&1?CAIRO_FONT_WEIGHT_BOLD:CAIRO_FONT_WEIGHT_NORMAL);cairo_set_font_size(s->c,size==8?10:size==16?18:14);}UNLOCK;OK;}
 FN(getStringWidth){char*t=string_copy(r,2);int v=0;LOCK;Surface*s=get(J(0));if(s&&t){cairo_text_extents_t e;cairo_text_extents(s->c,t,&e);v=(int)ceil(e.x_advance);}UNLOCK;free(t);PI(v);OK;}
 FN(getFontHeight){int v=14;LOCK;Surface*s=get(J(0));if(s){cairo_font_extents_t e;cairo_font_extents(s->c,&e);v=(int)ceil(e.ascent+e.descent);}UNLOCK;PI(v);OK;}
 FN(getFontAscent){int v=11;LOCK;Surface*s=get(J(0));if(s){cairo_font_extents_t e;cairo_font_extents(s->c,&e);v=(int)ceil(e.ascent);}UNLOCK;PI(v);OK;}
-FN(drawString){char*t=string_copy(r,2);LOCK;Surface*s=get(J(0));if(s&&t){cairo_text_extents_t e;cairo_font_extents_t f;cairo_text_extents(s->c,t,&e);cairo_font_extents(s->c,&f);double x=I(3),y=I(4);int a=I(5);anchor(a,(int)ceil(e.x_advance),(int)ceil(f.ascent+f.descent),&x,&y);if(!(a&64))y+=f.ascent;cairo_move_to(s->c,x,y);cairo_show_text(s->c,t);atomic_fetch_add(&draw_calls,1);}UNLOCK;free(t);OK;}
+FN(drawString){if(sink_draw(J(0)))OK;char*t=string_copy(r,2);LOCK;Surface*s=get(J(0));if(s&&t){cairo_text_extents_t e;cairo_font_extents_t f;cairo_text_extents(s->c,t,&e);cairo_font_extents(s->c,&f);double x=I(3),y=I(4);int a=I(5);anchor(a,(int)ceil(e.x_advance),(int)ceil(f.ascent+f.descent),&x,&y);if(!(a&64))y+=f.ascent;cairo_move_to(s->c,x,y);cairo_show_text(s->c,t);atomic_fetch_add(&draw_calls,1);}UNLOCK;free(t);OK;}
 /* MIDP uses positive counterclockwise angles in screen coordinates. */
 static void arc_path(cairo_t*c,double x,double y,double w,double h,int start,int sweep,int fill){
     if(w<=0||h<=0||!sweep)return;
@@ -284,13 +301,14 @@ static void round_path(cairo_t*c,double x,double y,double w,double h,double aw,d
     }
     if(fill)cairo_fill(c);else cairo_stroke(c);
 }
-#define SHAPE(name,impl,fill) FN(name){LOCK;Surface*s=get(J(0));if(s){impl(s->c,I(2),I(3),I(4),I(5),I(6),I(7),fill);atomic_fetch_add(&draw_calls,1);}UNLOCK;OK;}
+#define SHAPE(name,impl,fill) FN(name){if(sink_draw(J(0)))OK;LOCK;Surface*s=get(J(0));if(s){impl(s->c,I(2),I(3),I(4),I(5),I(6),I(7),fill);atomic_fetch_add(&draw_calls,1);}UNLOCK;OK;}
 SHAPE(drawArc,arc_path,0)
 SHAPE(fillArc,arc_path,1)
 SHAPE(drawRoundRect,round_path,0)
 SHAPE(fillRoundRect,round_path,1)
 #undef SHAPE
 static void polygon(Runtime*r,int fill){
+    if(sink_draw(J(0)))return;
     Instance*x=R(2),*y=R(3);int n=I(4);
     if(n<(fill?3:2)||!array_ok(x,DATATYPE_INT)||!array_ok(y,DATATYPE_INT)||n>x->arr_length||n>y->arr_length)return;
     LOCK;Surface*s=get(J(0));
@@ -327,13 +345,13 @@ static void region(Surface*d,Surface*s,int x,int y,int w,int h,int tr,double dx,
     }
     cairo_surface_mark_dirty(tmp);blit(d,tmp,dw,dh,dx,dy);cairo_surface_destroy(tmp);
 }
-FN(drawImage){LOCK;Surface*d=get(J(0)),*s=get(J(2));if(s)region(d,s,0,0,sw(s),sh(s),0,I(4),I(5),I(6));UNLOCK;OK;}
-FN(drawRegion){LOCK;region(get(J(0)),get(J(2)),I(4),I(5),I(6),I(7),I(8),I(9),I(10),I(11));UNLOCK;OK;}
-FN(copyArea){LOCK;Surface*s=get(J(0));region(s,s,I(2),I(3),I(4),I(5),0,I(6),I(7),0);UNLOCK;OK;}
+FN(drawImage){sink_read(J(2));if(sink_draw(J(0)))OK;LOCK;Surface*d=get(J(0)),*s=get(J(2));if(s)region(d,s,0,0,sw(s),sh(s),0,I(4),I(5),I(6));UNLOCK;OK;}
+FN(drawRegion){sink_read(J(2));if(sink_draw(J(0)))OK;LOCK;region(get(J(0)),get(J(2)),I(4),I(5),I(6),I(7),I(8),I(9),I(10),I(11));UNLOCK;OK;}
+FN(copyArea){sink_read(J(0));LOCK;Surface*s=get(J(0));region(s,s,I(2),I(3),I(4),I(5),0,I(6),I(7),0);UNLOCK;OK;}
 static uint32_t premul(uint32_t v){unsigned a=v>>24;return (a<<24)|((((v>>16)&255)*a+127)/255<<16)|((((v>>8)&255)*a+127)/255<<8)|((v&255)*a+127)/255;}
-FN(drawRGB){Instance*a=R(2);int o=I(3),stride=I(4),w=I(7),h=I(8);if(range(a,o,stride,w,h)){LOCK;Surface*s=get(J(0));if(s){cairo_surface_t*t=cairo_image_surface_create(CAIRO_FORMAT_ARGB32,w,h);if(cairo_surface_status(t)==CAIRO_STATUS_SUCCESS){for(int y=0;y<h;y++)for(int x=0;x<w;x++){uint32_t v=((uint32_t*)a->arr_body)[(int64_t)o+(int64_t)y*stride+x];put(t,x,y,I(9)?premul(v):v|0xff000000u);}cairo_surface_mark_dirty(t);blit(s,t,w,h,I(5),I(6));}else unsupported("drawRGB allocation");cairo_surface_destroy(t);}UNLOCK;}OK;}
-FN(getImageRGB){Instance*a=R(2);int o=I(3),stride=I(4),x=I(5),y=I(6),w=I(7),h=I(8);if(range(a,o,stride,w,h)){LOCK;Surface*s=get(J(0));if(s&&x>=0&&y>=0&&x<=sw(s)-w&&y<=sh(s)-h){cairo_surface_flush(s->s);for(int j=0;j<h;j++)for(int i=0;i<w;i++)((uint32_t*)a->arr_body)[(int64_t)o+(int64_t)j*stride+i]=pixel(s->s,x+i,y+j);}UNLOCK;}OK;}
-FN(flushToScreen){LOCK;Surface*s=get(J(0));if(s&&show_canvas&&sw(s)==width&&sh(s)==height){cairo_surface_flush(s->s);for(int y=0;y<height;y++)memcpy(frame+(size_t)y*width,cairo_image_surface_get_data(s->s)+(size_t)y*cairo_image_surface_get_stride(s->s),(size_t)width*4);dirty=1;atomic_fetch_add(&frames,1);}UNLOCK;OK;}
+FN(drawRGB){if(sink_draw(J(0)))OK;Instance*a=R(2);int o=I(3),stride=I(4),w=I(7),h=I(8);if(range(a,o,stride,w,h)){LOCK;Surface*s=get(J(0));if(s){cairo_surface_t*t=cairo_image_surface_create(CAIRO_FORMAT_ARGB32,w,h);if(cairo_surface_status(t)==CAIRO_STATUS_SUCCESS){for(int y=0;y<h;y++)for(int x=0;x<w;x++){uint32_t v=((uint32_t*)a->arr_body)[(int64_t)o+(int64_t)y*stride+x];put(t,x,y,I(9)?premul(v):v|0xff000000u);}cairo_surface_mark_dirty(t);blit(s,t,w,h,I(5),I(6));}else unsupported("drawRGB allocation");cairo_surface_destroy(t);}UNLOCK;}OK;}
+FN(getImageRGB){sink_read(J(0));Instance*a=R(2);int o=I(3),stride=I(4),x=I(5),y=I(6),w=I(7),h=I(8);if(range(a,o,stride,w,h)){LOCK;Surface*s=get(J(0));if(s&&x>=0&&y>=0&&x<=sw(s)-w&&y<=sh(s)-h){cairo_surface_flush(s->s);for(int j=0;j<h;j++)for(int i=0;i<w;i++)((uint32_t*)a->arr_body)[(int64_t)o+(int64_t)j*stride+i]=pixel(s->s,x+i,y+j);}UNLOCK;}OK;}
+FN(flushToScreen){if(sink_draw(J(0)))OK;LOCK;Surface*s=get(J(0));if(s&&show_canvas&&sw(s)==width&&sh(s)==height){cairo_surface_flush(s->s);for(int y=0;y<height;y++)memcpy(frame+(size_t)y*width,cairo_image_surface_get_data(s->s)+(size_t)y*cairo_image_surface_get_stride(s->s),(size_t)width*4);dirty=1;atomic_fetch_add(&frames,1);}UNLOCK;OK;}
 FN(profilePaintBegin){PJ(ns(CLOCK_THREAD_CPUTIME_ID));OK;}
 FN(profilePaintEnd){uint64_t e=ns(CLOCK_THREAD_CPUTIME_ID),b=J(0);if(b&&e>=b){atomic_fetch_add(&paints,1);atomic_fetch_add(&paint_cpu,e-b);}OK;}
 FN(isStopRequested){PI(atomic_load(&stop_requested));OK;}
@@ -352,6 +370,24 @@ FN(reportLaunchError){/* Do not persist exception strings that may contain crede
 FN(zero){PI(0);OK;}
 FN(zero_long){PJ(0);OK;}
 FN(noop){OK;}
+/* Reuse Canvas's existing full-repaint Core eligibility and paintLock.
+ * Java paint, graphics state, image raster and pixel queries stay live.
+ * A screen pixel dependency invalidates the experimental sample, not a
+ * claimed successful fallback after irreversible discarded draws. */
+FN(labPaintPolicy){PI(atomic_load(&sink_requested)&&!atomic_load(&sink_invalid)?1:0);OK;}
+FN(labCorePaint){PI(sink_admitted&&atomic_load(&sink_requested)&&!atomic_load(&sink_invalid));OK;}
+FN(labBeginPaint){
+    s64 previous=sink_context; sink_context=0;
+    if(I(2)&&sink_admitted&&!atomic_load(&sink_invalid)){
+        LOCK;Surface*s=get(J(0));if(s&&!s->image&&sw(s)==width&&sh(s)==height)sink_context=J(0);UNLOCK;
+    }
+    PJ(previous);OK;
+}
+FN(labEndPaint){if(sink_context)atomic_fetch_add(&sink_paints,1);sink_context=J(0);OK;}
+FN(labCoreResult){
+    if(I(0)!=0){atomic_store(&sink_invalid,1);atomic_store(&sink_requested,0);atomic_fetch_add(&sink_faults,1);}
+    OK;
+}
 #include "lab_ui.h"
 FN(unavailable){unsupported("native bridge operation outside supported 2D subset");return RUNTIME_STATUS_ERROR;}
 #define CLS "javax/microedition/lcdui/NativeBridge"
@@ -372,11 +408,11 @@ static java_native_method methods[]={
  N(pollInputEvent,"()[I",pollInputEvent),N(isStopRequested,"()Z",isStopRequested),
  N(startupPhase,"(IJ)V",startupPhase),N(reportLaunchError,"(Ljava/lang/String;)V",reportLaunchError),
  N(afkBufferBlitBegin,"(IIZ)J",zero_long),N(afkBufferBlitEnd,"(J)V",noop),
- N(afkSuspended,"()Z",zero),N(takeAfkRefresh,"()I",zero),N(afkPaintPolicy,"()I",zero),
+ N(afkSuspended,"()Z",zero),N(takeAfkRefresh,"()I",zero),N(afkPaintPolicy,"()I",labPaintPolicy),
  N(ninjaDeepActive,"()Z",zero),N(ninjaDeepSkip,"(Ljava/lang/Object;I)Z",zero),
- N(ninjaCorePaint,"(Ljava/lang/Object;)Z",zero),N(ninjaCorePaintResult,"(I)V",noop),
+ N(ninjaCorePaint,"(Ljava/lang/Object;)Z",labCorePaint),N(ninjaCorePaintResult,"(I)V",labCoreResult),
  N(afkImageCacheEnabled,"()Z",zero),N(imageCacheNote,"(II)V",noop),N(afkCanvasResult,"(I)V",noop),
- N(afkBypassPaint,"()Z",zero),N(beginAfkPaint,"(JZ)J",zero_long),N(endAfkPaint,"(J)V",noop),
+ N(afkBypassPaint,"()Z",zero),N(beginAfkPaint,"(JZ)J",labBeginPaint),N(endAfkPaint,"(J)V",labEndPaint),
  N(displayWaitEnabled,"()Z",zero),N(displayWaitVersion,"()I",zero),N(displayWaitIfUnchanged,"(II)I",zero),N(displayWake,"()V",noop),N(jarSparsePaintDue,"()Z",zero),
  N(lockScreen,"()V",noop),N(unlockScreen,"()V",noop),N(screenRevision,"()I",screenRevision),
  N(formBegin,"(Ljava/lang/String;I)V",formBegin),N(formAddCommand,"(Ljava/lang/String;III)V",formAddCommand),
@@ -438,6 +474,7 @@ static void *run_vm(void *unused){
         if(getenv("JARBOX_LAB_UI_FIXTURE")&&getenv("JARBOX_LAB_TEST_PORT"))
             sys_properties_set_c(vm,"jarbox.lab.test.port",getenv("JARBOX_LAB_TEST_PORT"));
         if(fixture_ui&&getenv("JARBOX_LAB_TEST_CONTROL"))sys_properties_set_c(vm,"jarbox.lab.test.control","1");
+        if(sink_fixture)sys_properties_set_c(vm,"jarbox.lab.test.sink","1");
         (void)jarbox_session_enter_foreground(vm->session);
         pthread_mutex_lock(&vm_lock);active_vm=vm;pthread_mutex_unlock(&vm_lock);
         ArrayList *args=arraylist_create(0);arraylist_push_back(args,game_path);
@@ -463,13 +500,13 @@ static void sample(void){
     if(active_vm)sample_vm_gc(active_vm);
     pthread_mutex_unlock(&vm_lock);
     LOCK;unsigned long long bytes=native_bytes;UNLOCK;
-    fprintf(trace,"%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%s\n",
+    fprintf(trace,"%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%s,%d,%llu,%llu,%llu,%d\n",
         (unsigned long long)ns(CLOCK_MONOTONIC),(unsigned long long)ns(CLOCK_PROCESS_CPUTIME_ID),
         (unsigned long long)atomic_load(&paints),(unsigned long long)atomic_load(&paint_cpu),
         (unsigned long long)atomic_load(&frames),(unsigned long long)atomic_load(&draw_calls),
         (unsigned long long)atomic_load(&image_allocs),(unsigned long long)atomic_load(&events_delivered),
         (unsigned long long)atomic_load(&gc_cycles),(unsigned long long)atomic_load(&gc_cpu),
-        bytes,(unsigned long long)atomic_load(&gc_aborts),(unsigned long long)atomic_load(&gc_heap_sample),logic_mode?"logic":trace_graph?"graph":"plain");fflush(trace);
+        bytes,(unsigned long long)atomic_load(&gc_aborts),(unsigned long long)atomic_load(&gc_heap_sample),logic_mode?"logic":trace_graph?"graph":"plain",atomic_load(&sink_requested),(unsigned long long)atomic_load(&sink_paints),(unsigned long long)atomic_load(&sink_draws),(unsigned long long)atomic_load(&sink_faults),atomic_load(&sink_invalid));fflush(trace);
 }
 static int write_graph(void){
     size_t len=strlen(trace_path)+32;char *p=malloc(len),*tmp=malloc(len);
@@ -491,7 +528,9 @@ int main(int argc,char**argv){
     if(!valid_size(width,height)||width>MAX_SCREEN||height>MAX_SCREEN||(!trace_graph&&!logic_mode&&strcmp(argv[8],"plain")))return 2;
     fixture_ui=getenv("JARBOX_LAB_UI_FIXTURE")&&strcmp(getenv("JARBOX_LAB_UI_FIXTURE"),"1")==0;
     if(fixture_ui&&(!getenv("SDL_VIDEODRIVER")||strcmp(getenv("SDL_VIDEODRIVER"),"dummy")||!strstr(game_path,"/fixture.jar")))return 2;
-    if(logic_mode&&!fixture_ui&&!nick_archive(game_path)){
+    sink_fixture=fixture_ui&&getenv("JARBOX_LAB_TEST_SINK")!=NULL;
+    sink_admitted=sink_fixture||nick_archive(game_path);
+    if(logic_mode&&!fixture_ui&&!sink_admitted){
         fprintf(stderr,"LAB_LOGIC_REFUSED unknown archive\n");return 2;
     }
     trace_path=argv[5];trace=fopen(trace_path,"w");if(!trace)return 2;
@@ -500,7 +539,7 @@ int main(int argc,char**argv){
         snprintf(p,n,"%s.effects.csv",trace_path);effect_file=fopen(p,"w");free(p);if(!effect_file)return 2;
         fprintf(effect_file,"sequence,monotonic_ns,worker,method,pc,operation,value,lost_total\n");
     }
-    fprintf(trace,"monotonic_ns,process_cpu_ns,paints,paint_cpu_ns,frames,draw_calls,image_allocs,input_events,gc_cycles,gc_cpu_ns,native_surface_bytes,gc_aborts,gc_heap_sample_bytes,mode\n");
+    fprintf(trace,"monotonic_ns,process_cpu_ns,paints,paint_cpu_ns,frames,draw_calls,image_allocs,input_events,gc_cycles,gc_cpu_ns,native_surface_bytes,gc_aborts,gc_heap_sample_bytes,mode,sink_requested,sink_paints,sink_draws,sink_faults,sink_invalid\n");
     frame=calloc((size_t)width*height,4);if(!frame)return 2;
     if(SDL_Init(SDL_INIT_VIDEO|SDL_INIT_EVENTS)){fprintf(stderr,"%s\n",SDL_GetError());return 2;}
     SDL_Window *win=SDL_CreateWindow("JarBox Research Lab",SDL_WINDOWPOS_CENTERED,SDL_WINDOWPOS_CENTERED,width*2,height*2,SDL_WINDOW_RESIZABLE);

@@ -73,7 +73,7 @@ static SDL_Keycode ctl_key(const char *s){
 static void ctl_poll(int physical){
     if(ctl_fd<0)return;
     for(int budget=0;budget<4;budget++){
-        struct sockaddr_un peer={0};socklen_t len=sizeof peer;char req[96],reply[320];
+        struct sockaddr_un peer={0};socklen_t len=sizeof peer;char req[96],reply[640];
         ssize_t n=recvfrom(ctl_fd,req,sizeof req-1,MSG_TRUNC,(struct sockaddr*)&peer,&len);
         if(n<0)return;
         if(n==0||n>=(ssize_t)sizeof req||memchr(req,0,(size_t)n))continue;
@@ -85,7 +85,14 @@ static void ctl_poll(int physical){
         if(!strcmp(req,"status"))state="ok";
         else if(!strcmp(req,"snapshot"))state=ctl_snapshot()?"ok":"snapshot_failed";
         else if(!strcmp(req,"stop")){atomic_store(&stop_requested,1);state="stopping";}
+        else if(!strcmp(req,"sink off")){atomic_store(&sink_requested,0);state="ok";}
+        else if(!strcmp(req,"sink on")){
+            if(sink_admitted&&canvas&&atomic_load(&frames)&&!physical&&!atomic_load(&sink_invalid)){
+                atomic_store(&sink_requested,1);state="ok";
+            }
+        }
         else if(physical)state="physical_input_active";
+        else if(atomic_load(&sink_requested)&&!sink_fixture)state="render_paused";
         else if(atomic_load(&stop_requested))state="stopping";
         else if(!strncmp(req,"chat ",5)){
             /* Only the three explicitly requested research commands, into
@@ -115,8 +122,8 @@ static void ctl_poll(int physical){
                 }
             }
         }
-        snprintf(reply,sizeof reply,"{\"state\":\"%s\",\"canvas\":%d,\"width\":%d,\"height\":%d,\"frames\":%llu,\"input_events\":%llu,\"queued_before\":%u}",
-          state,canvas,width,height,(unsigned long long)atomic_load(&frames),(unsigned long long)atomic_load(&events_delivered),queued);
+        snprintf(reply,sizeof reply,"{\"state\":\"%s\",\"canvas\":%d,\"width\":%d,\"height\":%d,\"frames\":%llu,\"input_events\":%llu,\"queued_before\":%u,\"paints\":%llu,\"sink_requested\":%d,\"sink_paints\":%llu,\"sink_draws\":%llu,\"sink_faults\":%llu,\"sink_invalid\":%d}",
+          state,canvas,width,height,(unsigned long long)atomic_load(&frames),(unsigned long long)atomic_load(&events_delivered),queued,(unsigned long long)atomic_load(&paints),atomic_load(&sink_requested),(unsigned long long)atomic_load(&sink_paints),(unsigned long long)atomic_load(&sink_draws),(unsigned long long)atomic_load(&sink_faults),atomic_load(&sink_invalid));
         if(len>offsetof(struct sockaddr_un,sun_path)&&len<=sizeof peer)
             (void)sendto(ctl_fd,reply,strlen(reply),MSG_DONTWAIT,(struct sockaddr*)&peer,len);
     }

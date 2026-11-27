@@ -59,3 +59,8 @@ python3 "$ROOT/tools/desktop_lab/test_transport.py" "$OUT" control 2>&1 | tee "$
 grep -Fx 'LAB_FIXTURE_BACKGROUND_INPUT_PASS' "$OUT/fixture/run-control.log"
 grep -Fx 'LAB_CONTROL_READY' "$OUT/fixture/run-control.log"
 echo DESKTOP_LAB_BACKGROUND_CONTROL_PASS
+
+python3 "$ROOT/tools/desktop_lab/test_transport.py" "$OUT" sink 2>&1 | tee "$OUT/fixture/run-sink.log"
+grep -F 'LAB_SINK_ABA_PASS' "$OUT/fixture/run-sink.log"
+grep -Fx 'LAB_SINK_PAINT 3' "$OUT/fixture/run-sink.log"
+grep -Fx 'LAB_FIXTURE_BACKGROUND_INPUT_PASS' "$OUT/fixture/run-sink.log"

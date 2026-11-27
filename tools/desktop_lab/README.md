@@ -143,3 +143,6 @@ from gameplay timing and is never enabled in default plain CPU baselines.
 For the exact research workflow, `labctl.py SESSION chat gm37|k27|ts`
 only fills an empty non-password TextBox titled `chat`. Use `key f1`
 separately to submit, then verify the map and zone. Other strings are refused.
+
+## Experimental scoped screen raster sink
+`labctl.py SESSION sink on|off` toggles the desktop-only experiment for the exact Nick archive, default off. It reuses Canvas Core full-repaint checks, keeps Java paint and offscreen Image raster, and discards only native screen draw calls within the same thread/context. Trace includes actual admissions, discarded operations and invalidation. Screen input refused while the framebuffer is stale; restore sink off before using input. A pixel dependency or failed paint invalidates the experiment. Fixture A/B/A asserts paint progression, offscreen pixels, no presented frames during B and restored frames on exit. This is a lab candidate, not a claim of gameplay equivalence or iOS savings.
