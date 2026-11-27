@@ -500,10 +500,14 @@ void jvm_destroy(MiniJVM *jvm) {
        __atomic_load_n(&jvm->render_island_bytes,__ATOMIC_RELAXED));
 #endif
 #if defined(JARBOX_RECONSTRUCT_EXPERIMENT) && JARBOX_RECONSTRUCT_EXPERIMENT && __JVM_OS_IOS__
-    jvm_printf("[JarBoxVM][GlyphLoop] loops=%llu chars=%llu draws=%llu\n",
+    jvm_printf("[JarBoxVM][GlyphLoop] loops=%llu chars=%llu draws=%llu attempts=%llu scope_refusals=%llu link_refusals=%llu data_refusals=%llu\n",
        (unsigned long long)__atomic_load_n(&jvm->glyph_loops,__ATOMIC_RELAXED),
        (unsigned long long)__atomic_load_n(&jvm->glyph_chars,__ATOMIC_RELAXED),
-       (unsigned long long)__atomic_load_n(&jvm->glyph_draws,__ATOMIC_RELAXED));
+       (unsigned long long)__atomic_load_n(&jvm->glyph_draws,__ATOMIC_RELAXED),
+       (unsigned long long)__atomic_load_n(&jvm->glyph_attempts,__ATOMIC_RELAXED),
+       (unsigned long long)__atomic_load_n(&jvm->glyph_scope_refusals,__ATOMIC_RELAXED),
+       (unsigned long long)__atomic_load_n(&jvm->glyph_link_refusals,__ATOMIC_RELAXED),
+       (unsigned long long)__atomic_load_n(&jvm->glyph_data_refusals,__ATOMIC_RELAXED));
 #endif
     close_log();
 #if _JVM_DEBUG_LOG_LEVEL > 0

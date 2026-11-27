@@ -2029,6 +2029,7 @@ struct _MiniJVM {
     uint64_t render_island_plans,render_island_skips,render_island_ops,render_wrapper_skips;
 #if defined(JARBOX_RECONSTRUCT_EXPERIMENT) && JARBOX_RECONSTRUCT_EXPERIMENT
     uint64_t glyph_loops,glyph_chars,glyph_draws;
+    uint64_t glyph_attempts,glyph_scope_refusals,glyph_link_refusals,glyph_data_refusals;
 #endif
 #endif
 #if defined(JARBOX_HOST_RENDER_ISLAND_TEST)

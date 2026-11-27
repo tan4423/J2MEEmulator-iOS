@@ -61,6 +61,19 @@ class FlightRecorderTest(unittest.TestCase):
             (p/"main.swift").write_text("import Foundation\n"+s[a:b]+MAIN)
             subprocess.run([swift,str(p/"main.swift"),"-o",str(p/"test")],check=True,timeout=60)
             subprocess.run([str(p/"test")],check=True,timeout=30)
+    def test_headless_admission_export(self):
+        native=(ROOT/"J2MEEmulator/NativeBridge/jvm_bridge.c").read_text()
+        sampler=native.split("int jvm_bridge_flight_sample(",1)[1].split("\n}",1)[0]
+        swift=(ROOT/"J2MEEmulator/SceneDelegate.swift").read_text()
+        header=(ROOT/"J2MEEmulator/NativeBridge/jvm_bridge.h").read_text()
+        before_unlock=sampler.split("pthread_mutex_unlock(&g_bridge_lifecycle_lock)",1)[0]
+        after_pin=before_unlock.split("jarbox_session_reserve_callback(vm->session)",1)[1]
+        for field in ["block_ir_seen","block_ir_plans","block_ir_shared_hits","block_ir_bytes","render_island_plans","render_island_skips","render_island_ops","render_wrapper_skips","render_island_bytes","glyph_loops","glyph_chars","glyph_draws","glyph_attempts","glyph_scope_refusals","glyph_link_refusals","glyph_data_refusals"]:
+            self.assertIn("out->"+field+"=__atomic_load_n(&vm->"+field,after_pin)
+            self.assertIn(field,header)
+            self.assertIn(field+"=\\(slot."+field+")",swift)
+        for field in ("residual_verified","residual_ready","residual_compiles","residual_calls","residual_skips","residual_deopts","residual_faults"):
+            self.assertIn(field+"=\\(slot."+field+")",swift)
     def test_wiring(self):
         native=(ROOT/"J2MEEmulator/NativeBridge/jvm_bridge.c").read_text()
         sampler=native.split("int jvm_bridge_flight_sample(",1)[1].split("\n}",1)[0]

@@ -1045,8 +1045,34 @@ int jvm_bridge_flight_sample(JarBoxFlightProcess *process, JarBoxFlightSlot *slo
         // STARTING may be incomplete; CLEANUP may already be freeing the VM.
         if (detail && out->phase==BRIDGE_RUNNING) {
             MiniJVM *vm=atomic_load_explicit(&slot->jvm,memory_order_acquire);
-            if (vm && vm->session && jarbox_session_reserve_callback(vm->session))
+            if (vm && vm->session && jarbox_session_reserve_callback(vm->session)) {
                 held[count]=vm->session;
+                // Snapshot VM-local scalar evidence while the lifecycle lock
+                // still protects the running slot. Never dereference a VM
+                // pointer after unlocking or access a collector-owned vector.
+#if defined(JARBOX_BLOCK_IR_EXPERIMENT) && JARBOX_BLOCK_IR_EXPERIMENT
+                out->block_ir_seen=__atomic_load_n(&vm->block_ir_seen,__ATOMIC_RELAXED);
+                out->block_ir_plans=__atomic_load_n(&vm->block_ir_plans,__ATOMIC_RELAXED);
+                out->block_ir_shared_hits=__atomic_load_n(&vm->block_ir_shared_hits,__ATOMIC_RELAXED);
+                out->block_ir_bytes=__atomic_load_n(&vm->block_ir_bytes,__ATOMIC_RELAXED);
+#endif
+#if defined(JARBOX_RENDER_ISLAND_EXPERIMENT) && JARBOX_RENDER_ISLAND_EXPERIMENT && __JVM_OS_IOS__
+                out->render_island_plans=__atomic_load_n(&vm->render_island_plans,__ATOMIC_RELAXED);
+                out->render_island_skips=__atomic_load_n(&vm->render_island_skips,__ATOMIC_RELAXED);
+                out->render_island_ops=__atomic_load_n(&vm->render_island_ops,__ATOMIC_RELAXED);
+                out->render_wrapper_skips=__atomic_load_n(&vm->render_wrapper_skips,__ATOMIC_RELAXED);
+                out->render_island_bytes=__atomic_load_n(&vm->render_island_bytes,__ATOMIC_RELAXED);
+#if defined(JARBOX_RECONSTRUCT_EXPERIMENT) && JARBOX_RECONSTRUCT_EXPERIMENT
+                out->glyph_loops=__atomic_load_n(&vm->glyph_loops,__ATOMIC_RELAXED);
+                out->glyph_chars=__atomic_load_n(&vm->glyph_chars,__ATOMIC_RELAXED);
+                out->glyph_draws=__atomic_load_n(&vm->glyph_draws,__ATOMIC_RELAXED);
+                out->glyph_attempts=__atomic_load_n(&vm->glyph_attempts,__ATOMIC_RELAXED);
+                out->glyph_scope_refusals=__atomic_load_n(&vm->glyph_scope_refusals,__ATOMIC_RELAXED);
+                out->glyph_link_refusals=__atomic_load_n(&vm->glyph_link_refusals,__ATOMIC_RELAXED);
+                out->glyph_data_refusals=__atomic_load_n(&vm->glyph_data_refusals,__ATOMIC_RELAXED);
+#endif
+#endif
+            }
         }
         ++count;
     }

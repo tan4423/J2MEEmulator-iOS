@@ -750,11 +750,20 @@ static int jbg_live_skip(Runtime *r,unsigned kind,StackEntry *sp){
     JriLiveFrame f={0};
     ConstantMethodRef *mr=jbg_methodref_at(r->method,kind==1?126:129);
     JbgProof proof;
+    __atomic_fetch_add(&r->jvm->glyph_attempts,1,__ATOMIC_RELAXED);
     if(!mr||jri_live_variant(mr)!=0||!w||
-       !treo_glyph_scope_capture(r,w,&f.scope)||
-       !jri_live_wrapper_proof(r,mr,w,&f,0,NULL)||
-       !jbg_vm_preflight(r,kind,"Ljavax/microedition/lcdui/Image;",&proof)||
-       !treo_residual_scope_valid(r,w,&f.scope))return 0;
+       !treo_glyph_scope_capture(r,w,&f.scope)){
+        __atomic_fetch_add(&r->jvm->glyph_scope_refusals,1,__ATOMIC_RELAXED);return 0;
+    }
+    if(!jri_live_wrapper_proof(r,mr,w,&f,0,NULL)){
+        __atomic_fetch_add(&r->jvm->glyph_link_refusals,1,__ATOMIC_RELAXED);return 0;
+    }
+    if(!jbg_vm_preflight(r,kind,"Ljavax/microedition/lcdui/Image;",&proof)){
+        __atomic_fetch_add(&r->jvm->glyph_data_refusals,1,__ATOMIC_RELAXED);return 0;
+    }
+    if(!treo_residual_scope_valid(r,w,&f.scope)){
+        __atomic_fetch_add(&r->jvm->glyph_scope_refusals,1,__ATOMIC_RELAXED);return 0;
+    }
     jbg_replay(sp,w,proof.font,proof.row,(Instance *)f.scope.graphics,proof.image);
     __atomic_fetch_add(&r->jvm->glyph_loops,1,__ATOMIC_RELAXED);
     __atomic_fetch_add(&r->jvm->glyph_chars,proof.count,__ATOMIC_RELAXED);

@@ -106,7 +106,7 @@ static inline void *jbg_vm_row(void *ctx,unsigned i){
     if(!a||a->mb.type!=MEM_TYPE_ARR||a->mb.arr_type_index!=DATATYPE_ARRAY||
        a->arr_length<0||i>=(unsigned)a->arr_length||!a->arr_body)return NULL;
     memcpy(&v,a->arr_body+(size_t)i*sizeof(v),sizeof v);
-    if(!v||v->mb.type!=MEM_TYPE_ARR||v->mb.arr_type_index!=DATATYPE_JINT||
+    if(!v||v->mb.type!=MEM_TYPE_ARR||v->mb.arr_type_index!=DATATYPE_INT||
        v->arr_length<4||!v->arr_body)return NULL;
     return v;
 }
