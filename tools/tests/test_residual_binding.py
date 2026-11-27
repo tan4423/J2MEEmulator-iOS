@@ -32,6 +32,7 @@ struct JClass {
     const char *name;void *jloader;JClass *superclass;
     int status,field_instance_len,field_static_len;unsigned char *field_static;
     struct {int field_used;FieldInfo *field;} fieldPool;
+    FieldInfo *desktop_proof_fields[16];
     struct {unsigned access_flags;} cff;
 };
 struct Instance {struct {int type;JClass *clazz;} mb;unsigned char *obj_fields;};
@@ -98,6 +99,28 @@ int main(void) {
     #define GOOD() do{assert(jbr_nick_binding(r,&w,&b));assert(b.wrapper==&w&&b.canvas==&c&&b.graphics==&g&&b.context==12345);}while(0)
     #define BAD() do{assert(!jbr_nick_binding(r,&w,&b));assert(!b.wrapper&&!b.context);}while(0)
     GOOD();
+#if defined(JARBOX_DESKTOP_LAB)
+    /* Explicit collisions and different loaded owners cannot alias.
+     * Exercise hit after publication, not only the cold path. */
+    JClass probe[2]={0};FieldInfo pf[2][2];unsigned char pb[2][16]={0};
+    assert(jbr_proof_slot("a","I")==jbr_proof_slot("q","I"));
+    for(unsigned i=0;i<2;i++){
+        probe[i].status=CLASS_STATUS_CLINITED;
+        probe[i].field_static=pb[i];probe[i].field_static_len=sizeof(pb[i]);
+        probe[i].fieldPool.field=pf[i];probe[i].fieldPool.field_used=2;
+        field(&pf[i][0],&probe[i],"a","I",4*i,0,1);
+        field(&pf[i][1],&probe[i],"q","I",8,0,1);
+    }
+    for(int j=0;j<1000;j++)for(unsigned i=0;i<2;i++){
+        assert(jbr_bfield(&probe[i],NULL,"a","I",4,0,1)==pb[i]+4*i);
+        assert(jbr_bfield(&probe[i],NULL,"a","I",4,0,1)==pb[i]+4*i);
+        assert(jbr_bfield(&probe[i],NULL,"q","I",4,0,1)==pb[i]+8);
+        assert(!jbr_bfield(&probe[i],NULL,"a","J",8,0,1));
+        assert(!jbr_bfield(&probe[i],NULL,"q","I",4,1,1));
+    }
+    assert(!jbr_bfield(&probe[0],NULL,"q","I",12,0,1));
+    puts("desktop proof cache collision/owner PASS");
+#endif
     assert(jbr_nick_paint_binding_at(r,&w,&b,30,5));
     /* A generic descendant need not have the map method's own signature,
      * but still needs the exact delegate PC, owner and rooted wrapper. */
@@ -170,9 +193,13 @@ class BindingTest(unittest.TestCase):
             flags=["-std=c11","-O2","-Wall","-Wextra","-Werror"]
             if os.environ.get("JARBOX_RESIDUAL_SANITIZE")=="1":
                 flags+=["-g","-O1","-fsanitize=address,undefined","-fno-omit-frame-pointer","-fno-pie","-no-pie"]
-            subprocess.run([cc,*flags,"-I",str(JVM),str(p/"test.c"),"-o",str(exe)],check=True,timeout=30)
-            r=subprocess.run([str(exe)],capture_output=True,text=True,timeout=30,
-                env={**os.environ,"ASAN_OPTIONS":"halt_on_error=1","UBSAN_OPTIONS":"halt_on_error=1"})
-            self.assertEqual(r.returncode,0,r.stdout+r.stderr)
-            self.assertIn("10000 valid/invalid batches PASS",r.stdout)
+            for desktop in (False,True):
+                with self.subTest(desktop=desktop):
+                    extra=["-DJARBOX_DESKTOP_LAB=1"] if desktop else []
+                    subprocess.run([cc,*flags,*extra,"-I",str(JVM),str(p/"test.c"),"-o",str(exe)],check=True,timeout=30)
+                    r=subprocess.run([str(exe)],capture_output=True,text=True,timeout=30,
+                        env={**os.environ,"ASAN_OPTIONS":"halt_on_error=1","UBSAN_OPTIONS":"halt_on_error=1"})
+                    self.assertEqual(r.returncode,0,r.stdout+r.stderr)
+                    self.assertIn("10000 valid/invalid batches PASS",r.stdout)
+                    if desktop:self.assertIn("desktop proof cache collision/owner PASS",r.stdout)
 if __name__=="__main__":unittest.main()
