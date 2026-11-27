@@ -11,7 +11,7 @@
 #error Residual fixture executor is host-only; no game admission is implemented
 #endif
 #include <stdlib.h>
-#include "jarbox_residual_plan.h"
+#include "jarbox_residual_compile.h"
 #include "jarbox_host_residual_fixture.h"
 #define JBR_COUNT (sizeof(jbr_plan)/sizeof(jbr_plan[0]))
 static int jbr_fixture_admit(Runtime *r,MethodInfo *m,CodeAttribute *ca) {
@@ -34,6 +34,64 @@ static int jbr_fixture_admit(Runtime *r,MethodInfo *m,CodeAttribute *ca) {
         (jbr_draw_effects || (s->sp-1)->rvalue) &&
         !memcmp(ca->bytecode_for_jit,jbr_expected_code,sizeof(jbr_expected_code)) &&
         jbr_validate(jbr_plan,JBR_COUNT,jbr_expected_code,sizeof(jbr_expected_code));
+}
+static int jbr_eq(Utf8String *s,const char *str) { return s && utf8_equals_c(s,str); }
+static int jbr_fixture_cp(void *ctx,unsigned op,unsigned ix) {
+    JClass *cl=ctx;
+    if(!cl->constant_item_ptr || !ix || ix>=(unsigned)cl->constant_item_count)return JBR_CP_REJECT;
+    ConstantItem *item=class_get_constant_item(cl,ix);
+    if(!item)return JBR_CP_REJECT;
+    if((op==0xb2||op==0xb3)&&item->tag==CONSTANT_FIELD_REF) {
+        ConstantFieldRef *f=(ConstantFieldRef *)item;
+        if(op==0xb3) {
+            if(jbr_eq(f->clsName,"Class_hii")&&jbr_eq(f->descriptor,"I")&&
+               (jbr_eq(f->name,"a2")||jbr_eq(f->name,"b2")||jbr_eq(f->name,"c2")||jbr_eq(f->name,"d2")))
+                return JBR_CP_INT;
+            return JBR_CP_REJECT;
+        }
+        if(!jbr_eq(f->clsName,"Class_hii")&&!jbr_eq(f->clsName,"Class_hac")&&!jbr_eq(f->clsName,"Class_hxb"))
+            return JBR_CP_REJECT;
+        if(jbr_eq(f->descriptor,"I")||jbr_eq(f->descriptor,"B"))return JBR_CP_INT;
+        if(jbr_eq(f->descriptor,"[C")||jbr_eq(f->descriptor,"Ljavax/microedition/lcdui/Image;"))return JBR_CP_REF;
+    }
+    if(item->tag==CONSTANT_METHOD_REF) {
+        ConstantMethodRef *m=(ConstantMethodRef *)item;
+        if(op==0xb8&&jbr_eq(m->clsName,"Class_hii")&&jbr_eq(m->descriptor,"(II)I")&&
+           (jbr_eq(m->name,"q3")||jbr_eq(m->name,"m3")))return JBR_CP_INT2;
+        if(op==0xb6&&jbr_eq(m->clsName,"Class_hvi")&&jbr_eq(m->name,"a")&&
+           jbr_eq(m->descriptor,"(Ljavax/microedition/lcdui/Image;IIIIIIII)V"))return JBR_CP_DRAW;
+    }
+    return JBR_CP_REJECT;
+}
+static int jbr_same_op(const JarBoxResidualOp *a,const JarBoxResidualOp *b) {
+    return a->kind==b->kind&&a->a==b->a&&a->b==b->b&&a->dst==b->dst&&
+           a->pc==b->pc&&a->next==b->next&&a->alt==b->alt&&
+           a->length==b->length&&a->imm==b->imm;
+}
+static const JarBoxResidualOp *jbr_fixture_compile(Runtime *r,MethodInfo *m,CodeAttribute *ca) {
+    if(!jbr_fixture_admit(r,m,ca))return NULL;
+    JarBoxResidualOp *plan=__atomic_load_n(&ca->host_residual_plan,__ATOMIC_ACQUIRE);
+    if(plan)return plan;
+    // No resolution, Java execution or VM heap allocation while holding
+    // this lock. The owner class retains the immutable pointer-free plan.
+    spin_lock(&ca->compile_lock);
+    plan=__atomic_load_n(&ca->host_residual_plan,__ATOMIC_RELAXED);
+    if(!plan) {
+        JarBoxResidualOp *candidate=calloc(JBR_COUNT,sizeof(*candidate));
+        if(candidate) {
+            unsigned count=jbr_compile(ca->bytecode_for_jit,ca->code_length,
+                jbr_fixture_cp,m->_this_class,jbr_draw_effects,candidate,JBR_COUNT);
+            int valid=count==JBR_COUNT&&jbr_validate(candidate,count,ca->bytecode_for_jit,ca->code_length);
+            for(unsigned i=0;valid&&i<count;i++)valid=jbr_same_op(candidate+i,jbr_plan+i);
+            if(valid) {
+                plan=candidate;
+                __atomic_store_n(&ca->host_residual_plan,plan,__ATOMIC_RELEASE);
+                __atomic_fetch_add(&r->jvm->session->treo_state.host_residual_compiles,1,__ATOMIC_RELAXED);
+            } else free(candidate);
+        }
+    }
+    spin_unlock(&ca->compile_lock);
+    return plan;
 }
 #endif
 
@@ -2246,7 +2304,8 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
             runtime->pc = ca->code;
 
 #if defined(JARBOX_HOST_RESIDUAL_TEST)
-            const int jbr_active=jbr_fixture_admit(runtime,method,ca);
+            const JarBoxResidualOp *jbr_compiled=jbr_fixture_compile(runtime,method,ca);
+            const int jbr_active=jbr_compiled!=NULL;
             unsigned jbr_index=0,jbr_pending=JBR_END;
             if(jbr_active) {
                 localvar_init(runtime,JBR_SLOTS,method->para_slots);
@@ -2368,7 +2427,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                     if(jbr_active) {
                         StackEntry *base=localvar+JBR_SLOTS;
                         if(jbr_pending!=JBR_END) {
-                            const JarBoxResidualOp *o=jbr_plan+jbr_pending;
+                            const JarBoxResidualOp *o=jbr_compiled+jbr_pending;
                             if(runtime->pc!=ca->code+o->pc) {
                                 // One original effect completed. If resolution
                                 // quickened in place without PC advancement,
@@ -2389,7 +2448,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                             // at its original bytecode PC, with ordinary args.
                             for(;;) {
                                 if(jbr_index>=JBR_COUNT || sp!=base)abort();
-                                const JarBoxResidualOp *o=jbr_plan+jbr_index;
+                                const JarBoxResidualOp *o=jbr_compiled+jbr_index;
                                 runtime->pc=ca->code+o->pc;
                                 stack->sp=sp;
                                 if(thrd_info->suspend_count) {
@@ -2426,7 +2485,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                                 jbr_index=jbr_pure_step(o,localvar);
                             }
                         }
-                        const JarBoxResidualOp *o=jbr_plan+jbr_pending;
+                        const JarBoxResidualOp *o=jbr_compiled+jbr_pending;
                         const unsigned actual=*runtime->pc;
                         // Allow only known quickening variants of this effect.
                         if(actual!=(unsigned)o->imm &&

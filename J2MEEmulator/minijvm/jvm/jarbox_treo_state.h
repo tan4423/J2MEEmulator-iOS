@@ -62,6 +62,7 @@ typedef struct JarBoxTreoState {
 #if defined(JARBOX_HOST_RESIDUAL_TEST) && !__JVM_OS_IOS__
     unsigned host_residual_enabled;
     uint64_t host_residual_calls;
+    uint64_t host_residual_compiles;
 #endif
     uint64_t ref_leaf_fast_calls;
     uint64_t aload_field_fusions;

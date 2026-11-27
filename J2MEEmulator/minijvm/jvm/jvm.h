@@ -914,6 +914,9 @@ struct _CodeAttribute {
     s32 code_length;
     u8 *code; // [code_length];
     u8 *bytecode_for_jit; // [code_length];
+#if defined(JARBOX_HOST_RESIDUAL_TEST) && !__JVM_OS_IOS__
+    void *host_residual_plan; // owned by this CodeAttribute, immutable after publication
+#endif
 #if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__ && defined(TREO_VM_DECODED_INT_EXPERIMENT) && TREO_VM_DECODED_INT_EXPERIMENT
     uint64_t jarbox_decoded_int_plan; // immutable, pointer-free, zero = fallback
 #endif

@@ -601,6 +601,10 @@ s32 _class_method_info_destroy(JClass *clazz) {
             ca->code = NULL;
             jvm_free(ca->bytecode_for_jit);//
             ca->bytecode_for_jit = NULL;
+#if defined(JARBOX_HOST_RESIDUAL_TEST) && !__JVM_OS_IOS__
+            free(ca->host_residual_plan);
+            ca->host_residual_plan = NULL;
+#endif
             jvm_free(ca->exception_table);//info has been converted to converted_attribute
             ca->exception_table = NULL;
             jvm_free(ca->line_number_table);
