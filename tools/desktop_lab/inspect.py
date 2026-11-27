@@ -41,8 +41,18 @@ def report(path, window):
          "gc_heap_sample_bytes":int(b["gc_heap_sample_bytes"]) if b.get("gc_heap_sample_bytes") else None,
          "input_events":delta("input_events"),"native_surface_bytes":int(b["native_surface_bytes"]),
          "benchmark_eligible":b["mode"]=="plain","note":"Paint is inclusive; graph mode perturbs execution. Role names are static hypotheses, not proof."}
+    if b.get("graph_enabled") is not None:
+        out["graph_enabled"]=bool(int(b["graph_enabled"]))
+        out["mixed_profile_window"]=any(r.get("graph_enabled")!=b["graph_enabled"] for r in rows if int(r["monotonic_ns"])>=int(a["monotonic_ns"]))
+        out["note"]="Counter-only disables call graph, not effect trace. Paint is inclusive; graph and profile transitions perturb timing."
+    if b.get("sink_requested") is not None:
+        out["sink_level"]=int(b["sink_requested"])
+        out["sink_invalid"]=bool(int(b["sink_invalid"]))
+        out["benchmark_eligible"]=out["benchmark_eligible"] and not out["sink_invalid"]
+        for k in ("sink_paints","sink_draws","deep_leaves","glyph_loops","glyph_chars","map_q3","map_m3","map_refusals","ir_spans","ir_ops"):
+            if b.get(k) is not None and a.get(k) is not None:out[k+"_per_s"]=round(delta(k)*1e9/dt,2)
     edge_path=pathlib.Path(str(path)+".edges.tsv")
-    if edge_path.exists():
+    if edge_path.exists() and out.get("graph_enabled",True):
         with edge_path.open() as f: edges=list(csv.DictReader(f,delimiter="\t"))
         out["graph_overflow"]=sum(int(e["calls"]) for e in edges if e["caller"]=="<overflow>")
         edges=[e for e in edges if e["caller"]!="<overflow>"]

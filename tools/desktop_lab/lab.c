@@ -34,8 +34,9 @@ static const char *trace_path;
 static int frame_w,frame_h, dirty, show_canvas=1;
 static uint32_t *frame;
 static unsigned long long native_bytes;
-int jarbox_lab_trace_enabled;
-#define trace_graph jarbox_lab_trace_enabled
+_Atomic int jarbox_lab_trace_enabled;
+int jarbox_lab_effect_enabled;
+static int trace_graph; // launch profile, immutable after startup
 enum { EFFECT_CAP=4096 };
 typedef struct {uint64_t seq,mono;unsigned worker;int pc,write,value;char method[192];} Effect;
 static Effect effects[EFFECT_CAP],effect_snapshot[EFFECT_CAP];
@@ -94,7 +95,7 @@ static int method_name(MethodInfo *m,char *out,size_t n) {
     return len>0 && (size_t)len<n;
 }
 void jarbox_lab_method_enter(MethodInfo *m,Runtime *parent) {
-    if(!trace_graph||!m||!parent) return;
+    if(!atomic_load_explicit(&jarbox_lab_trace_enabled,memory_order_relaxed)||!m||!parent) return;
     char a[192],b[192];
     if(!method_name(m,b,sizeof b)) return;
     if(!method_name(parent->method,a,sizeof a)) strcpy(a,"<entry>");
@@ -116,7 +117,7 @@ void jarbox_lab_method_enter(MethodInfo *m,Runtime *parent) {
 done: pthread_mutex_unlock(&graph_lock);
 }
 void jarbox_lab_int_field(Runtime *r,Instance *receiver,int offset,int value,int write){
-    if(!trace_graph||!r||!r->method||!receiver||!receiver->mb.clazz)return;
+    if(!jarbox_lab_effect_enabled||!r||!r->method||!receiver||!receiver->mb.clazz)return;
     MethodInfo *m=r->method;JClass *c=m->_this_class;
     if(!c||!c->name||(!utf8_equals_c(c->name,"Class_hda")&&!utf8_equals_c(c->name,"LabFixture$Probe")))return;
     /* A field offset is only meaningful inside the receiver's actual
@@ -523,7 +524,7 @@ static void sample(void){
         (unsigned long long)atomic_load(&gc_cycles),(unsigned long long)atomic_load(&gc_cpu),
         bytes,(unsigned long long)atomic_load(&gc_aborts),(unsigned long long)atomic_load(&gc_heap_sample),logic_mode?"logic":trace_graph?"graph":"plain",atomic_load(&sink_requested),(unsigned long long)atomic_load(&sink_paints),(unsigned long long)atomic_load(&sink_draws),(unsigned long long)atomic_load(&sink_faults),atomic_load(&sink_invalid));
     for(unsigned i=0;i<10;i++)fprintf(trace,",%llu",(unsigned long long)atomic_load(&deep_counts[i]));
-    fputc('\n',trace);fflush(trace);
+    fprintf(trace,",%d,%llu,%llu,%llu\n",atomic_load(&jarbox_lab_trace_enabled),(unsigned long long)atomic_load(&logic_plans),(unsigned long long)atomic_load(&logic_spans),(unsigned long long)atomic_load(&logic_ops));fflush(trace);
 }
 static int write_graph(void){
     size_t len=strlen(trace_path)+32;char *p=malloc(len),*tmp=malloc(len);
@@ -541,6 +542,7 @@ int main(int argc,char**argv){
     if(argc!=9){fprintf(stderr,"usage: lab RT.jar API.jar GAME.jar SAVE_DIR TRACE.csv WIDTH HEIGHT graph|plain|logic\n");return 2;}
     rt_path=argv[1];api_path=argv[2];game_path=argv[3];save_path=argv[4];
     width=atoi(argv[6]);height=atoi(argv[7]);trace_graph=!strcmp(argv[8],"graph");
+    atomic_store(&jarbox_lab_trace_enabled,trace_graph);jarbox_lab_effect_enabled=trace_graph;
     logic_mode=!strcmp(argv[8],"logic");
     if(!valid_size(width,height)||width>MAX_SCREEN||height>MAX_SCREEN||(!trace_graph&&!logic_mode&&strcmp(argv[8],"plain")))return 2;
     fixture_ui=getenv("JARBOX_LAB_UI_FIXTURE")&&strcmp(getenv("JARBOX_LAB_UI_FIXTURE"),"1")==0;
@@ -558,7 +560,7 @@ int main(int argc,char**argv){
         snprintf(p,n,"%s.effects.csv",trace_path);effect_file=fopen(p,"w");free(p);if(!effect_file)return 2;
         fprintf(effect_file,"sequence,monotonic_ns,worker,method,pc,operation,value,lost_total\n");
     }
-    fprintf(trace,"monotonic_ns,process_cpu_ns,paints,paint_cpu_ns,frames,draw_calls,image_allocs,input_events,gc_cycles,gc_cpu_ns,native_surface_bytes,gc_aborts,gc_heap_sample_bytes,mode,sink_requested,sink_paints,sink_draws,sink_faults,sink_invalid,deep_leaves,glyph_attempts,glyph_scope_refusals,glyph_link_refusals,glyph_data_refusals,glyph_loops,glyph_chars,map_q3,map_m3,map_refusals\n");
+    fprintf(trace,"monotonic_ns,process_cpu_ns,paints,paint_cpu_ns,frames,draw_calls,image_allocs,input_events,gc_cycles,gc_cpu_ns,native_surface_bytes,gc_aborts,gc_heap_sample_bytes,mode,sink_requested,sink_paints,sink_draws,sink_faults,sink_invalid,deep_leaves,glyph_attempts,glyph_scope_refusals,glyph_link_refusals,glyph_data_refusals,glyph_loops,glyph_chars,map_q3,map_m3,map_refusals,graph_enabled,ir_plans,ir_spans,ir_ops\n");
     frame=calloc((size_t)width*height,4);if(!frame)return 2;
     if(SDL_Init(SDL_INIT_VIDEO|SDL_INIT_EVENTS)){fprintf(stderr,"%s\n",SDL_GetError());return 2;}
     SDL_Window *win=SDL_CreateWindow("JarBox Research Lab",SDL_WINDOWPOS_CENTERED,SDL_WINDOWPOS_CENTERED,width*2,height*2,SDL_WINDOW_RESIZABLE);
@@ -612,7 +614,7 @@ int main(int argc,char**argv){
         LOCK;int draw=dirty;if(draw){SDL_UpdateTexture(tex,NULL,frame,width*4);dirty=0;}UNLOCK;
         if(draw){SDL_RenderClear(ren);SDL_RenderCopy(ren,tex,NULL,NULL);SDL_RenderPresent(ren);}
         uint64_t now=ns(CLOCK_MONOTONIC);if(now-last>=1000000000ull){sample();flush_effects();last=now;}
-        if(trace_graph&&now-last_graph>=5000000000ull){if(!write_graph())unsupported("graph export");last_graph=now;}
+        if(trace_graph&&atomic_load_explicit(&jarbox_lab_trace_enabled,memory_order_relaxed)&&now-last_graph>=5000000000ull){if(!write_graph())unsupported("graph export");last_graph=now;}
         SDL_Delay(8);
     }
     ctl_close();pthread_join(th,NULL);sample();flush_effects();fclose(trace);

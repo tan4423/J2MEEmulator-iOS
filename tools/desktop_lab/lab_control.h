@@ -85,10 +85,13 @@ static void ctl_poll(int physical){
         if(!strcmp(req,"status"))state="ok";
         else if(!strcmp(req,"snapshot"))state=ctl_snapshot()?"ok":"snapshot_failed";
         else if(!strcmp(req,"stop")){atomic_store(&stop_requested,1);state="stopping";}
+        else if(!strcmp(req,"profile counters")||!strcmp(req,"profile graph")){
+            if(trace_graph){atomic_store(&jarbox_lab_trace_enabled,!strcmp(req,"profile graph"));state="ok";}
+        }
         else if(!strcmp(req,"sink off")){atomic_store(&sink_requested,0);state="ok";}
-        else if(!strcmp(req,"sink on")||!strcmp(req,"sink deep")||!strcmp(req,"sink glyph")||!strcmp(req,"sink map")){
+        else if(!strcmp(req,"sink on")||!strcmp(req,"sink deep")||!strcmp(req,"sink glyph")||!strcmp(req,"sink map")||!strcmp(req,"sink ir")){
             if(sink_admitted&&canvas&&atomic_load(&frames)&&!physical&&!atomic_load(&sink_invalid)){
-                int level=!strcmp(req,"sink map")?4:!strcmp(req,"sink glyph")?3:!strcmp(req,"sink deep")?2:1;
+                int level=!strcmp(req,"sink ir")?5:!strcmp(req,"sink map")?4:!strcmp(req,"sink glyph")?3:!strcmp(req,"sink deep")?2:1;
                 if(level==1||deep_admitted){atomic_store(&sink_requested,level);state="ok";}
             }
         }
@@ -123,8 +126,8 @@ static void ctl_poll(int physical){
                 }
             }
         }
-        snprintf(reply,sizeof reply,"{\"state\":\"%s\",\"canvas\":%d,\"width\":%d,\"height\":%d,\"frames\":%llu,\"input_events\":%llu,\"queued_before\":%u,\"paints\":%llu,\"sink_requested\":%d,\"sink_paints\":%llu,\"sink_draws\":%llu,\"sink_faults\":%llu,\"sink_invalid\":%d,\"deep_leaves\":%llu,\"glyph_attempts\":%llu,\"glyph_scope_refusals\":%llu,\"glyph_link_refusals\":%llu,\"glyph_data_refusals\":%llu,\"glyph_loops\":%llu,\"glyph_chars\":%llu,\"map_q3\":%llu,\"map_m3\":%llu,\"map_refusals\":%llu}",
-          state,canvas,width,height,(unsigned long long)atomic_load(&frames),(unsigned long long)atomic_load(&events_delivered),queued,(unsigned long long)atomic_load(&paints),atomic_load(&sink_requested),(unsigned long long)atomic_load(&sink_paints),(unsigned long long)atomic_load(&sink_draws),(unsigned long long)atomic_load(&sink_faults),atomic_load(&sink_invalid),(unsigned long long)atomic_load(&deep_counts[0]),(unsigned long long)atomic_load(&deep_counts[1]),(unsigned long long)atomic_load(&deep_counts[2]),(unsigned long long)atomic_load(&deep_counts[3]),(unsigned long long)atomic_load(&deep_counts[4]),(unsigned long long)atomic_load(&deep_counts[5]),(unsigned long long)atomic_load(&deep_counts[6]),(unsigned long long)atomic_load(&deep_counts[7]),(unsigned long long)atomic_load(&deep_counts[8]),(unsigned long long)atomic_load(&deep_counts[9]));
+        snprintf(reply,sizeof reply,"{\"state\":\"%s\",\"canvas\":%d,\"width\":%d,\"height\":%d,\"frames\":%llu,\"input_events\":%llu,\"queued_before\":%u,\"paints\":%llu,\"sink_requested\":%d,\"sink_paints\":%llu,\"sink_draws\":%llu,\"sink_faults\":%llu,\"sink_invalid\":%d,\"deep_leaves\":%llu,\"glyph_attempts\":%llu,\"glyph_scope_refusals\":%llu,\"glyph_link_refusals\":%llu,\"glyph_data_refusals\":%llu,\"glyph_loops\":%llu,\"glyph_chars\":%llu,\"map_q3\":%llu,\"map_m3\":%llu,\"map_refusals\":%llu,\"graph_enabled\":%d,\"ir_plans\":%llu,\"ir_spans\":%llu,\"ir_ops\":%llu}",
+          state,canvas,width,height,(unsigned long long)atomic_load(&frames),(unsigned long long)atomic_load(&events_delivered),queued,(unsigned long long)atomic_load(&paints),atomic_load(&sink_requested),(unsigned long long)atomic_load(&sink_paints),(unsigned long long)atomic_load(&sink_draws),(unsigned long long)atomic_load(&sink_faults),atomic_load(&sink_invalid),(unsigned long long)atomic_load(&deep_counts[0]),(unsigned long long)atomic_load(&deep_counts[1]),(unsigned long long)atomic_load(&deep_counts[2]),(unsigned long long)atomic_load(&deep_counts[3]),(unsigned long long)atomic_load(&deep_counts[4]),(unsigned long long)atomic_load(&deep_counts[5]),(unsigned long long)atomic_load(&deep_counts[6]),(unsigned long long)atomic_load(&deep_counts[7]),(unsigned long long)atomic_load(&deep_counts[8]),(unsigned long long)atomic_load(&deep_counts[9]),atomic_load(&jarbox_lab_trace_enabled),(unsigned long long)atomic_load(&logic_plans),(unsigned long long)atomic_load(&logic_spans),(unsigned long long)atomic_load(&logic_ops));
         if(len>offsetof(struct sockaddr_un,sun_path)&&len<=sizeof peer)
             (void)sendto(ctl_fd,reply,strlen(reply),MSG_DONTWAIT,(struct sockaddr*)&peer,len);
     }

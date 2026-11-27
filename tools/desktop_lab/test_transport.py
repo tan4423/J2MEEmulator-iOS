@@ -70,6 +70,10 @@ with socket.socket() as listener:
                         assert result.poll() is None and time.monotonic()<deadline
                         time.sleep(.1)
                     assert cmd("tap 999 999")["state"]=="refused"
+                    assert cmd("profile counters")["state"]=="ok"
+                    assert cmd("status")["graph_enabled"]==0
+                    assert cmd("profile graph")["state"]=="ok"
+                    assert cmd("status")["graph_enabled"]==1
                     assert cmd("snapshot")["state"]=="ok"
                     assert (private/"control-frame.png").read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
                     if sink:

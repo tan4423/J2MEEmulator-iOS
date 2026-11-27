@@ -187,6 +187,9 @@ static unsigned jri_fixture_call_skip(Runtime *r,ConstantMethodRef *mr,MethodInf
 #if defined(JARBOX_BLOCK_IR_EXPERIMENT) && JARBOX_BLOCK_IR_EXPERIMENT
 #include "jarbox_block_ir.h"
 #include <stddef.h>
+#if defined(JARBOX_DESKTOP_LAB)
+extern int jarbox_lab_sink_level(int64_t context);
+#endif
 #if defined(JARBOX_HOST_BLOCK_IR_TEST) && (__JVM_OS_IOS__ || defined(TREO_IOS_GAME_JIT))
 #error Host block IR selection must never be used on iOS
 #endif
@@ -201,7 +204,7 @@ static const JbiPlan *jbi_method_plan(Runtime *r,MethodInfo *m,CodeAttribute *ca
     // Full-render logic-only experiment. The desktop owner verifies the
     // exact archive before selecting this immutable per-VM profile.
     const char *name=utf8_cstr(m->_this_class->name);
-    if(!r->jvm->desktop_block_ir_enabled ||
+    if((!r->jvm->desktop_block_ir_enabled && jarbox_lab_sink_level(0)<5) ||
        (strncmp(name,"Class_",6) &&
         !(r->jvm->desktop_block_ir_fixture &&
           (!strcmp(name,"LabFixture")||!strncmp(name,"LabFixture$",11)))))return NULL;
@@ -2714,9 +2717,10 @@ static inline int jarbox_try_ref_leaf(MethodInfo *method, Runtime *caller) {
 #endif
 s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
 #if defined(JARBOX_DESKTOP_LAB) && JARBOX_DESKTOP_LAB
-    extern int jarbox_lab_trace_enabled;
+    extern _Atomic int jarbox_lab_trace_enabled;
+    extern int jarbox_lab_effect_enabled;
     extern void jarbox_lab_method_enter(MethodInfo *, Runtime *);
-    if (jarbox_lab_trace_enabled) jarbox_lab_method_enter(method, pruntime);
+    if (atomic_load_explicit(&jarbox_lab_trace_enabled,memory_order_relaxed)) jarbox_lab_method_enter(method, pruntime);
 #endif
     JARBOX_HOT_CHECK(pruntime,method,NULL);
 #if defined(JARBOX_DESKTOP_LAB) && JARBOX_DESKTOP_LAB
@@ -7104,7 +7108,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                                 (sp++)->ivalue = *((s32 *) ptr);
 #if defined(JARBOX_DESKTOP_LAB) && JARBOX_DESKTOP_LAB
                                 extern void jarbox_lab_int_field(Runtime *, Instance *, int, int, int);
-                                if (jarbox_lab_trace_enabled) jarbox_lab_int_field(runtime,ins,offset,sp[-1].ivalue,0);
+                                if (jarbox_lab_effect_enabled) jarbox_lab_int_field(runtime,ins,offset,sp[-1].ivalue,0);
 #endif
                                 runtime->pc += 3;
 #if _JVM_DEBUG_LOG_LEVEL > 5
@@ -7224,7 +7228,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                                 *((s32 *) ptr) = ival1;
 #if defined(JARBOX_DESKTOP_LAB) && JARBOX_DESKTOP_LAB
                                 extern void jarbox_lab_int_field(Runtime *, Instance *, int, int, int);
-                                if (jarbox_lab_trace_enabled) jarbox_lab_int_field(runtime,ins,offset,ival1,1);
+                                if (jarbox_lab_effect_enabled) jarbox_lab_int_field(runtime,ins,offset,ival1,1);
 #endif
                                 runtime->pc += 3;
 #if _JVM_DEBUG_LOG_LEVEL > 5

@@ -150,3 +150,5 @@ separately to submit, then verify the map and zone. Other strings are refused.
 Desktop `sink deep` adds exact bundled Graphics leaf elision; `sink glyph` also ports the audited Nick glyph loop preflight and reference-lane replay, scoped to an actual screen Canvas. Both require exact game and build-generated boot/API identities. New trace counters report actual admissions and refusals. Experimental, default off; live performance and equivalence must be measured.
 
 `sink map` extends glyph mode with exact Class_hii q3/m3 successful array reads on the paint worker. Original exceptions, cold linkage, other threads and other JARs fall back. Map counters record both primitive kinds and refusals. No live map data cached.
+
+`sink ir` adds the existing Block IR pure integer spans on the scoped paint worker (not the other simulation/network threads). `profile counters` / `profile graph` pause/resume only the expensive call graph in a research session. Skill effect trace stays active; trace `graph_enabled` distinguishes the phases. Counter-only is not the same as an uninstrumented production CPU benchmark. IR counters identify real execution.
