@@ -969,7 +969,15 @@ Runtime *jdwp_get_runtime(JdwpServer *srv) {
 }
 
 s32 jdwp_is_ignore_sync(JdwpServer *srv) {
+#if defined(JARBOX_DESKTOP_LAB) && JARBOX_DESKTOP_LAB
+    // The desktop lab runs independent Java/UI/GC workers with JDWP disabled.
+    // A NULL debugger server therefore does not mean single-threaded VM
+    // creation here. Keep Java synchronized-method monitors active in the
+    // lab so monitor-sensitive optimizations are tested under real locking.
+    if (!srv) return 0;
+#else
     if (!srv)return 1;//srv==NULL mean that vm is creating ,there isn't multi thread,so can be ignore
+#endif
     return srv->thread_sync_ignore != 0;
 }
 
