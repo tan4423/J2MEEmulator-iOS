@@ -52,5 +52,6 @@ for mode in plain logic; do
 done
 grep -Fx 'LAB_LOGIC mode=0 plans=0 spans=0 ops=0' "$OUT/fixture/run-plain.log"
 grep -E '^LAB_LOGIC mode=1 plans=[1-9][0-9]* spans=[1-9][0-9]* ops=[1-9][0-9]*
+echo DESKTOP_LAB_LOGIC_AB_PASS
  "$OUT/fixture/run-logic.log"
 echo DESKTOP_LAB_LOGIC_AB_PASS
