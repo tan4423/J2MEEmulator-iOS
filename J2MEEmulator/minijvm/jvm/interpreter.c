@@ -189,6 +189,7 @@ static unsigned jri_fixture_call_skip(Runtime *r,ConstantMethodRef *mr,MethodInf
 #include <stddef.h>
 #if defined(JARBOX_DESKTOP_LAB)
 extern int jarbox_lab_sink_level(int64_t context);
+extern int jarbox_lab_array_lookup_enabled(void);
 #endif
 #if defined(JARBOX_HOST_BLOCK_IR_TEST) && (__JVM_OS_IOS__ || defined(TREO_IOS_GAME_JIT))
 #error Host block IR selection must never be used on iOS
@@ -1350,7 +1351,12 @@ uint64_t treo_vm_utf16_fast_calls(void) { return 0; }
 #else
 #define TREO_VM_ARRAY_LOOKUP_MODE1 0
 #endif
-#if ((defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__) || defined(JARBOX_HOST_INTRINSIC_TEST)) && (TREO_VM_ARRAY_LOOKUP_LEGACY || TREO_VM_ARRAY_LOOKUP_MODE1)
+#if defined(JARBOX_DESKTOP_ARRAY_LOOKUP_TEST) && JARBOX_DESKTOP_ARRAY_LOOKUP_TEST && defined(JARBOX_DESKTOP_LAB) && JARBOX_DESKTOP_LAB
+#define TREO_VM_ARRAY_LOOKUP_DESKTOP 1
+#else
+#define TREO_VM_ARRAY_LOOKUP_DESKTOP 0
+#endif
+#if ((defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__) || defined(JARBOX_HOST_INTRINSIC_TEST) || TREO_VM_ARRAY_LOOKUP_DESKTOP) && (TREO_VM_ARRAY_LOOKUP_LEGACY || TREO_VM_ARRAY_LOOKUP_MODE1)
 #define TREO_VM_ARRAY_LOOKUP 1
 #else
 #define TREO_VM_ARRAY_LOOKUP 0
@@ -3032,9 +3038,17 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
     // Only a fully initialized, resolved, in-bounds int[] read takes the fast
     // path. Null/OOB, uninitialized fields, debugger, suspension and other
     // rare conditions retain the original exception and Java semantics.
+#if TREO_VM_ARRAY_LOOKUP_DESKTOP
+    /* Lab-only gate: exact archive/API/RT identity, explicit opt-in and
+       active level-1 headless paint scope. iOS keeps its separate family gate. */
+    const int lookup_mode1=TREO_VM_ARRAY_LOOKUP_MODE1 &&
+        JARBOX_HOST_INTRINSIC_ALLOWED(pruntime,1u) &&
+        jarbox_lab_array_lookup_enabled();
+#else
     const int lookup_mode1=TREO_VM_ARRAY_LOOKUP_MODE1 && treo_paint_mode==1 &&
         JARBOX_HOST_INTRINSIC_ALLOWED(pruntime,1u) &&
         jarbox_treo_nso_family_verified(&pruntime->jvm->session->treo_state);
+#endif
     if ((lookup_mode1 || (TREO_VM_ARRAY_LOOKUP_LEGACY && treo_paint_mode == 8)) &&
         method->para_slots == 2 && method->return_slots == 1 && method->is_static &&
         !method->is_native && !method->is_sync && method->breakpoint == NULL &&
@@ -3111,6 +3125,10 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                                 pruntime->thrd_info->jarbox_array_lookup_pending=0;
                                 __atomic_fetch_add(&pruntime->jvm->session->treo_state.array_lookup_mode1_calls,
                                                    64,__ATOMIC_RELAXED);
+#if TREO_VM_ARRAY_LOOKUP_DESKTOP
+                                /* Batch successful q3 hits into per-paint telemetry. */
+                                jarbox_lab_deep_note(7,64);
+#endif
                             }
                         } else treo_vm_array_lookup_note();
                         return RUNTIME_STATUS_NORMAL;
