@@ -16,7 +16,8 @@ typedef struct { const char *rt, *api, *app, *tag, *mode; char save[512]; int po
     MiniJVM *jvm; pthread_t th; pthread_mutex_t lock; atomic_int finished;
     int stop_requested, rc;
     uint64_t char_calls, array_calls, gc_cycles;
-    uint64_t thread_cpu_ns, process_cpu_ns, residual_calls, residual_compiles, residual_deopts; } Job;
+    uint64_t thread_cpu_ns, process_cpu_ns, residual_calls, residual_compiles, residual_deopts;
+    uint64_t binding_good,binding_bad,binding_mismatch; } Job;
 
 static void request_vm_stop(MiniJVM *vm) {
     vm->collector->exit_flag = 1;
@@ -33,7 +34,7 @@ static uint64_t cpu_now(clockid_t clock) {
 #endif
 static void *job_main(void *p) {
     Job *j = p; char cp[2048], portbuf[16];
-    if(!strncmp(j->mode,"residual",8))
+    if(!strncmp(j->mode,"residual",8)||!strcmp(j->mode,"binding"))
         snprintf(cp,sizeof cp,"%s:%s",j->app,j->api); // controlled LCDUI doubles only
     else snprintf(cp, sizeof cp, "%s:%s", j->api, j->app);
     snprintf(portbuf, sizeof portbuf, "%d", j->port);
@@ -78,12 +79,17 @@ static void *job_main(void *p) {
     j->array_calls=__atomic_load_n(&vm->session->treo_state.array_lookup_mode1_calls,__ATOMIC_RELAXED);
     j->gc_cycles=__atomic_load_n(&vm->session->treo_state.gc_worker_cycles,__ATOMIC_RELAXED);
 #else
-    j->rc = call_main(vm, !strncmp(j->mode,"residual",8)?"ResidualMain":"SmokeMain", args);
+    j->rc = call_main(vm, !strncmp(j->mode,"residual",8)?"ResidualMain":(!strcmp(j->mode,"binding")?"BindingMain":"SmokeMain"), args);
 #endif
 #if defined(JARBOX_HOST_RESIDUAL_TEST)
     j->residual_calls=__atomic_load_n(&vm->session->treo_state.host_residual_calls,__ATOMIC_RELAXED);
     j->residual_compiles=__atomic_load_n(&vm->session->treo_state.host_residual_compiles,__ATOMIC_RELAXED);
     j->residual_deopts=__atomic_load_n(&vm->session->treo_state.host_residual_deopts,__ATOMIC_RELAXED);
+#endif
+#if defined(JARBOX_HOST_BINDING_TEST)
+    j->binding_good=__atomic_load_n(&vm->session->treo_state.host_binding_good,__ATOMIC_RELAXED);
+    j->binding_bad=__atomic_load_n(&vm->session->treo_state.host_binding_bad,__ATOMIC_RELAXED);
+    j->binding_mismatch=__atomic_load_n(&vm->session->treo_state.host_binding_mismatch,__ATOMIC_RELAXED);
 #endif
     arraylist_destroy(args);
     pthread_mutex_lock(&j->lock);
@@ -215,6 +221,17 @@ int main(int argc, char **argv) {
         REQUIRE(!a.rc && !b.rc && intrinsic_ok(&a) && intrinsic_ok(&b));
         REQUIRE(a.char_calls>=64 && a.array_calls>=64 && !b.char_calls && !b.array_calls);
         REQUIRE(a.gc_cycles>0 && b.gc_cycles>0);
+    } else
+#endif
+#if defined(JARBOX_HOST_BINDING_TEST)
+    if(!strcmp(scenario,"binding_diff")) {
+        init_job(&a,argv,"A","binding",bport,base);
+        init_job(&b,argv,"B","binding",bport+1,base);
+        start_job(&a);start_job(&b);join_job(&a);join_job(&b);
+        printf("binding A: good=%llu bad=%llu mismatch=%llu\n",(unsigned long long)a.binding_good,(unsigned long long)a.binding_bad,(unsigned long long)a.binding_mismatch);
+        printf("binding B: good=%llu bad=%llu mismatch=%llu\n",(unsigned long long)b.binding_good,(unsigned long long)b.binding_bad,(unsigned long long)b.binding_mismatch);
+        REQUIRE(!a.rc&&!b.rc&&a.binding_good==1000&&b.binding_good==1000&&
+                a.binding_bad==9000&&b.binding_bad==9000&&!a.binding_mismatch&&!b.binding_mismatch);
     } else
 #endif
     if (!strcmp(scenario,"residual_diff")) {

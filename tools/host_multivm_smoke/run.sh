@@ -7,6 +7,7 @@ case "$SUITE" in
   lifecycle) EXTRA=""; SCENARIOS="pair stop_a restart";;
   residual|residual_draw) EXTRA="-DJARBOX_HOST_RESIDUAL_TEST=1"; SCENARIOS="residual_diff residual_native_diff";;
   residual_resume) EXTRA="-DJARBOX_HOST_RESIDUAL_TEST=1"; SCENARIOS="residual_resume_diff";;
+  binding) EXTRA="-DJARBOX_HOST_BINDING_TEST=1"; SCENARIOS="binding_diff";;
   intrinsics|benchmark)
     EXTRA="-DJARBOX_HOST_INTRINSIC_TEST=1 -DTREO_VM_CHAR_LEAF_EXPERIMENT=1 -DTREO_VM_ARRAY_LOOKUP_MODE1_EXPERIMENT=1"
     SCENARIOS=intrinsic_diff
@@ -38,6 +39,13 @@ if [[ "$SUITE" == residual || "$SUITE" == residual_draw || "$SUITE" == residual_
   export UBSAN_OPTIONS=halt_on_error=1
   export ASAN_OPTIONS=halt_on_error=1
 fi
+if [[ "$SUITE" == binding ]]; then
+  python3 "$ROOT/tools/ninja_residual_binding_fixture.py" "$OUT/binding" "$OUT/jarbox_host_binding_fixture.h"
+  APP="$OUT/binding/classes"
+  INC="$INC -I$OUT"
+  export UBSAN_OPTIONS=halt_on_error=1
+  export ASAN_OPTIONS=halt_on_error=1
+fi
 gcc -g $OPT -rdynamic -fno-pie -no-pie -Dsignal=smoke_signal -w -std=gnu11 -pthread $SF $EXTRA $INC $SRCS -lm -o $OUT/smoke
 mkdir -p $OUT/app
 JAVAC="java -m jdk.compiler/com.sun.tools.javac.Main"
@@ -55,6 +63,8 @@ for sc in $SCENARIOS; do for i in $(seq 1 $ITER); do
     pass=$((pass+1))
     if [[ "$SUITE" == residual || "$SUITE" == residual_draw || "$SUITE" == residual_resume ]]; then
       grep -E "^residual_((native|resume)_)?diff: PASS|^residual native (calls|compiles|deopts):" "$OUT/$sc.$i.log"
+    elif [[ "$SUITE" == binding ]]; then
+      grep -E "^binding (A|B):|^binding_diff: PASS" "$OUT/$sc.$i.log"
     elif [[ "$SUITE" == intrinsics ]]; then
       grep -E '^intrinsics A:|^intrinsic_diff: PASS' "$OUT/$sc.$i.log"
     elif [[ "$SUITE" == benchmark ]]; then

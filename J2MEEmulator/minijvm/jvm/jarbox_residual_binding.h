@@ -88,7 +88,8 @@ static inline int jbr_bcontext(JClass *cl,Instance *obj,int64_t *v) {
 // one direct paint delegate call (Class_hef.paint PC5), and one writer
 // of an existing wrapper's Graphics (Class_hxb.a PC8). c3 is created
 // per delegate in its constructor. Reject offscreen/mismatched ancestry.
-static inline int jbr_nick_binding(Runtime *r,Instance *wrapper,JarBoxResidualBinding *out) {
+static inline int jbr_binding_at(Runtime *r,Instance *wrapper,JarBoxResidualBinding *out,
+                                 unsigned map_pc,unsigned delegate_pc,unsigned paint_pc) {
     static const char *gd="(Ljavax/microedition/lcdui/Graphics;)V";
     static const char *wd="(LClass_hvi;)V";
     if(out)memset(out,0,sizeof(*out));
@@ -100,17 +101,17 @@ static inline int jbr_nick_binding(Runtime *r,Instance *wrapper,JarBoxResidualBi
     JClass *wc=wrapper->mb.clazz;
     Runtime *p=r->parent;
     if(!jbr_bframe(p,r,1)||!jbr_bmethod(p->method,"Class_hmi","m",wd)||
-       !p->method->is_static||!jbr_bpc(p,58)||p->localvar[0].rvalue!=wrapper||
+       !p->method->is_static||!jbr_bpc(p,map_pc)||p->localvar[0].rvalue!=wrapper||
        p->method->_this_class->jloader!=map->jloader)return 0;
     Runtime *delegate=NULL;
     for(unsigned n=0;p&&n<64;n++,p=p->parent) {
         if(!jbr_bframe(p,r,0))return 0;
         if(jbr_bmethod(p->method,"Class_hxb","a",gd)){delegate=p;break;}
     }
-    if(!jbr_bframe(delegate,r,2)||delegate->method->is_static||!jbr_bpc(delegate,30))return 0;
+    if(!jbr_bframe(delegate,r,2)||delegate->method->is_static||!jbr_bpc(delegate,delegate_pc))return 0;
     Runtime *paint=delegate->parent;
     if(!jbr_bframe(paint,r,2)||!jbr_bmethod(paint->method,"Class_hef","paint",gd)||
-       paint->method->is_static||!jbr_bpc(paint,5))return 0;
+       paint->method->is_static||!jbr_bpc(paint,paint_pc))return 0;
     Runtime *canvas_frame=paint->parent;
     if(!jbr_bframe(canvas_frame,r,1)||
        !jbr_bmethod(canvas_frame->method,"javax/microedition/lcdui/Canvas","doPaint","()V")||
@@ -137,5 +138,8 @@ static inline int jbr_nick_binding(Runtime *r,Instance *wrapper,JarBoxResidualBi
     int64_t cctx=0,gctx=0;
     if(!jbr_bcontext(api,c,&cctx)||!jbr_bcontext(g->mb.clazz,g,&gctx)||cctx!=gctx)return 0;
     out->wrapper=wrapper;out->canvas=c;out->graphics=g;out->context=cctx;return 1;
+}
+static inline int jbr_nick_binding(Runtime *r,Instance *wrapper,JarBoxResidualBinding *out) {
+    return jbr_binding_at(r,wrapper,out,58,30,5);
 }
 #endif

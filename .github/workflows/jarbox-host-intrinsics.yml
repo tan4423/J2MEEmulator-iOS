@@ -39,6 +39,8 @@ jobs:
         run: bash tools/host_multivm_smoke/run.sh asan 1 residual_draw
       - name: Exact residual Canvas, wrapper and owner binding predicate
         run: JARBOX_RESIDUAL_SANITIZE=1 python3 -m unittest discover -s tools/tests -p test_residual_binding.py
+      - name: Real MiniJVM paint ancestry and offscreen rejection
+        run: bash tools/host_multivm_smoke/run.sh asan 1 binding
       - name: Resume original interpreter mid-loop without replay
         run: bash tools/host_multivm_smoke/run.sh asan 1 residual_resume
       - name: Four-way matched-mode host CPU benchmark

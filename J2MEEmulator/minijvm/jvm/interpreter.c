@@ -6,6 +6,13 @@
 #include "jarbox_decoded_int.h"
 #include "jarbox_array_index.h"
 #include "jarbox_java_integer.h"
+#if defined(JARBOX_HOST_BINDING_TEST)
+#if __JVM_OS_IOS__ || defined(TREO_IOS_GAME_JIT)
+#error Host binding fixture cannot be used for iOS admission
+#endif
+#include "jarbox_residual_binding.h"
+#include "jarbox_host_binding_fixture.h"
+#endif
 #if defined(JARBOX_HOST_RESIDUAL_TEST)
 #if __JVM_OS_IOS__ || defined(TREO_IOS_GAME_JIT)
 #error Residual fixture executor is host-only; no game admission is implemented
@@ -2302,6 +2309,19 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                 exit(1);
             }
             runtime->pc = ca->code;
+#if defined(JARBOX_HOST_BINDING_TEST)
+            if(jbr_bmethod(method,"Class_hii","k1","(LClass_hvi;)V")) {
+                JarBoxTreoState *state=&jvm->session->treo_state;
+                JarBoxResidualBinding b;
+                Instance *wrapper=stack_size(stack)>=1?(stack->sp-1)->rvalue:NULL;
+                const void *expected=jbr_bfield(clazz,NULL,"expected","I",sizeof(s32),0,1);
+                s32 want=-1;if(expected)memcpy(&want,expected,sizeof(want));
+                int got=jbr_binding_at(runtime,wrapper,&b,JBR_TEST_MAP_PC,JBR_TEST_DELEGATE_PC,JBR_TEST_PAINT_PC);
+                if(want!=got)__atomic_fetch_add(&state->host_binding_mismatch,1,__ATOMIC_RELAXED);
+                if(got)__atomic_fetch_add(&state->host_binding_good,1,__ATOMIC_RELAXED);
+                else __atomic_fetch_add(&state->host_binding_bad,1,__ATOMIC_RELAXED);
+            }
+#endif
 
 #if defined(JARBOX_HOST_RESIDUAL_TEST)
             const JarBoxResidualOp *jbr_compiled=jbr_fixture_compile(runtime,method,ca);
