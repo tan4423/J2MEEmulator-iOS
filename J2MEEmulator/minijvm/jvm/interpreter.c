@@ -189,7 +189,6 @@ static unsigned jri_fixture_call_skip(Runtime *r,ConstantMethodRef *mr,MethodInf
 #include <stddef.h>
 #if defined(JARBOX_DESKTOP_LAB)
 extern int jarbox_lab_sink_level(int64_t context);
-extern int jarbox_lab_array_lookup_enabled(void);
 #endif
 #if defined(JARBOX_HOST_BLOCK_IR_TEST) && (__JVM_OS_IOS__ || defined(TREO_IOS_GAME_JIT))
 #error Host block IR selection must never be used on iOS
@@ -269,6 +268,7 @@ static const JbiPlan *jbi_method_plan(Runtime *r,MethodInfo *m,CodeAttribute *ca
 #if (defined(JARBOX_DESKTOP_LAB) && JARBOX_DESKTOP_LAB)
 #include "mbedtls/sha256.h"
 extern int jarbox_lab_sink_level(int64_t context);
+extern int jarbox_lab_array_lookup_enabled(void);
 extern void jarbox_lab_deep_note(unsigned kind,unsigned count);
 extern void jarbox_lab_residual_fault(void);
 static int treo_residual_scope_valid(Runtime *r,Instance *w,const JarBoxResidualScope *s) {
