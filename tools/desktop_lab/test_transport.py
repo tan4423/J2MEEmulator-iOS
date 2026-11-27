@@ -78,6 +78,7 @@ with socket.socket() as listener:
                     assert (private/"control-frame.png").read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
                     if sink:
                         # Synthetic fixtures never authorize exact real-game residual execution.
+                        assert cmd("guard on")["state"]=="refused"
                         assert cmd("sink residual")["state"]=="refused"
                         a=cmd("status")
                         assert a["residual_plans"]==a["residual_calls"]==a["residual_regions"]==0

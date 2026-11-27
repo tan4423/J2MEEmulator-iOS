@@ -1105,6 +1105,9 @@ struct _MethodInfo {
     u16 treo_mod_diag_roles; // immutable diagnostic classification, zero = unknown
     u8 treo_int_leaf_kind; // exact primitive expression classified before bytecode conversion
     u32 treo_ref_leaf; // raw shape: field CP index and lazy-branch flag
+#if defined(JARBOX_DESKTOP_LAB)
+    u8 desktop_liveness_role;
+#endif
 };
 //============================================
 

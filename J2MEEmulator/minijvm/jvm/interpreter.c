@@ -2761,6 +2761,12 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
     extern _Atomic int jarbox_lab_trace_enabled;
     extern int jarbox_lab_effect_enabled;
     extern void jarbox_lab_method_enter(MethodInfo *, Runtime *);
+    extern void jarbox_lab_liveness_note(unsigned kind);
+    if(jarbox_lab_effect_enabled){
+        unsigned role=desktop_liveness_role(method);
+        if(role==2&&pruntime&&pruntime->method&&desktop_liveness_role(pruntime->method)==3)jarbox_lab_liveness_note(1);
+        else if(role==4)jarbox_lab_liveness_note(2);
+    }
     if (atomic_load_explicit(&jarbox_lab_trace_enabled,memory_order_relaxed)) jarbox_lab_method_enter(method, pruntime);
 #endif
     JARBOX_HOT_CHECK(pruntime,method,NULL);

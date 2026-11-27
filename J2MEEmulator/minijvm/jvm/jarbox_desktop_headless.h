@@ -25,6 +25,18 @@ static unsigned jbg_live_kind(MethodInfo *m,CodeAttribute *ca){
     return kind<=2?kind:0;
 }
 
+/* Diagnostic only; cached role belongs to the loaded MethodInfo. */
+static unsigned desktop_liveness_role(MethodInfo *m){
+    unsigned role=__atomic_load_n(&m->desktop_liveness_role,__ATOMIC_RELAXED);
+    if(role)return role;
+    role=1;
+    JClass *cl=m->_this_class;
+    if(jbr_bname(cl,"Class_hcb")&&jbr_eq(m->name,"a"))role=2;
+    else if(jbr_bname(cl,"Class_bn")&&jbr_eq(m->name,"run")&&jbr_eq(m->descriptor,"()V"))role=3;
+    else if(jbr_bname(cl,"Class_hac")&&jbr_eq(m->name,"a")&&jbr_eq(m->descriptor,"()V"))role=4;
+    __atomic_store_n(&m->desktop_liveness_role,role,__ATOMIC_RELAXED);
+    return role;
+}
 static int desktop_graphics_leaf_kind(MethodInfo *m){
     unsigned tag=__atomic_load_n(&m->treo_afk_kind,__ATOMIC_RELAXED);
     if(tag)return tag==3;
