@@ -163,7 +163,8 @@ int main(void) {
 
 
 def harness(source):
-    start = source.index("static inline MethodInfo *jarbox_virtual_lookup(")
+    # Match the definition, not the earlier residual forward declaration.
+    start = source.index("static inline MethodInfo *jarbox_virtual_lookup(MiniJVM *jvm,")
     end = source.index("#include <stdatomic.h>", start)
     handlers = []
     for op in ("op_invokevirtual_fast", "op_invokeinterface_fast"):
