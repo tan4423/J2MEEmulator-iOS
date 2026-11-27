@@ -10,6 +10,7 @@ on:
       - 'codemagic.yaml'
       - 'J2MEEmulator/minijvm/jvm/jarbox_residual_*.h'
       - 'J2MEEmulator/minijvm/jvm/interpreter.c'
+      - 'J2MEEmulator/minijvm/jvm/jarbox_treo_state.h'
       - 'J2MEEmulator/NativeBridge/j2me_render.m'
       - 'J2MEEmulator/NativeBridge/jvm_bridge.c'
   workflow_dispatch:
