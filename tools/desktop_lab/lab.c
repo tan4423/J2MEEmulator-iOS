@@ -17,7 +17,7 @@
 #include "garbage.h"
 #include "arraylist.h"
 
-enum { MAX_SURF=8192, MAX_DIM=2048, MAX_EVENTS=256, MAX_EDGES=8192 };
+enum { MAX_SURF=8192, MAX_DIM=8192, MAX_SCREEN=2048, MAX_EVENTS=256, MAX_EDGES=8192 };
 typedef struct { cairo_surface_t *s; cairo_t *c; int image, mutable; uint64_t id; } Surface;
 static Surface surfaces[MAX_SURF];
 static unsigned next_slot=1;
@@ -143,7 +143,7 @@ static Surface *get(s64 h){
 }
 static int sw(Surface *s){return cairo_image_surface_get_width(s->s);}
 static int sh(Surface *s){return cairo_image_surface_get_height(s->s);}
-static int valid_size(int w,int h){return w>0&&h>0&&w<=MAX_DIM&&h<=MAX_DIM;}
+static int valid_size(int w,int h){return w>0&&h>0&&w<=MAX_DIM&&h<=MAX_DIM&&(uint64_t)w*h<=16u*1024u*1024u;}
 static s64 add(cairo_surface_t *s,int image,int mut){
     if(!s||cairo_surface_status(s)!=CAIRO_STATUS_SUCCESS||
        !valid_size(cairo_image_surface_get_width(s),cairo_image_surface_get_height(s))||
@@ -223,7 +223,7 @@ FN(createImageFromData){
         if(!memcmp(p,"\x89PNG\r\n\x1a\n",8)&&!memcmp(p+12,"IHDR",4)){
             uint32_t w=((uint32_t)p[16]<<24)|((uint32_t)p[17]<<16)|((uint32_t)p[18]<<8)|p[19];
             uint32_t h=((uint32_t)p[20]<<24)|((uint32_t)p[21]<<16)|((uint32_t)p[22]<<8)|p[23];
-            if(w&&h&&w<=MAX_DIM&&h<=MAX_DIM){
+            if(w&&h&&w<=MAX_DIM&&h<=MAX_DIM&&(uint64_t)w*h<=16u*1024u*1024u){
                 Png input={p,(size_t)len};LOCK;
                 id=add(cairo_image_surface_create_from_png_stream(png_read,&input),1,0);
                 UNLOCK;
@@ -454,7 +454,7 @@ int main(int argc,char**argv){
     if(argc!=9){fprintf(stderr,"usage: lab RT.jar API.jar GAME.jar SAVE_DIR TRACE.csv WIDTH HEIGHT graph|plain\n");return 2;}
     rt_path=argv[1];api_path=argv[2];game_path=argv[3];save_path=argv[4];
     width=atoi(argv[6]);height=atoi(argv[7]);trace_graph=!strcmp(argv[8],"graph");
-    if(!valid_size(width,height)||(!trace_graph&&strcmp(argv[8],"plain")))return 2;
+    if(!valid_size(width,height)||width>MAX_SCREEN||height>MAX_SCREEN||(!trace_graph&&strcmp(argv[8],"plain")))return 2;
     trace_path=argv[5];trace=fopen(trace_path,"w");if(!trace)return 2;
     fixture_ui=getenv("JARBOX_LAB_UI_FIXTURE")&&strcmp(getenv("JARBOX_LAB_UI_FIXTURE"),"1")==0;
     if(fixture_ui&&(!getenv("SDL_VIDEODRIVER")||strcmp(getenv("SDL_VIDEODRIVER"),"dummy")||!strstr(game_path,"/fixture.jar")))return 2;

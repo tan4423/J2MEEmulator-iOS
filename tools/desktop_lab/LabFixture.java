@@ -57,6 +57,15 @@ public final class LabFixture extends MIDlet {
             g.drawRoundRect(15,20,12,12,4,4);
             g.fillRoundRect(30,20,12,12,4,4);
             g.fillArc(45,20,12,12,0,90);
+            try {
+                Image tall=Image.createImage("/lab-tall.png");
+                if(tall.getWidth()!=24||tall.getHeight()!=3432)throw new RuntimeException("tall atlas dimensions");
+                int[] atlasPixel=new int[1];
+                tall.getRGB(atlasPixel,0,1,23,3431,1,1);
+                if(atlasPixel[0]!=0xff336699)throw new RuntimeException("tall atlas last pixel");
+                g.drawRegion(tall,0,3408,24,24,0,60,20,Graphics.TOP|Graphics.LEFT);
+                System.out.println("LAB_FIXTURE_TALL_ATLAS_PASS");
+            }catch(Exception e){throw new RuntimeException(e.toString());}
             Image check=Image.createImage(24,24);
             Graphics cg=check.getGraphics();
             cg.setColor(0x00aa00);cg.fillRoundRect(0,0,20,20,6,6);

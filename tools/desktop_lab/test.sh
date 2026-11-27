@@ -5,10 +5,20 @@ OUT=$(realpath "$1")
 mkdir -p "$OUT/fixture/classes" "$OUT/fixture/save"
 javac --release 8 -cp "$OUT/jars/j2me_api.jar" -d "$OUT/fixture/classes" "$ROOT/tools/desktop_lab/LabFixture.java"
 printf 'Manifest-Version: 1.0\nMIDlet-Name: LabFixture\nMIDlet-Version: 1.0\nMIDlet-Vendor: JarBox\nMIDlet-1: LabFixture,,LabFixture\n\n' > "$OUT/fixture/manifest"
+# Synthetic sprite atlas at the maximum actual Nick t5 PNG height.
+python3 - "$OUT/fixture/classes/lab-tall.png" <<'PY'
+import struct,zlib,pathlib,sys
+w,h=24,3432
+def chunk(t,d):
+    return struct.pack(">I",len(d))+t+d+struct.pack(">I",zlib.crc32(t+d)&0xffffffff)
+raw=(b'\x00'+b'\x33\x66\x99\xff'*w)*h
+pathlib.Path(sys.argv[1]).write_bytes(b'\x89PNG\r\n\x1a\n'+chunk(b'IHDR',struct.pack(">IIBBBBB",w,h,8,6,0,0,0))+chunk(b'IDAT',zlib.compress(raw))+chunk(b'IEND',b''))
+PY
 jar cfm "$OUT/fixture/fixture.jar" "$OUT/fixture/manifest" -C "$OUT/fixture/classes" .
 python3 "$ROOT/tools/desktop_lab/test_transport.py" "$OUT" 2>&1 | tee "$OUT/fixture/run.log"
 grep -Fx 'LAB_FIXTURE_TCP_RMS_PASS' "$OUT/fixture/run.log"
 grep -Fx 'LAB_FIXTURE_SHAPES_PASS' "$OUT/fixture/run.log"
+grep -Fx 'LAB_FIXTURE_TALL_ATLAS_PASS' "$OUT/fixture/run.log"
 grep -Fx 'LAB_FIXTURE_UI_PASS' "$OUT/fixture/run.log"
 grep -Fx 'LAB_FIXTURE_PIXEL_PASS' "$OUT/fixture/run.log"
 grep -E 'LAB_EXIT rc=0 failed=0 frames=[1-9][0-9]* input_overflow=0' "$OUT/fixture/run.log"

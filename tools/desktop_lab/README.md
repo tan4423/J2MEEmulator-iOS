@@ -77,3 +77,5 @@ close/reopen, modal text input, offscreen pixel reads and shape drawing.
 It never connects to a game server. The new GUI and WSL installation still
 need a Windows-device test. Deep Treo remains disabled until its shared
 runtime admission contract is ported and validated.
+
+Nick t5 archive SHA-256 11b1d4c11f9082b9d07bc7bd92a9ad3abad40764853e23686cc86686869c966c was inspected locally: 168 PNG assets, 20 taller than 2048, maximum 24x3432. The desktop decoder now accepts bounded images up to 8192 per axis and 16M pixels, independent of the screen limit; CI decodes a generated 24x3432 atlas and tests its last pixel and a lower tile. No original game asset is committed or used by CI.
