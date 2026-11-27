@@ -48,14 +48,14 @@ static int sink_admitted,sink_fixture;
 static _Atomic int sink_requested,sink_invalid;
 static _Atomic uint64_t sink_paints,sink_draws,sink_faults;
 static _Thread_local s64 sink_context;
-static _Atomic uint64_t deep_counts[7];
+static _Atomic uint64_t deep_counts[10];
 static int deep_admitted;
 int jarbox_lab_sink_level(int64_t context){
     if(!sink_context||(context&&context!=sink_context)||!deep_admitted||atomic_load(&sink_invalid))return 0;
     return atomic_load_explicit(&sink_requested,memory_order_relaxed);
 }
 void jarbox_lab_deep_note(unsigned kind,unsigned count){
-    if(kind<7)atomic_fetch_add_explicit(&deep_counts[kind],count,memory_order_relaxed);
+    if(kind<10)atomic_fetch_add_explicit(&deep_counts[kind],count,memory_order_relaxed);
 }
 static int sink_draw(s64 id){
     if(id>0&&id==sink_context){
@@ -521,7 +521,7 @@ static void sample(void){
         (unsigned long long)atomic_load(&image_allocs),(unsigned long long)atomic_load(&events_delivered),
         (unsigned long long)atomic_load(&gc_cycles),(unsigned long long)atomic_load(&gc_cpu),
         bytes,(unsigned long long)atomic_load(&gc_aborts),(unsigned long long)atomic_load(&gc_heap_sample),logic_mode?"logic":trace_graph?"graph":"plain",atomic_load(&sink_requested),(unsigned long long)atomic_load(&sink_paints),(unsigned long long)atomic_load(&sink_draws),(unsigned long long)atomic_load(&sink_faults),atomic_load(&sink_invalid));
-    for(unsigned i=0;i<7;i++)fprintf(trace,",%llu",(unsigned long long)atomic_load(&deep_counts[i]));
+    for(unsigned i=0;i<10;i++)fprintf(trace,",%llu",(unsigned long long)atomic_load(&deep_counts[i]));
     fputc('\n',trace);fflush(trace);
 }
 static int write_graph(void){
@@ -556,7 +556,7 @@ int main(int argc,char**argv){
         snprintf(p,n,"%s.effects.csv",trace_path);effect_file=fopen(p,"w");free(p);if(!effect_file)return 2;
         fprintf(effect_file,"sequence,monotonic_ns,worker,method,pc,operation,value,lost_total\n");
     }
-    fprintf(trace,"monotonic_ns,process_cpu_ns,paints,paint_cpu_ns,frames,draw_calls,image_allocs,input_events,gc_cycles,gc_cpu_ns,native_surface_bytes,gc_aborts,gc_heap_sample_bytes,mode,sink_requested,sink_paints,sink_draws,sink_faults,sink_invalid,deep_leaves,glyph_attempts,glyph_scope_refusals,glyph_link_refusals,glyph_data_refusals,glyph_loops,glyph_chars\n");
+    fprintf(trace,"monotonic_ns,process_cpu_ns,paints,paint_cpu_ns,frames,draw_calls,image_allocs,input_events,gc_cycles,gc_cpu_ns,native_surface_bytes,gc_aborts,gc_heap_sample_bytes,mode,sink_requested,sink_paints,sink_draws,sink_faults,sink_invalid,deep_leaves,glyph_attempts,glyph_scope_refusals,glyph_link_refusals,glyph_data_refusals,glyph_loops,glyph_chars,map_q3,map_m3,map_refusals\n");
     frame=calloc((size_t)width*height,4);if(!frame)return 2;
     if(SDL_Init(SDL_INIT_VIDEO|SDL_INIT_EVENTS)){fprintf(stderr,"%s\n",SDL_GetError());return 2;}
     SDL_Window *win=SDL_CreateWindow("JarBox Research Lab",SDL_WINDOWPOS_CENTERED,SDL_WINDOWPOS_CENTERED,width*2,height*2,SDL_WINDOW_RESIZABLE);

@@ -2720,7 +2720,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
 #endif
     JARBOX_HOT_CHECK(pruntime,method,NULL);
 #if defined(JARBOX_DESKTOP_LAB) && JARBOX_DESKTOP_LAB
-    if(desktop_graphics_leaf(method,pruntime))return RUNTIME_STATUS_NORMAL;
+    if(desktop_map_leaf(method,pruntime)||desktop_graphics_leaf(method,pruntime))return RUNTIME_STATUS_NORMAL;
 #endif
 #if defined(JARBOX_HOST_GLYPH_LOOP_TEST)
     if(jbg_fixture_sink_return(method,pruntime))return RUNTIME_STATUS_NORMAL;

@@ -176,3 +176,75 @@ static int desktop_glyph_skip(Runtime *r,unsigned kind,StackEntry *sp){
     jarbox_lab_deep_note(5,1);jarbox_lab_deep_note(6,proof.count);
     return 1;
 }
+
+/* Exact Nick map array leaves. No cached array/data values; preserve the
+ * original order of reads and the reference lane written by getstatic.
+ * Refuse cold links and exceptional accesses rather than synthesize catch. */
+static unsigned desktop_map_kind(MethodInfo *m){
+    unsigned k=__atomic_load_n(&m->treo_array_lookup_kind,__ATOMIC_RELAXED);
+    if(k)return k;
+    CodeAttribute *ca=m->converted_code;
+    k=1;
+    if(ca&&ca->bytecode_for_jit&&ca->code_length==17&&ca->max_stack==3&&ca->max_locals==3&&
+       ca->exception_table_length==1&&ca->exception_table&&
+       jbr_eq(m->_this_class->name,"Class_hii")&&jbr_eq(m->descriptor,"(II)I")){
+        const u8 *c=ca->bytecode_for_jit;
+        const ExceptionTable *e=ca->exception_table;
+        if(c[0]==0xb2&&c[3]==0x1b&&c[4]==0xb2&&c[7]==0x68&&
+           c[8]==0x1a&&c[9]==0x60&&c[11]==0xac&&c[12]==0x4d&&
+           c[13]==0x11&&jbg_u16(c+14)==1000&&c[16]==0xac&&
+           e->start_pc==0&&e->end_pc==11&&e->handler_pc==12){
+            if(c[10]==0x2e&&jbr_eq(m->name,"q3"))k=2;
+            if(c[10]==0x34&&jbr_eq(m->name,"m3"))k=3;
+        }
+    }
+    __atomic_store_n(&m->treo_array_lookup_kind,k,__ATOMIC_RELAXED);
+    return k;
+}
+static FieldInfo *desktop_map_field(JClass *cl,unsigned ix,const char *name,const char *desc,unsigned bytes,int ref){
+    ConstantItem *item=jbg_item(cl,ix);
+    if(!item||item->tag!=CONSTANT_FIELD_REF)return NULL;
+    ConstantFieldRef *f=(ConstantFieldRef *)item;
+    FieldInfo *fi=f->fieldInfo;
+    if(!fi||fi->_this_class!=cl||!jbr_eq(f->name,name)||!jbr_eq(f->descriptor,desc)||
+       !jbr_eq(fi->name,name)||!jbr_eq(fi->descriptor,desc)||
+       !(fi->access_flags&ACC_STATIC)||(fi->access_flags&ACC_VOLATILE)||fi->isvolatile||
+       !!fi->isrefer!=ref||fi->datatype_bytes!=bytes||!cl->field_static||
+       cl->field_static_len<(s32)bytes||(size_t)fi->offset>(size_t)cl->field_static_len-bytes)
+        return NULL;
+    return fi;
+}
+static int desktop_map_leaf(MethodInfo *m,Runtime *r){
+    if(!m->is_static||m->para_slots!=2||m->return_slots!=1||m->is_native||m->is_sync||
+       jarbox_lab_sink_level(0)<4||r->jvm->jdwp_enable||r->thrd_info->is_stop||
+       r->thrd_info->suspend_count||m->breakpoint||m->_this_class->status!=CLASS_STATUS_CLINITED)return 0;
+    unsigned kind=desktop_map_kind(m);
+    if(kind<2)return 0;
+    CodeAttribute *ca=m->converted_code;
+    const u8 *c=ca->bytecode_for_jit;
+    JClass *cl=m->_this_class;
+    FieldInfo *af=desktop_map_field(cl,jbg_u16(c+1),kind==2?"x3":"u3",kind==2?"[I":"[C",sizeof(__refer),1);
+    FieldInfo *wf=desktop_map_field(cl,jbg_u16(c+5),"j1","I",4,0);
+    RuntimeStack *s=r->stack;
+    if(!af||!wf||stack_size(s)<2||s->store+s->max_size-s->sp<4){
+        jarbox_lab_deep_note(9,1);return 0;
+    }
+    void *ap=getStaticFieldPtr(af),*wp=getStaticFieldPtr(wf);
+    if((uintptr_t)ap%_Alignof(__refer)||(uintptr_t)wp%_Alignof(s32)){
+        jarbox_lab_deep_note(9,1);return 0;
+    }
+    StackEntry *args=s->sp-2;
+    Instance *arr=__atomic_load_n((__refer *)ap,__ATOMIC_RELAXED);
+    s32 width=__atomic_load_n((s32 *)wp,__ATOMIC_RELAXED);
+    uint32_t idx;
+    if(!arr||arr->mb.type!=MEM_TYPE_ARR||!arr->arr_body||
+       arr->mb.arr_type_index!=(kind==2?DATATYPE_INT:DATATYPE_JCHAR)||
+       !jarbox_array_index(args[0].ivalue,args[1].ivalue,width,arr->arr_length,&idx)){
+        jarbox_lab_deep_note(9,1);return 0;
+    }
+    s32 value=kind==2?((s32 *)arr->arr_body)[idx]:((u16 *)arr->arr_body)[idx];
+    args[3].rvalue=arr;
+    s->sp=args;push_int(s,value);
+    jarbox_lab_deep_note(kind==2?7:8,1);
+    return 1;
+}
