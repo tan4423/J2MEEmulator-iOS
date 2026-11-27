@@ -926,6 +926,10 @@ struct _CodeAttribute {
 #if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__ && defined(TREO_VM_DECODED_INT_EXPERIMENT) && TREO_VM_DECODED_INT_EXPERIMENT
     uint64_t jarbox_decoded_int_plan; // immutable, pointer-free, zero = fallback
 #endif
+#if defined(JARBOX_HOST_RENDER_ISLAND_TEST)
+    void *render_island_plan;
+    unsigned render_island_state;
+#endif
     spinlock_t compile_lock;
     struct _Jit {
         jit_func func;
@@ -2016,6 +2020,10 @@ struct _MiniJVM {
     int host_block_ir_enabled;
     uint64_t host_block_ir_spans, host_block_ir_ops, host_block_ir_compiles;
 #endif
+#endif
+#if defined(JARBOX_HOST_RENDER_ISLAND_TEST)
+    int host_render_island_enabled;
+    uint64_t host_render_island_skips,host_render_island_ops,host_render_island_refusals;
 #endif
     ArrayList *shutdown_hook;//shutdown hook ,it contains thread instance
 

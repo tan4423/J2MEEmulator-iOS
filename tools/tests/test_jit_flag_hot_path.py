@@ -62,8 +62,11 @@ int main(void) {
         residual=i.split("static const JarBoxResidualOp *jbr_live_compile",1)[1].split("// Host differential",1)[0]
         self.assertEqual(residual.count("treo_game_jit_enabled_fast()"),1)
         self.assertLess(residual.index('ca->code_length!=1368'),residual.index("treo_game_jit_enabled_fast()"))
-        # Six interpreter-only tiers plus ordinary JIT dispatch. No extra reads.
-        self.assertEqual(i.count("treo_game_jit_enabled_fast()"), 7)
+        block_ir=i.split("static const JbiPlan *jbi_method_plan",1)[1].split("unsigned state=",1)[0]
+        self.assertEqual(block_ir.count("treo_game_jit_enabled_fast()"),1)
+        self.assertIn("jarbox_session_phase(owner)!=JARBOX_SESSION_PARKED",block_ir)
+        # Seven interpreter-only tiers plus ordinary JIT dispatch.
+        self.assertEqual(i.count("treo_game_jit_enabled_fast()"), 8)
         self.assertNotIn("treo_game_jit_is_enabled()",i)
         self.assertEqual(j.count("int treo_jit_enabled_state;"),1)
         self.assertIn("int treo_game_jit_is_enabled(void) { return treo_game_jit_enabled_fast(); }",j)

@@ -16,6 +16,9 @@ typedef struct { const char *rt, *api, *app, *tag, *mode; char save[512]; int po
     MiniJVM *jvm; pthread_t th; pthread_mutex_t lock; atomic_int finished;
     int stop_requested, rc;
     uint64_t char_calls, array_calls, gc_cycles;
+#if defined(JARBOX_HOST_RENDER_ISLAND_TEST)
+    uint64_t islands, island_ops, island_refusals;
+#endif
 #if defined(JARBOX_HOST_BLOCK_IR_TEST)
     uint64_t block_spans, block_ops, block_compiles, block_shared_hits;
 #endif
@@ -63,6 +66,9 @@ static void *job_main(void *p) {
 #if defined(JARBOX_HOST_BLOCK_IR_TEST)
     vm->host_block_ir_enabled=!strcmp(j->mode,"intrinsic-block-on");
 #endif
+#if defined(JARBOX_HOST_RENDER_ISLAND_TEST)
+    vm->host_render_island_enabled=!strcmp(j->mode,"intrinsic-island-on");
+#endif
     if (jvm_init(vm, (char *)j->rt, cp)) { j->rc = -3; goto cleanup; }
     pthread_mutex_lock(&j->lock);
     j->jvm = vm;
@@ -92,6 +98,9 @@ static void *job_main(void *p) {
 #if defined(JARBOX_HOST_BLOCK_IR_TEST)
     if(!strncmp(j->mode,"intrinsic-block-",16))main_class="BlockMain";
 #endif
+#if defined(JARBOX_HOST_RENDER_ISLAND_TEST)
+    if(!strncmp(j->mode,"intrinsic-island-",17))main_class="RenderIslandMain";
+#endif
     j->rc=call_main(vm,main_class,args);
     uint64_t t1=cpu_now(CLOCK_THREAD_CPUTIME_ID),p1=cpu_now(CLOCK_PROCESS_CPUTIME_ID);
     if (t0 && t1>t0) j->thread_cpu_ns=t1-t0;
@@ -99,6 +108,11 @@ static void *job_main(void *p) {
     j->char_calls=__atomic_load_n(&vm->session->treo_state.char_leaf_calls,__ATOMIC_RELAXED);
     j->array_calls=__atomic_load_n(&vm->session->treo_state.array_lookup_mode1_calls,__ATOMIC_RELAXED);
     j->gc_cycles=__atomic_load_n(&vm->session->treo_state.gc_worker_cycles,__ATOMIC_RELAXED);
+#if defined(JARBOX_HOST_RENDER_ISLAND_TEST)
+    j->islands=__atomic_load_n(&vm->host_render_island_skips,__ATOMIC_RELAXED);
+    j->island_ops=__atomic_load_n(&vm->host_render_island_ops,__ATOMIC_RELAXED);
+    j->island_refusals=__atomic_load_n(&vm->host_render_island_refusals,__ATOMIC_RELAXED);
+#endif
 #if defined(JARBOX_HOST_BLOCK_IR_TEST)
     j->block_spans=__atomic_load_n(&vm->host_block_ir_spans,__ATOMIC_RELAXED);
     j->block_ops=__atomic_load_n(&vm->host_block_ir_ops,__ATOMIC_RELAXED);
@@ -183,6 +197,16 @@ static int block_ok(const Job *j) {
     snprintf(path,sizeof path,"%s/block.txt",j->save);
     FILE *f=fopen(path,"r");if(!f)return 0;
     size_t n=fread(buf,1,sizeof buf-1,f);fclose(f);
+    return n==strlen(expected)&&!memcmp(buf,expected,n);
+}
+#endif
+#if defined(JARBOX_HOST_RENDER_ISLAND_TEST)
+static int island_ok(const Job *j){
+    char path[1024],buf[128]={0};
+    snprintf(path,sizeof path,"%s/island.txt",j->save);
+    FILE *f=fopen(path,"r");if(!f)return 0;
+    size_t n=fread(buf,1,sizeof buf-1,f);fclose(f);
+    const char *expected="PASS 8000\n";
     return n==strlen(expected)&&!memcmp(buf,expected,n);
 }
 #endif
@@ -305,6 +329,19 @@ int main(int argc, char **argv) {
         printf("block IR A=%llu/%llu/%llu B=%llu/%llu/%llu (spans/ops/compiles)\n",
                (unsigned long long)a.block_spans,(unsigned long long)a.block_ops,(unsigned long long)a.block_compiles,
                (unsigned long long)b.block_spans,(unsigned long long)b.block_ops,(unsigned long long)b.block_compiles);
+    } else
+#endif
+#if defined(JARBOX_HOST_RENDER_ISLAND_TEST)
+    if(!strcmp(scenario,"render_island_diff")){
+        init_job(&a,argv,"A","intrinsic-island-off",bport,base);
+        init_job(&b,argv,"B","intrinsic-island-on",bport+1,base);
+        start_job(&a);start_job(&b);join_job(&a);join_job(&b);
+        REQUIRE(!a.rc&&!b.rc&&island_ok(&a)&&island_ok(&b));
+        REQUIRE(!a.islands&&!a.island_ops&&!a.island_refusals);
+        REQUIRE(b.islands>=7900&&b.islands<=8000&&b.island_ops>=8*b.islands&&b.island_refusals>=8000);
+        REQUIRE(a.gc_cycles>0&&b.gc_cycles>0);
+        printf("render islands B=%llu ops=%llu refusals=%llu\n",
+               (unsigned long long)b.islands,(unsigned long long)b.island_ops,(unsigned long long)b.island_refusals);
     } else
 #endif
     if (!strcmp(scenario,"intrinsic_bench")) {

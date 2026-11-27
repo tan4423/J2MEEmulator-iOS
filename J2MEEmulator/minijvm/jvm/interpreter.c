@@ -6,6 +6,94 @@
 #include "jarbox_decoded_int.h"
 #include "jarbox_array_index.h"
 #include "jarbox_java_integer.h"
+
+#if defined(JARBOX_HOST_RENDER_ISLAND_TEST)
+#if __JVM_OS_IOS__ || defined(TREO_IOS_GAME_JIT)
+#error Fixture sink is not an iOS admission policy
+#endif
+#include "jarbox_render_island.h"
+static ConstantItem *jri_item(JClass *cl,unsigned ix){
+    return cl&&cl->constant_item_ptr&&ix&&ix<(unsigned)cl->constant_item_count?
+           class_get_constant_item(cl,ix):NULL;
+}
+static unsigned jri_fixture_cp(void *ctx,unsigned raw,unsigned ix){
+    ConstantItem *item=jri_item(ctx,ix);
+    if(!item)return 0;
+    if(raw==0xb2&&item->tag==CONSTANT_FIELD_REF){
+        ConstantFieldRef *f=(ConstantFieldRef *)item;
+        if(f->descriptor&&utf8_equals_c(f->descriptor,"I"))return 1;
+    }
+    if(raw==0xb6&&item->tag==CONSTANT_METHOD_REF){
+        ConstantMethodRef *m=(ConstantMethodRef *)item;
+        if(m->clsName&&m->name&&m->descriptor&&
+           utf8_equals_c(m->clsName,"RenderIslandMain$Sink")&&utf8_equals_c(m->name,"draw")&&
+           utf8_equals_c(m->descriptor,"(IIII)V"))return jri_shape(5,1);
+    }
+    return 0;
+}
+static const JriPlan *jri_fixture_plan(Runtime *r,MethodInfo *m,CodeAttribute *ca){
+    if(!r->jvm->host_render_island_enabled||r->jvm->jdwp_enable||m->breakpoint||
+       r->thrd_info->is_stop||r->thrd_info->suspend_count||
+       !utf8_equals_c(m->_this_class->name,"RenderIslandMain")||
+       ca->code_length<5||ca->code_length>JBI_MAX_CODE||!ca->bytecode_for_jit||
+       ca->exception_table_length>JBI_MAX_HANDLERS)return NULL;
+    unsigned state=__atomic_load_n(&ca->render_island_state,__ATOMIC_ACQUIRE);
+    if(state==2)return ca->render_island_plan;
+    if(state||!__atomic_compare_exchange_n(&ca->render_island_state,&state,1,0,
+                                         __ATOMIC_ACQ_REL,__ATOMIC_ACQUIRE))return NULL;
+    JbiHandler handlers[JBI_MAX_HANDLERS];
+    for(unsigned i=0;i<ca->exception_table_length;i++){
+        ExceptionTable *h=ca->exception_table+i;
+        handlers[i]=(JbiHandler){h->start_pc,h->end_pc,h->handler_pc};
+    }
+    JriPlan *p=jri_build(ca->bytecode_for_jit,ca->code_length,ca->max_locals,ca->max_stack,
+                        handlers,ca->exception_table_length,0,jri_fixture_cp,m->_this_class);
+    ca->render_island_plan=p;
+    __atomic_store_n(&ca->render_island_state,p?2:3,__ATOMIC_RELEASE);
+    return p;
+}
+static inline MethodInfo *jarbox_virtual_lookup(MiniJVM *,ConstantMethodRef *,Instance *);
+static int jri_fixture_guard(Runtime *r,const JriIsland *s,StackEntry *locals){
+    JClass *cl=r->method->_this_class;
+    Instance *obj=locals[s->receiver].rvalue;
+    if(!obj||obj->mb.type!=MEM_TYPE_INS||!obj->mb.clazz||!obj->obj_fields)return 0;
+    JClass *sc=obj->mb.clazz;
+    if(sc->status!=CLASS_STATUS_CLINITED||sc->jloader!=cl->jloader||
+       !(sc->cff.access_flags&ACC_FINAL)||!utf8_equals_c(sc->name,"RenderIslandMain$Sink"))return 0;
+    ConstantItem *item=jri_item(cl,s->cp);
+    if(!item||item->tag!=CONSTANT_METHOD_REF||!jri_fixture_cp(cl,0xb6,s->cp))return 0;
+    MethodInfo *target=jarbox_virtual_lookup(r->jvm,(ConstantMethodRef *)item,obj);
+    if(!target||target->_this_class!=sc||target->is_sync||target->is_native||
+       target->is_static||target->breakpoint||!target->converted_code)return 0;
+    /* No resolver or class init in a guard. All candidate static reads
+     * must already be naturally linked and nonvolatile. */
+    for(unsigned i=0;i<s->nreads;i++){
+        ConstantItem *ci=jri_item(cl,s->reads[i]);
+        if(!ci||ci->tag!=CONSTANT_FIELD_REF)return 0;
+        ConstantFieldRef *ref=(ConstantFieldRef *)ci;FieldInfo *f=ref->fieldInfo;
+        if(!f||!f->_this_class||f->isvolatile||f->isrefer||
+           !(f->access_flags&ACC_STATIC)||(f->access_flags&ACC_VOLATILE)||
+           f->datatype_bytes!=4||!utf8_equals_c(f->descriptor,"I")||
+           f->_this_class->status!=CLASS_STATUS_CLINITED||
+           f->_this_class->jloader!=cl->jloader||!f->_this_class->field_static||
+           (size_t)f->offset+4>(size_t)f->_this_class->field_static_len||
+           !utf8_equals(f->_this_class->name,ref->clsName)||
+           !utf8_equals(f->name,ref->name)||!utf8_equals(f->descriptor,ref->descriptor))return 0;
+    }
+    /* Trusted fixture: scope owned by the invoking Java thread; no mutable
+     * owner state is shared. Only its deliberately effect-free draw branch. */
+    for(int i=0;i<sc->fieldPool.field_used;i++){
+        FieldInfo *f=sc->fieldPool.field+i;
+        if(f->name&&f->descriptor&&utf8_equals_c(f->name,"closed")&&
+           utf8_equals_c(f->descriptor,"Z")&&!(f->access_flags&ACC_STATIC)&&
+           !f->isvolatile&&f->datatype_bytes==1&&
+           (size_t)f->offset_instance<(size_t)sc->field_instance_len)
+            return obj->obj_fields[f->offset_instance]!=0;
+    }
+    return 0;
+}
+#endif
+
 #if defined(JARBOX_BLOCK_IR_EXPERIMENT) && JARBOX_BLOCK_IR_EXPERIMENT
 #include "jarbox_block_ir.h"
 #include <stddef.h>
@@ -2859,6 +2947,9 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                 int block_ir_report=block_ir&&!__atomic_load_n(&jvm->block_ir_seen,__ATOMIC_RELAXED);
 #endif
 #endif
+#if defined(JARBOX_HOST_RENDER_ISLAND_TEST)
+                const JriPlan *render_island=jri_fixture_plan(runtime,method,ca);
+#endif
                 do {
 #if defined(JARBOX_RESIDUAL_EXECUTOR)
                     if(jbr_active) {
@@ -3016,6 +3107,29 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
 #endif
                                 continue;
                             }
+                        }
+                    }
+#endif
+#if defined(JARBOX_HOST_RENDER_ISLAND_TEST)
+                    if(render_island&&!thrd_info->suspend_count&&!thrd_info->is_stop){
+                        const JriIsland *s=jri_find(render_island,(unsigned)(runtime->pc-ca->code));
+                        if(s){
+                            // The expression is self-contained. Leave the pre-existing
+                            // operand stack and every local slot untouched.
+                            stack->sp=sp;
+                            check_suspend_and_pause(runtime);
+                            sp=stack->sp;
+                            if(!thrd_info->is_stop&&!thrd_info->suspend_count&&
+                               sp>=localvar+ca->max_locals&&sp<=stack->store+stack->max_size&&
+                               s->peak<=stack->store+stack->max_size-sp&&
+                               sp-(localvar+ca->max_locals)+s->peak<=ca->max_stack&&
+                               jri_fixture_guard(runtime,s,localvar)){
+                                runtime->pc=ca->code+s->end;
+                                __atomic_fetch_add(&jvm->host_render_island_skips,1,__ATOMIC_RELAXED);
+                                __atomic_fetch_add(&jvm->host_render_island_ops,s->steps,__ATOMIC_RELAXED);
+                                continue;
+                            }
+                            __atomic_fetch_add(&jvm->host_render_island_refusals,1,__ATOMIC_RELAXED);
                         }
                     }
 #endif
