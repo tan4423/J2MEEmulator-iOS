@@ -3418,7 +3418,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                 do {
 #if defined(JARBOX_DESKTOP_LAB) && JARBOX_DESKTOP_LAB
                     if(method->is_sync&&ca->code_length==49&&runtime->pc==ca->code&&
-                       desktop_vector_body(runtime,&sp))continue;
+                       desktop_vector_body(runtime,sp)){sp=stack->sp;continue;}
                     if(desktop_glyph&&runtime->pc==ca->code+49){
                         unsigned kind=desktop_glyph;desktop_glyph=0;
                         stack->sp=sp;check_suspend_and_pause(runtime);sp=stack->sp;

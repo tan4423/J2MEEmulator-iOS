@@ -191,9 +191,9 @@ static int desktop_map_leaf(MethodInfo *m,Runtime *r){
  * synchronized super wrapper, never caches a receiver/element, and never
  * synthesizes an exception. Leave the ordinary areturn handler in charge. */
 extern int jarbox_lab_vector_enabled(void);
-static int desktop_vector_body(Runtime *r,StackEntry **top){
+static int desktop_vector_body(Runtime *r,StackEntry *sp){
     MethodInfo *m=r->method;CodeAttribute *ca=m->converted_code;JClass *cl=m->_this_class;
-    StackEntry *l=r->localvar,*sp=*top;RuntimeStack *s=r->stack;
+    StackEntry *l=r->localvar;RuntimeStack *s=r->stack;
     if(!jarbox_lab_vector_enabled()||r->jvm->jdwp_enable||
        r->thrd_info->is_stop||r->thrd_info->suspend_count||m->breakpoint||
        !m->is_sync||m->is_static||m->is_native||m->para_slots!=2||m->return_slots!=1||
@@ -242,7 +242,7 @@ static int desktop_vector_body(Runtime *r,StackEntry **top){
     // reference lanes for the VM's conservative collector.
     sp[0].ivalue=index;sp[0].rvalue=result;
     sp[1].rvalue=v;sp[1].ivalue=index;
-    *top=sp+1;s->sp=*top;
+    s->sp=sp+1;
     r->pc=ca->code+48;
     jarbox_lab_deep_note(16,1);
     return 1;
