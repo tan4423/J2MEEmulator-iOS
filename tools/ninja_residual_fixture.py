@@ -40,7 +40,25 @@ HARNESS = '''import java.io.FileOutputStream;
 public class ResidualMain {
     static int rng=1289;
     static int next(){rng=rng*1664525+1013904223;return rng;}
+    static void check(boolean ok){if(!ok)throw new IllegalStateException("Java integer semantics");}
+    static void arithmetic(int a,int b,long c,long d,int n){
+        check(a+b==Integer.MIN_VALUE);
+        check(a-(-b)==Integer.MIN_VALUE);
+        check((a+b)*(-b)==Integer.MIN_VALUE);
+        int x=a;x++;check(x==Integer.MIN_VALUE);
+        check(-x==Integer.MIN_VALUE);
+        check(x/(-b)==Integer.MIN_VALUE&&x%(-b)==0);
+        check((x>>n)==-1073741824&&(x>>>n)==1073741824&&(b<<n)==2);
+        check(c+d==Long.MIN_VALUE);
+        check(c-(-d)==Long.MIN_VALUE);
+        long y=c+d;check(-y==Long.MIN_VALUE&&y*(-d)==Long.MIN_VALUE);
+        check(y/(-d)==Long.MIN_VALUE&&y%(-d)==0);
+        check((y>>(n+32))==-4611686018427387904L&&(y>>>(n+32))==4611686018427387904L&&(d<<(n+32))==2L);
+        boolean zero=false;try{int z=a/(b-b);check(z==1);}catch(ArithmeticException e){zero=true;}check(zero);
+    }
     public static void main(String[] args)throws Exception{
+        arithmetic(Integer.MAX_VALUE,1,Long.MAX_VALUE,1L,33);
+        arithmetic(Integer.MAX_VALUE,1,Long.MAX_VALUE,1L,-31);
         FileOutputStream out=new FileOutputStream(args[1]+"/residual.txt");
         Class_hvi receiver=new Class_hvi();
         int faults=0,changed=0;

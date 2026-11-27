@@ -5,6 +5,7 @@
 #include "jarbox_int_leaf.h"
 #include "jarbox_decoded_int.h"
 #include "jarbox_array_index.h"
+#include "jarbox_java_integer.h"
 
 // Host differential uses the same interpreter candidate blocks and JIT stubs.
 #if defined(JARBOX_HOST_INTRINSIC_TEST)
@@ -3464,7 +3465,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         case op_iadd: TREO_VM_HANDLER(op_iadd) {
 
                             --sp;
-                            (sp - 1)->ivalue += (sp - 0)->ivalue;
+                            (sp - 1)->ivalue = jarbox_java_iadd((sp - 1)->ivalue, (sp - 0)->ivalue);
 #if _JVM_DEBUG_LOG_LEVEL > 5
                             invoke_deepth(runtime);
                             jvm_printf("iadd:  %d\n", (sp - 1)->ivalue);
@@ -3478,7 +3479,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         case op_ladd: TREO_VM_HANDLER(op_ladd) {
                             --sp;
                             --sp;
-                            (sp - 2)->lvalue += (sp - 0)->lvalue;
+                            (sp - 2)->lvalue = jarbox_java_ladd((sp - 2)->lvalue, (sp - 0)->lvalue);
 
 #if _JVM_DEBUG_LOG_LEVEL > 5
                             invoke_deepth(runtime);
@@ -3521,7 +3522,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
 
                         case op_isub: TREO_VM_HANDLER(op_isub) {
                             --sp;
-                            (sp - 1)->ivalue -= (sp - 0)->ivalue;
+                            (sp - 1)->ivalue = jarbox_java_isub((sp - 1)->ivalue, (sp - 0)->ivalue);
 
 #if _JVM_DEBUG_LOG_LEVEL > 5
                             invoke_deepth(runtime);
@@ -3536,7 +3537,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         case op_lsub: TREO_VM_HANDLER(op_lsub) {
                             --sp;
                             --sp;
-                            (sp - 2)->lvalue -= (sp - 0)->lvalue;
+                            (sp - 2)->lvalue = jarbox_java_lsub((sp - 2)->lvalue, (sp - 0)->lvalue);
 
 #if _JVM_DEBUG_LOG_LEVEL > 5
                             invoke_deepth(runtime);
@@ -3581,7 +3582,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         case op_imul: TREO_VM_HANDLER(op_imul) {
 
                             --sp;
-                            (sp - 1)->ivalue *= (sp - 0)->ivalue;
+                            (sp - 1)->ivalue = jarbox_java_imul((sp - 1)->ivalue, (sp - 0)->ivalue);
 #if _JVM_DEBUG_LOG_LEVEL > 5
                             invoke_deepth(runtime);
                             jvm_printf("imul:  %d\n", (sp - 1)->ivalue);
@@ -3595,7 +3596,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         case op_lmul: TREO_VM_HANDLER(op_lmul) {
                             --sp;
                             --sp;
-                            (sp - 2)->lvalue *= (sp - 0)->lvalue;
+                            (sp - 2)->lvalue = jarbox_java_lmul((sp - 2)->lvalue, (sp - 0)->lvalue);
 
 #if _JVM_DEBUG_LOG_LEVEL > 5
                             invoke_deepth(runtime);
@@ -3644,7 +3645,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                                 goto label_arrithmetic_throw;
                             } else {
                                 --sp;
-                                (sp - 1)->ivalue /= (sp - 0)->ivalue;
+                                (sp - 1)->ivalue = jarbox_java_idiv((sp - 1)->ivalue, (sp - 0)->ivalue);
                                 runtime->pc++;
                             }
 
@@ -3662,7 +3663,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                             } else {
                                 --sp;
                                 --sp;
-                                (sp - 2)->lvalue /= (sp - 0)->lvalue;
+                                (sp - 2)->lvalue = jarbox_java_ldiv((sp - 2)->lvalue, (sp - 0)->lvalue);
                                 runtime->pc++;
                             }
 
@@ -3705,7 +3706,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                                 goto label_arrithmetic_throw;
                             } else {
                                 --sp;
-                                (sp - 1)->ivalue %= (sp - 0)->ivalue;
+                                (sp - 1)->ivalue = jarbox_java_irem((sp - 1)->ivalue, (sp - 0)->ivalue);
 #if _JVM_DEBUG_LOG_LEVEL > 5
                                 invoke_deepth(runtime);
                                 jvm_printf("irem:  %d\n", (sp - 1)->ivalue);
@@ -3722,7 +3723,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                             } else {
                                 --sp;
                                 --sp;
-                                (sp - 2)->lvalue %= (sp - 0)->lvalue;
+                                (sp - 2)->lvalue = jarbox_java_lrem((sp - 2)->lvalue, (sp - 0)->lvalue);
 
 #if _JVM_DEBUG_LOG_LEVEL > 5
                                 invoke_deepth(runtime);
@@ -3776,7 +3777,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                             invoke_deepth(runtime);
                             jvm_printf("ineg:  %d\n", (sp - 1)->ivalue);
 #endif
-                            (sp - 1)->ivalue = -(sp - 1)->ivalue;
+                            (sp - 1)->ivalue = jarbox_java_isub(0, (sp - 1)->ivalue);
                             runtime->pc++;
 
                             break;
@@ -3789,7 +3790,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                             invoke_deepth(runtime);
                             jvm_printf("lneg:  %lld\n", (sp - 2)->lvalue);
 #endif
-                            (sp - 2)->lvalue = -(sp - 2)->lvalue;
+                            (sp - 2)->lvalue = jarbox_java_lsub(0, (sp - 2)->lvalue);
                             runtime->pc++;
 
                             break;
@@ -3829,7 +3830,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                             jvm_printf("ishl: %x << %x  \n", (sp - 2)->ivalue, (sp - 1)->ivalue);
 #endif
                             --sp;
-                            (sp - 1)->ivalue <<= (sp - 0)->ivalue;
+                            (sp - 1)->ivalue = jarbox_java_ishl((sp - 1)->ivalue, (sp - 0)->ivalue);
                             runtime->pc++;
 
                             break;
@@ -3843,7 +3844,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                             jvm_printf("lshl: %llx << %x  \n", (sp - 3)->lvalue, (sp - 1)->ivalue);
 #endif
                             --sp;
-                            (sp - 2)->lvalue <<= (sp - 0)->ivalue;
+                            (sp - 2)->lvalue = jarbox_java_lshl((sp - 2)->lvalue, (sp - 0)->ivalue);
                             runtime->pc++;
 
                             break;
@@ -3857,7 +3858,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                             jvm_printf("ishr: %x >> %x  \n", (sp - 2)->ivalue, (sp - 1)->ivalue);
 #endif
                             --sp;
-                            (sp - 1)->ivalue >>= (sp - 0)->ivalue;
+                            (sp - 1)->ivalue = jarbox_java_ishr((sp - 1)->ivalue, (sp - 0)->ivalue);
                             runtime->pc++;
 
                             break;
@@ -3871,7 +3872,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                             jvm_printf("lshr: %llx >> %x  \n", (sp - 3)->lvalue, (sp - 1)->ivalue);
 #endif
                             --sp;
-                            (sp - 2)->lvalue >>= (sp - 0)->ivalue;
+                            (sp - 2)->lvalue = jarbox_java_lshr((sp - 2)->lvalue, (sp - 0)->ivalue);
                             runtime->pc++;
 
                             break;
@@ -3885,7 +3886,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                             jvm_printf("iushr: %x >>> %x  \n", (sp - 2)->uivalue, (sp - 1)->ivalue);
 #endif
                             --sp;
-                            (sp - 1)->uivalue >>= (sp - 0)->ivalue;
+                            (sp - 1)->uivalue >>= ((u32)(sp - 0)->ivalue & 31u);
                             runtime->pc++;
 
                             break;
@@ -3899,7 +3900,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                             jvm_printf("lushr: %llx >>> %x   \n", (sp - 3)->ulvalue, (sp - 1)->ivalue);
 #endif
                             --sp;
-                            (sp - 2)->ulvalue >>= (sp - 0)->ivalue;
+                            (sp - 2)->ulvalue >>= ((u32)(sp - 0)->ivalue & 63u);
                             runtime->pc++;
 
                             break;
@@ -3994,7 +3995,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
 
 
                         case op_iinc: TREO_VM_HANDLER(op_iinc) {
-                            localvar[(u8) runtime->pc[1]].ivalue += (s8) runtime->pc[2];
+                            localvar[(u8) runtime->pc[1]].ivalue = jarbox_java_iadd(localvar[(u8) runtime->pc[1]].ivalue, (s8) runtime->pc[2]);
                             runtime->pc += 3;
 #if _JVM_DEBUG_LOG_LEVEL > 5
                             invoke_deepth(runtime);
@@ -5491,7 +5492,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                                 }
                                 case op_iinc    : {
 
-                                    localvar[*((u16 *) (runtime->pc + 1))].ivalue += *((s16 *) (runtime->pc + 3));
+                                    localvar[*((u16 *) (runtime->pc + 1))].ivalue = jarbox_java_iadd(localvar[*((u16 *) (runtime->pc + 1))].ivalue, *((s16 *) (runtime->pc + 3)));
 #if _JVM_DEBUG_LOG_LEVEL > 5
                                     invoke_deepth(runtime);
                                     jvm_printf("wide iinc: localvar(%d) = %d , inc %d\n", *((u16 *) (runtime->pc + 1)), runtime->localvar[*((u16 *) (runtime->pc + 1))].ivalue, *((u16 *) (runtime->pc + 3)));
