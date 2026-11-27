@@ -91,7 +91,9 @@ public class ResidualMain {
 }'''
 
 
-def build(root, archive=None, bootclasspath=None, draw_effects=False, resume=False, resolved_reads=False):
+def build(root, archive=None, bootclasspath=None, draw_effects=False, resume=False, resolved_reads=False, skip_draws=False):
+    if skip_draws and (archive is not None or not draw_effects or not resume or resolved_reads):
+        raise ValueError('closed-sink fixture is synthetic, with resume and conservative reads')
     if resolved_reads and (archive is not None or not draw_effects or resume):
         raise ValueError('resolved-read CI fixture is synthetic, with draw effects and no resume')
     if resume and not draw_effects:raise ValueError('resume requires draw effects')
@@ -102,10 +104,13 @@ def build(root, archive=None, bootclasspath=None, draw_effects=False, resume=Fal
     pkg=src/'javax/microedition/lcdui';pkg.mkdir(parents=True)
     # Test double, deliberately not the real LCDUI Image. Never packaged.
     (pkg/'Image.java').write_text(wrapped.IMAGE if draw_effects else 'package javax.microedition.lcdui; public class Image {}')
-    if draw_effects: (pkg/'Graphics.java').write_text(wrapped.graphics_source(resume))
+    if draw_effects: (pkg/'Graphics.java').write_text(wrapped.graphics_source(resume,skip_draws))
     if archive is None:
         synthetic=SYNTHETIC
         external=EXTERNAL
+        if skip_draws:
+            # A retained logic call closes the sink between draw regions.
+            synthetic=synthetic.replace('public static int m3(int x,int y){return', 'public static int m3(int x,int y){if(--javax.microedition.lcdui.Graphics.remaining<=0)javax.microedition.lcdui.Graphics.scope=false;return')
         if resolved_reads:
             # A not-yet-resolved CP read whose result is draw-only, and a
             # volatile read in an otherwise dead argument computation.
@@ -139,7 +144,7 @@ def build(root, archive=None, bootclasspath=None, draw_effects=False, resume=Fal
     code,locals_count,pc_map=emit_bytecode(ins,entry,plan)
     reduced=replace_fixture_code(data,code,locals_count,max_stack=10 if draw_effects else 2)
     (original/'Class_hii.class').write_bytes(data)
-    harness=wrapped.harness(HARNESS,fields,resume) if draw_effects else HARNESS
+    harness=wrapped.harness(HARNESS,fields,resume,skip_draws) if draw_effects else HARNESS
     if resolved_reads:
         harness=harness.replace('        int faults=0,changed=0;', '''        // Natural resolution, one complete ordinary k1 invocation. r3=9
         // stays cold. Do not initialize game classes early in a live VM.
@@ -161,6 +166,6 @@ def build(root, archive=None, bootclasspath=None, draw_effects=False, resume=Fal
 
 
 def main():
-    p=argparse.ArgumentParser(description=__doc__);p.add_argument('root',type=Path);p.add_argument('--archive',type=Path);p.add_argument('--bootclasspath',type=Path);p.add_argument('--draw-effects',action='store_true');p.add_argument('--resume',action='store_true');p.add_argument('--resolved-reads',action='store_true');a=p.parse_args()
-    build(a.root,a.archive,a.bootclasspath,a.draw_effects,a.resume,a.resolved_reads)
+    p=argparse.ArgumentParser(description=__doc__);p.add_argument('root',type=Path);p.add_argument('--archive',type=Path);p.add_argument('--bootclasspath',type=Path);p.add_argument('--draw-effects',action='store_true');p.add_argument('--resume',action='store_true');p.add_argument('--resolved-reads',action='store_true');p.add_argument('--skip-draws',action='store_true');a=p.parse_args()
+    build(a.root,a.archive,a.bootclasspath,a.draw_effects,a.resume,a.resolved_reads,a.skip_draws)
 if __name__=='__main__':main()

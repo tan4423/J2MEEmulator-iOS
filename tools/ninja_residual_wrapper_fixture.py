@@ -53,7 +53,9 @@ def copy_wrapper(data):
     return head+fields+methods+b'\0\0'
 
 
-def graphics_source(resume):
+def graphics_source(resume,skip_draws=False):
+    if skip_draws:
+        return graphics_source(True).replace('public static int calls,limit,count;', 'public static int calls,limit,count,remaining; public static boolean scope;').replace('        if(calls>=order.length)', '        if(scope)return;\n        if(calls>=order.length)').replace('if(calls>limit){','if(true){')
     if not resume:return GRAPHICS
     # Model a scope ending BETWEEN draw calls. Before the limit the sink
     # ignores coordinates; after it, every original integer is observable.
@@ -67,7 +69,7 @@ def graphics_source(resume):
         }''')
 
 
-def harness(base, fields, resume=False):
+def harness(base, fields, resume=False, skip_draws=False):
     # Preserve original receiver and source-image identity. Exercise null
     # wrapper and null graphics target; the controlled sink ignores int args.
     base=base.replace('Class_hvi receiver=new Class_hvi();','javax.microedition.lcdui.Graphics target=new javax.microedition.lcdui.Graphics();')
@@ -91,4 +93,8 @@ def harness(base, fields, resume=False):
             }
             trace.append((char)10);
             out.write(trace.toString().getBytes());''')
+    if skip_draws:
+        base=base.replace('javax.microedition.lcdui.Graphics.limit=n%4;', '''javax.microedition.lcdui.Graphics.limit=n%4;
+            javax.microedition.lcdui.Graphics.remaining=n%4;
+            javax.microedition.lcdui.Graphics.scope=n%4!=0;''')
     return base

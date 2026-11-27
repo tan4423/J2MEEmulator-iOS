@@ -8,6 +8,7 @@ case "$SUITE" in
   residual|residual_draw) EXTRA="-DJARBOX_HOST_RESIDUAL_TEST=1"; SCENARIOS="residual_diff residual_native_diff";;
   residual_resume) EXTRA="-DJARBOX_HOST_RESIDUAL_TEST=1"; SCENARIOS="residual_resume_diff";;
   residual_read) EXTRA="-DJARBOX_HOST_RESIDUAL_TEST=1"; SCENARIOS="residual_native_diff";;
+  residual_closed) EXTRA="-DJARBOX_HOST_RESIDUAL_TEST=1"; SCENARIOS="residual_closed_diff";;
   binding) EXTRA="-DJARBOX_HOST_BINDING_TEST=1"; SCENARIOS="binding_diff";;
   intrinsics|benchmark)
     EXTRA="-DJARBOX_HOST_INTRINSIC_TEST=1 -DTREO_VM_CHAR_LEAF_EXPERIMENT=1 -DTREO_VM_ARRAY_LOOKUP_MODE1_EXPERIMENT=1"
@@ -28,12 +29,13 @@ INC="-I$CORE/jvm -I$CORE/utils -I$CORE/utils/https -I$CORE/utils/https/mbedtls/i
 SRCS="$(ls $CORE/jvm/*.c | grep -v '/jit.c') $(ls $CORE/utils/*.c) $CORE/utils/https/mbedtls/library/net_sockets.c $CORE/utils/https/mbedtls/library/platform.c $HERE/stubs.c $HERE/smoke.c"
 RT=$ROOT/J2MEEmulator/Resources/jars/minijvm_rt.jar; API=$ROOT/J2MEEmulator/Resources/jars/j2me_api.jar
 APP="$OUT/app"
-if [[ "$SUITE" == residual || "$SUITE" == residual_draw || "$SUITE" == residual_resume || "$SUITE" == residual_read ]]; then
+if [[ "$SUITE" == residual || "$SUITE" == residual_draw || "$SUITE" == residual_resume || "$SUITE" == residual_read || "$SUITE" == residual_closed ]]; then
   ARGS=(); DRAW=()
   if [[ -n "${JARBOX_RESIDUAL_ARCHIVE:-}" ]]; then ARGS=(--archive "$JARBOX_RESIDUAL_ARCHIVE"); fi
   if [[ "$SUITE" == residual_draw ]]; then DRAW=(--draw-effects); fi
   if [[ "$SUITE" == residual_resume ]]; then DRAW=(--draw-effects --resume); fi
   if [[ "$SUITE" == residual_read ]]; then DRAW=(--draw-effects --resolved-reads); fi
+  if [[ "$SUITE" == residual_closed ]]; then DRAW=(--draw-effects --resume --skip-draws); fi
   python3 "$ROOT/tools/ninja_residual_fixture.py" "$OUT/fixtures" --bootclasspath "$RT" "${ARGS[@]}" "${DRAW[@]}"
   APP="$OUT/fixtures/original"
   python3 "$ROOT/tools/ninja_residual_native.py" "$APP" "$OUT/jarbox_host_residual_fixture.h" "${DRAW[@]}"
@@ -63,8 +65,8 @@ pass=0; fail=0
 for sc in $SCENARIOS; do for i in $(seq 1 $ITER); do
   if timeout "$LIMIT" "$OUT/smoke" "$RT" "$API" "$APP" "$sc" >"$OUT/$sc.$i.log" 2>&1; then
     pass=$((pass+1))
-    if [[ "$SUITE" == residual || "$SUITE" == residual_draw || "$SUITE" == residual_resume || "$SUITE" == residual_read ]]; then
-      grep -E "^residual_((native|resume)_)?diff: PASS|^residual native (calls|compiles|deopts):" "$OUT/$sc.$i.log"
+    if [[ "$SUITE" == residual || "$SUITE" == residual_draw || "$SUITE" == residual_resume || "$SUITE" == residual_read || "$SUITE" == residual_closed ]]; then
+      grep -E "^residual_((native|resume|closed)_)?diff: PASS|^residual native (calls|compiles|deopts|skipped):" "$OUT/$sc.$i.log"
     elif [[ "$SUITE" == binding ]]; then
       grep -E "^binding (A|B):|^binding_diff: PASS" "$OUT/$sc.$i.log"
     elif [[ "$SUITE" == intrinsics ]]; then

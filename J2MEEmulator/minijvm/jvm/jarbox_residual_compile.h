@@ -66,13 +66,37 @@ static inline unsigned jbr_chase(const JbrCompileNode *n,unsigned count,unsigned
     }
     return JBR_END; // reject an unproved empty cycle, never erase nontermination
 }
+// Every removed draw must be in a closed, single-entry linear argument
+// region. No helper calls, external writes, or branches are allowed between
+// checkpoint and the draw. Array/arithmetic faults remain original effects.
+// This proves control shape only, NOT absence of class-init or sink effects.
+static inline int jbr_closed_draw_regions(const JbrCompileNode *n,unsigned count) {
+    uint16_t incoming[JBR_MAX_NODES]={0};
+    if(!count||count>JBR_MAX_NODES)return 0;
+    for(unsigned i=0;i<count;i++){
+        unsigned a=n[i].op.next,b=n[i].op.alt;
+        if(a!=JBR_END){if(a>=count)return 0;++incoming[a];}
+        if(b!=JBR_END){if(b>=count)return 0;++incoming[b];}
+    }
+    unsigned active=0,draws=0;
+    for(unsigned i=0;i<count;i++){
+        unsigned raw=n[i].raw;
+        if(raw==0x2a){if(active)return 0;active=1;continue;}
+        if(!active){if(raw==0xb6)return 0;continue;}
+        if(!i||incoming[i]!=1||n[i-1].op.next!=i||n[i-1].op.alt!=JBR_END)return 0;
+        if(raw==0xb6){active=0;++draws;continue;}
+        if(raw==0xb8||raw==0xb3||raw==0xb1||raw==0xa7||
+           raw==0x9f||raw==0xa0||raw==0xa2)return 0;
+    }
+    return !active&&draws>0;
+}
 // Return emitted count, zero on any unsupported/malformed input/OOM. No
 // partial plan is published. All call/array/division and static reads/writes
 // remain roots. draw_effects=1 retains receiver/source and original call;
 // the dummy primitive args are valid solely for the trusted sink fixture.
 static inline unsigned jbr_compile(const unsigned char *code,unsigned size,
     JarBoxResidualCPKind cp,void *ctx,int draw_effects,JarBoxResidualOp *out,unsigned capacity) {
-    if(!code||!cp||!out||!size||size>JBR_MAX_CODE||!capacity||draw_effects<0||draw_effects>2)return 0;
+    if(!code||!cp||!out||!size||size>JBR_MAX_CODE||!capacity||draw_effects<0||draw_effects>3)return 0;
     JbrCompileScratch *sc=calloc(1,sizeof(*sc));if(!sc)return 0;
     JbrCompileNode *n=sc->nodes;unsigned count=0,result=0;
     memset(sc->at,0xff,sizeof(sc->at));memset(sc->remap,0xff,sizeof(sc->remap));
@@ -93,6 +117,7 @@ static inline unsigned jbr_compile(const unsigned char *code,unsigned size,
         if(raw!=0xb1&&o->next==JBR_END)goto done;
         if((raw==0x9f||raw==0xa0||raw==0xa2)&&o->alt==JBR_END)goto done;
     }
+    if(draw_effects==3&&!jbr_closed_draw_regions(n,count))goto done;
     n[0].seen=1;n[0].initialized=1;
     // Types and definite initialization converge monotonically at CFG merges.
     for(unsigned pass=0;;pass++) {
@@ -110,7 +135,7 @@ static inline unsigned jbr_compile(const unsigned char *code,unsigned size,
                 // Resume is allowed only before the first operand of a draw
                 // block, with the ordinary locals definitely initialized.
                 // This narrow contract rejects unsupported stack shapes.
-                if(draw_effects==2){
+                if(draw_effects>=2){
                     if(t.depth || (t.initialized&14u)!=14u)goto done;
                     o->checkpoint=1;
                 }
@@ -129,7 +154,7 @@ static inline unsigned jbr_compile(const unsigned char *code,unsigned size,
                 else if(raw==0xb8){if(typ!=JBR_CP_INT2)goto done;b=jbr_pop(&t,0);a=jbr_pop(&t,0);d=jbr_push(&t,0);}
                 else {if(typ!=JBR_CP_DRAW)goto done;for(unsigned j=0;j<8;j++)if(jbr_pop(&t,0)<0)goto done;
                     b=jbr_pop(&t,1);a=jbr_pop(&t,1);if(a<0||b<0)goto done;
-                    if(!draw_effects){kind=JBR_NOP;a=b=JBR_NONE;imm=len=0;}}
+                    if(!draw_effects||draw_effects==3){kind=JBR_NOP;a=b=JBR_NONE;imm=len=0;}}
             }
             else if(raw==0xa7)kind=JBR_NOP;
             else if(raw==0xb1){if(t.depth)goto done;kind=JBR_EFFECT;imm=raw;len=1;}

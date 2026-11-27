@@ -41,7 +41,7 @@ def slot(v):
     return (16 if v[0]=='r' else 4)+int(v[1:])
 
 
-def emit(ins,entry,plan,resume=False,resolved_reads=False):
+def emit(ins,entry,plan,resume=False,resolved_reads=False,skip_draws=False):
     """One node per retained IR operation. Effects delegate at original PC."""
     table={p:(o,a) for p,o,a in ins}
     order=[entry]+sorted(set(plan)-{entry});index={p:i for i,p in enumerate(order)}
@@ -77,14 +77,16 @@ def emit(ins,entry,plan,resume=False,resolved_reads=False):
             f'static const int jbr_draw_effects = {int(any(o.effect and table[p][0]=="invokevirtual" for p,o in plan.items()))};\n'+
             f'static const int jbr_resume = {int(resume)};\n'+
             f'static const int jbr_resolved_reads = {int(resolved_reads)};\n'+
+            f'static const int jbr_skip_draws = {int(skip_draws)};\n'+
             'static const unsigned char jbr_expected_code[] = {\n'+
             '\n'.join('    '+','.join(str(x) for x in code[i:i+24])+',' for i in range(0,len(code),24))+
             '\n};\nstatic const JarBoxResidualOp jbr_plan[] = {\n'+'\n'.join(rows)+'\n};\n')
 
 
 def main():
-    p=argparse.ArgumentParser(description=__doc__);p.add_argument('original',type=Path);p.add_argument('header',type=Path);p.add_argument('--draw-effects',action='store_true');p.add_argument('--resume',action='store_true');p.add_argument('--resolved-reads',action='store_true');a=p.parse_args()
+    p=argparse.ArgumentParser(description=__doc__);p.add_argument('original',type=Path);p.add_argument('header',type=Path);p.add_argument('--draw-effects',action='store_true');p.add_argument('--resume',action='store_true');p.add_argument('--resolved-reads',action='store_true');p.add_argument('--skip-draws',action='store_true');a=p.parse_args()
     if a.resume and not a.draw_effects:raise ValueError('resume requires draw effects')
+    if a.skip_draws and (not a.resume or a.resolved_reads):raise ValueError('closed sink requires resume, conservative reads')
     ins=ir.disassemble(a.original);ops,fields,_=ir.lower(ins,draw_effects=a.draw_effects)
     if a.resolved_reads:
         if not a.draw_effects:raise ValueError('resolved reads require draw effects')
@@ -92,18 +94,23 @@ def main():
         # Independent expectation; the C compiler must prove the actual metadata.
         plain={f for f in fields if f[1] in ('I','B') and f[0] not in ('Class_hac.b20','Class_hxb.s5')}
         ops,_,_=ir.lower(ins,draw_effects=True,plain_reads=plain)
+    if a.skip_draws:ops,_,_=ir.lower(ins,draw_effects=False)
     checkpoints={pc for pc,op,_ in ins if op=='aload_0'} if a.resume else set()
     # Test oracle: every admitted draw block starts with aload_0 on an
     # empty stack and all three original int locals are initialized.
     # C independently verifies this before compiling any checkpoint.
-    for pc in checkpoints:ops[pc].uses.update(('l1','l2','l3'))
+    for pc in checkpoints:
+        ops[pc].uses.update(('l1','l2','l3'))
+        if a.skip_draws:ops[pc].effect=True # mandatory guard even when receiver dies
     entry,plan=ir.reduce(ops)
     if not checkpoints<=set(plan):raise ValueError('lost resume checkpoint')
-    for pc in checkpoints:plan[pc].uses.difference_update(('l1','l2','l3'))
+    for pc in checkpoints:
+        plan[pc].uses.difference_update(('l1','l2','l3'))
+        if a.skip_draws:plan[pc].effect=False # emit checkpoint MOVE, not call
     if a.resolved_reads:
         removed={pc for pc,op,arg in ins if op=='getstatic' and pc not in plan}
         retained={pc for pc,op,arg in ins if op=='getstatic' and ('Class_hac.b20:' in arg or 'Class_hxb.s5:' in arg)}
         if not removed or not retained or not retained<=set(plan):raise ValueError('vacuous read policy')
         print('resolved-read fixture: removed',len(removed),'read sites; mandatory',len(retained))
-    a.header.write_text(emit(ins,entry,plan,a.resume,a.resolved_reads));print('native residual plan:',len(plan),'nodes; checkpoints:',len(checkpoints))
+    a.header.write_text(emit(ins,entry,plan,a.resume,a.resolved_reads,a.skip_draws));print('native residual plan:',len(plan),'nodes; checkpoints:',len(checkpoints))
 if __name__=='__main__':main()

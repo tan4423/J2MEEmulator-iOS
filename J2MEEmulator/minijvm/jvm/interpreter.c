@@ -19,8 +19,23 @@
 #endif
 #include <stdlib.h>
 #include "jarbox_residual_compile.h"
+#include "jarbox_residual_binding.h"
 #include "jarbox_host_residual_fixture.h"
 #define JBR_COUNT (sizeof(jbr_plan)/sizeof(jbr_plan[0]))
+// Controlled closed sink fixture ONLY. Actual game admission also needs
+// original archive/API identities and immutable binding for each region.
+static int jbr_fixture_scope(Instance *wrapper) {
+    if(!wrapper||!jbr_bname(wrapper->mb.clazz,"Class_hvi")||
+       !jbr_bobject(wrapper,wrapper->mb.clazz))return -1;
+    const void *p=jbr_bfield(wrapper->mb.clazz,wrapper,"a",
+        "Ljavax/microedition/lcdui/Graphics;",sizeof(Instance *),1,0);
+    Instance *g=NULL;
+    if(p)memcpy(&g,p,sizeof(g));
+    if(!g||!jbr_bname(g->mb.clazz,"javax/microedition/lcdui/Graphics")||
+       !jbr_bobject(g,g->mb.clazz))return -1;
+    const unsigned char *scope=jbr_bfield(g->mb.clazz,NULL,"scope","Z",1,0,1);
+    return scope?(*scope!=0):-1;
+}
 static int jbr_fixture_admit(Runtime *r,MethodInfo *m,CodeAttribute *ca) {
     RuntimeStack *s=r->stack;
     const uint16_t endian=1;
@@ -38,7 +53,8 @@ static int jbr_fixture_admit(Runtime *r,MethodInfo *m,CodeAttribute *ca) {
         ca->jit.state!=JIT_GEN_SUCCESS &&
         stack_size(s)>=1 && stack_size(s)<=s->max_size &&
         JBR_SLOTS-1+ca->max_stack+2<=s->max_size-stack_size(s) &&
-        (jbr_draw_effects || (s->sp-1)->rvalue) &&
+        (jbr_skip_draws?jbr_fixture_scope((s->sp-1)->rvalue)>=0:
+            (jbr_draw_effects || (s->sp-1)->rvalue)) &&
         !memcmp(ca->bytecode_for_jit,jbr_expected_code,sizeof(jbr_expected_code)) &&
         jbr_validate(jbr_plan,JBR_COUNT,jbr_expected_code,sizeof(jbr_expected_code));
 }
@@ -110,7 +126,7 @@ static const JarBoxResidualOp *jbr_fixture_compile(Runtime *r,MethodInfo *m,Code
         JarBoxResidualOp *candidate=calloc(JBR_COUNT,sizeof(*candidate));
         if(candidate) {
             unsigned count=jbr_compile(ca->bytecode_for_jit,ca->code_length,
-                jbr_fixture_cp,m->_this_class,jbr_draw_effects+jbr_resume,candidate,JBR_COUNT);
+                jbr_fixture_cp,m->_this_class,jbr_skip_draws?3:jbr_draw_effects+jbr_resume,candidate,JBR_COUNT);
             int valid=count==JBR_COUNT&&jbr_validate(candidate,count,ca->bytecode_for_jit,ca->code_length);
             for(unsigned i=0;valid&&i<count;i++)valid=jbr_same_op(candidate+i,jbr_plan+i);
             if(valid) {
@@ -2505,7 +2521,8 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                                     ret=RUNTIME_STATUS_ERROR;
                                     goto label_exit_while;
                                 }
-                                if(jbr_resume && o->checkpoint && jbr_draws>=jbr_limit) {
+                                if(jbr_resume && o->checkpoint &&
+                                   (jbr_skip_draws?jbr_fixture_scope(localvar[0].rvalue)!=1:jbr_draws>=jbr_limit)) {
                                     // Resume exactly at the original empty-stack
                                     // aload_0 PC, BEFORE any effect of this draw.
                                     // The compiler retains all original locals
@@ -2520,6 +2537,8 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                                     __atomic_fetch_add(&jvm->session->treo_state.host_residual_deopts,1,__ATOMIC_RELAXED);
                                     break;
                                 }
+                                if(jbr_skip_draws && o->checkpoint)
+                                    __atomic_fetch_add(&jvm->session->treo_state.host_residual_skipped,1,__ATOMIC_RELAXED);
                                 if(o->kind==JBR_EFFECT) {
                                     if(o->a!=JBR_NONE) {
                                         jbr_copy_slot(sp,localvar+o->a,o->a);

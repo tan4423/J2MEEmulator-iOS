@@ -45,6 +45,8 @@ jobs:
         run: bash tools/host_multivm_smoke/run.sh asan 1 residual_resume
       - name: Eliminate dead linked primitive reads but preserve volatile and cold reads
         run: bash tools/host_multivm_smoke/run.sh asan 1 residual_read
+      - name: Remove entire closed screen draw regions with original-PC fallback
+        run: bash tools/host_multivm_smoke/run.sh asan 1 residual_closed
       - name: Four-way matched-mode host CPU benchmark
         run: |
           python3 -m unittest discover -s tools/tests -p test_host_intrinsic_benchmark.py
