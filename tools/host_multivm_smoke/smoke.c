@@ -17,7 +17,7 @@ typedef struct { const char *rt, *api, *app, *tag, *mode; char save[512]; int po
     int stop_requested, rc;
     uint64_t char_calls, array_calls, gc_cycles;
 #if defined(JARBOX_HOST_GLYPH_LOOP_TEST)
-    uint64_t glyph_loops,glyph_chars,glyph_shadow,glyph_mismatch;
+    uint64_t glyph_loops,glyph_chars,glyph_shadow,glyph_mismatch,glyph_gc_crossings,glyph_gc_cleared;
 #endif
 #if defined(JARBOX_HOST_RENDER_ISLAND_TEST)
     uint64_t islands, island_ops, island_refusals, wrapper_skips;
@@ -124,6 +124,8 @@ static void *job_main(void *p) {
     j->glyph_chars=__atomic_load_n(&vm->host_glyph_chars,__ATOMIC_RELAXED);
     j->glyph_shadow=__atomic_load_n(&vm->host_glyph_shadow,__ATOMIC_RELAXED);
     j->glyph_mismatch=__atomic_load_n(&vm->host_glyph_mismatch,__ATOMIC_RELAXED);
+    j->glyph_gc_crossings=__atomic_load_n(&vm->host_glyph_gc_crossings,__ATOMIC_RELAXED);
+    j->glyph_gc_cleared=__atomic_load_n(&vm->host_glyph_gc_cleared,__ATOMIC_RELAXED);
 #endif
 #if defined(JARBOX_HOST_RENDER_ISLAND_TEST)
     j->islands=__atomic_load_n(&vm->host_render_island_skips,__ATOMIC_RELAXED);
@@ -400,11 +402,14 @@ int main(int argc, char **argv) {
         init_job(&b,argv,"B","intrinsic-glyph-on",bport+1,base);
         start_job(&a);start_job(&b);join_job(&a);join_job(&b);
         REQUIRE(!a.rc&&!b.rc&&glyph_ok(&a)&&glyph_ok(&b));
-        printf("glyph A shadow=%llu mismatch=%llu B loops=%llu chars=%llu\n",
+        printf("glyph A shadow=%llu mismatch=%llu gc_crossings=%llu cleared_lanes=%llu B loops=%llu chars=%llu\n",
             (unsigned long long)a.glyph_shadow,(unsigned long long)a.glyph_mismatch,
+            (unsigned long long)a.glyph_gc_crossings,(unsigned long long)a.glyph_gc_cleared,
             (unsigned long long)b.glyph_loops,(unsigned long long)b.glyph_chars);
         REQUIRE(!a.glyph_loops&&!a.glyph_chars&&!a.glyph_mismatch&&!b.glyph_mismatch);
         REQUIRE(a.glyph_shadow>=3900&&a.glyph_shadow<=4000);
+        REQUIRE(a.glyph_gc_crossings<=a.glyph_shadow&&a.glyph_shadow-a.glyph_gc_crossings>=3800);
+        REQUIRE(a.glyph_gc_cleared<=22*a.glyph_gc_crossings);
         REQUIRE(b.glyph_loops>=3900&&b.glyph_loops<=4000&&b.glyph_chars==5*b.glyph_loops);
         REQUIRE(a.gc_cycles>0&&b.gc_cycles>0);
     } else

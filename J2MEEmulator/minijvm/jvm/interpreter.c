@@ -69,7 +69,7 @@ static Instance *jbg_fixture_guard(Runtime *r,unsigned kind,JbgProof *proof){
     jbg_host_note(r,9);
     return g;
 }
-typedef struct {unsigned end;StackEntry slots[22];} JbgShadow;
+typedef struct {unsigned end;uint64_t gc_epoch;StackEntry slots[22];} JbgShadow;
 #endif
 
 
@@ -3446,9 +3446,24 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
 #if defined(JARBOX_HOST_GLYPH_LOOP_TEST)
                     if(glyph_shadow.end&&runtime->pc==ca->code+glyph_shadow.end){
                         unsigned mismatch=sp!=localvar+ca->max_locals;
-                        if(!mismatch)for(unsigned k=0;k<22;++k)
-                            if(sp[k].rvalue!=glyph_shadow.slots[k].rvalue){mismatch=1;break;}
+                        unsigned crossed=glyph_shadow.gc_epoch!=
+                            __atomic_load_n(&stack->glyph_gc_clear_epoch,__ATOMIC_ACQUIRE);
+                        unsigned cleared=0;
+                        if(!mismatch)for(unsigned k=0;k<22;++k){
+                            if(sp[k].rvalue==glyph_shadow.slots[k].rvalue)continue;
+                            // GC may clear unused scratch while original code
+                            // runs. Only a measured STW clear and actual NULL
+                            // can explain a missing stale reference. Unexpected
+                            // non-null references always fail, even across GC.
+                            if(crossed&&!sp[k].rvalue){++cleared;continue;}
+                            mismatch=1;
+                            jvm_printf("glyph shadow mismatch kind_end=%u slot=%u crossed=%u actual_null=%d expected_null=%d\n",
+                                glyph_shadow.end,k,crossed,!sp[k].rvalue,!glyph_shadow.slots[k].rvalue);
+                            break;
+                        }
                         __atomic_fetch_add(&jvm->host_glyph_shadow,1,__ATOMIC_RELAXED);
+                        if(crossed)__atomic_fetch_add(&jvm->host_glyph_gc_crossings,1,__ATOMIC_RELAXED);
+                        if(cleared)__atomic_fetch_add(&jvm->host_glyph_gc_cleared,cleared,__ATOMIC_RELAXED);
                         if(mismatch)__atomic_fetch_add(&jvm->host_glyph_mismatch,1,__ATOMIC_RELAXED);
                         glyph_shadow.end=0;
                     }
@@ -3477,6 +3492,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                                 // reference lanes, including untouched scratch.
                                 memcpy(glyph_shadow.slots,sp,sizeof glyph_shadow.slots);
                                 jbg_replay(glyph_shadow.slots,proof.wrapper,proof.font,proof.row,g,proof.image);
+                                glyph_shadow.gc_epoch=__atomic_load_n(&stack->glyph_gc_clear_epoch,__ATOMIC_ACQUIRE);
                                 glyph_shadow.end=kind==1?153:253;
                             }
 #else

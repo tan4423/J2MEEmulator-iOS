@@ -1285,6 +1285,11 @@ s32 _gc_copy_objs_from_thread(Runtime *pruntime) {
     //reset free stack space
     stack->gc_clean = stack->sp;
     memset(stack->sp, 0, sizeof(StackEntry) * (stack->max_size - stack_size(stack)));
+#if defined(JARBOX_HOST_GLYPH_LOOP_TEST)
+    // Record the actual STW scratch clear, not the asynchronously
+    // published end-of-cycle metric. Host differential only.
+    __atomic_fetch_add(&stack->glyph_gc_clear_epoch,1,__ATOMIC_RELEASE);
+#endif
 
     s32 i, imax;
     StackEntry *entry;

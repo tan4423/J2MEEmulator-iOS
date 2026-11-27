@@ -1444,6 +1444,9 @@ struct _StackFrame {
     StackEntry *store;
     StackEntry *sp;
     StackEntry *gc_clean;
+#if defined(JARBOX_HOST_GLYPH_LOOP_TEST)
+    uint64_t glyph_gc_clear_epoch;
+#endif
     s32 max_size;
 };
 
@@ -2040,6 +2043,7 @@ struct _MiniJVM {
     int host_glyph_enabled;
     uint32_t host_glyph_refusal_mask;
     uint64_t host_glyph_loops,host_glyph_chars,host_glyph_shadow,host_glyph_mismatch;
+    uint64_t host_glyph_gc_crossings,host_glyph_gc_cleared;
 #endif
     ArrayList *shutdown_hook;//shutdown hook ,it contains thread instance
 
