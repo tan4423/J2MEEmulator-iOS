@@ -89,3 +89,25 @@ desktop GC telemetry was found to be zero despite actual collector logs
 because iOS-only counters were not active. The lab now records real
 collector attempts, aborts, thread CPU and published heap samples under a
 desktop-only flag; CI requires positive values. No GC policy is changed.
+
+
+## JarBox PC settings
+
+Use the Settings button in the launcher to persist:
+- Default JAR path (no account credentials are stored).
+- Game viewport width and height (64–2048; Nick baseline 240x320).
+- Default trace mode: graph/effects or plain CPU baseline.
+- Research data/RMS root (private local directory).
+- Live metrics refresh interval (500/1000/2000/5000 ms).
+
+Settings are stored in the user's config directory with owner-only permissions
+and atomically replaced. Session data lives under the selected research root.
+The dialog refuses to change that root while a game is running. The existing
+main-window resolution and trace controls remain quick overrides; the current
+values are persisted when a session starts.
+
+The game-facing iOS compatibility profile, 128 MiB VM heap, 500 ms collector
+period and 70% heap trigger are deliberately fixed and shown read-only. They
+are not exposed as tuning controls because changing them could alter gameplay
+timing and invalidate comparisons. Credentials and raw login data are never
+written into settings or exported research ZIPs.
