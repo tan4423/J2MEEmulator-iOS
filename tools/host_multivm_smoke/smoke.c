@@ -142,7 +142,7 @@ static int residual_equal(const Job *a,const Job *b) {
             int index=-1,fault=-1;
             if(!fgets(x,sizeof x,f)||!fgets(y,sizeof y,g)||strcmp(x,y)||
                !strchr(x,'\n')||sscanf(x,"%d:%d:",&index,&fault)!=2||index!=n||
-               fault<0||fault>3)break;
+               fault<0||fault>4)break;
         }
         if(n==2000 && fgets(x,sizeof x,f)&&fgets(y,sizeof y,g)&&!strcmp(x,y)&&
            sscanf(x,"PASS 2000 %d %d",&faults,&changed)==2&&
@@ -247,7 +247,7 @@ int main(int argc, char **argv) {
         REQUIRE(!a.rc&&!b.rc&&residual_equal(&a,&b));
     }
 #if defined(JARBOX_HOST_RESIDUAL_TEST)
-    else if (!strcmp(scenario,"residual_native_diff") || !strcmp(scenario,"residual_resume_diff") || !strcmp(scenario,"residual_closed_diff") || !strcmp(scenario,"residual_extended_diff")) {
+    else if (!strcmp(scenario,"residual_native_diff") || !strcmp(scenario,"residual_resume_diff") || !strcmp(scenario,"residual_closed_diff") || !strcmp(scenario,"residual_extended_diff") || !strcmp(scenario,"residual_wide_diff")) {
         // Both VMs load the original fixture, only B admits the native plan.
         init_job(&a,argv,"A","residual",bport,base);
         init_job(&b,argv,"B","residual-native",bport+1,base);
@@ -257,7 +257,7 @@ int main(int argc, char **argv) {
         printf("residual native compiles: A=%llu B=%llu\n",
                (unsigned long long)a.residual_compiles,(unsigned long long)b.residual_compiles);
         printf("residual native deopts: A=%llu B=%llu\n",(unsigned long long)a.residual_deopts,(unsigned long long)b.residual_deopts);
-        const int extended=!strcmp(scenario,"residual_extended_diff");
+        const int extended=!strcmp(scenario,"residual_extended_diff")||!strcmp(scenario,"residual_wide_diff");
         const int closed=extended||!strcmp(scenario,"residual_closed_diff");
         unsigned admitted=2000;
         if(closed){admitted=0;for(unsigned i=0;i<2000;i++)if(i%53&&i%59)++admitted;}

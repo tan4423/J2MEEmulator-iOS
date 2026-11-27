@@ -49,6 +49,8 @@ jobs:
         run: bash tools/host_multivm_smoke/run.sh asan 1 residual_closed
       - name: Mixed reference/integer locals and fifth local across whole-loop continuation
         run: bash tools/host_multivm_smoke/run.sh asan 1 residual_extended
+      - name: Stateful whole-loop residual with retained virtual calls and mixed reference locals
+        run: bash tools/host_multivm_smoke/run.sh asan 1 residual_wide
       - name: Four-way matched-mode host CPU benchmark
         run: |
           python3 -m unittest discover -s tools/tests -p test_host_intrinsic_benchmark.py

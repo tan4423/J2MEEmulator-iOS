@@ -37,6 +37,11 @@ static const int jbr_resolved_reads=1,jbr_resume=1,jbr_skip_draws=1,jbr_draw_eff
 #else
 #define JBR_EXTENDED_FIXTURE 0
 #endif
+#if defined(JARBOX_HOST_RESIDUAL_WIDE_TEST)
+#define JBR_WIDE_FIXTURE 1
+#else
+#define JBR_WIDE_FIXTURE 0
+#endif
 // Controlled closed sink fixture ONLY. Actual game admission also needs
 // original archive/API identities and immutable binding for each region.
 static int jbr_fixture_scope(Instance *wrapper) {
@@ -123,11 +128,53 @@ static int jbr_closed_region_ready(JClass *cl,const CodeAttribute *ca,unsigned p
     }
     return 0;
 }
+#if defined(JARBOX_HOST_RESIDUAL_WIDE_TEST)
+// Controlled fixture descriptors only. No dynamic game admission from a
+// descriptor: the exact generated original code is required by the host gate.
+static int jbr_fixture_desc(const char **p,int allow_void){
+    char c=*(*p)++;if(!c)return -1;
+    if(c=='V')return allow_void?0:-1;
+    if(c=='I'||c=='Z'||c=='B'||c=='C'||c=='S')return 1;
+    int array=0;while(c=='['){array=1;c=*(*p)++;if(!c)return -1;}
+    if(c=='L'){const char *end=strchr(*p,';');if(!end||end==*p)return -1;*p=end+1;return 2;}
+    return array&&strchr("IZBCSJF D",c)&&c!=' '?2:-1;
+}
+static int jbr_fixture_call(unsigned op,const char *p){
+    if(!p||*p++!='(')return 0;
+    unsigned n=op==0xb6?1:0,refs=n;
+    while(*p&&*p!=')'){
+        int t=jbr_fixture_desc(&p,0);if(t<=0||n>=12)return 0;
+        if(t==2)refs|=1u<<n;
+        ++n;
+    }
+    if(*p++!=')'||!*p)return 0;
+    int t=jbr_fixture_desc(&p,1);return t>=0&&!*p?jbr_call_shape(n,refs,t):0;
+}
+#endif
 static int jbr_fixture_cp(void *ctx,unsigned op,unsigned ix) {
     JClass *cl=ctx;
     if(!cl->constant_item_ptr || !ix || ix>=(unsigned)cl->constant_item_count)return JBR_CP_REJECT;
     ConstantItem *item=class_get_constant_item(cl,ix);
     if(!item)return JBR_CP_REJECT;
+#if defined(JARBOX_HOST_RESIDUAL_WIDE_TEST)
+    if((op==0x12||op==0x13)&&item->tag==CONSTANT_INTEGER)return JBR_CP_LITERAL_INT;
+    if(op==0xc0&&item->tag==CONSTANT_CLASS)return JBR_CP_CAST;
+    if((op==0xb2||op==0xb3||op==0xb4)&&item->tag==CONSTANT_FIELD_REF){
+        ConstantFieldRef *f=(ConstantFieldRef *)item;
+        const char *p=utf8_cstr(f->descriptor);int t=jbr_fixture_desc(&p,0);
+        if(*p||t<1||(op==0xb3&&t!=1))return JBR_CP_REJECT;
+        return t==2?JBR_CP_REF:JBR_CP_INT;
+    }
+    if((op==0xb6||op==0xb8)&&item->tag==CONSTANT_METHOD_REF){
+        ConstantMethodRef *m=(ConstantMethodRef *)item;
+        if(op==0xb6&&jbr_eq(m->clsName,"Class_hvi")){
+            if(jbr_eq(m->name,"a")&&jbr_eq(m->descriptor,"(Ljavax/microedition/lcdui/Image;III)V"))return JBR_CP_DRAW_IMAGE;
+            if(jbr_eq(m->name,"a")&&jbr_eq(m->descriptor,"(Ljavax/microedition/lcdui/Image;IIIIIIII)V"))return JBR_CP_DRAW;
+            if((jbr_eq(m->name,"b")||jbr_eq(m->name,"c"))&&jbr_eq(m->descriptor,"(IIII)V"))return JBR_CP_DRAW_RECT;
+        }
+        return jbr_fixture_call(op,utf8_cstr(m->descriptor));
+    }
+#endif
     if((op==0xb2||op==0xb3)&&item->tag==CONSTANT_FIELD_REF) {
         ConstantFieldRef *f=(ConstantFieldRef *)item;
         if(op==0xb3) {
@@ -178,7 +225,7 @@ static const JarBoxResidualOp *jbr_fixture_compile(Runtime *r,MethodInfo *m,Code
         JarBoxResidualOp *candidate=calloc(capacity,sizeof(*candidate));
         if(candidate) {
             unsigned count=jbr_compile(ca->bytecode_for_jit,ca->code_length,
-                jbr_fixture_cp,m->_this_class,JBR_EXTENDED_FIXTURE?4:jbr_skip_draws?3:jbr_draw_effects+jbr_resume,candidate,capacity);
+                jbr_fixture_cp,m->_this_class,JBR_WIDE_FIXTURE?5:JBR_EXTENDED_FIXTURE?4:jbr_skip_draws?3:jbr_draw_effects+jbr_resume,candidate,capacity);
             int valid=count&&(JBR_EXTENDED_FIXTURE||count==JBR_COUNT)&&jbr_validate(candidate,count,ca->bytecode_for_jit,ca->code_length);
             if(!JBR_EXTENDED_FIXTURE)for(unsigned i=0;valid&&i<count;i++)valid=jbr_same_op(candidate+i,jbr_plan+i);
             if(valid) {
@@ -2712,7 +2759,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                                     jbr_copy_slot(localvar+o->dst,base,o->dst);
                                 sp=base;
                                 stack->sp=sp;
-                                if(o->imm==op_invokevirtual)++jbr_draws;
+                                if(jbr_effect_raw(o)==op_invokevirtual)++jbr_draws;
                                 jbr_index=o->next;
                                 jbr_pending=JBR_END;
                             }
@@ -2757,7 +2804,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                                     // at each checkpoint, even draw-only values.
                                     // No previous writes, calls or reads replay.
                                     // Local 4 uses a dedicated int slot, not the operand scratch at slot 4.
-                                    if(ca->max_locals==5)jbr_copy_slot(localvar+4,localvar+JBR_LOCAL4,JBR_LOCAL4);
+                                    if(ca->max_locals==5)localvar[4]=localvar[JBR_LOCAL4];
                                     memset(localvar+ca->max_locals,0,
                                         (JBR_SLOTS-ca->max_locals)*sizeof(StackEntry));
                                     runtime->localvar_slots=ca->max_locals;
@@ -2769,6 +2816,12 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                                 }
                                 if(jbr_skip_draws && o->checkpoint)
                                     __atomic_fetch_add(&jvm->session->treo_state.host_residual_skipped,1,__ATOMIC_RELAXED);
+                                if(o->kind==JBR_WIDE_EFFECT){
+                                    for(unsigned k=0;k<o->a;k++){
+                                        unsigned slot=jbr_wide_arg(o,k);jbr_copy_slot(sp++,localvar+slot,slot);
+                                    }
+                                    stack->sp=sp;jbr_pending=jbr_index;break;
+                                }
                                 if(o->kind==JBR_EFFECT) {
                                     if(o->a!=JBR_NONE) {
                                         jbr_copy_slot(sp,localvar+o->a,o->a);
@@ -2796,14 +2849,16 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
                         if(jbr_active) {
                         const JarBoxResidualOp *o=jbr_compiled+jbr_pending;
-                        const unsigned actual=*runtime->pc;
-                        // Allow only known quickening variants of this effect.
-                        if(actual!=(unsigned)o->imm &&
-                           !(o->imm==op_getstatic &&
-                             (actual==op_getstatic_int||actual==op_getstatic_byte||actual==op_getstatic_short||actual==op_getstatic_ref)) &&
-                           !(o->imm==op_putstatic && actual==op_putstatic_int) &&
-                           !(o->imm==op_invokestatic && actual==op_invokestatic_fast) &&
-                           !(o->imm==op_invokevirtual && actual==op_invokevirtual_fast))JBR_INVARIANT_FAIL();
+                        const unsigned actual=*runtime->pc,raw=jbr_effect_raw(o);
+                        // Only known quickening variants of this effect.
+                        if(actual!=raw &&
+                           !(raw==op_getstatic &&
+                             (actual==op_getstatic_int||actual==op_getstatic_byte||actual==op_getstatic_short||actual==op_getstatic_jchar||actual==op_getstatic_ref)) &&
+                           !(raw==op_getfield &&
+                             (actual==op_getfield_int||actual==op_getfield_byte||actual==op_getfield_short||actual==op_getfield_jchar||actual==op_getfield_ref)) &&
+                           !(raw==op_putstatic && actual==op_putstatic_int) &&
+                           !(raw==op_invokestatic && actual==op_invokestatic_fast) &&
+                           !(raw==op_invokevirtual && actual==op_invokevirtual_fast))JBR_INVARIANT_FAIL();
                         }
                     }
 #undef JBR_INVARIANT_FAIL
