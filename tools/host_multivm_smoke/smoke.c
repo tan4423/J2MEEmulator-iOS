@@ -232,8 +232,8 @@ int main(int argc, char **argv) {
         start_job(&a);start_job(&b);join_job(&a);join_job(&b);
         printf("binding A: good=%llu bad=%llu mismatch=%llu\n",(unsigned long long)a.binding_good,(unsigned long long)a.binding_bad,(unsigned long long)a.binding_mismatch);
         printf("binding B: good=%llu bad=%llu mismatch=%llu\n",(unsigned long long)b.binding_good,(unsigned long long)b.binding_bad,(unsigned long long)b.binding_mismatch);
-        REQUIRE(!a.rc&&!b.rc&&a.binding_good==2000&&b.binding_good==2000&&
-                a.binding_bad==19000&&b.binding_bad==19000&&!a.binding_mismatch&&!b.binding_mismatch);
+        REQUIRE(!a.rc&&!b.rc&&a.binding_good==3000&&b.binding_good==3000&&
+                a.binding_bad==28000&&b.binding_bad==28000&&!a.binding_mismatch&&!b.binding_mismatch);
     } else
 #endif
     if (!strcmp(scenario,"residual_diff")) {

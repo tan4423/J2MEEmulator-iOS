@@ -47,10 +47,12 @@ public abstract class Canvas {
         c3.a=wrongBinding?null:g;
         Class_hmi.m(c3);
         Class_hmi.i(screen,c3);
+        Class_hmi.k(c3);
     }
 }''',
 "Class_hmi.java":'''public final class Class_hmi {
     public static void m(Class_hvi w){Class_hii.k1(w);}
+    public static void k(Class_hvi w){Class_hii.r2(w);}
     public static void i(Class_hac c,Class_hvi w){c.a0(w);}
 }''',
 "Class_hac.java":'''public final class Class_hac {
@@ -61,6 +63,7 @@ public abstract class Canvas {
     public static int expected,touch;
     public static final void k1(Class_hvi w){touch++;}
     public static final void i3(Class_hvi w){touch++;}
+    public static final void r2(Class_hvi w){touch++;}
 }''',
 "BindingMain.java":'''public final class BindingMain {
     public static void main(String[] args) {
@@ -75,6 +78,8 @@ public abstract class Canvas {
             Class_hii.k1(null);                // no wrapper
             Class_hmi.i(new Class_hac(),off);  // route but no paint ancestry
             Class_hii.i3(null);                // no wrapper
+            Class_hmi.k(off);                 // minimap outside paint
+            Class_hii.r2(null);                // no wrapper
             new Class_hac().a0(off);           // missing i route
             g.ownsContext=true;c.doPaint();g.ownsContext=false;
             g.treoPixelDependent=true;c.doPaint();g.treoPixelDependent=false;
@@ -85,7 +90,7 @@ public abstract class Canvas {
             d.wrongBinding=true;c.doPaint();d.wrongBinding=false;
             if(i%100==0)System.gc();
         }
-        if(Class_hii.touch!=21000)throw new IllegalStateException("missing invocation");
+        if(Class_hii.touch!=31000)throw new IllegalStateException("missing invocation");
     }
 }'''
 }
@@ -107,8 +112,10 @@ def main():
             pc('Class_hef','Method Class_bs.a:(Ljavax/microedition/lcdui/Graphics;)V'),
             pc('Class_hac','Method Class_hii.i3:(LClass_hvi;)V'),
             pc('Class_hxb','Method Class_hmi.i:(LClass_hac;LClass_hvi;)V'),
-            pc('Class_hmi','Method Class_hac.a0:(LClass_hvi;)V'))
+            pc('Class_hmi','Method Class_hac.a0:(LClass_hvi;)V'),
+            pc('Class_hmi','Method Class_hii.r2:(LClass_hvi;)V'),
+            pc('Class_hxb','Method Class_hmi.k:(LClass_hvi;)V'))
     a.header.write_text('/* Synthetic fixture only. */\n'+
-        '\n'.join(f'#define JBR_TEST_{key}_PC {value}' for key,value in zip(('MAP','DELEGATE','PAINT','OVERLAY','OVERLAY_DELEGATE','OVERLAY_ROUTE'),values))+'\n')
+        '\n'.join(f'#define JBR_TEST_{key}_PC {value}' for key,value in zip(('MAP','DELEGATE','PAINT','OVERLAY','OVERLAY_DELEGATE','OVERLAY_ROUTE','MINIMAP','MINIMAP_DELEGATE'),values))+'\n')
     print('binding fixture PCs:',values)
 if __name__=='__main__':main()

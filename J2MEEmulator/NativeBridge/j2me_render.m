@@ -5108,8 +5108,9 @@ int treo_residual_scope_capture(Runtime *runtime,Instance *wrapper,JarBoxResidua
     // a mode change is grounds for the next checkpoint to resume.
     if(jarbox_session_phase(session)!=JARBOX_SESSION_PARKED||
        !jarbox_ninja_core_active(&state->ninja_core,treo_runtime_mode(runtime)))return 0;
-    *out=(JarBoxResidualScope){key,g_afk_scope_serial,b.context,
-        (uintptr_t)b.wrapper,(uintptr_t)b.canvas,(uintptr_t)b.graphics};
+    *out=(JarBoxResidualScope){.owner=key,.serial=g_afk_scope_serial,.context=b.context,
+        .wrapper=(uintptr_t)b.wrapper,.canvas=(uintptr_t)b.canvas,.graphics=(uintptr_t)b.graphics};
+    if(!jbr_scope_prepare_fields(out)){memset(out,0,sizeof(*out));return 0;}
     return 1;
 }
 #if (defined(TREO_RESIDUAL_EXPERIMENT) && TREO_RESIDUAL_EXPERIMENT && __JVM_OS_IOS__)
@@ -5127,9 +5128,9 @@ int treo_residual_scope_valid(Runtime *r,Instance *wrapper,const JarBoxResidualS
     if(jarbox_session_phase(session)!=JARBOX_SESSION_PARKED||
        !jarbox_ninja_core_active(&st->ninja_core,treo_runtime_mode(r))||
        s->owner!=jarbox_native_heap_key_for_runtime(r))return 0;
-    // Detect replacement by any retained call before the next closed region.
-    return jbr_bref(wrapper->mb.clazz,wrapper,"a","Ljavax/microedition/lcdui/Graphics;",
-                   (Instance *)s->graphics,0);
+    // Recheck all mutable target/pixel-dependency fields after retained calls.
+    // Layout offsets were certified once; no per-draw metadata scan.
+    return jbr_scope_fields_valid(s,wrapper);
 }
 #endif
 #endif

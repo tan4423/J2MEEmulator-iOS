@@ -120,7 +120,21 @@ int main(void) {
         r[4].method=&m[3];BAD();r[4].method=&m[4];
         GOOD();
     }
-    JarBoxResidualScope a={1,7,12345,(uintptr_t)&w,(uintptr_t)&c,(uintptr_t)&g},z=a;
+    JarBoxResidualScope a={.owner=1,.serial=7,.context=12345,.wrapper=(uintptr_t)&w,
+        .canvas=(uintptr_t)&c,.graphics=(uintptr_t)&g};
+    assert(!jbr_scope_fields_valid(&a,&w));
+    assert(jbr_scope_prepare_fields(&a)&&jbr_scope_fields_valid(&a,&w));
+    for(int i=0;i<10000;i++){
+        putref(wb,&off);assert(!jbr_scope_fields_valid(&a,&w));putref(wb,&g);
+        putref(cb,&off);assert(!jbr_scope_fields_valid(&a,&w));putref(cb,&g);
+        putref(cs,NULL);assert(!jbr_scope_fields_valid(&a,&w));putref(cs,&c);
+        putlong(cb+8,54321);assert(!jbr_scope_fields_valid(&a,&w));putlong(cb+8,12345);
+        putlong(gb,54321);assert(!jbr_scope_fields_valid(&a,&w));putlong(gb,12345);
+        for(int k=8;k<=10;k++){gb[k]=1;assert(!jbr_scope_fields_valid(&a,&w));gb[k]=0;}
+        cb[16]=1;assert(!jbr_scope_fields_valid(&a,&w));cb[16]=0;
+        assert(jbr_scope_fields_valid(&a,&w));
+    }
+    JarBoxResidualScope z=a;
     assert(jbr_scope_same(&a,&z));z.owner++;assert(!jbr_scope_same(&a,&z));z=a;
     z.serial++;assert(!jbr_scope_same(&a,&z));z=a;z.graphics=(uintptr_t)&off;assert(!jbr_scope_same(&a,&z));z=a;
     z.context++;assert(!jbr_scope_same(&a,&z));z=a;z.canvas=0;assert(!jbr_scope_same(&a,&z));

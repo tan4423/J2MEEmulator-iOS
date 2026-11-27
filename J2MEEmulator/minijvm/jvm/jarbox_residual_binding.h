@@ -12,9 +12,16 @@ typedef struct {
 } JarBoxResidualBinding;
 
 typedef struct {
+    JClass *wrapper_class,*canvas_class,*graphics_class;
+    uint32_t w_graphics,c_graphics,c_context,c_buffer,c_current;
+    uint32_t g_context,g_owns,g_pixels,g_headless;
+    unsigned ready;
+} JarBoxResidualGuard;
+typedef struct {
     uint64_t owner, serial;
     int64_t context;
     uintptr_t wrapper, canvas, graphics;
+    JarBoxResidualGuard guard;
 } JarBoxResidualScope;
 
 static inline int jbr_scope_same(const JarBoxResidualScope *a,const JarBoxResidualScope *b) {
@@ -89,6 +96,59 @@ static inline int jbr_bcontext(JClass *cl,Instance *obj,int64_t *v) {
     return *v!=0;
 }
 
+// The scope is frame-local. Actual Canvas and Graphics remain rooted by the
+// original paint frames; no object/field pointer is cached in a global plan.
+// Cache immutable offsets once, but reread every mutable field at each guard.
+static inline int jbr_guard_offset(JClass *cl,Instance *o,const char *name,const char *desc,
+                                  size_t width,int ref,uint32_t *out) {
+    const unsigned char *p=jbr_bfield(cl,o,name,desc,width,ref,!o);
+    const unsigned char *base=o?(const unsigned char *)o->obj_fields:(const unsigned char *)cl->field_static;
+    if(!p||!base||(uintptr_t)p<(uintptr_t)base||(uintptr_t)p-(uintptr_t)base>UINT32_MAX)return 0;
+    *out=(uint32_t)((uintptr_t)p-(uintptr_t)base);return 1;
+}
+static inline int jbr_guard_ref(const unsigned char *base,uint32_t off,Instance *want){
+    Instance *v=NULL;memcpy(&v,base+off,sizeof(v));return v==want;
+}
+static inline int jbr_guard_context(const unsigned char *base,uint32_t off,int64_t want){
+    int64_t v;memcpy(&v,base+off,sizeof(v));return v==want;
+}
+static inline int jbr_scope_fields_valid(const JarBoxResidualScope *s,Instance *wrapper){
+    if(!s||!s->guard.ready||!s->context||!wrapper||(uintptr_t)wrapper!=s->wrapper)return 0;
+    const JarBoxResidualGuard *q=&s->guard;
+    Instance *c=(Instance *)s->canvas,*g=(Instance *)s->graphics;
+    if(!jbr_bobject(wrapper,q->wrapper_class)||!jbr_bobject(c,q->canvas_class)||
+       !jbr_bobject(g,q->graphics_class)||!q->canvas_class->field_static)return 0;
+    const unsigned char *wb=(const unsigned char *)wrapper->obj_fields;
+    const unsigned char *cb=(const unsigned char *)c->obj_fields;
+    const unsigned char *gb=(const unsigned char *)g->obj_fields;
+    return jbr_guard_ref(wb,q->w_graphics,g)&&jbr_guard_ref(cb,q->c_graphics,g)&&
+        jbr_guard_ref((const unsigned char *)q->canvas_class->field_static,q->c_current,c)&&
+        jbr_guard_context(cb,q->c_context,s->context)&&jbr_guard_context(gb,q->g_context,s->context)&&
+        !cb[q->c_buffer]&&!gb[q->g_owns]&&!gb[q->g_pixels]&&!gb[q->g_headless];
+}
+static inline int jbr_scope_prepare_fields(JarBoxResidualScope *s){
+    if(!s||!s->wrapper||!s->canvas||!s->graphics)return 0;
+    JarBoxResidualGuard *q=&s->guard;memset(q,0,sizeof(*q));
+    Instance *w=(Instance *)s->wrapper,*c=(Instance *)s->canvas,*g=(Instance *)s->graphics;
+    q->wrapper_class=w->mb.clazz;q->canvas_class=c->mb.clazz;q->graphics_class=g->mb.clazz;
+    if(!jbr_bobject(w,q->wrapper_class)||!jbr_bobject(c,q->canvas_class)||
+       !jbr_bobject(g,q->graphics_class)||!q->canvas_class->superclass)return 0;
+    JClass *api=q->canvas_class->superclass;
+    const char *gd="Ljavax/microedition/lcdui/Graphics;";
+    if(!jbr_guard_offset(q->wrapper_class,w,"a",gd,sizeof(Instance *),1,&q->w_graphics)||
+       !jbr_guard_offset(api,c,"graphics",gd,sizeof(Instance *),1,&q->c_graphics)||
+       !jbr_guard_offset(api,c,"nativeContext","J",8,0,&q->c_context)||
+       !jbr_guard_offset(api,c,"treoUsesExplicitBuffer","Z",1,0,&q->c_buffer)||
+       !jbr_guard_offset(q->canvas_class,NULL,"g","LClass_hef;",sizeof(Instance *),1,&q->c_current)||
+       !jbr_guard_offset(q->graphics_class,g,"nativeContext","J",8,0,&q->g_context)||
+       !jbr_guard_offset(q->graphics_class,g,"ownsContext","Z",1,0,&q->g_owns)||
+       !jbr_guard_offset(q->graphics_class,g,"treoPixelDependent","Z",1,0,&q->g_pixels)||
+       !jbr_guard_offset(q->graphics_class,g,"headless","Z",1,0,&q->g_headless))return 0;
+    q->ready=1;
+    if(!jbr_scope_fields_valid(s,w)){q->ready=0;return 0;}
+    return 1;
+}
+
 // The exact corpus has one direct caller of k1 (Class_hmi.m PC58),
 // one direct paint delegate call (Class_hef.paint PC5), and one writer
 // of an existing wrapper's Graphics (Class_hxb.a PC8). c3 is created
@@ -100,7 +160,8 @@ static inline int jbr_binding_route(Runtime *r,Instance *wrapper,JarBoxResidualB
     if(out)memset(out,0,sizeof(*out));
     if(!out||!r||!r->jvm||!r->thrd_info||!r->stack)return 0;
     const int overlay=jbr_bmethod(r->method,"Class_hii","i3",wd);
-    if((!overlay&&!jbr_bmethod(r->method,"Class_hii","k1",wd))||!r->method->is_static)return 0;
+    const int minimap=jbr_bmethod(r->method,"Class_hii","r2",wd);
+    if((!overlay&&!minimap&&!jbr_bmethod(r->method,"Class_hii","k1",wd))||!r->method->is_static)return 0;
     JClass *map=r->method->_this_class;
     if(!wrapper||!jbr_bname(wrapper->mb.clazz,"Class_hvi")||
        !jbr_bobject(wrapper,wrapper->mb.clazz))return 0;
@@ -122,7 +183,7 @@ static inline int jbr_binding_route(Runtime *r,Instance *wrapper,JarBoxResidualB
            route->localvar[1].rvalue!=wrapper||
            route->method->_this_class->jloader!=map->jloader)return 0;
         p=route;
-    } else if(!jbr_bframe(p,r,1)||!jbr_bmethod(p->method,"Class_hmi","m",wd)||
+    } else if(!jbr_bframe(p,r,1)||!jbr_bmethod(p->method,"Class_hmi",minimap?"k":"m",wd)||
        !p->method->is_static||!jbr_bpc(p,map_pc)||p->localvar[0].rvalue!=wrapper||
        p->method->_this_class->jloader!=map->jloader)return 0;
     Runtime *delegate=NULL;
