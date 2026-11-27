@@ -78,7 +78,6 @@ with socket.socket() as listener:
                     assert (private/"control-frame.png").read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
                     if sink:
                         # Synthetic fixtures never authorize exact real-game residual execution.
-                        assert cmd("guard on")["state"]=="refused"
                         assert cmd("sink residual")["state"]=="refused"
                         a=cmd("status")
                         assert a["residual_plans"]==a["residual_calls"]==a["residual_regions"]==0
@@ -98,6 +97,15 @@ with socket.socket() as listener:
                             assert b["map_refusals"]-a["map_refusals"]==6,(a,b)
                             assert b["map_layout_builds"]-a["map_layout_builds"]==2,(a,b)
                             assert b["map_layout_hits"]>a["map_layout_hits"],(a,b)
+                        # Idle/disconnected is normal: no synthetic Nick skill,
+                        # network or update events, and no fresh paints. Stay parked.
+                        if not map_test:
+                            time.sleep(9)
+                            idle=cmd("status")
+                            assert idle["sink_requested"]==1 and idle["sink_invalid"]==0,(b,idle)
+                            assert idle["skill_advances_live"]==idle["network_calls_live"]==idle["update_calls_live"]==0,idle
+                            assert idle["paints"]==b["paints"] and idle["frames"]==b["frames"],(b,idle)
+                            print("LAB_IDLE_HEADLESS_PASS")
                         assert cmd("sink off")["state"]=="ok"
                         assert cmd("key enter")["state"]=="queued"
                         deadline=time.monotonic()+8

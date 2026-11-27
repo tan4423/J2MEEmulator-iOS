@@ -19,7 +19,6 @@
 #include "arraylist.h"
 #include "mbedtls/sha256.h"
 #include "jarbox_residual_build_identity.h"
-#include "lab_liveness.h"
 
 enum { MAX_SURF=8192, MAX_DIM=8192, MAX_SCREEN=2048, MAX_EVENTS=256, MAX_EDGES=8192 };
 typedef struct { cairo_surface_t *s; cairo_t *c; int image, mutable; uint64_t id; } Surface;
@@ -53,10 +52,6 @@ static _Thread_local s64 sink_context;
 static _Atomic uint64_t deep_counts[16];
 static _Thread_local uint64_t deep_pending[16];
 static _Atomic uint64_t live_counts[3];
-/* Main SDL thread owns watchdog and control state. */
-static JlgState live_state;
-static int guard_enabled,guard_reason;
-static uint64_t guard_trips;
 void jarbox_lab_liveness_note(unsigned kind){
     if(kind<3)atomic_fetch_add_explicit(&live_counts[kind],1,memory_order_relaxed);
 }
@@ -110,21 +105,6 @@ static _Atomic uint64_t net_stages[32];
 static uint64_t ns(clockid_t id) {
     struct timespec t;
     return clock_gettime(id,&t)?0:(uint64_t)t.tv_sec*1000000000ull+t.tv_nsec;
-}
-/* A quiet scene may conservatively restore raster. Never restart,
- * issue game input or automatically rearm. A hard VM hang is not
- * repaired by this flag; a new full paint proves visible recovery. */
-static void guard_observe(uint64_t now){
-    uint64_t v[JLG_SIGNALS]={atomic_load(&paints),atomic_load(&live_counts[0]),
-        atomic_load(&live_counts[1]),atomic_load(&live_counts[2])};
-    jlg_observe(&live_state,now,v);
-    if(guard_enabled&&atomic_load(&sink_requested)){
-        int why=jlg_stale(&live_state,now,UINT64_C(8000000000));
-        if(why){guard_reason=why;++guard_trips;atomic_store(&sink_requested,0);}
-    }
-}
-static int guard_ready(void){
-    return trace_graph&&!jlg_stale(&live_state,ns(CLOCK_MONOTONIC),UINT64_C(6000000000));
 }
 static int method_name(MethodInfo *m,char *out,size_t n) {
     if(!m||!m->_this_class||!m->_this_class->name||!m->name||!m->descriptor) return 0;
@@ -551,7 +531,6 @@ static int keycode(SDL_Keycode k){
 }
 #include "lab_control.h"
 static void sample(void){
-    guard_observe(ns(CLOCK_MONOTONIC));
     pthread_mutex_lock(&vm_lock);
     if(active_vm)sample_vm_gc(active_vm);
     pthread_mutex_unlock(&vm_lock);
@@ -564,7 +543,7 @@ static void sample(void){
         (unsigned long long)atomic_load(&gc_cycles),(unsigned long long)atomic_load(&gc_cpu),
         bytes,(unsigned long long)atomic_load(&gc_aborts),(unsigned long long)atomic_load(&gc_heap_sample),logic_mode?"logic":trace_graph?"graph":"plain",atomic_load(&sink_requested),(unsigned long long)atomic_load(&sink_paints),(unsigned long long)atomic_load(&sink_draws),(unsigned long long)atomic_load(&sink_faults),atomic_load(&sink_invalid));
     for(unsigned i=0;i<16;i++)fprintf(trace,",%llu",(unsigned long long)atomic_load(&deep_counts[i]));
-    fprintf(trace,",%d,%llu,%llu,%llu,%llu,%llu,%llu,%d,%llu,%d\n",atomic_load(&jarbox_lab_trace_enabled),(unsigned long long)atomic_load(&logic_plans),(unsigned long long)atomic_load(&logic_spans),(unsigned long long)atomic_load(&logic_ops),(unsigned long long)atomic_load(&live_counts[0]),(unsigned long long)atomic_load(&live_counts[1]),(unsigned long long)atomic_load(&live_counts[2]),guard_enabled,(unsigned long long)guard_trips,guard_reason);fflush(trace);
+    fprintf(trace,",%d,%llu,%llu,%llu,%llu,%llu,%llu\n",atomic_load(&jarbox_lab_trace_enabled),(unsigned long long)atomic_load(&logic_plans),(unsigned long long)atomic_load(&logic_spans),(unsigned long long)atomic_load(&logic_ops),(unsigned long long)atomic_load(&live_counts[0]),(unsigned long long)atomic_load(&live_counts[1]),(unsigned long long)atomic_load(&live_counts[2]));fflush(trace);
 }
 static int write_graph(void){
     size_t len=strlen(trace_path)+32;char *p=malloc(len),*tmp=malloc(len);
@@ -600,7 +579,7 @@ int main(int argc,char**argv){
         snprintf(p,n,"%s.effects.csv",trace_path);effect_file=fopen(p,"w");free(p);if(!effect_file)return 2;
         fprintf(effect_file,"sequence,monotonic_ns,worker,method,pc,operation,value,lost_total\n");
     }
-    fprintf(trace,"monotonic_ns,process_cpu_ns,paints,paint_cpu_ns,frames,draw_calls,image_allocs,input_events,gc_cycles,gc_cpu_ns,native_surface_bytes,gc_aborts,gc_heap_sample_bytes,mode,sink_requested,sink_paints,sink_draws,sink_faults,sink_invalid,deep_leaves,glyph_attempts,glyph_scope_refusals,glyph_link_refusals,glyph_data_refusals,glyph_loops,glyph_chars,map_q3,map_m3,map_refusals,residual_plans,residual_calls,residual_regions,residual_deopts,map_layout_builds,map_layout_hits,graph_enabled,ir_plans,ir_spans,ir_ops,skill_advances_live,network_calls_live,update_calls_live,guard_enabled,guard_trips,guard_reason\n");
+    fprintf(trace,"monotonic_ns,process_cpu_ns,paints,paint_cpu_ns,frames,draw_calls,image_allocs,input_events,gc_cycles,gc_cpu_ns,native_surface_bytes,gc_aborts,gc_heap_sample_bytes,mode,sink_requested,sink_paints,sink_draws,sink_faults,sink_invalid,deep_leaves,glyph_attempts,glyph_scope_refusals,glyph_link_refusals,glyph_data_refusals,glyph_loops,glyph_chars,map_q3,map_m3,map_refusals,residual_plans,residual_calls,residual_regions,residual_deopts,map_layout_builds,map_layout_hits,graph_enabled,ir_plans,ir_spans,ir_ops,skill_advances_live,network_calls_live,update_calls_live\n");
     frame=calloc((size_t)width*height,4);if(!frame)return 2;
     if(SDL_Init(SDL_INIT_VIDEO|SDL_INIT_EVENTS)){fprintf(stderr,"%s\n",SDL_GetError());return 2;}
     SDL_Window *win=SDL_CreateWindow("JarBox Research Lab",SDL_WINDOWPOS_CENTERED,SDL_WINDOWPOS_CENTERED,width*2,height*2,SDL_WINDOW_RESIZABLE);
@@ -617,7 +596,6 @@ int main(int argc,char**argv){
         SDL_Event e;
         ui_tick();
         LOCK;int modal=!show_canvas;UNLOCK;
-        if(modal&&!sink_fixture)atomic_store(&sink_requested,0);
         if(fixture_ui&&modal){
             fixture_ui=0;
             if(!getenv("JARBOX_LAB_TEST_CONTROL")){

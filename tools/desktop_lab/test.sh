@@ -54,8 +54,6 @@ grep -Fx 'LAB_LOGIC mode=0 plans=0 spans=0 ops=0' "$OUT/fixture/run-plain.log"
 grep -E '^LAB_LOGIC mode=1 plans=[1-9][0-9]* spans=[1-9][0-9]* ops=[1-9][0-9]*$' "$OUT/fixture/run-logic.log"
 echo DESKTOP_LAB_LOGIC_AB_PASS
 
-cc -std=c11 -Wall -Wextra -Werror "$ROOT/tools/desktop_lab/test_liveness.c" -o "$OUT/fixture/test-liveness"
-"$OUT/fixture/test-liveness"
 
 # Focus-independent input: real Java pointer callbacks on SDL dummy.
 python3 "$ROOT/tools/desktop_lab/test_transport.py" "$OUT" control 2>&1 | tee "$OUT/fixture/run-control.log"
@@ -66,6 +64,7 @@ echo DESKTOP_LAB_BACKGROUND_CONTROL_PASS
 python3 "$ROOT/tools/desktop_lab/test_transport.py" "$OUT" sink 2>&1 | tee "$OUT/fixture/run-sink.log"
 grep -F 'LAB_SINK_ABA_PASS' "$OUT/fixture/run-sink.log"
 grep -Fx 'LAB_SINK_PAINT 3' "$OUT/fixture/run-sink.log"
+grep -Fx 'LAB_IDLE_HEADLESS_PASS' "$OUT/fixture/run-sink.log"
 grep -Fx 'LAB_FIXTURE_BACKGROUND_INPUT_PASS' "$OUT/fixture/run-sink.log"
 
 python3 "$ROOT/tools/desktop_lab/test_transport.py" "$OUT" map 2>&1 | tee "$OUT/fixture/run-map.log"

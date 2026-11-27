@@ -4,10 +4,10 @@ import argparse,json,pathlib,socket,stat,os,uuid
 def main():
     p=argparse.ArgumentParser()
     p.add_argument("session",type=pathlib.Path)
-    p.add_argument("command",choices=("status","snapshot","tap","key","stop","chat","sink","profile","guard"))
+    p.add_argument("command",choices=("status","snapshot","tap","key","stop","chat","sink","profile"))
     p.add_argument("args",nargs="*")
     a=p.parse_args()
-    expected={"status":0,"snapshot":0,"tap":2,"key":1,"stop":0,"chat":1,"sink":1,"profile":1,"guard":1}
+    expected={"status":0,"snapshot":0,"tap":2,"key":1,"stop":0,"chat":1,"sink":1,"profile":1}
     if len(a.args)!=expected[a.command]:p.error("incorrect arguments")
     directory=a.session.resolve(strict=True)
     st=directory.stat()
