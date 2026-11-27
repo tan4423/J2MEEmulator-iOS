@@ -73,7 +73,10 @@ static inline const void *jbr_bfield(JClass *decl,Instance *obj,const char *name
 }
 static inline int jbr_bref(JClass *cl,Instance *obj,const char *name,const char *desc,Instance *expected,int isstatic) {
     const void *p=jbr_bfield(cl,obj,name,desc,sizeof(Instance *),1,isstatic);
-    Instance *v=NULL;if(!p||!expected)return 0;memcpy(&v,p,sizeof(v));return v==expected;
+    Instance *v=NULL;
+    if(!p||!expected)return 0;
+    memcpy(&v,p,sizeof(v));
+    return v==expected;
 }
 static inline int jbr_bzero(JClass *cl,Instance *obj,const char *name) {
     const unsigned char *p=jbr_bfield(cl,obj,name,"Z",1,0,0);
@@ -81,7 +84,9 @@ static inline int jbr_bzero(JClass *cl,Instance *obj,const char *name) {
 }
 static inline int jbr_bcontext(JClass *cl,Instance *obj,int64_t *v) {
     const void *p=jbr_bfield(cl,obj,"nativeContext","J",sizeof(*v),0,0);
-    if(!p)return 0;memcpy(v,p,sizeof(*v));return *v!=0;
+    if(!p)return 0;
+    memcpy(v,p,sizeof(*v));
+    return *v!=0;
 }
 
 // The exact corpus has one direct caller of k1 (Class_hmi.m PC58),

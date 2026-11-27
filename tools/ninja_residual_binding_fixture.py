@@ -51,8 +51,8 @@ public abstract class Canvas {
     public static void m(Class_hvi w){Class_hii.k1(w);}
 }''',
 "Class_hii.java":'''public final class Class_hii {
-    public static int expected;
-    public static final void k1(Class_hvi w){}
+    public static int expected,touch;
+    public static final void k1(Class_hvi w){touch++;}
 }''',
 "BindingMain.java":'''public final class BindingMain {
     public static void main(String[] args) {
@@ -74,6 +74,7 @@ public abstract class Canvas {
             d.wrongBinding=true;c.doPaint();d.wrongBinding=false;
             if(i%100==0)System.gc();
         }
+        if(Class_hii.touch!=10000)throw new IllegalStateException("missing invocation");
     }
 }'''
 }
