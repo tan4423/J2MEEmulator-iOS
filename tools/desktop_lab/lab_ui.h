@@ -8,7 +8,10 @@ static UiCommand ui_commands[UI_COMMANDS];
 static char ui_title[UI_TEXT],ui_alert[UI_TEXT];
 static char ui_pending[UI_MAX][UI_TEXT];
 static unsigned char ui_has_pending[UI_MAX];
-static int ui_revision,ui_type,ui_count,ui_cmds,ui_focus,ui_timeout;
+static int ui_revision,ui_type,ui_count,ui_cmds,ui_focus,ui_timeout,ui_command_focus;
+enum { UI_OPTIONS=2048 };
+typedef struct {int item,index;char text[UI_TEXT];} UiOption;
+static UiOption ui_options[UI_OPTIONS];static int ui_option_count;
 static uint64_t ui_deadline;
 static int ui_copy(char *dst,const char *src){
     if(!src)src="";
@@ -39,10 +42,12 @@ static void ui_render_locked(void){
         cairo_set_source_rgb(c,1,1,1);ui_line(c,y,it->label);
         if(it->type==1&&(it->constraints&0x10000)){
             char mask[UI_TEXT];size_t n=strlen(it->text);memset(mask,'*',n);mask[n]=0;ui_line(c,y+15,mask);
-        }else if(it->type==2){char choice[64];snprintf(choice,sizeof choice,"Choice %d / %d",it->selection+1,it->choices);ui_line(c,y+15,choice);}
+        }else if(it->type==2){const char *choice="(none)";
+            for(int j=0;j<ui_option_count;j++)if(ui_options[j].item==i&&ui_options[j].index==it->selection){choice=ui_options[j].text;break;}
+            ui_line(c,y+15,choice);}
         else ui_line(c,y+15,it->text);
     }
-    if(ui_cmds){char commands[UI_TEXT*2+32];snprintf(commands,sizeof commands,"F1 %s  |  F2 %s",ui_commands[0].label,ui_commands[ui_cmds-1].label);ui_line(c,height-8,commands);}
+    if(ui_cmds){char commands[UI_TEXT*2+32];snprintf(commands,sizeof commands,"F1 %s | F2 %s",ui_commands[ui_command_focus].label,ui_commands[ui_cmds-1].label);ui_line(c,height-8,commands);}
     else ui_line(c,height-8,"Enter: select");
     cairo_destroy(c);cairo_surface_flush(surface);cairo_surface_destroy(surface);dirty=1;
 }
@@ -50,7 +55,7 @@ FN(formBegin){
     char *title=string_copy(r,0);LOCK;
     if(ui_revision==INT_MAX){unsupported("UI revision overflow");}
     else ui_revision++;
-    ui_type=I(1);ui_count=ui_cmds=ui_focus=0;ui_timeout=-1;ui_deadline=0;
+    ui_type=I(1);ui_count=ui_cmds=ui_focus=ui_option_count=ui_command_focus=0;ui_timeout=-1;ui_deadline=0;
     memset(ui_items,0,sizeof ui_items);memset(ui_commands,0,sizeof ui_commands);
     memset(ui_pending,0,sizeof ui_pending);memset(ui_has_pending,0,sizeof ui_has_pending);
     ui_alert[0]=0;ui_copy(ui_title,title);UNLOCK;free(title);OK;
@@ -65,7 +70,10 @@ static void ui_add(Runtime*r,int type,int max,int constraints){
 FN(formAddStringItem){ui_add(r,0,0,0);OK;}
 FN(formAddTextField){ui_add(r,1,I(2),I(3));OK;}
 FN(formAddChoice){ui_add(r,2,I(1),0);OK;}
-FN(formAddChoiceOption){LOCK;if(ui_count&&ui_items[ui_count-1].type==2)ui_items[ui_count-1].choices++;else unsupported("choice without item");UNLOCK;OK;}
+FN(formAddChoiceOption){char *label=string_copy(r,0);LOCK;
+    if(ui_count&&ui_items[ui_count-1].type==2&&ui_option_count<UI_OPTIONS){
+        UiOption *o=&ui_options[ui_option_count++];o->item=ui_count-1;o->index=ui_items[ui_count-1].choices++;ui_copy(o->text,label);
+    }else unsupported("choice without item or capacity");UNLOCK;free(label);OK;}
 FN(formAddCommand){
     char *label=string_copy(r,0);LOCK;
     if(ui_cmds>=UI_COMMANDS)unsupported("desktop UI command capacity");
@@ -135,12 +143,13 @@ static int ui_handle_event(SDL_Event *e){
             UiItem*i=&ui_items[ui_focus];if(i->type==2&&i->choices>0)i->selection=(i->selection+i->choices+(k==SDLK_LEFT?-1:1))%i->choices;
         }else if(k==SDLK_BACKSPACE&&ui_count){UiItem*i=&ui_items[ui_focus];size_t n=strlen(i->text);
             if(i->type==1&&!(i->constraints&0x20000)&&n){do{n--;}while(n&&((unsigned char)i->text[n]&0xc0)==0x80);i->text[n]=0;}}
-        else if(k==SDLK_F1)ui_command_locked(0);
+        else if(k==SDLK_F3&&ui_cmds)ui_command_focus=(ui_command_focus+1)%ui_cmds;
+        else if(k==SDLK_F1)ui_command_locked(ui_command_focus);
         else if(k==SDLK_F2)ui_command_locked(ui_cmds-1);
         else if(k==SDLK_RETURN){
             if(ui_type==1&&ui_count)ui_event_locked((Event){11,ui_revision,ui_focus,0});
             else if(ui_type==2&&!ui_cmds)ui_event_locked((Event){12,ui_revision,0,0});
-            else ui_command_locked(0);
+            else ui_command_locked(ui_command_focus);
         }
     }
     if(e->type==SDL_TEXTINPUT||e->type==SDL_KEYDOWN)ui_render_locked();

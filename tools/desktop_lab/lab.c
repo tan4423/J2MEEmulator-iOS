@@ -18,9 +18,10 @@
 #include "arraylist.h"
 
 enum { MAX_SURF=8192, MAX_DIM=2048, MAX_EVENTS=256, MAX_EDGES=8192 };
-typedef struct { cairo_surface_t *s; cairo_t *c; int image, mutable; } Surface;
+typedef struct { cairo_surface_t *s; cairo_t *c; int image, mutable; uint64_t id; } Surface;
 static Surface surfaces[MAX_SURF];
-static unsigned next_handle=1;
+static unsigned next_slot=1;
+static uint64_t generation=1;
 static pthread_mutex_t lock=PTHREAD_MUTEX_INITIALIZER, graph_lock=PTHREAD_MUTEX_INITIALIZER;
 static _Atomic int stop_requested, finished, failed;
 static _Atomic uint64_t paints, paint_cpu, frames, draw_calls, image_allocs, events_delivered, gc_cycles, gc_cpu;
@@ -51,6 +52,7 @@ static uint64_t event_overflow;
 typedef struct {char from[192],to[192];uint64_t count;} Edge;
 static Edge edges[MAX_EDGES];
 static uint64_t graph_dropped;
+static _Atomic uint64_t net_stages[32];
 static uint64_t ns(clockid_t id) {
     struct timespec t;
     return clock_gettime(id,&t)?0:(uint64_t)t.tv_sec*1000000000ull+t.tv_nsec;
@@ -133,20 +135,32 @@ static void unsupported(const char *name) {
 #define OK return RUNTIME_STATUS_NORMAL
 #define LOCK pthread_mutex_lock(&lock)
 #define UNLOCK pthread_mutex_unlock(&lock)
-static Surface *get(s64 h){return h>0&&h<MAX_SURF&&surfaces[h].s?&surfaces[h]:NULL;}
+static Surface *get(s64 h){
+    if(h<=0)return NULL;
+    unsigned slot=(unsigned)((uint64_t)h%MAX_SURF);
+    Surface *s=&surfaces[slot];
+    return slot&&s->s&&s->id==(uint64_t)h?s:NULL;
+}
 static int sw(Surface *s){return cairo_image_surface_get_width(s->s);}
 static int sh(Surface *s){return cairo_image_surface_get_height(s->s);}
 static int valid_size(int w,int h){return w>0&&h>0&&w<=MAX_DIM&&h<=MAX_DIM;}
-static unsigned add(cairo_surface_t *s,int image,int mut){
+static s64 add(cairo_surface_t *s,int image,int mut){
     if(!s||cairo_surface_status(s)!=CAIRO_STATUS_SUCCESS||
        !valid_size(cairo_image_surface_get_width(s),cairo_image_surface_get_height(s))||
-       next_handle>=MAX_SURF){if(s)cairo_surface_destroy(s);return 0;}
+       generation>(uint64_t)INT64_MAX/MAX_SURF-1){if(s)cairo_surface_destroy(s);return 0;}
+    unsigned slot=0;
+    for(unsigned i=0;i<MAX_SURF-1;i++){
+        unsigned p=next_slot++;
+        if(next_slot>=MAX_SURF)next_slot=1;
+        if(!surfaces[p].s){slot=p;break;}
+    }
+    if(!slot){cairo_surface_destroy(s);return 0;}
     unsigned long long bytes=(unsigned long long)cairo_image_surface_get_stride(s)*cairo_image_surface_get_height(s);
     if(bytes>256ull*1024*1024-native_bytes){cairo_surface_destroy(s);return 0;}
     cairo_t *c=cairo_create(s);
     if(cairo_status(c)!=CAIRO_STATUS_SUCCESS){cairo_destroy(c);cairo_surface_destroy(s);return 0;}
-    unsigned id=next_handle++;
-    surfaces[id]=(Surface){s,c,image,mut};
+    uint64_t id=generation++*MAX_SURF+slot;
+    surfaces[slot]=(Surface){s,c,image,mut,id};
     native_bytes+=bytes;
     cairo_set_source_rgb(c,0,0,0);
     cairo_set_line_width(c,1); cairo_set_antialias(c,CAIRO_ANTIALIAS_NONE);
@@ -160,11 +174,11 @@ static void drop(s64 h){
     native_bytes-=(unsigned long long)cairo_image_surface_get_stride(s->s)*sh(s);
     cairo_destroy(s->c);cairo_surface_destroy(s->s);memset(s,0,sizeof *s);
 }
-static unsigned create(int w,int h,int image){
+static s64 create(int w,int h,int image){
     if(!valid_size(w,h))return 0;
     cairo_surface_t *s=cairo_image_surface_create(CAIRO_FORMAT_ARGB32,w,h);
-    unsigned id=add(s,image,1);
-    if(id){cairo_t *c=surfaces[id].c;cairo_set_source_rgb(c,1,1,1);cairo_paint(c);cairo_set_source_rgb(c,0,0,0);}
+    s64 id=add(s,image,1);
+    if(id){cairo_t *c=get(id)->c;cairo_set_source_rgb(c,1,1,1);cairo_paint(c);cairo_set_source_rgb(c,0,0,0);}
     return id;
 }
 static char *string_copy(Runtime *r,int slot){
@@ -193,16 +207,16 @@ static void blit(Surface *dst,cairo_surface_t *src,int w,int h,double x,double y
     cairo_paint(dst->c);cairo_restore(dst->c);
     atomic_fetch_add(&draw_calls,1);
 }
-FN(createContext){LOCK;unsigned id=create(I(0),I(1),0);UNLOCK;PJ(id);OK;}
+FN(createContext){LOCK;s64 id=create(I(0),I(1),0);UNLOCK;PJ(id);OK;}
 FN(destroyContext){LOCK;Surface *s=get(J(0));if(s&&!s->image)drop(J(0));UNLOCK;OK;}
-FN(createMutableImage){LOCK;unsigned id=create(I(0),I(1),1);UNLOCK;PJ(id);OK;}
+FN(createMutableImage){LOCK;s64 id=create(I(0),I(1),1);UNLOCK;PJ(id);OK;}
 typedef struct {const unsigned char *p;size_t left;} Png;
 static cairo_status_t png_read(void *v,unsigned char *out,unsigned n){
     Png *p=v;if(n>p->left)return CAIRO_STATUS_READ_ERROR;
     memcpy(out,p->p,n);p->p+=n;p->left-=n;return CAIRO_STATUS_SUCCESS;
 }
 FN(createImageFromData){
-    Instance *a=R(0);int off=I(1),len=I(2);unsigned id=0;
+    Instance *a=R(0);int off=I(1),len=I(2);s64 id=0;
     if(array_ok(a,DATATYPE_BYTE)&&off>=0&&len>=24&&off<=a->arr_length&&len<=a->arr_length-off){
         const unsigned char *p=(unsigned char*)a->arr_body+off;
         /* Bound dimensions before handing the PNG to a decoder. */
@@ -234,6 +248,51 @@ FN(getStringWidth){char*t=string_copy(r,2);int v=0;LOCK;Surface*s=get(J(0));if(s
 FN(getFontHeight){int v=14;LOCK;Surface*s=get(J(0));if(s){cairo_font_extents_t e;cairo_font_extents(s->c,&e);v=(int)ceil(e.ascent+e.descent);}UNLOCK;PI(v);OK;}
 FN(getFontAscent){int v=11;LOCK;Surface*s=get(J(0));if(s){cairo_font_extents_t e;cairo_font_extents(s->c,&e);v=(int)ceil(e.ascent);}UNLOCK;PI(v);OK;}
 FN(drawString){char*t=string_copy(r,2);LOCK;Surface*s=get(J(0));if(s&&t){cairo_text_extents_t e;cairo_font_extents_t f;cairo_text_extents(s->c,t,&e);cairo_font_extents(s->c,&f);double x=I(3),y=I(4);int a=I(5);anchor(a,(int)ceil(e.x_advance),(int)ceil(f.ascent+f.descent),&x,&y);if(!(a&64))y+=f.ascent;cairo_move_to(s->c,x,y);cairo_show_text(s->c,t);atomic_fetch_add(&draw_calls,1);}UNLOCK;free(t);OK;}
+/* MIDP uses positive counterclockwise angles in screen coordinates. */
+static void arc_path(cairo_t*c,double x,double y,double w,double h,int start,int sweep,int fill){
+    if(w<=0||h<=0||!sweep)return;
+    if(sweep>360)sweep=360;if(sweep< -360)sweep=-360;
+    double a=-start*(M_PI/180.0),b=a-sweep*(M_PI/180.0);
+    cairo_new_path(c);cairo_save(c);
+    cairo_translate(c,x+w/2,y+h/2);cairo_scale(c,w/2,h/2);
+    if(fill)cairo_move_to(c,0,0);
+    if(sweep>0)cairo_arc_negative(c,0,0,1,a,b);else cairo_arc(c,0,0,1,a,b);
+    if(fill)cairo_close_path(c);cairo_restore(c);
+    if(fill)cairo_fill(c);else cairo_stroke(c);
+}
+static void round_path(cairo_t*c,double x,double y,double w,double h,double aw,double ah,int fill){
+    if(w<=0||h<=0)return;
+    double rx=fmin(w,fmax(0,aw))/2,ry=fmin(h,fmax(0,ah))/2;
+    cairo_new_path(c);
+    if(rx==0||ry==0)cairo_rectangle(c,x,y,w,h);
+    else{
+        cairo_save(c);cairo_translate(c,x,y);cairo_scale(c,rx,ry);
+        double xx=w/rx,yy=h/ry;
+        cairo_arc(c,xx-1,1,1,-M_PI/2,0);
+        cairo_arc(c,xx-1,yy-1,1,0,M_PI/2);
+        cairo_arc(c,1,yy-1,1,M_PI/2,M_PI);
+        cairo_arc(c,1,1,1,M_PI,3*M_PI/2);
+        cairo_close_path(c);cairo_restore(c);
+    }
+    if(fill)cairo_fill(c);else cairo_stroke(c);
+}
+#define SHAPE(name,impl,fill) FN(name){LOCK;Surface*s=get(J(0));if(s){impl(s->c,I(2),I(3),I(4),I(5),I(6),I(7),fill);atomic_fetch_add(&draw_calls,1);}UNLOCK;OK;}
+SHAPE(drawArc,arc_path,0)
+SHAPE(fillArc,arc_path,1)
+SHAPE(drawRoundRect,round_path,0)
+SHAPE(fillRoundRect,round_path,1)
+#undef SHAPE
+static void polygon(Runtime*r,int fill){
+    Instance*x=R(2),*y=R(3);int n=I(4);
+    if(n<(fill?3:2)||!array_ok(x,DATATYPE_INT)||!array_ok(y,DATATYPE_INT)||n>x->arr_length||n>y->arr_length)return;
+    LOCK;Surface*s=get(J(0));
+    if(s){s32*a=(s32*)x->arr_body,*b=(s32*)y->arr_body;cairo_new_path(s->c);cairo_move_to(s->c,a[0],b[0]);
+        for(int i=1;i<n;i++)cairo_line_to(s->c,a[i],b[i]);
+        cairo_close_path(s->c);if(fill)cairo_fill(s->c);else cairo_stroke(s->c);atomic_fetch_add(&draw_calls,1);}
+    UNLOCK;
+}
+FN(fillPolygon){polygon(r,1);OK;}
+FN(drawPolygon){polygon(r,0);OK;}
 static uint32_t pixel(cairo_surface_t*s,int x,int y){
     uint32_t v;memcpy(&v,cairo_image_surface_get_data(s)+(size_t)y*cairo_image_surface_get_stride(s)+4*x,4);
     if(cairo_image_surface_get_format(s)==CAIRO_FORMAT_RGB24)v|=0xff000000u;
@@ -277,6 +336,7 @@ FN(pollInputEvent){
     if(a){s32 *p=(s32*)a->arr_body;p[0]=e.a;p[1]=e.b;p[2]=e.c;p[3]=e.d;atomic_fetch_add(&events_delivered,1);}else unsupported("input allocation");
     PR(a);OK;
 }
+FN(netTraceStage){int stage=I(0);if(stage>=0&&stage<32)atomic_fetch_add(&net_stages[stage],1);OK;}
 FN(startupPhase){fprintf(stderr,"LAB_STARTUP phase=%d ns=%lld\n",I(0),(long long)J(1));OK;}
 FN(reportLaunchError){/* Do not persist exception strings that may contain credentials. */unsupported("MIDlet launch/lifecycle failure");OK;}
 /* These hooks describe the explicitly selected compatible/full-paint baseline.
@@ -294,6 +354,8 @@ static java_native_method methods[]={
  N(getImageWidth,"(J)I",getImageWidth),N(getImageHeight,"(J)I",getImageHeight),N(getImageContext,"(J)J",getImageContext),
  N(setColor,"(JI)V",setColor),N(setClip,"(JIIII)V",setClip),N(setStrokeStyle,"(JI)V",setStrokeStyle),
  N(drawLine,"(JIIII)V",drawLine),N(fillRect,"(JIIII)V",fillRect),N(drawRect,"(JIIII)V",drawRect),
+ N(drawArc,"(JIIIIII)V",drawArc),N(fillArc,"(JIIIIII)V",fillArc),N(drawRoundRect,"(JIIIIII)V",drawRoundRect),N(fillRoundRect,"(JIIIIII)V",fillRoundRect),
+ N(fillPolygon,"(J[I[II)V",fillPolygon),N(drawPolygon,"(J[I[II)V",drawPolygon),
  N(drawImage,"(JJIII)V",drawImage),N(drawRegion,"(JJIIIIIIII)V",drawRegion),N(copyArea,"(JIIIIII)V",copyArea),
  N(drawRGB,"(J[IIIIIIII)V",drawRGB),N(getImageRGB,"(J[IIIIIII)V",getImageRGB),
  N(setFont,"(JIII)V",setFont),N(drawString,"(JLjava/lang/String;III)V",drawString),
@@ -315,8 +377,8 @@ static java_native_method methods[]={
  N(formAddChoice,"(Ljava/lang/String;I)V",formAddChoice),N(formAddChoiceOption,"(Ljava/lang/String;)V",formAddChoiceOption),
  N(listAddItem,"(Ljava/lang/String;)V",listAddItem),N(listSetLastIcon,"(J)V",listSetLastIcon),N(setListType,"(I)V",setListType),
  N(setAlertText,"(Ljava/lang/String;I)V",setAlertText),N(takeText,"(II)[C",takeText),
- N(formShow,"()V",formShow),N(showCanvas,"()V",showCanvas),N(netTraceStage,"(I)V",noop),
- N(vibrate,"(I)V",unavailable)
+ N(formShow,"()V",formShow),N(showCanvas,"()V",showCanvas),N(netTraceStage,"(I)V",netTraceStage),
+ N(vibrate,"(I)V",noop)
 };
 static void *run_vm(void *unused){
     MiniJVM *vm=jvm_create(); if(!vm)goto done;
@@ -338,6 +400,8 @@ static void *run_vm(void *unused){
         sys_properties_set_c(vm,"microedition.profiles","MIDP-2.0");sys_properties_set_c(vm,"microedition.configuration","CLDC-1.1");
         char w[16],h[16];snprintf(w,sizeof w,"%d",width);snprintf(h,sizeof h,"%d",height);
         sys_properties_set_c(vm,"j2me.screen.width",w);sys_properties_set_c(vm,"j2me.screen.height",h);
+        if(getenv("JARBOX_LAB_UI_FIXTURE")&&getenv("JARBOX_LAB_TEST_PORT"))
+            sys_properties_set_c(vm,"jarbox.lab.test.port",getenv("JARBOX_LAB_TEST_PORT"));
         (void)jarbox_session_enter_foreground(vm->session);
         pthread_mutex_lock(&vm_lock);active_vm=vm;pthread_mutex_unlock(&vm_lock);
         ArrayList *args=arraylist_create(0);arraylist_push_back(args,game_path);
@@ -410,6 +474,7 @@ int main(int argc,char**argv){
     smoke_install_crash_handler();pthread_t th;
     sample();if(pthread_create(&th,NULL,run_vm,NULL))return 2;
     uint64_t last=ns(CLOCK_MONOTONIC),last_graph=last;
+    int pointer_down=0;int pressed[512]={0};
     while(!atomic_load(&finished)){
         SDL_Event e;
         ui_tick();
@@ -425,12 +490,21 @@ int main(int argc,char**argv){
         else if(!modal&&SDL_IsTextInputActive())SDL_StopTextInput();
         while(SDL_PollEvent(&e)){
             if(e.type==SDL_QUIT||(e.type==SDL_KEYDOWN&&e.key.keysym.sym==SDLK_ESCAPE)){atomic_store(&stop_requested,1);continue;}
+            if(e.type==SDL_WINDOWEVENT&&e.window.event==SDL_WINDOWEVENT_FOCUS_LOST){
+                for(unsigned i=0;i<512;i++)if(pressed[i]){enqueue((Event){4,0,0,pressed[i]});pressed[i]=0;}
+                if(pointer_down){enqueue((Event){2,0,0,0});pointer_down=0;}
+            }
             if(ui_handle_event(&e))continue;
             if(e.type==SDL_KEYDOWN||e.type==SDL_KEYUP){
-                int k=keycode(e.key.keysym.sym);
-                if(k)enqueue((Event){e.type==SDL_KEYUP?4:e.key.repeat?5:3,0,0,k});
-                else if(e.key.keysym.sym==SDLK_ESCAPE)atomic_store(&stop_requested,1);
-            }
+                int k=keycode(e.key.keysym.sym),sc=e.key.keysym.scancode;
+                if(k){if(sc>=0&&sc<512)pressed[sc]=e.type==SDL_KEYUP?0:k;
+                    enqueue((Event){e.type==SDL_KEYUP?4:e.key.repeat?5:3,0,0,k});}
+            }else if((e.type==SDL_MOUSEBUTTONDOWN||e.type==SDL_MOUSEBUTTONUP)&&e.button.button==SDL_BUTTON_LEFT){
+                int x=e.button.x,y=e.button.y;
+                /* SDL logical-size scales pointer events into the game area. */
+                if(e.type==SDL_MOUSEBUTTONDOWN&&x>=0&&y>=0&&x<width&&y<height){pointer_down=1;enqueue((Event){0,x,y,0});}
+                else if(e.type==SDL_MOUSEBUTTONUP&&pointer_down){pointer_down=0;enqueue((Event){2,x,y,0});}
+            }else if(e.type==SDL_MOUSEMOTION&&pointer_down)enqueue((Event){1,e.motion.x,e.motion.y,0});
         }
         LOCK;int draw=dirty;if(draw){SDL_UpdateTexture(tex,NULL,frame,width*4);dirty=0;}UNLOCK;
         if(draw){SDL_RenderClear(ren);SDL_RenderCopy(ren,tex,NULL,NULL);SDL_RenderPresent(ren);}
@@ -441,8 +515,12 @@ int main(int argc,char**argv){
     pthread_join(th,NULL);sample();flush_effects();fclose(trace);
     if(effect_file){fclose(effect_file);fprintf(stderr,"LAB_EFFECTS_LOST=%llu\n",(unsigned long long)effect_lost);}
     if(trace_graph&&!write_graph())unsupported("graph export");
+    size_t nl=strlen(trace_path)+32;char *np=malloc(nl);
+    if(np){snprintf(np,nl,"%s.network.csv",trace_path);FILE *nf=fopen(np,"w");if(nf){
+        fputs("stage,count\n",nf);for(int i=0;i<32;i++)fprintf(nf,"%d,%llu\n",i,(unsigned long long)atomic_load(&net_stages[i]));fclose(nf);
+    }free(np);}
     fprintf(stderr,"LAB_EXIT rc=%d failed=%d frames=%llu input_overflow=%llu\n",rc,atomic_load(&failed),(unsigned long long)atomic_load(&frames),(unsigned long long)event_overflow);
-    for(unsigned i=1;i<next_handle;i++)drop(i);
+    for(unsigned i=1;i<MAX_SURF;i++)if(surfaces[i].s)drop((s64)surfaces[i].id);
     SDL_DestroyTexture(tex);SDL_DestroyRenderer(ren);SDL_DestroyWindow(win);SDL_Quit();free(frame);
     return rc||atomic_load(&failed)?1:0;
 }

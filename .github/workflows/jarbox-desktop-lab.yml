@@ -27,11 +27,16 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: success()
         with:
-          name: desktop-lab-linux
+          name: JarBox-PC-WSL-x64
           path: |
             ${{ runner.temp }}/lab/jarbox-lab
             ${{ runner.temp }}/lab/jars/
             ${{ runner.temp }}/lab/build-sha256.txt
             ${{ runner.temp }}/lab/source-commit.txt
+            ${{ runner.temp }}/lab/gui.py
+            ${{ runner.temp }}/lab/lab_inspector.py
+            ${{ runner.temp }}/lab/Start-JarBox.cmd
+            ${{ runner.temp }}/lab/start-wsl.sh
+            ${{ runner.temp }}/lab/README.md
             ${{ runner.temp }}/lab/fixture/trace.csv*
             ${{ runner.temp }}/lab/fixture/run.log

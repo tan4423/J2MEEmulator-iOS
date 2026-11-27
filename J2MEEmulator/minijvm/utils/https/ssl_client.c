@@ -3745,7 +3745,13 @@ int sslc_wrap(SSLC_Entry *entry, int netfd, char *hostname) {
 
     /* OPTIONAL is not optimal for security,
      * but makes interop easier in this simplified example */
+#if defined(JARBOX_DESKTOP_LAB) && JARBOX_DESKTOP_LAB
+    /* A PC lab must not silently accept a forged TLS peer. Device policy
+       remains untouched; strict verification is a documented difference. */
+    mbedtls_ssl_conf_authmode(&entry->conf, MBEDTLS_SSL_VERIFY_REQUIRED);
+#else
     mbedtls_ssl_conf_authmode(&entry->conf, MBEDTLS_SSL_VERIFY_OPTIONAL);
+#endif
     mbedtls_ssl_conf_ca_chain(&entry->conf, &entry->cacert, NULL);
     mbedtls_ssl_conf_rng(&entry->conf, mbedtls_ctr_drbg_random, &entry->ctr_drbg);
     mbedtls_ssl_conf_dbg(&entry->conf, my_debug, stdout);
@@ -3858,7 +3864,13 @@ int sslc_connect(SSLC_Entry *entry, char *hostname, char *port) {
 
     /* OPTIONAL is not optimal for security,
      * but makes interop easier in this simplified example */
+#if defined(JARBOX_DESKTOP_LAB) && JARBOX_DESKTOP_LAB
+    /* A PC lab must not silently accept a forged TLS peer. Device policy
+       remains untouched; strict verification is a documented difference. */
+    mbedtls_ssl_conf_authmode(&entry->conf, MBEDTLS_SSL_VERIFY_REQUIRED);
+#else
     mbedtls_ssl_conf_authmode(&entry->conf, MBEDTLS_SSL_VERIFY_OPTIONAL);
+#endif
     mbedtls_ssl_conf_ca_chain(&entry->conf, &entry->cacert, NULL);
     mbedtls_ssl_conf_rng(&entry->conf, mbedtls_ctr_drbg_random, &entry->ctr_drbg);
     mbedtls_ssl_conf_dbg(&entry->conf, my_debug, stdout);
