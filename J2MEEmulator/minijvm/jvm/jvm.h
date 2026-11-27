@@ -2027,7 +2027,7 @@ struct _MiniJVM {
 #endif
 #if defined(JARBOX_HOST_RENDER_ISLAND_TEST)
     int host_render_island_enabled;
-    uint64_t host_render_island_skips,host_render_island_ops,host_render_island_refusals;
+    uint64_t host_render_island_skips,host_render_island_ops,host_render_island_refusals,host_render_wrapper_skips;
 #endif
     ArrayList *shutdown_hook;//shutdown hook ,it contains thread instance
 

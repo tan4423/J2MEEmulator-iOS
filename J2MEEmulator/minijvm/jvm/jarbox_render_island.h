@@ -1,6 +1,7 @@
 #ifndef JARBOX_RENDER_ISLAND_H
 #define JARBOX_RENDER_ISLAND_H
 #include "jarbox_block_ir.h"
+#include <stddef.h>
 
 /* General closed render-expression certificates, independent of method
  * signature, original stack depth, obfuscation and residual slot limits.
@@ -97,6 +98,15 @@ static inline const JriIsland *jri_find(const JriPlan *p,unsigned pc){
     unsigned l=0,r=p->count;
     while(l<r){unsigned m=l+(r-l)/2;if(p->island[m].pc<pc)l=m+1;else r=m;}
     return l<p->count&&p->island[l].pc==pc?p->island+l:NULL;
+}
+/* Bound the existing evaluated invocation and its scratch frame before
+ * reading the receiver or replaying any reference lane. Same allocation for
+ * operand_base, sp and stack_end is a caller invariant. */
+static inline StackEntry *jri_call_args(StackEntry *sp,StackEntry *operand_base,
+        StackEntry *stack_end,unsigned argc){
+    if(!argc||argc>JRI_MAX_ARGS||sp<operand_base||sp>stack_end||
+       sp-operand_base<(ptrdiff_t)argc||stack_end-sp<(ptrdiff_t)(argc+2))return NULL;
+    return sp-argc;
 }
 /* The audited Nick wrapper has max_locals=argc; its only extra reference
  * writes before the bundled Graphics early-return are Graphics at argc

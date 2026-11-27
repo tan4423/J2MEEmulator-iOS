@@ -17,7 +17,7 @@ typedef struct { const char *rt, *api, *app, *tag, *mode; char save[512]; int po
     int stop_requested, rc;
     uint64_t char_calls, array_calls, gc_cycles;
 #if defined(JARBOX_HOST_RENDER_ISLAND_TEST)
-    uint64_t islands, island_ops, island_refusals;
+    uint64_t islands, island_ops, island_refusals, wrapper_skips;
 #endif
 #if defined(JARBOX_HOST_BLOCK_IR_TEST)
     uint64_t block_spans, block_ops, block_compiles, block_shared_hits;
@@ -114,6 +114,7 @@ static void *job_main(void *p) {
     j->islands=__atomic_load_n(&vm->host_render_island_skips,__ATOMIC_RELAXED);
     j->island_ops=__atomic_load_n(&vm->host_render_island_ops,__ATOMIC_RELAXED);
     j->island_refusals=__atomic_load_n(&vm->host_render_island_refusals,__ATOMIC_RELAXED);
+    j->wrapper_skips=__atomic_load_n(&vm->host_render_wrapper_skips,__ATOMIC_RELAXED);
 #endif
 #if defined(JARBOX_HOST_BLOCK_IR_TEST)
     j->block_spans=__atomic_load_n(&vm->host_block_ir_spans,__ATOMIC_RELAXED);
@@ -360,11 +361,12 @@ int main(int argc, char **argv) {
         init_job(&b,argv,"B","intrinsic-island-on",bport+1,base);
         start_job(&a);start_job(&b);join_job(&a);join_job(&b);
         REQUIRE(!a.rc&&!b.rc&&island_ok(&a)&&island_ok(&b));
-        REQUIRE(!a.islands&&!a.island_ops&&!a.island_refusals);
+        REQUIRE(!a.islands&&!a.island_ops&&!a.island_refusals&&!a.wrapper_skips);
         REQUIRE(b.islands>=7900&&b.islands<=8000&&b.island_ops>=8*b.islands&&b.island_refusals>=8000);
         REQUIRE(a.gc_cycles>0&&b.gc_cycles>0);
-        printf("render islands B=%llu ops=%llu refusals=%llu\n",
-               (unsigned long long)b.islands,(unsigned long long)b.island_ops,(unsigned long long)b.island_refusals);
+        REQUIRE(b.wrapper_skips>=3900&&b.wrapper_skips<=4000);
+        printf("render islands B=%llu ops=%llu refusals=%llu wrapper_only=%llu\n",
+               (unsigned long long)b.islands,(unsigned long long)b.island_ops,(unsigned long long)b.island_refusals,(unsigned long long)b.wrapper_skips);
     } else
 #endif
     if (!strcmp(scenario,"intrinsic_bench")) {

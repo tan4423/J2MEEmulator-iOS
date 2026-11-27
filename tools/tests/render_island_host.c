@@ -40,5 +40,19 @@ int main(void){
     assert(p&&p->island[0].ref_kind==JRI_REF_LOCAL&&p->island[0].ref_index==1);free(p);
     local_image[1]=0x01;p=jri_build(local_image,sizeof local_image,1,5,NULL,0,1,cp,NULL);
     assert(p&&p->island[0].ref_kind==JRI_REF_NULL);free(p);
+    /* A resolved invocation may have unrelated values below its arguments.
+     * Refuse underflow and insufficient scratch room without writing any lane. */
+    memcpy(b,a,sizeof a);
+    for(unsigned argc=1;argc<=JRI_MAX_ARGS;++argc){
+        for(unsigned base=0;base<=24;++base)for(unsigned sp=base;sp<=24;++sp){
+            StackEntry *args=jri_call_args(b+sp,b+base,b+24,argc);
+            int ok=sp-base>=argc&&24-sp>=argc+2;
+            assert((args!=NULL)==ok);
+            if(ok)assert(args==b+sp-argc);
+            assert(!memcmp(a,b,sizeof a));
+        }
+    }
+    assert(!jri_call_args(b+8,b,b+24,0));
+    assert(!jri_call_args(b+8,b,b+24,JRI_MAX_ARGS+1));
     puts("render islands: exact typed arguments, branch/handler/unknown/fault refusal PASS");
 }

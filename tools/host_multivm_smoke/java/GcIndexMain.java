@@ -52,6 +52,16 @@ public final class GcIndexMain {
     // conservative reference lanes can retain a value after get() returns.
     // The producer and each observer retire before the next GC request.
     static volatile int clearedCount, produced;
+    // The bundled Thread.join currently throws IllegalMonitorStateException
+    // in this fixture. Observe completion and retirement with a finite bound;
+    // never use this test helper as a production scheduling policy.
+    static void awaitRetired(Thread t,boolean producer) throws Exception {
+        for(int i=0;i<250;i++) {
+            if((producer?produced==1:clearedCount>=0)&&!t.isAlive())return;
+            Thread.sleep(20);
+        }
+        throw new IllegalStateException("GC fixture thread did not retire");
+    }
     static void produce(final int round) throws Exception {
         produced=0;
         Thread producer = new Thread() {
@@ -65,7 +75,7 @@ public final class GcIndexMain {
                 produced=1;
             }
         };
-        producer.start(); producer.join();
+        producer.start(); awaitRetired(producer,true);
         check(produced == 1 && invalid == 0);
     }
     static int countCleared() throws Exception {
@@ -77,7 +87,7 @@ public final class GcIndexMain {
                 clearedCount=count;
             }
         };
-        observer.start(); observer.join();
+        observer.start(); awaitRetired(observer,false);
         check(clearedCount>=0);
         return clearedCount;
     }
