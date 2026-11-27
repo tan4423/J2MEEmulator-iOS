@@ -3270,7 +3270,15 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                 jarbox_lab_deep_note(11,1);
 #else
                 const uint64_t ordinal=__atomic_fetch_add(&jvm->session->treo_state.host_residual_calls,1,__ATOMIC_RELAXED);
-                jbr_limit=(unsigned)(ordinal%4); // deterministic fixture scope schedule
+#if defined(JARBOX_HOST_RESIDUAL_TEST)
+                // The Java resume oracle sets limit=n%4 for EVERY call.
+                // A GC admission refusal still consumes that invocation;
+                // counting only compiled calls shifts all later schedules.
+                const uint64_t suspended=__atomic_load_n(&jvm->session->treo_state.host_residual_suspended,__ATOMIC_RELAXED);
+                jbr_limit=(unsigned)((ordinal+suspended)%4);
+#else
+                jbr_limit=(unsigned)(ordinal%4);
+#endif
 #endif
             } else
 #endif

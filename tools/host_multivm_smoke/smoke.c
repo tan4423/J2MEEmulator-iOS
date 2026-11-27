@@ -258,9 +258,13 @@ static int residual_equal(const Job *a,const Job *b) {
         int n=0,faults=0,changed=0;
         for(;n<2000;n++) {
             int index=-1,fault=-1;
-            if(!fgets(x,sizeof x,f)||!fgets(y,sizeof y,g)||strcmp(x,y)||
-               !strchr(x,'\n')||sscanf(x,"%d:%d:",&index,&fault)!=2||index!=n||
-               fault<0||fault>4)break;
+            if(!fgets(x,sizeof x,f)||!fgets(y,sizeof y,g)){
+                fprintf(stderr,"residual oracle truncated at record %d\n",n);break;
+            }
+            if(strcmp(x,y)||!strchr(x,'\n')||sscanf(x,"%d:%d:",&index,&fault)!=2||index!=n||
+               fault<0||fault>4){
+                fprintf(stderr,"residual oracle mismatch at record %d: A=%.300s B=%.300s\n",n,x,y);break;
+            }
         }
         if(n==2000 && fgets(x,sizeof x,f)&&fgets(y,sizeof y,g)&&!strcmp(x,y)&&
            sscanf(x,"PASS 2000 %d %d",&faults,&changed)==2&&
