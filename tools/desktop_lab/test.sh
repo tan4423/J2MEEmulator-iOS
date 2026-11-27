@@ -72,3 +72,12 @@ grep -Fx 'LAB_MAP_ABA_PASS' "$OUT/fixture/run-map.log"
 grep -Fx 'LAB_VECTOR_ABA_PASS' "$OUT/fixture/run-map.log"
 test "$(grep -Fc 'LAB_VECTOR_ORACLE_PASS' "$OUT/fixture/run-map.log")" -eq 3
 test "$(grep -Fc 'LAB_MAP_ORACLE_PASS' "$OUT/fixture/run-map.log")" -eq 3
+
+# Exact q3 fast-path oracle in MiniJVM, with level-1 headless sink held constant.
+python3 "$ROOT/tools/desktop_lab/test_transport.py" "$OUT" lookup 2>&1 | tee "$OUT/fixture/run-lookup.log"
+grep -F 'LAB_ARRAY_LOOKUP_ABA_PASS' "$OUT/fixture/run-lookup.log"
+grep -Fx 'LAB_FIXTURE_BACKGROUND_INPUT_PASS' "$OUT/fixture/run-lookup.log"
+test "$(grep -Fc 'LAB_MAP_ORACLE_PASS' "$OUT/fixture/run-lookup.log")" -ge 3
+
+# Standalone Java arithmetic differential and source-level guard wiring.
+python3 "$ROOT/tools/tests/test_array_lookup_mode1.py" -v
