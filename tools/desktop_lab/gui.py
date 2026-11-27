@@ -7,6 +7,7 @@ import os
 import pathlib
 import subprocess
 import tempfile
+import time
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 import uuid
@@ -30,6 +31,19 @@ DEFAULT_SETTINGS={
     "refresh_ms":1000,
 }
 BASE=DEFAULT_BASE
+RELAUNCH_INTERVAL=31.0
+
+def relaunch_remaining(lock,now=None):
+    # Caller owns the per-save flock; persist only lifecycle metadata.
+    lock.seek(0)
+    raw=lock.read().strip()
+    if not raw:return 0.0
+    retired=float(raw)
+    if not 0 < retired < float('inf'):raise ValueError('Invalid relaunch marker')
+    return min(RELAUNCH_INTERVAL,max(0.0,RELAUNCH_INTERVAL-((time.time() if now is None else now)-retired)))
+
+def mark_retired(lock,now=None):
+    lock.seek(0);lock.truncate();lock.write(str(time.time() if now is None else now));lock.flush();os.fsync(lock.fileno())
 
 def validate_settings(raw):
     """Validate user preferences; deliberately excludes gameplay/runtime knobs."""
@@ -228,6 +242,7 @@ class Lab:
 
     def start(self):
         if self.proc and self.proc.poll() is None:return
+        self._reap_exited()
         try:
             p=pathlib.Path(self.jar.get()).expanduser().resolve(strict=True)
             w,h=int(self.w.get()),int(self.h.get())
@@ -237,9 +252,14 @@ class Lab:
             with p.open("rb") as f:digest=hashlib.file_digest(f,"sha256").hexdigest()
             save=BASE/"saves"/digest;save.mkdir(parents=True,exist_ok=True,mode=0o700)
             import fcntl
-            self.save_lock=(save/".lab.lock").open("a")
+            self.save_lock=(save/".lab.lock").open("a+")
             try:fcntl.flock(self.save_lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
             except BlockingIOError:self.save_lock.close();raise ValueError("This JAR already has a running save session")
+            remaining=relaunch_remaining(self.save_lock)
+            if remaining>0:
+                self.save_lock.close()
+                self.status.set(f"Wait {int(remaining)+1} more seconds before restarting this game.")
+                return
             self.session=BASE/"sessions"/(dt.datetime.now().strftime("%Y%m%d-%H%M%S")+"-"+uuid.uuid4().hex[:8])
             self.session.mkdir(parents=True,exist_ok=True,mode=0o700)
             current=self._settings_values()
@@ -263,13 +283,21 @@ class Lab:
             try: data=metrics.report(self.session/"trace.csv",10)
             except (FileNotFoundError,ValueError,TypeError,KeyError):data={"status":"Waiting for complete samples"}
             self.view.configure(state="normal");self.view.delete("1.0","end");self.view.insert("1.0",json.dumps(data,indent=2,ensure_ascii=False));self.view.configure(state="disabled")
-        if self.proc and self.proc.poll() is not None:
-            code=self.proc.returncode;self.proc=None
-            if self.log:self.log.close();self.log=None
-            if getattr(self,"save_lock",None) and not self.save_lock.closed:self.save_lock.close()
-            self.start_btn.configure(state="normal");self.settings_btn.configure(state="normal")
-            self.status.set(f"Game exited (code {code}). Export research data; private log stays local.")
+        self._reap_exited()
         self.root.after(self.refresh_ms,self.poll)
+
+    def _reap_exited(self):
+        if self.proc and self.proc.poll() is not None:
+            code=self.proc.returncode
+            if getattr(self,"save_lock",None) and not self.save_lock.closed:
+                # Child is fully reaped; persist before releasing ownership.
+                mark_retired(self.save_lock)
+                self.save_lock.close()
+            self.proc=None
+            if self.log:self.log.close();self.log=None
+            self.start_btn.configure(state="normal");self.settings_btn.configure(state="normal")
+            self.status.set(f"Game exited (code {code}). Wait 31 seconds before restarting this save.")
+
 
     def export(self):
         if not self.session:return messagebox.showinfo("Export","Start a session first.")
@@ -290,6 +318,7 @@ class Lab:
     def close(self):
         if self.proc and self.proc.poll() is None:
             messagebox.showinfo("Game running","Close the game window first to preserve RMS and flush the trace.");return
+        self._reap_exited()
         self.root.destroy()
 
 if __name__=="__main__":

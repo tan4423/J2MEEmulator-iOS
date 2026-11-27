@@ -4039,6 +4039,7 @@ class GameViewController: UIViewController {
                 // A zero implicit token can also mean several parked VMs.
                 // This worker's token is retired; only an empty registry
                 // authorizes legacy process-wide Treo/renderer resets.
+                self.sessionLibrary?.recordRetiredGame(path: gamePath, cloneID: instanceCloneID)
                 let mayResetNative = jvm_bridge_active_session_count() == 0
                 unbindGameFrameView(token: launchingToken)
                 self.emulatorView.clearPendingGameFrame()

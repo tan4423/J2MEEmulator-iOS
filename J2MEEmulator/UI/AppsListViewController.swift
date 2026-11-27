@@ -1051,6 +1051,46 @@ class AppsListViewController: UIViewController,
     // presentation is only the visible surface, never the lifetime owner.
     // Keep STARTING/STOPPING controllers until their native tokens retire.
     private var managedGames: [GameViewController] = []
+    // Per save/tab, not a process-wide throttle. Only a retired native
+    // worker establishes a new deadline; parking/focusing never does.
+    private var relaunchDeadlines: [String: TimeInterval] = [:]
+    private static let relaunchInterval: TimeInterval = 31
+
+    private func relaunchKey(path: String, cloneID: UUID?) -> String {
+        "jarbox.relaunch." + JarBoxGameStorage.installId(for: path) + "." + (cloneID?.uuidString ?? "original")
+    }
+
+    func recordRetiredGame(path: String, cloneID: UUID?) {
+        let key = relaunchKey(path: path, cloneID: cloneID)
+        relaunchDeadlines[key] = ProcessInfo.processInfo.systemUptime + Self.relaunchInterval
+        // Cover ordinary app close/reopen too; no per-frame storage writes.
+        UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: key)
+    }
+
+    private func relaunchRemaining(path: String, cloneID: UUID?) -> TimeInterval {
+        let key = relaunchKey(path: path, cloneID: cloneID)
+        let now = ProcessInfo.processInfo.systemUptime
+        if let deadline = relaunchDeadlines[key] {
+            if deadline > now { return deadline - now }
+            relaunchDeadlines.removeValue(forKey: key)
+            UserDefaults.standard.removeObject(forKey: key)
+            return 0
+        }
+        let retired = UserDefaults.standard.double(forKey: key)
+        guard retired > 0 else { return 0 }
+        // Wall time is used once across process launches, then monotonic.
+        // Clock rollback cannot block a tab for an unbounded interval.
+        let remaining = min(Self.relaunchInterval, max(0, Self.relaunchInterval - (Date().timeIntervalSince1970 - retired)))
+        if remaining > 0 { relaunchDeadlines[key] = now + remaining }
+        else { UserDefaults.standard.removeObject(forKey: key) }
+        return remaining
+    }
+
+    private func relaunchDenial(path: String, cloneID: UUID?) -> String? {
+        let remaining = relaunchRemaining(path: path, cloneID: cloneID)
+        guard remaining > 0 else { return nil }
+        return "Phiên cũ vừa thoát. Vui lòng đợi thêm " + String(Int(ceil(remaining))) + " giây trước khi vào lại tab này."
+    }
 
 
     private var retainedGames: [GameViewController] {
@@ -1242,6 +1282,9 @@ class AppsListViewController: UIViewController,
         }
         guard !retainedGames.contains(where: { $0.holdsNativeInstance(for: app.path, cloneID: target) }) else {
             throw mutationError("Tab này vẫn đang khởi động hoặc đang dừng.")
+        }
+        if let reason = relaunchDenial(path: app.path, cloneID: target) {
+            throw mutationError(reason)
         }
         try requireNewTabSlot(for: app)
     }
@@ -2932,6 +2975,12 @@ class AppsListViewController: UIViewController,
         // Automatic parking is not a user navigation choice.
         defer { JarBoxGameStorage.rememberLastTab(jarPath: app.path, cloneID: selected) }
         for id in ids {
+            // Explicit settings restart waits once, off the main run loop.
+            // The usual launch path checks the same deadline again.
+            let remaining = relaunchRemaining(path: app.path, cloneID: id)
+            if remaining > 0 {
+                try await Task.sleep(nanoseconds: UInt64(ceil(remaining * 1_000_000_000)))
+            }
             guard pendingTabMutation == ticket, springboardVisible,
                   let scene = view.window?.windowScene, scene.activationState == .foregroundActive,
                   presentedViewController == nil else {
@@ -3114,6 +3163,12 @@ class AppsListViewController: UIViewController,
             let alert = UIAlertController(title: "Đang đóng phiên cũ",
                 message: "Tab này vẫn đang khởi động hoặc dừng; không thể dùng chung dữ liệu.",
                 preferredStyle: .alert)
+            alert.addAction(UIAlertAction(title: "OK", style: .default))
+            present(alert, animated: true)
+            return
+        }
+        if let reason = relaunchDenial(path: app.path, cloneID: cloneID) {
+            let alert = UIAlertController(title: "Chờ vào lại game", message: reason, preferredStyle: .alert)
             alert.addAction(UIAlertAction(title: "OK", style: .default))
             present(alert, animated: true)
             return

@@ -14,6 +14,18 @@ with tempfile.TemporaryDirectory() as tmp:
     gui.CONFIG_DIR=tmp/"config"
     gui.CONFIG_PATH=gui.CONFIG_DIR/"settings.json"
     gui.BASE=tmp/"data"
+    # Boundary, persistence and independent save identities without sleeping.
+    p=tmp/"cooldown.lock"
+    with p.open("a+") as lock:
+        assert gui.relaunch_remaining(lock,now=100)==0
+        gui.mark_retired(lock,now=100)
+        assert gui.relaunch_remaining(lock,now=130)>0
+        assert gui.relaunch_remaining(lock,now=131)==0
+        assert gui.relaunch_remaining(lock,now=90)==31
+    with p.open("a+") as lock:
+        assert gui.relaunch_remaining(lock,now=120)==11
+    with (tmp/"other.lock").open("a+") as lock:
+        assert gui.relaunch_remaining(lock,now=120)==0
     window=tk.Tk()
     window.withdraw()
     app=gui.Lab(window)
