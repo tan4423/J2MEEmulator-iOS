@@ -32,6 +32,9 @@
 #include "jvm_util.h"
 #if defined(TREO_NINJA_CORE_EXPERIMENT) && TREO_NINJA_CORE_EXPERIMENT
 #include "jarbox_residual_binding.h"
+#if defined(TREO_RESIDUAL_EXPERIMENT) && TREO_RESIDUAL_EXPERIMENT
+extern int treo_game_jit_is_enabled(void);
+#endif
 #endif
 #include "garbage.h"
 #include <stdio.h>
@@ -771,7 +774,7 @@ static s32 n_ninjaCorePaint(Runtime *runtime, JClass *clazz) {
 #if defined(TREO_RESIDUAL_EXPERIMENT) && TREO_RESIDUAL_EXPERIMENT && __JVM_OS_IOS__
     // No sink-only candidate on a cold/unrecognized method or failed plan.
     enabled=enabled&&__atomic_load_n(&state->residual_plan_ready,__ATOMIC_ACQUIRE)&&
-        !__atomic_load_n(&state->residual_faults,__ATOMIC_RELAXED);
+        !__atomic_load_n(&state->residual_faults,__ATOMIC_RELAXED)&&!treo_game_jit_is_enabled();
 #endif
 #if defined(TREO_CORE_ABA) && TREO_CORE_ABA
     if (enabled) {
@@ -5117,7 +5120,8 @@ int treo_residual_scope_valid(Runtime *r,Instance *wrapper,const JarBoxResidualS
     if(!r||!r->jvm||!r->jvm->session||!r->thrd_info||!s||!wrapper||
        (uintptr_t)wrapper!=s->wrapper||!s->serial||s->serial!=g_afk_scope_serial||
        !s->owner||s->owner!=g_afk_canvas_owner_key||s->context!=g_afk_canvas||
-       r->thrd_info->is_stop||!r->thrd_info->jarbox_headless_scope)return 0;
+       r->thrd_info->is_stop||r->thrd_info->suspend_count||r->jvm->jdwp_enable||
+       treo_game_jit_is_enabled()||!r->thrd_info->jarbox_headless_scope)return 0;
     JarBoxSession *session=r->jvm->session;
     JarBoxTreoState *st=&session->treo_state;
     if(jarbox_session_phase(session)!=JARBOX_SESSION_PARKED||

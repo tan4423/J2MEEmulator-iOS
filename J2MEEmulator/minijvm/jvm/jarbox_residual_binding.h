@@ -93,19 +93,36 @@ static inline int jbr_bcontext(JClass *cl,Instance *obj,int64_t *v) {
 // one direct paint delegate call (Class_hef.paint PC5), and one writer
 // of an existing wrapper's Graphics (Class_hxb.a PC8). c3 is created
 // per delegate in its constructor. Reject offscreen/mismatched ancestry.
-static inline int jbr_binding_at(Runtime *r,Instance *wrapper,JarBoxResidualBinding *out,
-                                 unsigned map_pc,unsigned delegate_pc,unsigned paint_pc) {
+static inline int jbr_binding_route(Runtime *r,Instance *wrapper,JarBoxResidualBinding *out,
+                                 unsigned map_pc,unsigned delegate_pc,unsigned paint_pc,unsigned route_pc) {
     static const char *gd="(Ljavax/microedition/lcdui/Graphics;)V";
     static const char *wd="(LClass_hvi;)V";
     if(out)memset(out,0,sizeof(*out));
-    if(!out||!r||!r->jvm||!r->thrd_info||!r->stack||
-       !jbr_bmethod(r->method,"Class_hii","k1",wd)||!r->method->is_static)return 0;
+    if(!out||!r||!r->jvm||!r->thrd_info||!r->stack)return 0;
+    const int overlay=jbr_bmethod(r->method,"Class_hii","i3",wd);
+    if((!overlay&&!jbr_bmethod(r->method,"Class_hii","k1",wd))||!r->method->is_static)return 0;
     JClass *map=r->method->_this_class;
     if(!wrapper||!jbr_bname(wrapper->mb.clazz,"Class_hvi")||
        !jbr_bobject(wrapper,wrapper->mb.clazz))return 0;
     JClass *wc=wrapper->mb.clazz;
     Runtime *p=r->parent;
-    if(!jbr_bframe(p,r,1)||!jbr_bmethod(p->method,"Class_hmi","m",wd)||
+    if(overlay){
+        // Real Nick overlay path: Class_hmi.i(Class_hac,Class_hvi)
+        // PC54 -> Class_hac.a0(Class_hvi) PC2044 -> Class_hii.i3.
+        if(!jbr_bframe(p,r,2)||!jbr_bmethod(p->method,"Class_hac","a0",wd)||
+           p->method->is_static||!jbr_bpc(p,map_pc)||p->localvar[1].rvalue!=wrapper||
+           !jbr_bobject(p->localvar[0].rvalue,p->method->_this_class)||
+           !(p->method->_this_class->cff.access_flags&16)||
+           p->method->_this_class->jloader!=map->jloader)return 0;
+        Runtime *route=p->parent;
+        if(!jbr_bframe(route,r,2)||
+           !jbr_bmethod(route->method,"Class_hmi","i","(LClass_hac;LClass_hvi;)V")||
+           !route->method->is_static||!jbr_bpc(route,route_pc)||
+           route->localvar[0].rvalue!=p->localvar[0].rvalue||
+           route->localvar[1].rvalue!=wrapper||
+           route->method->_this_class->jloader!=map->jloader)return 0;
+        p=route;
+    } else if(!jbr_bframe(p,r,1)||!jbr_bmethod(p->method,"Class_hmi","m",wd)||
        !p->method->is_static||!jbr_bpc(p,map_pc)||p->localvar[0].rvalue!=wrapper||
        p->method->_this_class->jloader!=map->jloader)return 0;
     Runtime *delegate=NULL;
@@ -144,7 +161,12 @@ static inline int jbr_binding_at(Runtime *r,Instance *wrapper,JarBoxResidualBind
     if(!jbr_bcontext(api,c,&cctx)||!jbr_bcontext(g->mb.clazz,g,&gctx)||cctx!=gctx)return 0;
     out->wrapper=wrapper;out->canvas=c;out->graphics=g;out->context=cctx;return 1;
 }
+static inline int jbr_binding_at(Runtime *r,Instance *wrapper,JarBoxResidualBinding *out,
+                                 unsigned map_pc,unsigned delegate_pc,unsigned paint_pc) {
+    return jbr_binding_route(r,wrapper,out,map_pc,delegate_pc,paint_pc,0);
+}
 static inline int jbr_nick_binding(Runtime *r,Instance *wrapper,JarBoxResidualBinding *out) {
-    return jbr_binding_at(r,wrapper,out,58,30,5);
+    const int overlay=r&&jbr_bmethod(r->method,"Class_hii","i3","(LClass_hvi;)V");
+    return jbr_binding_route(r,wrapper,out,overlay?2044:58,30,5,54);
 }
 #endif

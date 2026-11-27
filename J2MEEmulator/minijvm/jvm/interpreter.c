@@ -211,51 +211,61 @@ static MethodInfo *jbr_live_declared(JClass *c,const char *name,const char *desc
     }
     return found;
 }
-static int jbr_live_wrapper_ready(Instance *w,const JarBoxResidualScope *scope) {
+static inline MethodInfo *jarbox_virtual_lookup(MiniJVM *,ConstantMethodRef *,Instance *);
+static int jbr_live_target_ready(MiniJVM *vm,ConstantMethodRef *mr,Instance *receiver,MethodInfo *expected) {
+    return mr&&expected&&(!mr->methodInfo||mr->methodInfo==expected)&&
+           (mr->methodInfo==expected||jarbox_virtual_lookup(vm,mr,receiver)==expected);
+}
+static int jbr_live_wrapper_ready(MiniJVM *vm,Instance *w,const JarBoxResidualScope *scope,int image) {
     static const unsigned char digest[32]={0x13,0xca,0x49,0xde,0x94,0x27,0xbe,0x04,0xff,0xe4,0xb4,0xe0,0xe3,0xa9,0x6a,0xf0,0x0e,0x0d,0x16,0x56,0x20,0x93,0xf8,0x93,0x6a,0x1c,0xa1,0x18,0xf3,0xa8,0x7f,0xa1};
-    static const char *desc="(Ljavax/microedition/lcdui/Image;IIIIIIII)V";
+    static const unsigned char image_digest[32]={0x1e,0xe7,0x75,0x00,0xc0,0x72,0xc0,0x94,0xc3,0x87,0x4f,0x28,0xef,0x0f,0xc4,0x48,0x0a,0xd9,0xac,0x0c,0xa2,0xce,0x1e,0x6b,0x52,0x8e,0x21,0x71,0x77,0x09,0x64,0xcc};
+    const char *desc=image?"(Ljavax/microedition/lcdui/Image;III)V":"(Ljavax/microedition/lcdui/Image;IIIIIIII)V";
+    const char *name=image?"drawImage":"drawRegion";
     if(!w||!scope||!scope->graphics)return 0;
     JClass *wc=w->mb.clazz;
     Instance *g=(Instance *)scope->graphics;
     MethodInfo *wm=jbr_live_declared(wc,"a",desc);
-    MethodInfo *gm=jbr_live_declared(g->mb.clazz,"drawRegion",desc);
-    if(!wm||!gm||!jbr_live_code(wm->converted_code,67,digest)||
+    MethodInfo *gm=jbr_live_declared(g->mb.clazz,name,desc);
+    if(!wm||!gm||!jbr_live_code(wm->converted_code,image?25:67,image?image_digest:digest)||
        !jbr_bfield(wc,NULL,"g","I",4,0,1))return 0;
     // Exact JAR and packaged API identities are launch-gated. Verify that
     // the wrapper's actual CP refers to those loaded declarations. No
     // resolver or Java execution on this path.
     CodeAttribute *ca=wm->converted_code;
-    unsigned ix=jbr_u16(ca->bytecode_for_jit+3);
+    unsigned ix=jbr_u16(ca->bytecode_for_jit+(image?2:3));
     ConstantItem *item=ix&&ix<(unsigned)wc->constant_item_count?class_get_constant_item(wc,ix):NULL;
     if(!item||item->tag!=CONSTANT_FIELD_REF||!jbr_plain_int_read(wc,(ConstantFieldRef *)item))return 0;
     ConstantFieldRef *f=(ConstantFieldRef *)item;
     if(!jbr_eq(f->name,"g")||f->fieldInfo->_this_class!=wc)return 0;
-    ix=jbr_u16(ca->bytecode_for_jit+46);
+    ix=jbr_u16(ca->bytecode_for_jit+(image?14:46));
     item=ix&&ix<(unsigned)wc->constant_item_count?class_get_constant_item(wc,ix):NULL;
     if(!item||item->tag!=CONSTANT_FIELD_REF)return 0;
     f=(ConstantFieldRef *)item;
     if(!f->fieldInfo||f->fieldInfo->_this_class!=wc||f->fieldInfo->isvolatile||
        !jbr_eq(f->name,"a")||!jbr_eq(f->descriptor,"Ljavax/microedition/lcdui/Graphics;"))return 0;
-    ix=jbr_u16(ca->bytecode_for_jit+64);
+    ix=jbr_u16(ca->bytecode_for_jit+(image?22:64));
     item=ix&&ix<(unsigned)wc->constant_item_count?class_get_constant_item(wc,ix):NULL;
     if(!item||item->tag!=CONSTANT_METHOD_REF)return 0;
     ConstantMethodRef *mr=(ConstantMethodRef *)item;
     return jbr_eq(mr->clsName,"javax/microedition/lcdui/Graphics")&&
-        jbr_eq(mr->name,"drawRegion")&&jbr_eq(mr->descriptor,desc)&&
-        (!mr->methodInfo||mr->methodInfo==gm);
+        jbr_eq(mr->name,name)&&jbr_eq(mr->descriptor,desc)&&
+        jbr_live_target_ready(vm,mr,g,gm);
 }
 static const JarBoxResidualOp *jbr_live_compile(Runtime *r,MethodInfo *m,CodeAttribute *ca,
                                                 JarBoxResidualScope *scope,unsigned *count) {
     static const unsigned char digest[32]={0x96,0xd7,0xab,0x33,0x79,0x07,0xcf,0x79,0xd4,0x50,0x14,0x30,0x16,0x8f,0x6f,0x65,0xc2,0x91,0xc6,0xa1,0xba,0x8f,0xe3,0xbd,0x77,0x51,0x56,0x26,0x4c,0xb7,0xd0,0xa5};
+    static const unsigned char overlay_digest[32]={0xa9,0x55,0x03,0x4d,0x66,0xfe,0x26,0xeb,0x66,0x10,0x36,0x93,0x6c,0x6a,0xcb,0x2d,0x2c,0xcc,0x3e,0x0f,0x82,0x00,0x07,0x48,0xfe,0x7e,0x5b,0x01,0x4c,0xaf,0x85,0x4d};
     RuntimeStack *s=r->stack;
     JarBoxTreoState *st=r->jvm->session?&r->jvm->session->treo_state:NULL;
     *count=0;
+    if((ca->code_length!=1368||ca->max_locals!=4)&&(ca->code_length!=413||ca->max_locals!=5))return NULL;
+    const int overlay=ca->code_length==413;
     // Cheap signature rejection precedes control-plane reads for ordinary
     // methods. No active JIT or debugger, exact method and rooted receiver.
     if(!st||!m->is_static||m->is_sync||m->is_native||m->para_slots!=1||m->return_slots||
-       ca->max_locals!=4||ca->max_stack!=10||ca->exception_table_length||
-       ca->code_length!=1368||!jbr_eq(m->_this_class->name,"Class_hii")||
-       !jbr_eq(m->name,"k1")||!jbr_eq(m->descriptor,"(LClass_hvi;)V")||
+       ca->max_stack!=10||ca->exception_table_length||
+       !jbr_eq(m->_this_class->name,"Class_hii")||
+       !jbr_eq(m->name,overlay?"i3":"k1")||!jbr_eq(m->descriptor,"(LClass_hvi;)V")||
        !__atomic_load_n(&st->residual_archive_verified,__ATOMIC_ACQUIRE)||
        __atomic_load_n(&st->residual_faults,__ATOMIC_RELAXED)||
        jarbox_session_phase(r->jvm->session)!=JARBOX_SESSION_PARKED||
@@ -283,11 +293,22 @@ static const JarBoxResidualOp *jbr_live_compile(Runtime *r,MethodInfo *m,CodeAtt
     // Only the exact audited Nick map/wrapper. All removed regions must
     // already have linked and initialized operands; never warm by executing
     // extra Java. A still-cold map takes the original interpreter.
-    if(!jbr_live_code(ca,1368,digest)||!jbr_live_wrapper_ready((s->sp-1)->rvalue,scope))return NULL;
+    if(!jbr_live_code(ca,overlay?413:1368,overlay?overlay_digest:digest)||
+       !jbr_live_wrapper_ready(r->jvm,wrapper,scope,0)||
+       (overlay&&!jbr_live_wrapper_ready(r->jvm,wrapper,scope,1)))return NULL;
     for(unsigned p=0;p<(unsigned)ca->code_length;) {
         unsigned raw=ca->bytecode_for_jit[p],len=jbr_raw_size(raw);
         if(!len||len>(unsigned)ca->code_length-p)return NULL;
         if(raw==0x2a&&!jbr_closed_region_ready(m->_this_class,ca,p))return NULL;
+        if(raw==0xb6){
+            JClass *cl=m->_this_class;
+            unsigned ix=jbr_u16(ca->bytecode_for_jit+p+1);
+            int typ=jbr_fixture_cp(cl,raw,ix);
+            if(typ!=JBR_CP_DRAW&&(!overlay||typ!=JBR_CP_DRAW_IMAGE))return NULL;
+            const char *desc=typ==JBR_CP_DRAW_IMAGE?"(Ljavax/microedition/lcdui/Image;III)V":"(Ljavax/microedition/lcdui/Image;IIIIIIII)V";
+            ConstantMethodRef *mr=(ConstantMethodRef *)class_get_constant_item(cl,ix);
+            if(!jbr_live_target_ready(r->jvm,mr,wrapper,jbr_live_declared(wrapper->mb.clazz,"a",desc)))return NULL;
+        }
         p+=len;
     }
     spin_lock(&ca->compile_lock);
@@ -296,12 +317,12 @@ static const JarBoxResidualOp *jbr_live_compile(Runtime *r,MethodInfo *m,CodeAtt
         JarBoxResidualOp *candidate=calloc(JBR_MAX_NODES,sizeof(*candidate));
         if(candidate) {
             unsigned n=jbr_compile(ca->bytecode_for_jit,ca->code_length,
-                jbr_fixture_cp,m->_this_class,3,candidate,JBR_MAX_NODES);
+                jbr_fixture_cp,m->_this_class,overlay?4:3,candidate,JBR_MAX_NODES);
             if(n&&jbr_validate(candidate,n,ca->bytecode_for_jit,ca->code_length)){
                 ca->residual_plan_count=n;plan=candidate;
                 __atomic_store_n(&ca->host_residual_plan,plan,__ATOMIC_RELEASE);
                 __atomic_fetch_add(&st->host_residual_compiles,1,__ATOMIC_RELAXED);
-                __atomic_store_n(&st->residual_plan_ready,1,__ATOMIC_RELEASE);
+                __atomic_fetch_or(&st->residual_plan_ready,overlay?2u:1u,__ATOMIC_RELEASE);
             } else free(candidate);
         }
     }
@@ -2520,13 +2541,17 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
             }
             runtime->pc = ca->code;
 #if defined(JARBOX_HOST_BINDING_TEST)
-            if(jbr_bmethod(method,"Class_hii","k1","(LClass_hvi;)V")) {
+            const int binding_overlay=jbr_bmethod(method,"Class_hii","i3","(LClass_hvi;)V");
+            if(binding_overlay||jbr_bmethod(method,"Class_hii","k1","(LClass_hvi;)V")) {
                 JarBoxTreoState *state=&jvm->session->treo_state;
                 JarBoxResidualBinding b;
                 Instance *wrapper=stack_size(stack)>=1?(stack->sp-1)->rvalue:NULL;
                 const void *expected=jbr_bfield(clazz,NULL,"expected","I",sizeof(s32),0,1);
                 s32 want=-1;if(expected)memcpy(&want,expected,sizeof(want));
-                int got=jbr_binding_at(runtime,wrapper,&b,JBR_TEST_MAP_PC,JBR_TEST_DELEGATE_PC,JBR_TEST_PAINT_PC);
+                int got=jbr_binding_route(runtime,wrapper,&b,
+                    binding_overlay?JBR_TEST_OVERLAY_PC:JBR_TEST_MAP_PC,
+                    binding_overlay?JBR_TEST_OVERLAY_DELEGATE_PC:JBR_TEST_DELEGATE_PC,
+                    JBR_TEST_PAINT_PC,JBR_TEST_OVERLAY_ROUTE_PC);
                 if(want!=got)__atomic_fetch_add(&state->host_binding_mismatch,1,__ATOMIC_RELAXED);
                 if(got)__atomic_fetch_add(&state->host_binding_good,1,__ATOMIC_RELAXED);
                 else __atomic_fetch_add(&state->host_binding_bad,1,__ATOMIC_RELAXED);
