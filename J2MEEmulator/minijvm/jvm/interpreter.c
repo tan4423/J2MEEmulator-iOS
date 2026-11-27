@@ -3054,7 +3054,12 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
         !method->is_native && !method->is_sync && method->breakpoint == NULL &&
         method->_this_class->status >= CLASS_STATUS_CLINITED &&
         !pruntime->jvm->jdwp_enable && !pruntime->thrd_info->is_stop &&
-        !pruntime->thrd_info->suspend_count && !treo_game_jit_enabled_fast() &&
+        !pruntime->thrd_info->suspend_count &&
+#if TREO_VM_ARRAY_LOOKUP_DESKTOP
+        1 && /* Desktop lab build deliberately links with JIT disabled. */
+#else
+        !treo_game_jit_enabled_fast() &&
+#endif
         treo_vm_matches_array_lookup(method)) {
 #if TREO_VM_ARRAY_LOOKUP_DIAG
         treo_array_diag_note(3); // exact candidate plus debugger/thread safety
