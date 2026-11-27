@@ -60,7 +60,7 @@ public final class LabFixture extends MIDlet {
             s6++;
             if(!sink&&s6!=1)throw new RuntimeException("fixture state");
             if(sink)System.out.println("LAB_SINK_PAINT "+s6);
-            if("1".equals(System.getProperty("jarbox.lab.test.map")))Class_hii.verify();
+            if("1".equals(System.getProperty("jarbox.lab.test.map"))){Class_hii.verify();Class_hjf.verify();}
 
             Image im=Image.createImage(8,8);
             Graphics ig=im.getGraphics();
@@ -128,4 +128,26 @@ final class Class_hii {
         check(q3(0,0),87654);check(m3(0,0),65533);
         System.out.println("LAB_MAP_ORACLE_PASS");
     }
+}
+
+/* Same synchronized super forwarding shape as the original game, without
+ * copying game content. Test actual boot Vector and live array replacement. */
+final class Class_hjf extends java.util.Vector {
+    public final synchronized Object elementAt(int i){return super.elementAt(i);}
+    private static void check(boolean ok){if(!ok)throw new RuntimeException("Vector oracle mismatch");}
+    private static void test(java.util.Vector v){
+        Object a=new Object(),b=new Object();
+        v.addElement(a);v.addElement(null);v.addElement(b);
+        check(v.elementAt(0)==a);check(v.elementAt(1)==null);check(v.elementAt(2)==b);
+        v.setElementAt(b,0);check(v.elementAt(0)==b);
+        v.removeElementAt(0);check(v.elementAt(0)==null);
+        v.ensureCapacity(100);check(v.elementAt(1)==b);
+        int caught=0;
+        try{v.elementAt(-1);}catch(ArrayIndexOutOfBoundsException e){caught++;}
+        try{v.elementAt(2);}catch(ArrayIndexOutOfBoundsException e){caught++;}
+        v.removeAllElements();
+        try{v.elementAt(0);}catch(ArrayIndexOutOfBoundsException e){caught++;}
+        check(caught==3);
+    }
+    static void verify(){test(new java.util.Vector());test(new Class_hjf());System.out.println("LAB_VECTOR_ORACLE_PASS");}
 }

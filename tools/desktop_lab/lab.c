@@ -49,25 +49,27 @@ static int sink_admitted,sink_fixture,map_fixture;
 static _Atomic int sink_requested,sink_invalid;
 static _Atomic uint64_t sink_paints,sink_draws,sink_faults;
 static _Thread_local s64 sink_context;
-static _Atomic uint64_t deep_counts[16];
-static _Thread_local uint64_t deep_pending[16];
+static _Atomic uint64_t deep_counts[18];
+static _Thread_local uint64_t deep_pending[18];
+static _Atomic int vector_requested;
 static _Atomic uint64_t live_counts[3];
 void jarbox_lab_liveness_note(unsigned kind){
     if(kind<3)atomic_fetch_add_explicit(&live_counts[kind],1,memory_order_relaxed);
 }
 static int deep_admitted;
+int jarbox_lab_vector_enabled(void){return deep_admitted&&atomic_load_explicit(&vector_requested,memory_order_relaxed);}
 int jarbox_lab_sink_level(int64_t context){
     if(!sink_context||(context&&context!=sink_context)||!deep_admitted||atomic_load(&sink_invalid))return 0;
     return atomic_load_explicit(&sink_requested,memory_order_relaxed);
 }
 void jarbox_lab_deep_note(unsigned kind,unsigned count){
-    if(kind<16){
+    if(kind<18){
         if(sink_context)deep_pending[kind]+=count;
         else atomic_fetch_add_explicit(&deep_counts[kind],count,memory_order_relaxed);
     }
 }
 static void flush_deep_counts(void){
-    for(unsigned i=0;i<16;i++)if(deep_pending[i]){
+    for(unsigned i=0;i<18;i++)if(deep_pending[i]){
         atomic_fetch_add_explicit(&deep_counts[i],deep_pending[i],memory_order_relaxed);
         deep_pending[i]=0;
     }
@@ -542,7 +544,7 @@ static void sample(void){
         (unsigned long long)atomic_load(&image_allocs),(unsigned long long)atomic_load(&events_delivered),
         (unsigned long long)atomic_load(&gc_cycles),(unsigned long long)atomic_load(&gc_cpu),
         bytes,(unsigned long long)atomic_load(&gc_aborts),(unsigned long long)atomic_load(&gc_heap_sample),logic_mode?"logic":trace_graph?"graph":"plain",atomic_load(&sink_requested),(unsigned long long)atomic_load(&sink_paints),(unsigned long long)atomic_load(&sink_draws),(unsigned long long)atomic_load(&sink_faults),atomic_load(&sink_invalid));
-    for(unsigned i=0;i<16;i++)fprintf(trace,",%llu",(unsigned long long)atomic_load(&deep_counts[i]));
+    for(unsigned i=0;i<18;i++)fprintf(trace,",%llu",(unsigned long long)atomic_load(&deep_counts[i]));
     fprintf(trace,",%d,%llu,%llu,%llu,%llu,%llu,%llu\n",atomic_load(&jarbox_lab_trace_enabled),(unsigned long long)atomic_load(&logic_plans),(unsigned long long)atomic_load(&logic_spans),(unsigned long long)atomic_load(&logic_ops),(unsigned long long)atomic_load(&live_counts[0]),(unsigned long long)atomic_load(&live_counts[1]),(unsigned long long)atomic_load(&live_counts[2]));fflush(trace);
 }
 static int write_graph(void){
@@ -579,7 +581,7 @@ int main(int argc,char**argv){
         snprintf(p,n,"%s.effects.csv",trace_path);effect_file=fopen(p,"w");free(p);if(!effect_file)return 2;
         fprintf(effect_file,"sequence,monotonic_ns,worker,method,pc,operation,value,lost_total\n");
     }
-    fprintf(trace,"monotonic_ns,process_cpu_ns,paints,paint_cpu_ns,frames,draw_calls,image_allocs,input_events,gc_cycles,gc_cpu_ns,native_surface_bytes,gc_aborts,gc_heap_sample_bytes,mode,sink_requested,sink_paints,sink_draws,sink_faults,sink_invalid,deep_leaves,glyph_attempts,glyph_scope_refusals,glyph_link_refusals,glyph_data_refusals,glyph_loops,glyph_chars,map_q3,map_m3,map_refusals,residual_plans,residual_calls,residual_regions,residual_deopts,map_layout_builds,map_layout_hits,graph_enabled,ir_plans,ir_spans,ir_ops,skill_advances_live,network_calls_live,update_calls_live\n");
+    fprintf(trace,"monotonic_ns,process_cpu_ns,paints,paint_cpu_ns,frames,draw_calls,image_allocs,input_events,gc_cycles,gc_cpu_ns,native_surface_bytes,gc_aborts,gc_heap_sample_bytes,mode,sink_requested,sink_paints,sink_draws,sink_faults,sink_invalid,deep_leaves,glyph_attempts,glyph_scope_refusals,glyph_link_refusals,glyph_data_refusals,glyph_loops,glyph_chars,map_q3,map_m3,map_refusals,residual_plans,residual_calls,residual_regions,residual_deopts,map_layout_builds,map_layout_hits,vector_hits,vector_refusals,graph_enabled,ir_plans,ir_spans,ir_ops,skill_advances_live,network_calls_live,update_calls_live\n");
     frame=calloc((size_t)width*height,4);if(!frame)return 2;
     if(SDL_Init(SDL_INIT_VIDEO|SDL_INIT_EVENTS)){fprintf(stderr,"%s\n",SDL_GetError());return 2;}
     SDL_Window *win=SDL_CreateWindow("JarBox Research Lab",SDL_WINDOWPOS_CENTERED,SDL_WINDOWPOS_CENTERED,width*2,height*2,SDL_WINDOW_RESIZABLE);

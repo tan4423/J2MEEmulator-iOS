@@ -184,3 +184,66 @@ static int desktop_map_leaf(MethodInfo *m,Runtime *r){
     jarbox_lab_deep_note(kind==2?7:8,1);
     return 1;
 }
+
+/* Independent Desktop Logic A/B. This replaces only the successful
+ * instruction sequence of the bundled Vector.elementAt, AFTER the ordinary
+ * synchronized method prologue. It never skips either monitor of the Nick
+ * synchronized super wrapper, never caches a receiver/element, and never
+ * synthesizes an exception. Leave the ordinary areturn handler in charge. */
+extern int jarbox_lab_vector_enabled(void);
+static int desktop_vector_body(Runtime *r,StackEntry **top){
+    MethodInfo *m=r->method;CodeAttribute *ca=m->converted_code;JClass *cl=m->_this_class;
+    StackEntry *l=r->localvar,*sp=*top;RuntimeStack *s=r->stack;
+    if(!jarbox_lab_vector_enabled()||r->jvm->jdwp_enable||
+       r->thrd_info->is_stop||r->thrd_info->suspend_count||m->breakpoint||
+       !m->is_sync||m->is_static||m->is_native||m->para_slots!=2||m->return_slots!=1||
+       ca->code_length!=49||ca->max_locals!=2||ca->max_stack!=4||
+       ca->exception_table_length||!ca->bytecode_for_jit||
+       cl->jloader||cl->status!=CLASS_STATUS_CLINITED||
+       !jbr_eq(cl->name,"java/util/Vector")||!jbr_eq(m->name,"elementAt")||
+       !jbr_eq(m->descriptor,"(I)Ljava/lang/Object;")||
+       !l||sp!=l+2||s->store+s->max_size-sp<4)return 0;
+    Instance *v=l[0].rvalue;
+    if(!v||v->mb.type!=MEM_TYPE_INS||!v->mb.clazz||!v->obj_fields||
+       r->lock!=(MemoryBlock *)v||
+       (v->mb.clazz!=cl&&(v->mb.clazz->superclass!=cl||
+          !jbr_eq(v->mb.clazz->name,"Class_hjf"))))return 0;
+    uint64_t layout=__atomic_load_n(&ca->desktop_vector_layout,__ATOMIC_ACQUIRE);
+    if(!layout){
+        const u8 *c=ca->bytecode_for_jit;
+        // Successful branch, exact original PCs from the authorized boot
+        // archive. The exceptional branch is left entirely untouched.
+        if(c[0]!=0x1b||c[1]!=0x2a||c[2]!=0xb4||c[5]!=0xa1||
+           jbg_u16(c+6)!=37||c[42]!=0x2a||c[43]!=0xb4||
+           c[46]!=0x1b||c[47]!=0x32||c[48]!=0xb0)return 0;
+        FieldInfo *n=jbg_field_at(m,2,"elementCount","I",4,0);
+        FieldInfo *a=jbg_field_at(m,43,"elementData","[Ljava/lang/Object;",sizeof(Instance *),1);
+        if(!n||!a||(size_t)n->offset_instance>UINT16_MAX||
+           (size_t)a->offset_instance>UINT16_MAX)return 0;
+        layout=(UINT64_C(1)<<32)|((uint64_t)n->offset_instance<<16)|a->offset_instance;
+        __atomic_store_n(&ca->desktop_vector_layout,layout,__ATOMIC_RELEASE);
+    }
+    unsigned no=(uint16_t)(layout>>16),ao=(uint16_t)layout;
+    if(v->mb.clazz->field_instance_len<0||
+       (size_t)no+sizeof(s32)>(size_t)v->mb.clazz->field_instance_len||
+       (size_t)ao+sizeof(Instance *)>(size_t)v->mb.clazz->field_instance_len)return 0;
+    s32 index=l[1].ivalue,n;
+    memcpy(&n,v->obj_fields+no,sizeof(n));
+    // A negative index also reaches aaload in the original implementation;
+    // fallback to reproduce its exact exception and message.
+    if(index<0||index>=n){jarbox_lab_deep_note(17,1);return 0;}
+    Instance *a=NULL,*result=NULL;
+    memcpy(&a,v->obj_fields+ao,sizeof(a));
+    if(!a||a->mb.type!=MEM_TYPE_ARR||a->mb.arr_type_index!=DATATYPE_REFERENCE||
+       index>=a->arr_length||!a->arr_body){jarbox_lab_deep_note(17,1);return 0;}
+    memcpy(&result,a->arr_body+(size_t)index*sizeof(result),sizeof(result));
+    // Replay both operand lanes exactly: iload_1/getfield count/compare
+    // then aload_0/getfield array/iload_1/aaload. Preserve ordinary stale
+    // reference lanes for the VM's conservative collector.
+    sp[0].ivalue=index;sp[0].rvalue=result;
+    sp[1].rvalue=v;sp[1].ivalue=index;
+    *top=sp+1;s->sp=*top;
+    r->pc=ca->code+48;
+    jarbox_lab_deep_note(16,1);
+    return 1;
+}

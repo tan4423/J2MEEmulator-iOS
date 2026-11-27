@@ -936,6 +936,7 @@ struct _CodeAttribute {
 #if defined(JARBOX_DESKTOP_LAB)
     unsigned desktop_glyph_kind;
     uint64_t desktop_map_layout; // immutable linked field offsets, no heap pointers
+    uint64_t desktop_vector_layout; // successful linked Vector body proof
     const unsigned char *desktop_verified_digest; // static expected digest, not a heap pointer
 #endif
     spinlock_t compile_lock;

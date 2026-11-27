@@ -80,6 +80,9 @@ with socket.socket() as listener:
                         # Synthetic fixtures never authorize exact real-game residual execution.
                         assert cmd("sink residual")["state"]=="refused"
                         a=cmd("status")
+                        assert not a["vector_enabled"] and a["vector_hits"]==0
+                        if map_test:assert cmd("vector on")["state"]=="ok"
+                        else:assert cmd("vector on")["state"]=="refused"
                         assert a["residual_plans"]==a["residual_calls"]==a["residual_regions"]==0
                         assert cmd("sink map" if map_test else "sink on")["state"]=="ok"
                         assert cmd("key enter")["state"]=="queued"
@@ -97,6 +100,8 @@ with socket.socket() as listener:
                             assert b["map_refusals"]-a["map_refusals"]==6,(a,b)
                             assert b["map_layout_builds"]-a["map_layout_builds"]==2,(a,b)
                             assert b["map_layout_hits"]>a["map_layout_hits"],(a,b)
+                            assert b["vector_hits"]-a["vector_hits"]==12,(a,b)
+                            assert b["vector_refusals"]-a["vector_refusals"]==6,(a,b)
                         # Idle/disconnected is normal: no synthetic Nick skill,
                         # network or update events, and no fresh paints. Stay parked.
                         if not map_test:
@@ -106,6 +111,7 @@ with socket.socket() as listener:
                             assert idle["skill_advances_live"]==idle["network_calls_live"]==idle["update_calls_live"]==0,idle
                             assert idle["paints"]==b["paints"] and idle["frames"]==b["frames"],(b,idle)
                             print("LAB_IDLE_HEADLESS_PASS")
+                        assert cmd("vector off")["state"]=="ok"
                         assert cmd("sink off")["state"]=="ok"
                         assert cmd("key enter")["state"]=="queued"
                         deadline=time.monotonic()+8
@@ -118,6 +124,8 @@ with socket.socket() as listener:
                         print("LAB_SINK_ABA_PASS",json.dumps({"a":a,"b":b,"a2":d}))
                         if map_test:
                             assert d["map_q3"]==b["map_q3"] and d["map_m3"]==b["map_m3"] and d["map_refusals"]==b["map_refusals"]
+                            assert d["vector_hits"]==b["vector_hits"] and d["vector_refusals"]==b["vector_refusals"]
+                            print("LAB_VECTOR_ABA_PASS")
                             print("LAB_MAP_ABA_PASS")
                     assert cmd("tap 120 137")["state"]=="queued"
                     assert result.wait(timeout=15)==0
