@@ -49,8 +49,8 @@ with socket.socket() as listener:
             result=subprocess.Popen([str(x) for x in args],env=env)
             try:
                 with socket.socket(socket.AF_UNIX,socket.SOCK_DGRAM) as control_sock:
-                    c.bind("\0jb-test-"+uuid.uuid4().hex)
-                    c.settimeout(2)
+                    control_sock.bind("\0jb-test-"+uuid.uuid4().hex)
+                    control_sock.settimeout(2)
                     deadline=time.monotonic()+25
                     while not (private/"control.sock").exists():
                         assert result.poll() is None and time.monotonic()<deadline
