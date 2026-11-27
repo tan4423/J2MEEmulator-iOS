@@ -64,3 +64,7 @@ python3 "$ROOT/tools/desktop_lab/test_transport.py" "$OUT" sink 2>&1 | tee "$OUT
 grep -F 'LAB_SINK_ABA_PASS' "$OUT/fixture/run-sink.log"
 grep -Fx 'LAB_SINK_PAINT 3' "$OUT/fixture/run-sink.log"
 grep -Fx 'LAB_FIXTURE_BACKGROUND_INPUT_PASS' "$OUT/fixture/run-sink.log"
+
+python3 "$ROOT/tools/desktop_lab/test_transport.py" "$OUT" map 2>&1 | tee "$OUT/fixture/run-map.log"
+grep -Fx 'LAB_MAP_ABA_PASS' "$OUT/fixture/run-map.log"
+test "$(grep -Fc 'LAB_MAP_ORACLE_PASS' "$OUT/fixture/run-map.log")" -eq 3

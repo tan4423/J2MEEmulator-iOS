@@ -44,7 +44,7 @@ static _Atomic unsigned next_worker;
 static _Thread_local unsigned worker_id;
 static FILE *effect_file;
 static int fixture_ui, logic_mode;
-static int sink_admitted,sink_fixture;
+static int sink_admitted,sink_fixture,map_fixture;
 static _Atomic int sink_requested,sink_invalid;
 static _Atomic uint64_t sink_paints,sink_draws,sink_faults;
 static _Thread_local s64 sink_context;
@@ -489,6 +489,7 @@ static void *run_vm(void *unused){
             sys_properties_set_c(vm,"jarbox.lab.test.port",getenv("JARBOX_LAB_TEST_PORT"));
         if(fixture_ui&&getenv("JARBOX_LAB_TEST_CONTROL"))sys_properties_set_c(vm,"jarbox.lab.test.control","1");
         if(sink_fixture)sys_properties_set_c(vm,"jarbox.lab.test.sink","1");
+        if(map_fixture)sys_properties_set_c(vm,"jarbox.lab.test.map","1");
         (void)jarbox_session_enter_foreground(vm->session);
         pthread_mutex_lock(&vm_lock);active_vm=vm;pthread_mutex_unlock(&vm_lock);
         ArrayList *args=arraylist_create(0);arraylist_push_back(args,game_path);
@@ -546,7 +547,8 @@ int main(int argc,char**argv){
     if(fixture_ui&&(!getenv("SDL_VIDEODRIVER")||strcmp(getenv("SDL_VIDEODRIVER"),"dummy")||!strstr(game_path,"/fixture.jar")))return 2;
     sink_fixture=fixture_ui&&getenv("JARBOX_LAB_TEST_SINK")!=NULL;
     sink_admitted=sink_fixture||nick_archive(game_path);
-    deep_admitted=!sink_fixture&&sink_admitted&&file_digest_matches(api_path,jbr_bundled_api_sha256)&&file_digest_matches(rt_path,jbr_bundled_boot_sha256);
+    map_fixture=sink_fixture&&getenv("JARBOX_LAB_TEST_MAP")&&strcmp(getenv("JARBOX_LAB_TEST_MAP"),"1")==0;
+    deep_admitted=(map_fixture||(!sink_fixture&&sink_admitted))&&file_digest_matches(api_path,jbr_bundled_api_sha256)&&file_digest_matches(rt_path,jbr_bundled_boot_sha256);
     if(logic_mode&&!fixture_ui&&!sink_admitted){
         fprintf(stderr,"LAB_LOGIC_REFUSED unknown archive\n");return 2;
     }

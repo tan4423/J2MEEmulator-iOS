@@ -2,9 +2,10 @@
 import os, pathlib, socket, subprocess, sys, threading, time, json, tempfile, uuid
 root=pathlib.Path(sys.argv[1]).resolve()
 mode=sys.argv[2] if len(sys.argv)>2 else "graph"
-assert mode in ("graph","plain","logic","control","sink")
-sink=mode=="sink"
-control=mode in ("control","sink")
+assert mode in ("graph","plain","logic","control","sink","map")
+map_test=mode=="map"
+sink=mode in ("sink","map")
+control=mode in ("control","sink","map")
 if control:mode="graph"
 save=root/"fixture"/("save-"+mode)
 save.mkdir(exist_ok=True)
@@ -41,6 +42,7 @@ with socket.socket() as listener:
             args[5]=private/"trace.csv"
             env.update(JARBOX_LAB_CONTROL="1",JARBOX_LAB_TEST_CONTROL="1")
             if sink:env["JARBOX_LAB_TEST_SINK"]="1"
+            if map_test:env["JARBOX_LAB_TEST_MAP"]="1"
             result=subprocess.Popen([str(x) for x in args],env=env)
             try:
                 with socket.socket(socket.AF_UNIX,socket.SOCK_DGRAM) as c:
@@ -72,7 +74,7 @@ with socket.socket() as listener:
                     assert (private/"control-frame.png").read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
                     if sink:
                         a=cmd("status")
-                        assert cmd("sink on")["state"]=="ok"
+                        assert cmd("sink map" if map_test else "sink on")["state"]=="ok"
                         assert cmd("key enter")["state"]=="queued"
                         deadline=time.monotonic()+8
                         while True:
@@ -82,6 +84,10 @@ with socket.socket() as listener:
                             time.sleep(.1)
                         assert b["paints"]>a["paints"] and b["frames"]==a["frames"]
                         assert b["sink_draws"]>0 and b["sink_invalid"]==0
+                        if map_test:
+                            assert b["map_q3"]-a["map_q3"]==10,(a,b)
+                            assert b["map_m3"]-a["map_m3"]==10,(a,b)
+                            assert b["map_refusals"]-a["map_refusals"]==6,(a,b)
                         assert cmd("sink off")["state"]=="ok"
                         assert cmd("key enter")["state"]=="queued"
                         deadline=time.monotonic()+8
@@ -92,6 +98,9 @@ with socket.socket() as listener:
                             time.sleep(.1)
                         assert d["paints"]>b["paints"] and d["sink_faults"]==0
                         print("LAB_SINK_ABA_PASS",json.dumps({"a":a,"b":b,"a2":d}))
+                        if map_test:
+                            assert d["map_q3"]==b["map_q3"] and d["map_m3"]==b["map_m3"] and d["map_refusals"]==b["map_refusals"]
+                            print("LAB_MAP_ABA_PASS")
                     assert cmd("tap 120 137")["state"]=="queued"
                     assert result.wait(timeout=15)==0
             finally:
