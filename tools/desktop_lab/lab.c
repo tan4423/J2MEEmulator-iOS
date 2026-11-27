@@ -23,7 +23,10 @@ static Surface surfaces[MAX_SURF];
 static unsigned next_handle=1;
 static pthread_mutex_t lock=PTHREAD_MUTEX_INITIALIZER, graph_lock=PTHREAD_MUTEX_INITIALIZER;
 static _Atomic int stop_requested, finished, failed;
-static _Atomic uint64_t paints, paint_cpu, frames, draw_calls, image_allocs, events_delivered, gc_cycles;
+static _Atomic uint64_t paints, paint_cpu, frames, draw_calls, image_allocs, events_delivered, gc_cycles, gc_cpu;
+static pthread_mutex_t vm_lock=PTHREAD_MUTEX_INITIALIZER;
+static MiniJVM *active_vm;
+static const char *trace_path;
 static int frame_w,frame_h, dirty, show_canvas=1;
 static uint32_t *frame;
 static unsigned long long native_bytes;
@@ -230,9 +233,7 @@ FN(reportLaunchError){/* Do not persist exception strings that may contain crede
 FN(zero){PI(0);OK;}
 FN(zero_long){PJ(0);OK;}
 FN(noop){OK;}
-FN(formBegin){if(I(1)!=0)unsupported("native Form/List/Alert backend not implemented");OK;}
-FN(showCanvas){LOCK;show_canvas=1;UNLOCK;OK;}
-FN(formShow){unsupported("native Form/List/Alert backend not implemented");OK;}
+#include "lab_ui.h"
 FN(unavailable){unsupported("native bridge operation outside supported 2D subset");return RUNTIME_STATUS_ERROR;}
 #define CLS "javax/microedition/lcdui/NativeBridge"
 #define N(name,desc,fn) {CLS,#name,desc,n_##fn}
@@ -256,8 +257,13 @@ static java_native_method methods[]={
  N(afkImageCacheEnabled,"()Z",zero),N(imageCacheNote,"(II)V",noop),N(afkCanvasResult,"(I)V",noop),
  N(afkBypassPaint,"()Z",zero),N(beginAfkPaint,"(JZ)J",zero_long),N(endAfkPaint,"(J)V",noop),
  N(displayWaitEnabled,"()Z",zero),N(displayWaitVersion,"()I",zero),N(displayWaitIfUnchanged,"(II)I",zero),N(displayWake,"()V",noop),N(jarSparsePaintDue,"()Z",zero),
- N(lockScreen,"()V",noop),N(unlockScreen,"()V",noop),N(screenRevision,"()I",zero),
- N(formBegin,"(Ljava/lang/String;I)V",formBegin),N(formAddCommand,"(Ljava/lang/String;III)V",noop),
+ N(lockScreen,"()V",noop),N(unlockScreen,"()V",noop),N(screenRevision,"()I",screenRevision),
+ N(formBegin,"(Ljava/lang/String;I)V",formBegin),N(formAddCommand,"(Ljava/lang/String;III)V",formAddCommand),
+ N(formAddStringItem,"(Ljava/lang/String;Ljava/lang/String;I)V",formAddStringItem),
+ N(formAddTextField,"(Ljava/lang/String;Ljava/lang/String;II)V",formAddTextField),
+ N(formAddChoice,"(Ljava/lang/String;I)V",formAddChoice),N(formAddChoiceOption,"(Ljava/lang/String;)V",formAddChoiceOption),
+ N(listAddItem,"(Ljava/lang/String;)V",listAddItem),N(listSetLastIcon,"(J)V",listSetLastIcon),N(setListType,"(I)V",setListType),
+ N(setAlertText,"(Ljava/lang/String;I)V",setAlertText),N(takeText,"(II)[C",takeText),
  N(formShow,"()V",formShow),N(showCanvas,"()V",showCanvas),N(netTraceStage,"(I)V",noop),
  N(vibrate,"(I)V",unavailable)
 };
@@ -282,9 +288,14 @@ static void *run_vm(void *unused){
         char w[16],h[16];snprintf(w,sizeof w,"%d",width);snprintf(h,sizeof h,"%d",height);
         sys_properties_set_c(vm,"j2me.screen.width",w);sys_properties_set_c(vm,"j2me.screen.height",h);
         (void)jarbox_session_enter_foreground(vm->session);
+        pthread_mutex_lock(&vm_lock);active_vm=vm;pthread_mutex_unlock(&vm_lock);
         ArrayList *args=arraylist_create(0);arraylist_push_back(args,game_path);
         rc=call_main(vm,"javax/microedition/shell/MIDletRunner",args);arraylist_destroy(args);
+        pthread_mutex_lock(&vm_lock);
         atomic_store(&gc_cycles,__atomic_load_n(&vm->session->treo_state.gc_worker_cycles,__ATOMIC_RELAXED));
+        atomic_store(&gc_cpu,__atomic_load_n(&vm->session->treo_state.gc_worker_cpu_ns,__ATOMIC_RELAXED));
+        active_vm=NULL;
+        pthread_mutex_unlock(&vm_lock);
     }
     free(cp);
     vm->collector->exit_flag=1;jarbox_session_begin_stop(vm->session);
@@ -297,12 +308,31 @@ static int keycode(SDL_Keycode k){
     switch(k){case SDLK_UP:return -1;case SDLK_DOWN:return -2;case SDLK_LEFT:return -3;case SDLK_RIGHT:return -4;case SDLK_RETURN:return -5;case SDLK_F1:return -6;case SDLK_F2:return -7;case SDLK_ASTERISK:return 42;case SDLK_HASH:return 35;default:return k>=SDLK_0&&k<=SDLK_9?k:0;}
 }
 static void sample(void){
-    fprintf(trace,"%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu\n",
+    pthread_mutex_lock(&vm_lock);
+    if(active_vm){
+        atomic_store(&gc_cycles,__atomic_load_n(&active_vm->session->treo_state.gc_worker_cycles,__ATOMIC_RELAXED));
+        atomic_store(&gc_cpu,__atomic_load_n(&active_vm->session->treo_state.gc_worker_cpu_ns,__ATOMIC_RELAXED));
+    }
+    pthread_mutex_unlock(&vm_lock);
+    LOCK;unsigned long long bytes=native_bytes;UNLOCK;
+    fprintf(trace,"%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%s\n",
         (unsigned long long)ns(CLOCK_MONOTONIC),(unsigned long long)ns(CLOCK_PROCESS_CPUTIME_ID),
         (unsigned long long)atomic_load(&paints),(unsigned long long)atomic_load(&paint_cpu),
         (unsigned long long)atomic_load(&frames),(unsigned long long)atomic_load(&draw_calls),
         (unsigned long long)atomic_load(&image_allocs),(unsigned long long)atomic_load(&events_delivered),
-        (unsigned long long)atomic_load(&gc_cycles));fflush(trace);
+        (unsigned long long)atomic_load(&gc_cycles),(unsigned long long)atomic_load(&gc_cpu),
+        bytes,trace_graph?"graph":"plain");fflush(trace);
+}
+static int write_graph(void){
+    size_t len=strlen(trace_path)+32;char *p=malloc(len),*tmp=malloc(len);
+    if(!p||!tmp){free(p);free(tmp);return 0;}
+    snprintf(p,len,"%s.edges.tsv",trace_path);snprintf(tmp,len,"%s.edges.tmp",trace_path);
+    FILE *f=fopen(tmp,"w");if(!f){free(p);free(tmp);return 0;}
+    pthread_mutex_lock(&graph_lock);
+    fprintf(f,"caller\tcallee\tcalls\n");for(unsigned i=0;i<MAX_EDGES;i++)if(edges[i].count)fprintf(f,"%s\t%s\t%llu\n",edges[i].from,edges[i].to,(unsigned long long)edges[i].count);
+    uint64_t dropped=graph_dropped;pthread_mutex_unlock(&graph_lock);
+    fprintf(f,"<overflow>\t<overflow>\t%llu\n",(unsigned long long)dropped);
+    int ok=!fclose(f)&&!rename(tmp,p);if(!ok)remove(tmp);free(p);free(tmp);return ok;
 }
 extern void smoke_install_crash_handler(void);
 int main(int argc,char**argv){
@@ -310,8 +340,8 @@ int main(int argc,char**argv){
     rt_path=argv[1];api_path=argv[2];game_path=argv[3];save_path=argv[4];
     width=atoi(argv[6]);height=atoi(argv[7]);trace_graph=!strcmp(argv[8],"graph");
     if(!valid_size(width,height)||(!trace_graph&&strcmp(argv[8],"plain")))return 2;
-    trace=fopen(argv[5],"w");if(!trace)return 2;
-    fprintf(trace,"monotonic_ns,process_cpu_ns,paints,paint_cpu_ns,frames,draw_calls,image_allocs,input_events,gc_cycles_final\n");
+    trace_path=argv[5];trace=fopen(trace_path,"w");if(!trace)return 2;
+    fprintf(trace,"monotonic_ns,process_cpu_ns,paints,paint_cpu_ns,frames,draw_calls,image_allocs,input_events,gc_cycles,gc_cpu_ns,native_surface_bytes,mode\n");
     frame=calloc((size_t)width*height,4);if(!frame)return 2;
     if(SDL_Init(SDL_INIT_VIDEO|SDL_INIT_EVENTS)){fprintf(stderr,"%s\n",SDL_GetError());return 2;}
     SDL_Window *win=SDL_CreateWindow("JarBox Research Lab",SDL_WINDOWPOS_CENTERED,SDL_WINDOWPOS_CENTERED,width*2,height*2,SDL_WINDOW_RESIZABLE);
@@ -321,11 +351,16 @@ int main(int argc,char**argv){
     SDL_RenderSetLogicalSize(ren,width,height);
     smoke_install_crash_handler();pthread_t th;
     sample();if(pthread_create(&th,NULL,run_vm,NULL))return 2;
-    uint64_t last=ns(CLOCK_MONOTONIC);
+    uint64_t last=ns(CLOCK_MONOTONIC),last_graph=last;
     while(!atomic_load(&finished)){
         SDL_Event e;
+        ui_tick();
+        LOCK;int modal=!show_canvas;UNLOCK;
+        if(modal&&!SDL_IsTextInputActive())SDL_StartTextInput();
+        else if(!modal&&SDL_IsTextInputActive())SDL_StopTextInput();
         while(SDL_PollEvent(&e)){
-            if(e.type==SDL_QUIT)atomic_store(&stop_requested,1);
+            if(e.type==SDL_QUIT||(e.type==SDL_KEYDOWN&&e.key.keysym.sym==SDLK_ESCAPE)){atomic_store(&stop_requested,1);continue;}
+            if(ui_handle_event(&e))continue;
             if(e.type==SDL_KEYDOWN||e.type==SDL_KEYUP){
                 int k=keycode(e.key.keysym.sym);
                 if(k)enqueue((Event){e.type==SDL_KEYUP?4:e.key.repeat?5:3,0,0,k});
@@ -335,15 +370,11 @@ int main(int argc,char**argv){
         LOCK;int draw=dirty;if(draw){SDL_UpdateTexture(tex,NULL,frame,width*4);dirty=0;}UNLOCK;
         if(draw){SDL_RenderClear(ren);SDL_RenderCopy(ren,tex,NULL,NULL);SDL_RenderPresent(ren);}
         uint64_t now=ns(CLOCK_MONOTONIC);if(now-last>=1000000000ull){sample();last=now;}
+        if(trace_graph&&now-last_graph>=5000000000ull){if(!write_graph())unsupported("graph export");last_graph=now;}
         SDL_Delay(8);
     }
     pthread_join(th,NULL);sample();fclose(trace);
-    if(trace_graph){
-        size_t len=strlen(argv[5])+16;char *p=malloc(len);if(!p)return 2;snprintf(p,len,"%s.edges.tsv",argv[5]);
-        FILE *f=fopen(p,"w");free(p);if(!f)return 2;
-        fprintf(f,"caller\tcallee\tcalls\n");for(unsigned i=0;i<MAX_EDGES;i++)if(edges[i].count)fprintf(f,"%s\t%s\t%llu\n",edges[i].from,edges[i].to,(unsigned long long)edges[i].count);
-        fclose(f);fprintf(stderr,"LAB_GRAPH_DROPPED=%llu\n",(unsigned long long)graph_dropped);
-    }
+    if(trace_graph&&!write_graph())unsupported("graph export");
     fprintf(stderr,"LAB_EXIT rc=%d failed=%d frames=%llu input_overflow=%llu\n",rc,atomic_load(&failed),(unsigned long long)atomic_load(&frames),(unsigned long long)event_overflow);
     for(unsigned i=1;i<next_handle;i++)drop(i);
     SDL_DestroyTexture(tex);SDL_DestroyRenderer(ren);SDL_DestroyWindow(win);SDL_Quit();free(frame);

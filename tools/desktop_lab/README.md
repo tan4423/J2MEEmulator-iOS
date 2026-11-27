@@ -8,7 +8,7 @@ method entry hook is compiled out of all existing production builds.
 
 ## Build and run
 
-On Ubuntu/WSL2 with WSLg: install gcc, pkg-config, OpenJDK 17, libsdl2-dev,
+On Ubuntu 24.04/WSL2 with WSLg: install gcc, pkg-config, OpenJDK 17, libsdl2-dev,
 libcairo2-dev, python3 and git. From the repo root:
     
     bash tools/desktop_lab/build.sh
@@ -33,13 +33,13 @@ No arguments, strings, login data or packet bytes in the CSV or edge table.
 Do not publish raw JVM stdout: the game itself may print sensitive data.
 CPU is cumulative process time, including SDL and the observer; compare
 matched plain-mode windows, never use graph-mode CPU as release evidence.
-GC cycle count is final-only in v0. Surface and trace storage are bounded
+GC cycles and CPU are sampled live under the VM lifecycle lock. The call graph is exported atomically every five seconds. Run `python3 tools/desktop_lab/inspect.py /absolute/path/trace.csv --watch` for rolling CPU and graph summaries. Surface and trace storage are bounded
 except the one-row-per-second CSV written until stop.
 
 ## Known limitations and next gates
 
 - Linux SDL/Cairo 2D renderer, not CoreGraphics/Metal. Font metrics and pixels
-  may differ. PNG only, no complete native Form/TextBox/List/Alert, audio, 3D,
+  may differ. PNG only. Basic native Form/TextBox/List/Alert is implemented for lab use, with Tab/arrows, typing and F1/F2/Enter; list icons and full MIDP constraints/choice labels are not equivalent yet. No audio, 3D,
   pointer handling, or TLS (existing host SSL stubs). The unsupported paths
   must not be treated as successful game behavior. This is a Canvas fixture
   milestone, not evidence that Nick can log in.
@@ -47,7 +47,7 @@ except the one-row-per-second CSV written until stop.
   handle budget is deliberately conservative for this first fixture.
 - Runtime patching reuses the exact iOS Java patch block on copied boot/API
   JARs. The lab uses a game-facing iOS profile and the same 500ms GC settings.
-- Next: complete UI/input, image and font parity, real transport/TLS, run
+- Next: validate UI/input, image and font parity, real transport/TLS, run
   Nick with an isolated save, verify startup and genuine state progression;
   then add targeted field/effect tracing and replay with separate reference
   and candidate VMs. Do not use a live server as a differential test harness.
