@@ -16,7 +16,7 @@ typedef struct { const char *rt, *api, *app, *tag, *mode; char save[512]; int po
     MiniJVM *jvm; pthread_t th; pthread_mutex_t lock; atomic_int finished;
     int stop_requested, rc;
     uint64_t char_calls, array_calls, gc_cycles;
-    uint64_t thread_cpu_ns, process_cpu_ns, residual_calls, residual_compiles, residual_deopts,residual_skipped;
+    uint64_t thread_cpu_ns, process_cpu_ns, residual_calls, residual_compiles, residual_deopts,residual_skipped,residual_cold_deopts;
     uint64_t binding_good,binding_bad,binding_mismatch; } Job;
 
 static void request_vm_stop(MiniJVM *vm) {
@@ -86,6 +86,7 @@ static void *job_main(void *p) {
     j->residual_compiles=__atomic_load_n(&vm->session->treo_state.host_residual_compiles,__ATOMIC_RELAXED);
     j->residual_deopts=__atomic_load_n(&vm->session->treo_state.host_residual_deopts,__ATOMIC_RELAXED);
     j->residual_skipped=__atomic_load_n(&vm->session->treo_state.host_residual_skipped,__ATOMIC_RELAXED);
+    j->residual_cold_deopts=__atomic_load_n(&vm->session->treo_state.host_residual_cold_deopts,__ATOMIC_RELAXED);
 #endif
 #if defined(JARBOX_HOST_BINDING_TEST)
     j->binding_good=__atomic_load_n(&vm->session->treo_state.host_binding_good,__ATOMIC_RELAXED);
@@ -265,6 +266,8 @@ int main(int argc, char **argv) {
         REQUIRE(a.residual_deopts==0&&((closed||!strcmp(scenario,"residual_resume_diff"))?
                 (b.residual_deopts>0&&b.residual_deopts<admitted):b.residual_deopts==0));
         REQUIRE(a.residual_skipped==0&&(closed?b.residual_skipped>0:b.residual_skipped==0));
+        printf("residual cold deopts: A=%llu B=%llu\n",(unsigned long long)a.residual_cold_deopts,(unsigned long long)b.residual_cold_deopts);
+        REQUIRE(a.residual_cold_deopts==0&&(closed?b.residual_cold_deopts==1:b.residual_cold_deopts==0));
     }
 #endif
     else if (!strcmp(scenario, "pair")) {

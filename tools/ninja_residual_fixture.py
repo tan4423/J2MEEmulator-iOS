@@ -109,6 +109,9 @@ def build(root, archive=None, bootclasspath=None, draw_effects=False, resume=Fal
         synthetic=SYNTHETIC
         external=EXTERNAL
         if skip_draws:
+            # A cold class initializer closes the sink INSIDE a draw region.
+            synthetic=synthetic.replace('                a2=x;', '                if(r3==9)g.a(sprite,Class_hxb.s5,24,24,24,0,0,0,0);\n                a2=x;')
+            external='public class Class_hac {public static int r24,v25,y26,b28,b20,e10,coldInit;}'
             # A retained logic call closes the sink between draw regions.
             synthetic=synthetic.replace('public static int m3(int x,int y){return', 'public static int m3(int x,int y){if(--javax.microedition.lcdui.Graphics.remaining<=0)javax.microedition.lcdui.Graphics.scope=false;return')
         if resolved_reads:
@@ -118,7 +121,7 @@ def build(root, archive=None, bootclasspath=None, draw_effects=False, resume=Fal
             external='public class Class_hac {public static int r24,v25,y26,b28,e10,coldInit; public static volatile int b20;}'
         (src/'Class_hii.java').write_text(synthetic)
         (src/'Class_hac.java').write_text(external)
-        (src/'Class_hxb.java').write_text('public class Class_hxb {public static int s5; static {Class_hac.coldInit++; s5=42;}}' if resolved_reads else 'public class Class_hxb {public static int s5;}')
+        (src/'Class_hxb.java').write_text('public class Class_hxb {public static int s5; static {Class_hac.coldInit++; s5=42; javax.microedition.lcdui.Graphics.scope=false;}}' if skip_draws else 'public class Class_hxb {public static int s5; static {Class_hac.coldInit++; s5=42;}}' if resolved_reads else 'public class Class_hxb {public static int s5;}')
         subprocess.run(['javac','--release','8','-d',str(original),*map(str,src.rglob('*.java'))],check=True)
         ins=ir.disassemble(original)
         data=(original/'Class_hii.class').read_bytes()
@@ -145,12 +148,13 @@ def build(root, archive=None, bootclasspath=None, draw_effects=False, resume=Fal
     reduced=replace_fixture_code(data,code,locals_count,max_stack=10 if draw_effects else 2)
     (original/'Class_hii.class').write_bytes(data)
     harness=wrapped.harness(HARNESS,fields,resume,skip_draws) if draw_effects else HARNESS
-    if resolved_reads:
+    if resolved_reads or skip_draws:
         # Do not initialize the cold class from the driver before k1's
         # first real branch. Preserve the RNG sequence, and record clinit.
         harness=harness.replace('Class_hxb.s5=next();','next();')
         harness=harness.replace('Class_hii.d2+":"','Class_hii.d2+":"+Class_hac.coldInit+":"')
         harness=harness.replace('if(faults==0||changed==0)', 'if(Class_hac.coldInit!=1)throw new IllegalStateException("cold clinit count");\n        if(faults==0||changed==0)')
+    if resolved_reads:
         harness=harness.replace('        int faults=0,changed=0;', '''        // Natural resolution, one complete ordinary k1 invocation. r3=9
         // stays cold. Do not initialize game classes early in a live VM.
         Class_hii.j1=1;Class_hii.r3=4;Class_hii.d4=24;

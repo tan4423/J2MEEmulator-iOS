@@ -75,6 +75,38 @@ static int jbr_plain_int_read(JClass *cl,ConstantFieldRef *ref) {
     return bytes&&f->datatype_bytes==bytes&&owner->field_static&&owner->field_static_len>=0&&
         (size_t)f->offset+bytes<=(size_t)owner->field_static_len;
 }
+// A closed region cannot invoke a class initializer between its entry guard
+// and omitted draw. Inspect the immutable original code and existing linked
+// metadata only. No resolution, initialization or Java execution here.
+static int jbr_closed_region_ready(JClass *cl,const CodeAttribute *ca,unsigned pc) {
+    const unsigned char *code=ca->bytecode_for_jit;
+    const unsigned size=ca->code_length;
+    if(!code||pc>=size||code[pc]!=0x2a)return 0;
+    for(unsigned p=pc+1;p<size;) {
+        unsigned raw=code[p],len=jbr_raw_size(raw);
+        if(!len||len>size-p)return 0;
+        if(raw==0xb6)return 1; // structural certificate checked by compiler
+        if(raw==0xb2) {
+            unsigned ix=jbr_u16(code+p+1);
+            if(!cl->constant_item_ptr||!ix||ix>=(unsigned)cl->constant_item_count)return 0;
+            ConstantItem *item=class_get_constant_item(cl,ix);
+            if(!item||item->tag!=CONSTANT_FIELD_REF)return 0;
+            ConstantFieldRef *ref=(ConstantFieldRef *)item;
+            FieldInfo *f=ref->fieldInfo;
+            if(!f||!f->_this_class||!(f->access_flags&8))return 0;
+            JClass *owner=f->_this_class;
+            if(owner->status!=CLASS_STATUS_CLINITED||owner->jloader!=cl->jloader||
+               !owner->name||!ref->clsName||!utf8_equals(owner->name,ref->clsName)||
+               !f->name||!ref->name||!utf8_equals(f->name,ref->name)||
+               !f->descriptor||!ref->descriptor||!utf8_equals(f->descriptor,ref->descriptor))return 0;
+            unsigned bytes=f->isrefer?sizeof(void *):jbr_eq(f->descriptor,"I")?4:jbr_eq(f->descriptor,"B")?1:0;
+            if(!bytes||f->datatype_bytes!=bytes||!owner->field_static||owner->field_static_len<0||
+               (size_t)f->offset+bytes>(size_t)owner->field_static_len)return 0;
+        }
+        p+=len;
+    }
+    return 0;
+}
 static int jbr_fixture_cp(void *ctx,unsigned op,unsigned ix) {
     JClass *cl=ctx;
     if(!cl->constant_item_ptr || !ix || ix>=(unsigned)cl->constant_item_count)return JBR_CP_REJECT;
@@ -2521,8 +2553,12 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                                     ret=RUNTIME_STATUS_ERROR;
                                     goto label_exit_while;
                                 }
+                                int cold_region=0;
+                                if(jbr_skip_draws&&o->checkpoint&&jbr_fixture_scope(localvar[0].rvalue)==1)
+                                    cold_region=!jbr_closed_region_ready(method->_this_class,ca,o->pc);
                                 if(jbr_resume && o->checkpoint &&
-                                   (jbr_skip_draws?jbr_fixture_scope(localvar[0].rvalue)!=1:jbr_draws>=jbr_limit)) {
+                                   (jbr_skip_draws?(cold_region||jbr_fixture_scope(localvar[0].rvalue)!=1):jbr_draws>=jbr_limit)) {
+                                    if(cold_region)__atomic_fetch_add(&jvm->session->treo_state.host_residual_cold_deopts,1,__ATOMIC_RELAXED);
                                     // Resume exactly at the original empty-stack
                                     // aload_0 PC, BEFORE any effect of this draw.
                                     // The compiler retains all original locals
