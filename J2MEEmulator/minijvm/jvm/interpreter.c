@@ -2703,8 +2703,9 @@ static inline int jarbox_try_ref_leaf(MethodInfo *method, Runtime *caller) {
 
 s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
 #if defined(JARBOX_DESKTOP_LAB) && JARBOX_DESKTOP_LAB
+    extern int jarbox_lab_trace_enabled;
     extern void jarbox_lab_method_enter(MethodInfo *, Runtime *);
-    jarbox_lab_method_enter(method, pruntime);
+    if (jarbox_lab_trace_enabled) jarbox_lab_method_enter(method, pruntime);
 #endif
     JARBOX_HOT_CHECK(pruntime,method,NULL);
 #if defined(JARBOX_HOST_GLYPH_LOOP_TEST)
@@ -7066,6 +7067,10 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                                 ptr = &(ins->obj_fields[offset]);
 
                                 (sp++)->ivalue = *((s32 *) ptr);
+#if defined(JARBOX_DESKTOP_LAB) && JARBOX_DESKTOP_LAB
+                                extern void jarbox_lab_int_field(Runtime *, int, int, int);
+                                if (jarbox_lab_trace_enabled) jarbox_lab_int_field(runtime,offset,sp[-1].ivalue,0);
+#endif
                                 runtime->pc += 3;
 #if _JVM_DEBUG_LOG_LEVEL > 5
                                 invoke_deepth(runtime);
@@ -7182,6 +7187,10 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                             } else {
                                 ptr = &(ins->obj_fields[offset]);
                                 *((s32 *) ptr) = ival1;
+#if defined(JARBOX_DESKTOP_LAB) && JARBOX_DESKTOP_LAB
+                                extern void jarbox_lab_int_field(Runtime *, int, int, int);
+                                if (jarbox_lab_trace_enabled) jarbox_lab_int_field(runtime,offset,ival1,1);
+#endif
                                 runtime->pc += 3;
 #if _JVM_DEBUG_LOG_LEVEL > 5
                                 invoke_deepth(runtime);

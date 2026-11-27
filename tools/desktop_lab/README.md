@@ -53,3 +53,13 @@ except the one-row-per-second CSV written until stop.
   and candidate VMs. Do not use a live server as a differential test harness.
 - Existing CI/device checkpoints remain authoritative. Desktop speed is not
   iPhone CPU evidence; no production admission of any new Deep Treo path.
+
+Graph mode now records linked Class_hda.s6:I int reads/writes at original
+interpreter field operations, with worker, method, converted PC, value and
+monotonic timestamp. It uses the value already loaded/stored by MiniJVM.
+No additional heap read, no object identity, no credentials. The special
+LabFixture$Probe field serves as an executable positive gate. The bounded
+4096-event ring reports loss if export cannot keep up. Converted PCs and
+role labels still need exact archive verification; no authorization to
+remove effects follows from the trace. The SDL dummy test drives a real
+TextBox command via SDL input events before the Canvas pixel test.

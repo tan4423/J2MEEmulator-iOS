@@ -30,7 +30,16 @@ static const char *trace_path;
 static int frame_w,frame_h, dirty, show_canvas=1;
 static uint32_t *frame;
 static unsigned long long native_bytes;
-static int trace_graph;
+int jarbox_lab_trace_enabled;
+#define trace_graph jarbox_lab_trace_enabled
+enum { EFFECT_CAP=4096 };
+typedef struct {uint64_t seq,mono;unsigned worker;int pc,write,value;char method[192];} Effect;
+static Effect effects[EFFECT_CAP],effect_snapshot[EFFECT_CAP];
+static uint64_t effect_seq,effect_exported,effect_lost;
+static _Atomic unsigned next_worker;
+static _Thread_local unsigned worker_id;
+static FILE *effect_file;
+static int fixture_ui;
 static char *rt_path,*api_path,*game_path,*save_path;
 static int width,height;
 static int rc=1;
@@ -73,6 +82,42 @@ void jarbox_lab_method_enter(MethodInfo *m,Runtime *parent) {
     }
     graph_dropped++;
 done: pthread_mutex_unlock(&graph_lock);
+}
+void jarbox_lab_int_field(Runtime *r,int offset,int value,int write){
+    if(!trace_graph||!r||!r->method)return;
+    MethodInfo *m=r->method;JClass *c=m->_this_class;
+    if(!c||!c->name||(!utf8_equals_c(c->name,"Class_hda")&&!utf8_equals_c(c->name,"LabFixture$Probe")))return;
+    if(!m->converted_code||!m->converted_code->code||!r->pc)return;
+    const unsigned char *code=(const unsigned char*)m->converted_code->code;
+    const unsigned char *pc=(const unsigned char*)r->pc;
+    if(pc<code||pc>=code+m->converted_code->code_length)return;
+    int matched=0;
+    for(int i=0;i<c->fieldPool.field_used;i++){
+        FieldInfo *f=c->fieldPool.field+i;
+        if(f->name&&f->descriptor&&f->offset_instance==offset&&utf8_equals_c(f->name,"s6")&&utf8_equals_c(f->descriptor,"I")){matched=1;break;}
+    }
+    if(!matched)return;
+    Effect e={0};if(!method_name(m,e.method,sizeof e.method))return;
+    if(!worker_id)worker_id=atomic_fetch_add(&next_worker,1)+1;
+    e.mono=ns(CLOCK_MONOTONIC);e.worker=worker_id;e.pc=(int)(pc-code);e.value=value;e.write=write;
+    pthread_mutex_lock(&graph_lock);
+    e.seq=++effect_seq;effects[(e.seq-1)%EFFECT_CAP]=e;
+    pthread_mutex_unlock(&graph_lock);
+}
+static void flush_effects(void){
+    if(!effect_file)return;
+    pthread_mutex_lock(&graph_lock);
+    uint64_t last=effect_seq,first=effect_exported+1;
+    if(last>=first&&last-first+1>EFFECT_CAP){effect_lost+=last-first+1-EFFECT_CAP;first=last-EFFECT_CAP+1;}
+    unsigned count=0;
+    for(uint64_t seq=first;seq<=last;seq++)effect_snapshot[count++]=effects[(seq-1)%EFFECT_CAP];
+    effect_exported=last;uint64_t lost=effect_lost;
+    pthread_mutex_unlock(&graph_lock);
+    for(unsigned i=0;i<count;i++){Effect*e=&effect_snapshot[i];
+        fprintf(effect_file,"%llu,%llu,%u,%s,%d,%s,%d,%llu\n",(unsigned long long)e->seq,(unsigned long long)e->mono,
+           e->worker,e->method,e->pc,e->write?"write":"read",e->value,(unsigned long long)lost);
+    }
+    fflush(effect_file);
 }
 static void unsupported(const char *name) {
     fprintf(stderr,"LAB_UNSUPPORTED: %s\n",name);
@@ -199,6 +244,12 @@ static void region(Surface*d,Surface*s,int x,int y,int w,int h,int tr,double dx,
     if(!d||!s||!valid_size(w,h)||x<0||y<0||x>sw(s)-w||y>sh(s)-h||tr<0||tr>7)return;
     int dw=tr>=4?h:w,dh=tr>=4?w:h;anchor(a,dw,dh,&dx,&dy);
     cairo_surface_flush(s->s);
+    if(tr==0&&d!=s){
+        cairo_save(d->c);cairo_rectangle(d->c,dx,dy,w,h);cairo_clip(d->c);
+        cairo_set_source_surface(d->c,s->s,dx-x,dy-y);
+        cairo_pattern_set_filter(cairo_get_source(d->c),CAIRO_FILTER_NEAREST);
+        cairo_paint(d->c);cairo_restore(d->c);atomic_fetch_add(&draw_calls,1);return;
+    }
     cairo_surface_t *tmp=cairo_image_surface_create(CAIRO_FORMAT_ARGB32,dw,dh);
     if(cairo_surface_status(tmp)!=CAIRO_STATUS_SUCCESS){cairo_surface_destroy(tmp);unsupported("region allocation");return;}
     for(int j=0;j<h;j++)for(int i=0;i<w;i++){
@@ -341,6 +392,13 @@ int main(int argc,char**argv){
     width=atoi(argv[6]);height=atoi(argv[7]);trace_graph=!strcmp(argv[8],"graph");
     if(!valid_size(width,height)||(!trace_graph&&strcmp(argv[8],"plain")))return 2;
     trace_path=argv[5];trace=fopen(trace_path,"w");if(!trace)return 2;
+    fixture_ui=getenv("JARBOX_LAB_UI_FIXTURE")&&strcmp(getenv("JARBOX_LAB_UI_FIXTURE"),"1")==0;
+    if(fixture_ui&&(!getenv("SDL_VIDEODRIVER")||strcmp(getenv("SDL_VIDEODRIVER"),"dummy")||!strstr(game_path,"/fixture.jar")))return 2;
+    if(trace_graph){
+        size_t n=strlen(trace_path)+24;char*p=malloc(n);if(!p)return 2;
+        snprintf(p,n,"%s.effects.csv",trace_path);effect_file=fopen(p,"w");free(p);if(!effect_file)return 2;
+        fprintf(effect_file,"sequence,monotonic_ns,worker,method,pc,operation,value,lost_total\n");
+    }
     fprintf(trace,"monotonic_ns,process_cpu_ns,paints,paint_cpu_ns,frames,draw_calls,image_allocs,input_events,gc_cycles,gc_cpu_ns,native_surface_bytes,mode\n");
     frame=calloc((size_t)width*height,4);if(!frame)return 2;
     if(SDL_Init(SDL_INIT_VIDEO|SDL_INIT_EVENTS)){fprintf(stderr,"%s\n",SDL_GetError());return 2;}
@@ -356,6 +414,13 @@ int main(int argc,char**argv){
         SDL_Event e;
         ui_tick();
         LOCK;int modal=!show_canvas;UNLOCK;
+        if(fixture_ui&&modal){
+            fixture_ui=0;
+            SDL_Event input={0};input.type=SDL_TEXTINPUT;strcpy(input.text.text,"b");
+            if(SDL_PushEvent(&input)!=1)unsupported("fixture text injection");
+            input=(SDL_Event){0};input.type=SDL_KEYDOWN;input.key.keysym.sym=SDLK_F1;
+            if(SDL_PushEvent(&input)!=1)unsupported("fixture command injection");
+        }
         if(modal&&!SDL_IsTextInputActive())SDL_StartTextInput();
         else if(!modal&&SDL_IsTextInputActive())SDL_StopTextInput();
         while(SDL_PollEvent(&e)){
@@ -369,11 +434,12 @@ int main(int argc,char**argv){
         }
         LOCK;int draw=dirty;if(draw){SDL_UpdateTexture(tex,NULL,frame,width*4);dirty=0;}UNLOCK;
         if(draw){SDL_RenderClear(ren);SDL_RenderCopy(ren,tex,NULL,NULL);SDL_RenderPresent(ren);}
-        uint64_t now=ns(CLOCK_MONOTONIC);if(now-last>=1000000000ull){sample();last=now;}
+        uint64_t now=ns(CLOCK_MONOTONIC);if(now-last>=1000000000ull){sample();flush_effects();last=now;}
         if(trace_graph&&now-last_graph>=5000000000ull){if(!write_graph())unsupported("graph export");last_graph=now;}
         SDL_Delay(8);
     }
-    pthread_join(th,NULL);sample();fclose(trace);
+    pthread_join(th,NULL);sample();flush_effects();fclose(trace);
+    if(effect_file){fclose(effect_file);fprintf(stderr,"LAB_EFFECTS_LOST=%llu\n",(unsigned long long)effect_lost);}
     if(trace_graph&&!write_graph())unsupported("graph export");
     fprintf(stderr,"LAB_EXIT rc=%d failed=%d frames=%llu input_overflow=%llu\n",rc,atomic_load(&failed),(unsigned long long)atomic_load(&frames),(unsigned long long)event_overflow);
     for(unsigned i=1;i<next_handle;i++)drop(i);

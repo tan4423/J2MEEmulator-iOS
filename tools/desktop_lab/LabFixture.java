@@ -3,12 +3,26 @@ import javax.microedition.lcdui.*;
 
 public final class LabFixture extends MIDlet {
     protected void startApp() {
-        Display.getDisplay(this).setCurrent(new Probe());
+        final TextBox text=new TextBox("Lab input","a",8,TextField.ANY);
+        final Command done=new Command("Done",Command.OK,1);
+        text.addCommand(done);
+        text.setCommandListener(new CommandListener(){
+            public void commandAction(Command c,Displayable d){
+                if(c!=done||!"ab".equals(text.getString()))throw new RuntimeException("desktop text/command roundtrip");
+                System.out.println("LAB_FIXTURE_UI_PASS");
+                Display.getDisplay(LabFixture.this).setCurrent(new Probe());
+            }
+        });
+        Display.getDisplay(this).setCurrent(text);
     }
     protected void pauseApp() {}
     protected void destroyApp(boolean unconditional) {}
     final class Probe extends Canvas {
+        private int s6;
         protected void paint(Graphics g) {
+            s6++;
+            if(s6!=1)throw new RuntimeException("fixture state");
+
             Image im=Image.createImage(8,8);
             Graphics ig=im.getGraphics();
             ig.setColor(0x123456);
