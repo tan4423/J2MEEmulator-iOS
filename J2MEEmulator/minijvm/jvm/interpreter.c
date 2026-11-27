@@ -2702,6 +2702,10 @@ static inline int jarbox_try_ref_leaf(MethodInfo *method, Runtime *caller) {
 #endif
 
 s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
+#if defined(JARBOX_DESKTOP_LAB) && JARBOX_DESKTOP_LAB
+    extern void jarbox_lab_method_enter(MethodInfo *, Runtime *);
+    jarbox_lab_method_enter(method, pruntime);
+#endif
     JARBOX_HOT_CHECK(pruntime,method,NULL);
 #if defined(JARBOX_HOST_GLYPH_LOOP_TEST)
     if(jbg_fixture_sink_return(method,pruntime))return RUNTIME_STATUS_NORMAL;
