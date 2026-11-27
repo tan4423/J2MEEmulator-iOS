@@ -133,9 +133,21 @@ public final class ResidualMain {
 }'''
 }
 
-def build(root,header,boot):
+def build(root,header,boot,background=False):
+    sources=dict(SOURCES)
+    if background:
+        sources['Class_hii.java']=sources['Class_hii.java'].replace('public static int[] palette;',
+            'public static int[] palette,offsets; public static javax.microedition.lcdui.Image[] frames;')
+        # Array faults inside a removable draw, a wide induction update and a
+        # length-driven loop. Retained list calls can close the sink between them.
+        sources['Class_hii.java']=sources['Class_hii.java'].replace('g.a(sprite,0,0,0);',
+            'g.a(sprite,0,0,0); for(int i=0;i<385;i+=192)g.a(frames[0],i,offsets[0],0);')
+        sources['Class_hii.java']=sources['Class_hii.java'].replace('int x=current.x/12,y=current.y/12;',
+            'for(int i=0;i<frames.length;i++)g.a(frames[i],i,offsets[i],0); int x=current.x/12,y=current.y/12;')
+        sources['ResidualMain.java']=sources['ResidualMain.java'].replace('Class_hii.t2=-100;',
+            'Class_hii.frames=n%47==0?null:new javax.microedition.lcdui.Image[]{Class_hii.sprite,null}; Class_hii.offsets=n%61==0?new int[0]:n%67==0?null:new int[]{n,-n}; Class_hii.t2=-100;')
     src=root/'src';classes=root/'classes';classes.mkdir(parents=True)
-    for name,body in SOURCES.items():
+    for name,body in sources.items():
         p=src/name;p.parent.mkdir(parents=True,exist_ok=True);p.write_text(body)
     subprocess.run(['javac','--release','8','-d',str(classes),*map(str,src.rglob('*.java'))],check=True)
     subprocess.run(['javac','-source','8','-target','8','-bootclasspath',str(boot),'-classpath',str(classes),'-d',str(classes),str(src/'ResidualMain.java')],check=True)
@@ -145,8 +157,19 @@ def build(root,header,boot):
     code=encode(ins,'<')
     if not {'getfield','checkcast','aaload','iaload','invokevirtual','invokestatic','if_acmpeq','astore_2','astore'}<=set(o for _,o,_ in ins):
         raise ValueError('missing stateful fixture coverage')
-    header.write_text('static const int jbr_draw_effects=0,jbr_resume=1,jbr_resolved_reads=0,jbr_skip_draws=1;\n'+
+    extra=''
+    if background:
+        # Independently locate receiver starts for the two actual array draws.
+        starts=[]
+        for i,(pc,op,arg) in enumerate(ins):
+            if op=='invokevirtual' and 'Image;III)V' in arg:
+                j=i-1
+                while j>=0 and ins[j][1]!='aload_0':j-=1
+                if j>=0 and any(o=='aaload' for _,o,_ in ins[j:i]):starts.append(ins[j][0])
+        if len(starts)!=2 or not {'iinc_w','arraylength'}<=set(o for _,o,_ in ins):raise ValueError('missing background coverage')
+        extra=f'#define JBR_TEST_BG_WIDE_PC {starts[0]}\n#define JBR_TEST_BG_ARRAY_PC {starts[1]}\n'
+    header.write_text(extra+'static const int jbr_draw_effects=0,jbr_resume=1,jbr_resolved_reads=0,jbr_skip_draws=1;\n'+
         'static const unsigned char jbr_expected_code[]={'+','.join(map(str,code))+'};\n'+
         'static const JarBoxResidualOp jbr_plan[]={{0}}; /* independent original Java execution */\n')
     print('stateful whole-loop fixture:',len(ins),'instructions,',len(code),'bytes')
-if __name__=='__main__':build(*map(Path,sys.argv[1:]))
+if __name__=='__main__':build(*map(Path,sys.argv[1:4]),background='--background' in sys.argv[4:])

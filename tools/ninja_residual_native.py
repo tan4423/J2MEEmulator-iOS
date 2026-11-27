@@ -20,6 +20,7 @@ OP.update({name:0x99+i for i,name in enumerate(('ifeq','ifne','iflt','ifge','ifg
 OP.update(ldc=0x12,ldc_w=0x13,aload=0x19,aload_2=0x2c,astore=0x3a,astore_2=0x4d,
           iaload=0x2e,aaload=0x32,ineg=0x74,ishl=0x78,getfield=0xb4,checkcast=0xc0,
           if_acmpeq=0xa5,if_acmpne=0xa6,ifnull=0xc6,ifnonnull=0xc7)
+OP.update(arraylength=0xbe,iinc_w=0xc4)
 CP_OPS|={'ldc_w','getfield','checkcast'}
 BRANCHES={k for k in OP if k.startswith('if')}|{'goto'}
 
@@ -40,6 +41,8 @@ def encode(ins, order):
         elif op=='ldc':out.append(int(re.match(r'#(\d+)',arg)[1]))
         elif op=='iinc':
             idx,value=map(int,arg.split(','));out.extend(struct.pack('Bb',idx,value))
+        elif op=='iinc_w':
+            idx,value=map(int,arg.split(','));out.append(0x84);out.extend(struct.pack(order+'Hh',idx,value))
     return bytes(out)
 
 

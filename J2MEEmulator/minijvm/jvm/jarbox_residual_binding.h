@@ -161,14 +161,15 @@ static inline int jbr_binding_route(Runtime *r,Instance *wrapper,JarBoxResidualB
     if(!out||!r||!r->jvm||!r->thrd_info||!r->stack)return 0;
     const int overlay=jbr_bmethod(r->method,"Class_hii","i3",wd);
     const int minimap=jbr_bmethod(r->method,"Class_hii","r2",wd);
-    if((!overlay&&!minimap&&!jbr_bmethod(r->method,"Class_hii","k1",wd))||!r->method->is_static)return 0;
+    const int background=jbr_bmethod(r->method,"Class_hxb","j1",wd);
+    if((!overlay&&!minimap&&!background&&!jbr_bmethod(r->method,"Class_hii","k1",wd))||!r->method->is_static)return 0;
     JClass *map=r->method->_this_class;
     if(!wrapper||!jbr_bname(wrapper->mb.clazz,"Class_hvi")||
        !jbr_bobject(wrapper,wrapper->mb.clazz))return 0;
     JClass *wc=wrapper->mb.clazz;
     Runtime *p=r->parent;
-    if(overlay){
-        // Real Nick overlay path: Class_hmi.i(Class_hac,Class_hvi)
+    if(overlay||background){
+        // Real Nick map/overlay path (background is a0 PC58): Class_hmi.i(Class_hac,Class_hvi)
         // PC54 -> Class_hac.a0(Class_hvi) PC2044 -> Class_hii.i3.
         if(!jbr_bframe(p,r,2)||!jbr_bmethod(p->method,"Class_hac","a0",wd)||
            p->method->is_static||!jbr_bpc(p,map_pc)||p->localvar[1].rvalue!=wrapper||

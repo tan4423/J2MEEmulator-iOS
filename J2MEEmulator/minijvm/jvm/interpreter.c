@@ -42,6 +42,11 @@ static const int jbr_resolved_reads=1,jbr_resume=1,jbr_skip_draws=1,jbr_draw_eff
 #else
 #define JBR_WIDE_FIXTURE 0
 #endif
+#if defined(JARBOX_HOST_RESIDUAL_BACKGROUND_TEST)
+#define JBR_BACKGROUND_FIXTURE 1
+#else
+#define JBR_BACKGROUND_FIXTURE 0
+#endif
 // Controlled closed sink fixture ONLY. Actual game admission also needs
 // original archive/API identities and immutable binding for each region.
 static int jbr_fixture_scope(Instance *wrapper) {
@@ -235,9 +240,21 @@ static const JarBoxResidualOp *jbr_fixture_compile(Runtime *r,MethodInfo *m,Code
         JarBoxResidualOp *candidate=calloc(capacity,sizeof(*candidate));
         if(candidate) {
             unsigned count=jbr_compile(ca->bytecode_for_jit,ca->code_length,
-                jbr_fixture_cp,m->_this_class,JBR_WIDE_FIXTURE?5:JBR_EXTENDED_FIXTURE?4:jbr_skip_draws?3:jbr_draw_effects+jbr_resume,candidate,capacity);
+                jbr_fixture_cp,m->_this_class,JBR_BACKGROUND_FIXTURE?6:JBR_WIDE_FIXTURE?5:JBR_EXTENDED_FIXTURE?4:jbr_skip_draws?3:jbr_draw_effects+jbr_resume,candidate,capacity);
             int valid=count&&(JBR_EXTENDED_FIXTURE||count==JBR_COUNT)&&jbr_validate(candidate,count,ca->bytecode_for_jit,ca->code_length);
             if(!JBR_EXTENDED_FIXTURE)for(unsigned i=0;valid&&i<count;i++)valid=jbr_same_op(candidate+i,jbr_plan+i);
+#if defined(JARBOX_HOST_RESIDUAL_BACKGROUND_TEST)
+            // Prove non-vacuous elimination of both array-argument draws,
+            // not merely the old r2-shaped closed draws elsewhere.
+            unsigned matches=0,wide_inc=0,lengths=0;
+            for(unsigned i=0;i<count;i++){
+                const JarBoxResidualOp *o=candidate+i;
+                if(o->checkpoint&&(o->pc==JBR_TEST_BG_ARRAY_PC||o->pc==JBR_TEST_BG_WIDE_PC))++matches;
+                if(o->kind==JBR_INC&&o->imm==192)++wide_inc;
+                if(o->kind==JBR_WIDE_EFFECT&&jbr_effect_raw(o)==0xbe)++lengths;
+            }
+            valid=valid&&matches==2&&wide_inc&&lengths;
+#endif
             if(valid) {
                 ca->residual_plan_count=count;plan=candidate;
                 __atomic_store_n(&ca->host_residual_plan,plan,__ATOMIC_RELEASE);
@@ -324,17 +341,18 @@ static const JarBoxResidualOp *jbr_live_compile(Runtime *r,MethodInfo *m,CodeAtt
     JarBoxTreoState *st=r->jvm->session?&r->jvm->session->treo_state:NULL;
     *count=0;
     static const unsigned char minimap_digest[32]={0x2e,0xa5,0xa4,0xe7,0xb0,0x59,0x8b,0xa7,0x65,0x8c,0x4d,0x65,0x60,0x5c,0x4c,0x77,0xb8,0xe8,0x51,0xe5,0x50,0xd5,0x2a,0x12,0x5c,0x82,0x6d,0x84,0xa3,0xde,0xa1,0x63};
+    static const unsigned char background_digest[32]={0xbd,0xac,0xc8,0x7a,0x00,0x3a,0x35,0x6a,0x0a,0x01,0xb2,0xdd,0x41,0x99,0x76,0x9f,0x40,0xa3,0xb5,0xc5,0x7f,0x0a,0xf1,0x74,0xad,0x54,0x74,0x6e,0xca,0xd7,0x15,0x5e};
     if((ca->code_length!=1368||ca->max_locals!=4)&&(ca->code_length!=413||ca->max_locals!=5)&&
-       (ca->code_length!=746||ca->max_locals!=5))return NULL;
-    const int overlay=ca->code_length==413,minimap=ca->code_length==746;
-    JarBoxResidualCPKind cp=minimap?jbr_wide_cp:jbr_fixture_cp;
-    const unsigned expected_checkpoints=minimap?12:overlay?5:21;
+       (ca->code_length!=746||ca->max_locals!=5)&&(ca->code_length!=1216||ca->max_locals!=2))return NULL;
+    const int overlay=ca->code_length==413,minimap=ca->code_length==746,background=ca->code_length==1216;
+    JarBoxResidualCPKind cp=(minimap||background)?jbr_wide_cp:jbr_fixture_cp;
+    const unsigned expected_checkpoints=background?25:minimap?12:overlay?5:21;
     // Cheap signature rejection precedes control-plane reads for ordinary
     // methods. No active JIT or debugger, exact method and rooted receiver.
     if(!st||!m->is_static||m->is_sync||m->is_native||m->para_slots!=1||m->return_slots||
-       ca->max_stack!=(minimap?7:10)||ca->exception_table_length||
-       !jbr_eq(m->_this_class->name,"Class_hii")||
-       !jbr_eq(m->name,minimap?"r2":overlay?"i3":"k1")||!jbr_eq(m->descriptor,"(LClass_hvi;)V")||
+       ca->max_stack!=(background?6:minimap?7:10)||ca->exception_table_length||
+       !jbr_eq(m->_this_class->name,background?"Class_hxb":"Class_hii")||
+       !jbr_eq(m->name,background?"j1":minimap?"r2":overlay?"i3":"k1")||!jbr_eq(m->descriptor,"(LClass_hvi;)V")||
        !__atomic_load_n(&st->residual_archive_verified,__ATOMIC_ACQUIRE)||
        __atomic_load_n(&st->residual_faults,__ATOMIC_RELAXED)||
        jarbox_session_phase(r->jvm->session)!=JARBOX_SESSION_PARKED||
@@ -362,11 +380,12 @@ static const JarBoxResidualOp *jbr_live_compile(Runtime *r,MethodInfo *m,CodeAtt
     // Only the exact audited Nick map/wrapper. All removed regions must
     // already have linked and initialized operands; never warm by executing
     // extra Java. A still-cold map takes the original interpreter.
-    if(!jbr_live_code(ca,minimap?746:overlay?413:1368,minimap?minimap_digest:overlay?overlay_digest:digest)||
-       (!minimap&&!jbr_live_wrapper_ready(r->jvm,wrapper,scope,0))||
-       ((overlay||minimap)&&!jbr_live_wrapper_ready(r->jvm,wrapper,scope,1))||
-       (minimap&&(!jbr_live_wrapper_ready(r->jvm,wrapper,scope,2)||
-                  !jbr_live_wrapper_ready(r->jvm,wrapper,scope,3))))return NULL;
+    if(!jbr_live_code(ca,background?1216:minimap?746:overlay?413:1368,
+                         background?background_digest:minimap?minimap_digest:overlay?overlay_digest:digest)||
+       (!minimap&&!background&&!jbr_live_wrapper_ready(r->jvm,wrapper,scope,0))||
+       ((overlay||minimap||background)&&!jbr_live_wrapper_ready(r->jvm,wrapper,scope,1))||
+       (minimap&&!jbr_live_wrapper_ready(r->jvm,wrapper,scope,2))||
+       ((minimap||background)&&!jbr_live_wrapper_ready(r->jvm,wrapper,scope,3)))return NULL;
     for(unsigned p=0;p<(unsigned)ca->code_length;) {
         unsigned raw=ca->bytecode_for_jit[p],len=jbr_raw_size(raw);
         if(!len||len>(unsigned)ca->code_length-p)return NULL;
@@ -375,10 +394,10 @@ static const JarBoxResidualOp *jbr_live_compile(Runtime *r,MethodInfo *m,CodeAtt
             unsigned ix=jbr_u16(ca->bytecode_for_jit+p+1);
             int typ=cp(cl,raw,ix);
             if(!jbr_draw_shape(typ)){
-                if(!minimap||!(typ&JBR_CP_CALL_FLAG))return NULL;
+                if((!minimap&&!background)||!(typ&JBR_CP_CALL_FLAG))return NULL;
             } else {
-                if((typ==JBR_CP_DRAW_RECT&&!minimap)||(typ==JBR_CP_DRAW_IMAGE&&!overlay&&!minimap)||
-                   (typ==JBR_CP_DRAW&&minimap))return NULL;
+                if((typ==JBR_CP_DRAW_RECT&&!minimap&&!background)||(typ==JBR_CP_DRAW_IMAGE&&!overlay&&!minimap&&!background)||
+                   (typ==JBR_CP_DRAW&&(minimap||background)))return NULL;
                 ConstantMethodRef *mr=(ConstantMethodRef *)class_get_constant_item(cl,ix);
                 const char *desc=typ==JBR_CP_DRAW_RECT?"(IIII)V":typ==JBR_CP_DRAW_IMAGE?
                     "(Ljavax/microedition/lcdui/Image;III)V":"(Ljavax/microedition/lcdui/Image;IIIIIIII)V";
@@ -393,7 +412,7 @@ static const JarBoxResidualOp *jbr_live_compile(Runtime *r,MethodInfo *m,CodeAtt
         JarBoxResidualOp *candidate=calloc(JBR_MAX_NODES,sizeof(*candidate));
         if(candidate) {
             unsigned n=jbr_compile(ca->bytecode_for_jit,ca->code_length,
-                cp,m->_this_class,minimap?5:overlay?4:3,candidate,JBR_MAX_NODES);
+                cp,m->_this_class,background?6:minimap?5:overlay?4:3,candidate,JBR_MAX_NODES);
             int valid=n&&jbr_validate(candidate,n,ca->bytecode_for_jit,ca->code_length);
             unsigned checkpoints=0;
             for(unsigned i=0;valid&&i<n;i++)if(candidate[i].checkpoint){
@@ -404,7 +423,7 @@ static const JarBoxResidualOp *jbr_live_compile(Runtime *r,MethodInfo *m,CodeAtt
                 ca->residual_plan_count=n;plan=candidate;
                 __atomic_store_n(&ca->host_residual_plan,plan,__ATOMIC_RELEASE);
                 __atomic_fetch_add(&st->host_residual_compiles,1,__ATOMIC_RELAXED);
-                __atomic_fetch_or(&st->residual_plan_ready,minimap?4u:overlay?2u:1u,__ATOMIC_RELEASE);
+                __atomic_fetch_or(&st->residual_plan_ready,background?8u:minimap?4u:overlay?2u:1u,__ATOMIC_RELEASE);
             } else free(candidate);
         }
     }
@@ -2625,15 +2644,16 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
 #if defined(JARBOX_HOST_BINDING_TEST)
             const int binding_overlay=jbr_bmethod(method,"Class_hii","i3","(LClass_hvi;)V");
             const int binding_minimap=jbr_bmethod(method,"Class_hii","r2","(LClass_hvi;)V");
-            if(binding_overlay||binding_minimap||jbr_bmethod(method,"Class_hii","k1","(LClass_hvi;)V")) {
+            const int binding_background=jbr_bmethod(method,"Class_hxb","j1","(LClass_hvi;)V");
+            if(binding_background||binding_overlay||binding_minimap||jbr_bmethod(method,"Class_hii","k1","(LClass_hvi;)V")) {
                 JarBoxTreoState *state=&jvm->session->treo_state;
                 JarBoxResidualBinding b;
                 Instance *wrapper=stack_size(stack)>=1?(stack->sp-1)->rvalue:NULL;
                 const void *expected=jbr_bfield(clazz,NULL,"expected","I",sizeof(s32),0,1);
                 s32 want=-1;if(expected)memcpy(&want,expected,sizeof(want));
                 int got=jbr_binding_route(runtime,wrapper,&b,
-                    binding_overlay?JBR_TEST_OVERLAY_PC:binding_minimap?JBR_TEST_MINIMAP_PC:JBR_TEST_MAP_PC,
-                    binding_overlay?JBR_TEST_OVERLAY_DELEGATE_PC:binding_minimap?JBR_TEST_MINIMAP_DELEGATE_PC:JBR_TEST_DELEGATE_PC,
+                    binding_background?JBR_TEST_BACKGROUND_PC:binding_overlay?JBR_TEST_OVERLAY_PC:binding_minimap?JBR_TEST_MINIMAP_PC:JBR_TEST_MAP_PC,
+                    (binding_background||binding_overlay)?JBR_TEST_OVERLAY_DELEGATE_PC:binding_minimap?JBR_TEST_MINIMAP_DELEGATE_PC:JBR_TEST_DELEGATE_PC,
                     JBR_TEST_PAINT_PC,JBR_TEST_OVERLAY_ROUTE_PC);
                 if(want!=got)__atomic_fetch_add(&state->host_binding_mismatch,1,__ATOMIC_RELAXED);
                 if(got)__atomic_fetch_add(&state->host_binding_good,1,__ATOMIC_RELAXED);

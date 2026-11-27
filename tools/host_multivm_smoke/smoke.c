@@ -232,8 +232,8 @@ int main(int argc, char **argv) {
         start_job(&a);start_job(&b);join_job(&a);join_job(&b);
         printf("binding A: good=%llu bad=%llu mismatch=%llu\n",(unsigned long long)a.binding_good,(unsigned long long)a.binding_bad,(unsigned long long)a.binding_mismatch);
         printf("binding B: good=%llu bad=%llu mismatch=%llu\n",(unsigned long long)b.binding_good,(unsigned long long)b.binding_bad,(unsigned long long)b.binding_mismatch);
-        REQUIRE(!a.rc&&!b.rc&&a.binding_good==3000&&b.binding_good==3000&&
-                a.binding_bad==28000&&b.binding_bad==28000&&!a.binding_mismatch&&!b.binding_mismatch);
+        REQUIRE(!a.rc&&!b.rc&&a.binding_good==4000&&b.binding_good==4000&&
+                a.binding_bad==38000&&b.binding_bad==38000&&!a.binding_mismatch&&!b.binding_mismatch);
     } else
 #endif
     if (!strcmp(scenario,"residual_diff")) {
@@ -247,7 +247,7 @@ int main(int argc, char **argv) {
         REQUIRE(!a.rc&&!b.rc&&residual_equal(&a,&b));
     }
 #if defined(JARBOX_HOST_RESIDUAL_TEST)
-    else if (!strcmp(scenario,"residual_native_diff") || !strcmp(scenario,"residual_resume_diff") || !strcmp(scenario,"residual_closed_diff") || !strcmp(scenario,"residual_extended_diff") || !strcmp(scenario,"residual_wide_diff")) {
+    else if (!strcmp(scenario,"residual_native_diff") || !strcmp(scenario,"residual_resume_diff") || !strcmp(scenario,"residual_closed_diff") || !strcmp(scenario,"residual_extended_diff") || !strcmp(scenario,"residual_wide_diff") || !strcmp(scenario,"residual_background_diff")) {
         // Both VMs load the original fixture, only B admits the native plan.
         init_job(&a,argv,"A","residual",bport,base);
         init_job(&b,argv,"B","residual-native",bport+1,base);
@@ -257,7 +257,7 @@ int main(int argc, char **argv) {
         printf("residual native compiles: A=%llu B=%llu\n",
                (unsigned long long)a.residual_compiles,(unsigned long long)b.residual_compiles);
         printf("residual native deopts: A=%llu B=%llu\n",(unsigned long long)a.residual_deopts,(unsigned long long)b.residual_deopts);
-        const int extended=!strcmp(scenario,"residual_extended_diff")||!strcmp(scenario,"residual_wide_diff");
+        const int extended=!strcmp(scenario,"residual_extended_diff")||!strcmp(scenario,"residual_wide_diff")||!strcmp(scenario,"residual_background_diff");
         const int closed=extended||!strcmp(scenario,"residual_closed_diff");
         unsigned admitted=2000;
         if(closed){admitted=0;for(unsigned i=0;i<2000;i++)if(i%53&&i%59)++admitted;}

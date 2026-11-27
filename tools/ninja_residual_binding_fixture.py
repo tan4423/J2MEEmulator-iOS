@@ -42,6 +42,8 @@ public abstract class Canvas {
 "Class_hxb.java":'''public final class Class_hxb extends Class_bs {
     private Class_hvi c3=new Class_hvi(null);
     private Class_hac screen=new Class_hac();
+    public static int expected,touch;
+    public static void j1(Class_hvi w){touch++;}
     public boolean wrongBinding;
     protected final void a(javax.microedition.lcdui.Graphics g){
         c3.a=wrongBinding?null:g;
@@ -57,7 +59,7 @@ public abstract class Canvas {
 }''',
 "Class_hac.java":'''public final class Class_hac {
     private int state;
-    public final void a0(Class_hvi w){state++;Class_hii.i3(w);}
+    public final void a0(Class_hvi w){state++;Class_hxb.j1(w);Class_hii.i3(w);}
 }''',
 "Class_hii.java":'''public final class Class_hii {
     public static int expected,touch;
@@ -72,14 +74,15 @@ public abstract class Canvas {
         Class_hxb d=new Class_hxb();c.set(d);Class_hef.g=c;
         Class_hvi off=new Class_hvi(g);
         for(int i=0;i<1000;i++){
-            Class_hii.expected=1;c.doPaint();
-            Class_hii.expected=0;
+            Class_hii.expected=Class_hxb.expected=1;c.doPaint();
+            Class_hii.expected=Class_hxb.expected=0;
             Class_hmi.m(off);                  // no paint ancestry
             Class_hii.k1(null);                // no wrapper
             Class_hmi.i(new Class_hac(),off);  // route but no paint ancestry
             Class_hii.i3(null);                // no wrapper
             Class_hmi.k(off);                 // minimap outside paint
             Class_hii.r2(null);                // no wrapper
+            Class_hxb.j1(null);                // no wrapper
             new Class_hac().a0(off);           // missing i route
             g.ownsContext=true;c.doPaint();g.ownsContext=false;
             g.treoPixelDependent=true;c.doPaint();g.treoPixelDependent=false;
@@ -90,7 +93,7 @@ public abstract class Canvas {
             d.wrongBinding=true;c.doPaint();d.wrongBinding=false;
             if(i%100==0)System.gc();
         }
-        if(Class_hii.touch!=31000)throw new IllegalStateException("missing invocation");
+        if(Class_hii.touch!=31000||Class_hxb.touch!=11000)throw new IllegalStateException("missing invocation");
     }
 }'''
 }
@@ -114,8 +117,9 @@ def main():
             pc('Class_hxb','Method Class_hmi.i:(LClass_hac;LClass_hvi;)V'),
             pc('Class_hmi','Method Class_hac.a0:(LClass_hvi;)V'),
             pc('Class_hmi','Method Class_hii.r2:(LClass_hvi;)V'),
-            pc('Class_hxb','Method Class_hmi.k:(LClass_hvi;)V'))
+            pc('Class_hxb','Method Class_hmi.k:(LClass_hvi;)V'),
+            pc('Class_hac','Method Class_hxb.j1:(LClass_hvi;)V'))
     a.header.write_text('/* Synthetic fixture only. */\n'+
-        '\n'.join(f'#define JBR_TEST_{key}_PC {value}' for key,value in zip(('MAP','DELEGATE','PAINT','OVERLAY','OVERLAY_DELEGATE','OVERLAY_ROUTE','MINIMAP','MINIMAP_DELEGATE'),values))+'\n')
+        '\n'.join(f'#define JBR_TEST_{key}_PC {value}' for key,value in zip(('MAP','DELEGATE','PAINT','OVERLAY','OVERLAY_DELEGATE','OVERLAY_ROUTE','MINIMAP','MINIMAP_DELEGATE','BACKGROUND'),values))+'\n')
     print('binding fixture PCs:',values)
 if __name__=='__main__':main()
