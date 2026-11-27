@@ -25,8 +25,9 @@ static int jbr_plain_int_read(JClass *cl,ConstantFieldRef *ref) {
 }
 static int jbr_live_code(const CodeAttribute *ca,unsigned length,const unsigned char digest[32]) {
     unsigned char actual[32];
-    return ca&&ca->bytecode_for_jit&&ca->code_length==length&&
-        !mbedtls_sha256_ret(ca->bytecode_for_jit,length,actual,0)&&!memcmp(actual,digest,32);
+    if(!ca||!ca->bytecode_for_jit||ca->code_length!=length)return 0;
+    mbedtls_sha256(ca->bytecode_for_jit,length,actual,0);
+    return !memcmp(actual,digest,32);
 }
 static MethodInfo *jbr_live_declared(JClass *c,const char *name,const char *desc) {
     if(!c||c->status!=CLASS_STATUS_CLINITED||!c->methodPool.method||
