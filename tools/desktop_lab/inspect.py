@@ -37,7 +37,9 @@ def report(path, window):
          "paint_cpu_pct":round(delta("paint_cpu_ns")/dt*100,3),"gc_cpu_pct":round(delta("gc_cpu_ns")/dt*100,3),
          "paint_hz":round(delta("paints")*1e9/dt,2),"frames_hz":round(delta("frames")*1e9/dt,2),
          "draws_per_second":round(delta("draw_calls")*1e9/dt,2),"image_allocs_per_second":round(delta("image_allocs")*1e9/dt,2),
-         "gc_cycles":delta("gc_cycles"),"input_events":delta("input_events"),"native_surface_bytes":int(b["native_surface_bytes"]),
+         "gc_cycles":delta("gc_cycles"),"gc_aborts":delta("gc_aborts") if "gc_aborts" in b else None,
+         "gc_heap_sample_bytes":int(b["gc_heap_sample_bytes"]) if b.get("gc_heap_sample_bytes") else None,
+         "input_events":delta("input_events"),"native_surface_bytes":int(b["native_surface_bytes"]),
          "benchmark_eligible":b["mode"]=="plain","note":"Paint is inclusive; graph mode perturbs execution. Role names are static hypotheses, not proof."}
     edge_path=pathlib.Path(str(path)+".edges.tsv")
     if edge_path.exists():

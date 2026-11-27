@@ -24,7 +24,7 @@ static unsigned next_slot=1;
 static uint64_t generation=1;
 static pthread_mutex_t lock=PTHREAD_MUTEX_INITIALIZER, graph_lock=PTHREAD_MUTEX_INITIALIZER;
 static _Atomic int stop_requested, finished, failed;
-static _Atomic uint64_t paints, paint_cpu, frames, draw_calls, image_allocs, events_delivered, gc_cycles, gc_cpu;
+static _Atomic uint64_t paints, paint_cpu, frames, draw_calls, image_allocs, events_delivered, gc_cycles, gc_cpu, gc_aborts, gc_heap_sample;
 static pthread_mutex_t vm_lock=PTHREAD_MUTEX_INITIALIZER;
 static MiniJVM *active_vm;
 static const char *trace_path;
@@ -85,10 +85,15 @@ void jarbox_lab_method_enter(MethodInfo *m,Runtime *parent) {
     graph_dropped++;
 done: pthread_mutex_unlock(&graph_lock);
 }
-void jarbox_lab_int_field(Runtime *r,int offset,int value,int write){
-    if(!trace_graph||!r||!r->method)return;
+void jarbox_lab_int_field(Runtime *r,Instance *receiver,int offset,int value,int write){
+    if(!trace_graph||!r||!r->method||!receiver||!receiver->mb.clazz)return;
     MethodInfo *m=r->method;JClass *c=m->_this_class;
     if(!c||!c->name||(!utf8_equals_c(c->name,"Class_hda")&&!utf8_equals_c(c->name,"LabFixture$Probe")))return;
+    /* A field offset is only meaningful inside the receiver's actual
+       layout. Same numeric offsets in unrelated objects are not s6. */
+    JClass *owner=receiver->mb.clazz;
+    while(owner&&owner!=c)owner=owner->superclass;
+    if(!owner)return;
     if(!m->converted_code||!m->converted_code->code||!r->pc)return;
     const unsigned char *code=(const unsigned char*)m->converted_code->code;
     const unsigned char *pc=(const unsigned char*)r->pc;
@@ -96,7 +101,7 @@ void jarbox_lab_int_field(Runtime *r,int offset,int value,int write){
     int matched=0;
     for(int i=0;i<c->fieldPool.field_used;i++){
         FieldInfo *f=c->fieldPool.field+i;
-        if(f->name&&f->descriptor&&f->offset_instance==offset&&utf8_equals_c(f->name,"s6")&&utf8_equals_c(f->descriptor,"I")){matched=1;break;}
+        if(!(f->access_flags&8)&&f->name&&f->descriptor&&f->offset_instance==offset&&utf8_equals_c(f->name,"s6")&&utf8_equals_c(f->descriptor,"I")){matched=1;break;}
     }
     if(!matched)return;
     Effect e={0};if(!method_name(m,e.method,sizeof e.method))return;
@@ -380,6 +385,14 @@ static java_native_method methods[]={
  N(formShow,"()V",formShow),N(showCanvas,"()V",showCanvas),N(netTraceStage,"(I)V",netTraceStage),
  N(vibrate,"(I)V",noop)
 };
+static void sample_vm_gc(MiniJVM *vm){
+    if(!vm)return;
+    atomic_store(&gc_cycles,__atomic_load_n(&vm->session->treo_state.gc_worker_cycles,__ATOMIC_RELAXED));
+    atomic_store(&gc_cpu,__atomic_load_n(&vm->session->treo_state.gc_worker_cpu_ns,__ATOMIC_RELAXED));
+    atomic_store(&gc_aborts,__atomic_load_n(&vm->session->treo_state.gc_worker_aborts,__ATOMIC_RELAXED));
+    uint64_t sample=__atomic_load_n(&vm->collector->jarbox_status_heap_sample,__ATOMIC_ACQUIRE);
+    if(sample)atomic_store(&gc_heap_sample,sample-1);
+}
 static void *run_vm(void *unused){
     MiniJVM *vm=jvm_create(); if(!vm)goto done;
     if(!jarbox_native_heap_register_vm(vm)){
@@ -407,8 +420,7 @@ static void *run_vm(void *unused){
         ArrayList *args=arraylist_create(0);arraylist_push_back(args,game_path);
         rc=call_main(vm,"javax/microedition/shell/MIDletRunner",args);arraylist_destroy(args);
         pthread_mutex_lock(&vm_lock);
-        atomic_store(&gc_cycles,__atomic_load_n(&vm->session->treo_state.gc_worker_cycles,__ATOMIC_RELAXED));
-        atomic_store(&gc_cpu,__atomic_load_n(&vm->session->treo_state.gc_worker_cpu_ns,__ATOMIC_RELAXED));
+        sample_vm_gc(vm);
         active_vm=NULL;
         pthread_mutex_unlock(&vm_lock);
     }
@@ -424,19 +436,16 @@ static int keycode(SDL_Keycode k){
 }
 static void sample(void){
     pthread_mutex_lock(&vm_lock);
-    if(active_vm){
-        atomic_store(&gc_cycles,__atomic_load_n(&active_vm->session->treo_state.gc_worker_cycles,__ATOMIC_RELAXED));
-        atomic_store(&gc_cpu,__atomic_load_n(&active_vm->session->treo_state.gc_worker_cpu_ns,__ATOMIC_RELAXED));
-    }
+    if(active_vm)sample_vm_gc(active_vm);
     pthread_mutex_unlock(&vm_lock);
     LOCK;unsigned long long bytes=native_bytes;UNLOCK;
-    fprintf(trace,"%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%s\n",
+    fprintf(trace,"%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%s\n",
         (unsigned long long)ns(CLOCK_MONOTONIC),(unsigned long long)ns(CLOCK_PROCESS_CPUTIME_ID),
         (unsigned long long)atomic_load(&paints),(unsigned long long)atomic_load(&paint_cpu),
         (unsigned long long)atomic_load(&frames),(unsigned long long)atomic_load(&draw_calls),
         (unsigned long long)atomic_load(&image_allocs),(unsigned long long)atomic_load(&events_delivered),
         (unsigned long long)atomic_load(&gc_cycles),(unsigned long long)atomic_load(&gc_cpu),
-        bytes,trace_graph?"graph":"plain");fflush(trace);
+        bytes,(unsigned long long)atomic_load(&gc_aborts),(unsigned long long)atomic_load(&gc_heap_sample),trace_graph?"graph":"plain");fflush(trace);
 }
 static int write_graph(void){
     size_t len=strlen(trace_path)+32;char *p=malloc(len),*tmp=malloc(len);
@@ -463,7 +472,7 @@ int main(int argc,char**argv){
         snprintf(p,n,"%s.effects.csv",trace_path);effect_file=fopen(p,"w");free(p);if(!effect_file)return 2;
         fprintf(effect_file,"sequence,monotonic_ns,worker,method,pc,operation,value,lost_total\n");
     }
-    fprintf(trace,"monotonic_ns,process_cpu_ns,paints,paint_cpu_ns,frames,draw_calls,image_allocs,input_events,gc_cycles,gc_cpu_ns,native_surface_bytes,mode\n");
+    fprintf(trace,"monotonic_ns,process_cpu_ns,paints,paint_cpu_ns,frames,draw_calls,image_allocs,input_events,gc_cycles,gc_cpu_ns,native_surface_bytes,gc_aborts,gc_heap_sample_bytes,mode\n");
     frame=calloc((size_t)width*height,4);if(!frame)return 2;
     if(SDL_Init(SDL_INIT_VIDEO|SDL_INIT_EVENTS)){fprintf(stderr,"%s\n",SDL_GetError());return 2;}
     SDL_Window *win=SDL_CreateWindow("JarBox Research Lab",SDL_WINDOWPOS_CENTERED,SDL_WINDOWPOS_CENTERED,width*2,height*2,SDL_WINDOW_RESIZABLE);

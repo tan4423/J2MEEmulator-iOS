@@ -19,6 +19,8 @@ public final class LabFixture extends MIDlet {
             byte[] got=rs.getRecord(id);if(got.length!=3||got[1]!=5)throw new RuntimeException("RMS roundtrip");
             rs.closeRecordStore();
             System.out.println("LAB_FIXTURE_TCP_RMS_PASS");
+            // Real GC worker must run before the fixture stops.
+            Thread.sleep(1250);
         }catch(Exception ex){throw new RuntimeException(ex.toString());}
         final TextBox text=new TextBox("Lab input","a",8,TextField.ANY);
         final Command done=new Command("Done",Command.OK,1);

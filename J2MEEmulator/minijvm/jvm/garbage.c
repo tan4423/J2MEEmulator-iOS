@@ -695,7 +695,21 @@ s32 _gc_thread_run(void *para) {
             JarBoxGCPhaseCycle phaseCycle={0};
             jarbox_gc_phase_current=&phaseCycle;
 #endif
+#if defined(JARBOX_DESKTOP_LAB) && JARBOX_DESKTOP_LAB
+            struct timespec lab_gc_begin={0},lab_gc_end={0};
+            int lab_gc_clock_ok=!clock_gettime(CLOCK_THREAD_CPUTIME_ID,&lab_gc_begin);
+#endif
             s64 gcResult = _garbage_collect(collector);
+#if defined(JARBOX_DESKTOP_LAB) && JARBOX_DESKTOP_LAB
+            JarBoxTreoState *lab_metrics=&jvm->session->treo_state;
+            if(lab_gc_clock_ok&&!clock_gettime(CLOCK_THREAD_CPUTIME_ID,&lab_gc_end)){
+                uint64_t a=(uint64_t)lab_gc_begin.tv_sec*UINT64_C(1000000000)+lab_gc_begin.tv_nsec;
+                uint64_t b=(uint64_t)lab_gc_end.tv_sec*UINT64_C(1000000000)+lab_gc_end.tv_nsec;
+                if(b>=a)__atomic_fetch_add(&lab_metrics->gc_worker_cpu_ns,b-a,__ATOMIC_RELAXED);
+            }
+            __atomic_fetch_add(&lab_metrics->gc_worker_cycles,1,__ATOMIC_RELAXED);
+            if(gcResult<0)__atomic_fetch_add(&lab_metrics->gc_worker_aborts,1,__ATOMIC_RELAXED);
+#endif
 #if defined(TREO_GC_PHASE_DIAG) && TREO_GC_PHASE_DIAG && defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__
             jarbox_gc_phase_current=NULL;
 #endif

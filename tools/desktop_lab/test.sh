@@ -37,5 +37,7 @@ assert any(e['operation']=='write' and e['value']=='1' and 'LabFixture$Probe.pai
 assert any(e['operation']=='read' and e['value']=='1' and 'LabFixture$Probe.paint' in e['method'] for e in events), events
 assert all(e['lost_total']=='0' for e in events)
 assert int(rows[-1]['draw_calls'])>=9
+assert int(rows[-1]['gc_cycles'])>0 and int(rows[-1]['gc_cpu_ns'])>0
+assert int(rows[-1]['gc_heap_sample_bytes'])>0
 print('DESKTOP_LAB_FIXTURE_PASS')
 PY

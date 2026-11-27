@@ -79,3 +79,13 @@ need a Windows-device test. Deep Treo remains disabled until its shared
 runtime admission contract is ported and validated.
 
 Nick t5 archive SHA-256 11b1d4c11f9082b9d07bc7bd92a9ad3abad40764853e23686cc86686869c966c was inspected locally: 168 PNG assets, 20 taller than 2048, maximum 24x3432. The desktop decoder now accepts bounded images up to 8192 per axis and 16M pixels, independent of the screen limit; CI decodes a generated 24x3432 atlas and tests its last pixel and a lower tile. No original game asset is committed or used by CI.
+
+Local real-game offline gate at 5f1497b: original Nick t5 opened the game
+menu and account editor under X11/SDL (240x320), received actual pointer
+and keyboard events, and exited with rc=0 and no input overflow. Network
+sockets were denied by seccomp, so this is not an online gameplay gate.
+99 images allocated during startup; no image decode refusal. The initial
+desktop GC telemetry was found to be zero despite actual collector logs
+because iOS-only counters were not active. The lab now records real
+collector attempts, aborts, thread CPU and published heap samples under a
+desktop-only flag; CI requires positive values. No GC policy is changed.

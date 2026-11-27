@@ -7068,8 +7068,8 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
 
                                 (sp++)->ivalue = *((s32 *) ptr);
 #if defined(JARBOX_DESKTOP_LAB) && JARBOX_DESKTOP_LAB
-                                extern void jarbox_lab_int_field(Runtime *, int, int, int);
-                                if (jarbox_lab_trace_enabled) jarbox_lab_int_field(runtime,offset,sp[-1].ivalue,0);
+                                extern void jarbox_lab_int_field(Runtime *, Instance *, int, int, int);
+                                if (jarbox_lab_trace_enabled) jarbox_lab_int_field(runtime,ins,offset,sp[-1].ivalue,0);
 #endif
                                 runtime->pc += 3;
 #if _JVM_DEBUG_LOG_LEVEL > 5
@@ -7188,8 +7188,8 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                                 ptr = &(ins->obj_fields[offset]);
                                 *((s32 *) ptr) = ival1;
 #if defined(JARBOX_DESKTOP_LAB) && JARBOX_DESKTOP_LAB
-                                extern void jarbox_lab_int_field(Runtime *, int, int, int);
-                                if (jarbox_lab_trace_enabled) jarbox_lab_int_field(runtime,offset,ival1,1);
+                                extern void jarbox_lab_int_field(Runtime *, Instance *, int, int, int);
+                                if (jarbox_lab_trace_enabled) jarbox_lab_int_field(runtime,ins,offset,ival1,1);
 #endif
                                 runtime->pc += 3;
 #if _JVM_DEBUG_LOG_LEVEL > 5
