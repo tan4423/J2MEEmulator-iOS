@@ -95,6 +95,8 @@ with socket.socket() as listener:
                             assert b["map_q3"]-a["map_q3"]==10,(a,b)
                             assert b["map_m3"]-a["map_m3"]==10,(a,b)
                             assert b["map_refusals"]-a["map_refusals"]==6,(a,b)
+                            assert b["map_layout_builds"]-a["map_layout_builds"]==2,(a,b)
+                            assert b["map_layout_hits"]>a["map_layout_hits"],(a,b)
                         assert cmd("sink off")["state"]=="ok"
                         assert cmd("key enter")["state"]=="queued"
                         deadline=time.monotonic()+8

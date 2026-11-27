@@ -935,6 +935,7 @@ struct _CodeAttribute {
 #endif
 #if defined(JARBOX_DESKTOP_LAB)
     unsigned desktop_glyph_kind;
+    uint64_t desktop_map_layout; // immutable linked field offsets, no heap pointers
 #endif
     spinlock_t compile_lock;
     struct _Jit {

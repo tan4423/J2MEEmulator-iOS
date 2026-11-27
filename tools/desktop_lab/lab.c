@@ -49,14 +49,24 @@ static int sink_admitted,sink_fixture,map_fixture;
 static _Atomic int sink_requested,sink_invalid;
 static _Atomic uint64_t sink_paints,sink_draws,sink_faults;
 static _Thread_local s64 sink_context;
-static _Atomic uint64_t deep_counts[14];
+static _Atomic uint64_t deep_counts[16];
+static _Thread_local uint64_t deep_pending[16];
 static int deep_admitted;
 int jarbox_lab_sink_level(int64_t context){
     if(!sink_context||(context&&context!=sink_context)||!deep_admitted||atomic_load(&sink_invalid))return 0;
     return atomic_load_explicit(&sink_requested,memory_order_relaxed);
 }
 void jarbox_lab_deep_note(unsigned kind,unsigned count){
-    if(kind<14)atomic_fetch_add_explicit(&deep_counts[kind],count,memory_order_relaxed);
+    if(kind<16){
+        if(sink_context)deep_pending[kind]+=count;
+        else atomic_fetch_add_explicit(&deep_counts[kind],count,memory_order_relaxed);
+    }
+}
+static void flush_deep_counts(void){
+    for(unsigned i=0;i<16;i++)if(deep_pending[i]){
+        atomic_fetch_add_explicit(&deep_counts[i],deep_pending[i],memory_order_relaxed);
+        deep_pending[i]=0;
+    }
 }
 void jarbox_lab_residual_fault(void){
     atomic_store(&sink_invalid,1);atomic_store(&sink_requested,0);
@@ -368,7 +378,7 @@ FN(drawRGB){if(sink_draw(J(0)))OK;Instance*a=R(2);int o=I(3),stride=I(4),w=I(7),
 FN(getImageRGB){sink_read(J(0));Instance*a=R(2);int o=I(3),stride=I(4),x=I(5),y=I(6),w=I(7),h=I(8);if(range(a,o,stride,w,h)){LOCK;Surface*s=get(J(0));if(s&&x>=0&&y>=0&&x<=sw(s)-w&&y<=sh(s)-h){cairo_surface_flush(s->s);for(int j=0;j<h;j++)for(int i=0;i<w;i++)((uint32_t*)a->arr_body)[(int64_t)o+(int64_t)j*stride+i]=pixel(s->s,x+i,y+j);}UNLOCK;}OK;}
 FN(flushToScreen){if(sink_draw(J(0)))OK;LOCK;Surface*s=get(J(0));if(s&&show_canvas&&sw(s)==width&&sh(s)==height){cairo_surface_flush(s->s);for(int y=0;y<height;y++)memcpy(frame+(size_t)y*width,cairo_image_surface_get_data(s->s)+(size_t)y*cairo_image_surface_get_stride(s->s),(size_t)width*4);dirty=1;atomic_fetch_add(&frames,1);}UNLOCK;OK;}
 FN(profilePaintBegin){PJ(ns(CLOCK_THREAD_CPUTIME_ID));OK;}
-FN(profilePaintEnd){uint64_t e=ns(CLOCK_THREAD_CPUTIME_ID),b=J(0);if(b&&e>=b){atomic_fetch_add(&paints,1);atomic_fetch_add(&paint_cpu,e-b);}OK;}
+FN(profilePaintEnd){flush_deep_counts();uint64_t e=ns(CLOCK_THREAD_CPUTIME_ID),b=J(0);if(b&&e>=b){atomic_fetch_add(&paints,1);atomic_fetch_add(&paint_cpu,e-b);}OK;}
 FN(isStopRequested){PI(atomic_load(&stop_requested));OK;}
 FN(pollInputEvent){
     Event e;int found=0;LOCK;if(rd!=wr){e=events[rd++%MAX_EVENTS];found=1;}UNLOCK;
@@ -398,7 +408,7 @@ FN(labBeginPaint){
     }
     PJ(previous);OK;
 }
-FN(labEndPaint){if(sink_context)atomic_fetch_add(&sink_paints,1);sink_context=J(0);OK;}
+FN(labEndPaint){flush_deep_counts();if(sink_context)atomic_fetch_add(&sink_paints,1);sink_context=J(0);OK;}
 FN(labCoreResult){
     if(I(0)!=0){atomic_store(&sink_invalid,1);atomic_store(&sink_requested,0);atomic_fetch_add(&sink_faults,1);}
     OK;
@@ -527,7 +537,7 @@ static void sample(void){
         (unsigned long long)atomic_load(&image_allocs),(unsigned long long)atomic_load(&events_delivered),
         (unsigned long long)atomic_load(&gc_cycles),(unsigned long long)atomic_load(&gc_cpu),
         bytes,(unsigned long long)atomic_load(&gc_aborts),(unsigned long long)atomic_load(&gc_heap_sample),logic_mode?"logic":trace_graph?"graph":"plain",atomic_load(&sink_requested),(unsigned long long)atomic_load(&sink_paints),(unsigned long long)atomic_load(&sink_draws),(unsigned long long)atomic_load(&sink_faults),atomic_load(&sink_invalid));
-    for(unsigned i=0;i<14;i++)fprintf(trace,",%llu",(unsigned long long)atomic_load(&deep_counts[i]));
+    for(unsigned i=0;i<16;i++)fprintf(trace,",%llu",(unsigned long long)atomic_load(&deep_counts[i]));
     fprintf(trace,",%d,%llu,%llu,%llu\n",atomic_load(&jarbox_lab_trace_enabled),(unsigned long long)atomic_load(&logic_plans),(unsigned long long)atomic_load(&logic_spans),(unsigned long long)atomic_load(&logic_ops));fflush(trace);
 }
 static int write_graph(void){
@@ -564,7 +574,7 @@ int main(int argc,char**argv){
         snprintf(p,n,"%s.effects.csv",trace_path);effect_file=fopen(p,"w");free(p);if(!effect_file)return 2;
         fprintf(effect_file,"sequence,monotonic_ns,worker,method,pc,operation,value,lost_total\n");
     }
-    fprintf(trace,"monotonic_ns,process_cpu_ns,paints,paint_cpu_ns,frames,draw_calls,image_allocs,input_events,gc_cycles,gc_cpu_ns,native_surface_bytes,gc_aborts,gc_heap_sample_bytes,mode,sink_requested,sink_paints,sink_draws,sink_faults,sink_invalid,deep_leaves,glyph_attempts,glyph_scope_refusals,glyph_link_refusals,glyph_data_refusals,glyph_loops,glyph_chars,map_q3,map_m3,map_refusals,residual_plans,residual_calls,residual_regions,residual_deopts,graph_enabled,ir_plans,ir_spans,ir_ops\n");
+    fprintf(trace,"monotonic_ns,process_cpu_ns,paints,paint_cpu_ns,frames,draw_calls,image_allocs,input_events,gc_cycles,gc_cpu_ns,native_surface_bytes,gc_aborts,gc_heap_sample_bytes,mode,sink_requested,sink_paints,sink_draws,sink_faults,sink_invalid,deep_leaves,glyph_attempts,glyph_scope_refusals,glyph_link_refusals,glyph_data_refusals,glyph_loops,glyph_chars,map_q3,map_m3,map_refusals,residual_plans,residual_calls,residual_regions,residual_deopts,map_layout_builds,map_layout_hits,graph_enabled,ir_plans,ir_spans,ir_ops\n");
     frame=calloc((size_t)width*height,4);if(!frame)return 2;
     if(SDL_Init(SDL_INIT_VIDEO|SDL_INIT_EVENTS)){fprintf(stderr,"%s\n",SDL_GetError());return 2;}
     SDL_Window *win=SDL_CreateWindow("JarBox Research Lab",SDL_WINDOWPOS_CENTERED,SDL_WINDOWPOS_CENTERED,width*2,height*2,SDL_WINDOW_RESIZABLE);

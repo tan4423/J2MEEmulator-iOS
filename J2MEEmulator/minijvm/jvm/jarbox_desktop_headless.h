@@ -131,13 +131,29 @@ static int desktop_map_leaf(MethodInfo *m,Runtime *r){
     CodeAttribute *ca=m->converted_code;
     const u8 *c=ca->bytecode_for_jit;
     JClass *cl=m->_this_class;
-    FieldInfo *af=desktop_map_field(cl,jbg_u16(c+1),kind==2?"x3":"u3",kind==2?"[I":"[C",sizeof(__refer),1);
-    FieldInfo *wf=desktop_map_field(cl,jbg_u16(c+5),"j1","I",4,0);
     RuntimeStack *s=r->stack;
-    if(!af||!wf||stack_size(s)<2||s->store+s->max_size-s->sp<4){
+    if(stack_size(s)<2||s->store+s->max_size-s->sp<4){
         jarbox_lab_deep_note(9,1);return 0;
     }
-    void *ap=getStaticFieldPtr(af),*wp=getStaticFieldPtr(wf);
+    // The CodeAttribute belongs to this loaded class. Only immutable
+    // offsets from naturally resolved fields are published, never array
+    // references or values. Cold linkage remains eligible for later retry.
+    uint64_t layout=__atomic_load_n(&ca->desktop_map_layout,__ATOMIC_ACQUIRE);
+    if(!layout){
+        FieldInfo *af=desktop_map_field(cl,jbg_u16(c+1),kind==2?"x3":"u3",kind==2?"[I":"[C",sizeof(__refer),1);
+        FieldInfo *wf=desktop_map_field(cl,jbg_u16(c+5),"j1","I",4,0);
+        if(!af||!wf){jarbox_lab_deep_note(9,1);return 0;}
+        layout=(UINT64_C(1)<<32)|((uint64_t)af->offset<<16)|wf->offset;
+        __atomic_store_n(&ca->desktop_map_layout,layout,__ATOMIC_RELEASE);
+        jarbox_lab_deep_note(14,1);
+    } else jarbox_lab_deep_note(15,1);
+    unsigned ao=(uint16_t)(layout>>16),wo=(uint16_t)layout;
+    if(!cl->field_static||cl->field_static_len<0||
+       (size_t)ao+sizeof(__refer)>(size_t)cl->field_static_len||
+       (size_t)wo+sizeof(s32)>(size_t)cl->field_static_len){
+        jarbox_lab_deep_note(9,1);return 0;
+    }
+    void *ap=cl->field_static+ao,*wp=cl->field_static+wo;
     if((uintptr_t)ap%_Alignof(__refer)||(uintptr_t)wp%_Alignof(s32)){
         jarbox_lab_deep_note(9,1);return 0;
     }
