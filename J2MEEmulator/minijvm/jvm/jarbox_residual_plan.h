@@ -7,16 +7,22 @@
 // Host experiment only. This header assumes the actual VM StackEntry layout.
 enum { JBR_NOP, JBR_CONST, JBR_MOVE, JBR_INC, JBR_IADD, JBR_ISUB,
        JBR_IMUL, JBR_IAND, JBR_ISHR, JBR_IF_ICMPEQ, JBR_IF_ICMPNE,
-       JBR_IF_ICMPGE, JBR_EFFECT };
-enum { JBR_SLOTS=28, JBR_NONE=255, JBR_END=65535 };
+       JBR_IF_ICMPGE, JBR_EFFECT, JBR_NULL, JBR_MOVE_REF,
+       JBR_IF_ICMPLT,JBR_IF_ICMPGT,JBR_IF_ICMPLE,
+       JBR_IFEQ,JBR_IFNE,JBR_IFLT,JBR_IFGE,JBR_IFGT,JBR_IFLE };
+enum { JBR_LOCAL4=28, JBR_SLOTS=29, JBR_NONE=255, JBR_END=65535 };
 typedef struct {
     uint8_t kind,a,b,dst;
     uint16_t pc,next,alt;
     uint8_t length, checkpoint;
     int32_t imm;
 } JarBoxResidualOp;
-static inline int jbr_ref_slot(unsigned n) { return n==0 || (n>=16 && n<JBR_SLOTS); }
-static inline int jbr_int_slot(unsigned n) { return n>0 && n<16; }
+static inline int jbr_ref_slot(unsigned n) { return n==0 || (n>=16 && n<28); }
+static inline int jbr_int_slot(unsigned n) { return (n>0 && n<16)||n==JBR_LOCAL4; }
+static inline int jbr_two_branch(unsigned k) {
+    return (k>=JBR_IF_ICMPEQ&&k<=JBR_IF_ICMPGE)||(k>=JBR_IF_ICMPLT&&k<=JBR_IF_ICMPLE);
+}
+static inline int jbr_one_branch(unsigned k) {return k>=JBR_IFEQ&&k<=JBR_IFLE;}
 static inline void jbr_copy_slot(StackEntry *dst,const StackEntry *src,unsigned n) {
     if(jbr_ref_slot(n)) { dst->rvalue=src->rvalue;dst->lvalue=0; }
     else { dst->ivalue=src->ivalue;dst->rvalue=NULL; }
@@ -38,8 +44,8 @@ static inline int jbr_validate(const JarBoxResidualOp *plan,unsigned count,
             continue;
         }
         if(o->next>=count)return 0;
-        if(o->kind>=JBR_IF_ICMPEQ&&o->kind<=JBR_IF_ICMPGE) {
-            if(o->alt>=count||!jbr_int_slot(a)||!jbr_int_slot(b)||d!=JBR_NONE||o->length)return 0;
+        if(jbr_two_branch(o->kind)||jbr_one_branch(o->kind)) {
+            if(o->alt>=count||!jbr_int_slot(a)||(jbr_two_branch(o->kind)?!jbr_int_slot(b):b!=JBR_NONE)||d!=JBR_NONE||o->length)return 0;
             continue;
         }
         if(o->alt!=JBR_END)return 0;
@@ -59,6 +65,8 @@ static inline int jbr_validate(const JarBoxResidualOp *plan,unsigned count,
             switch(o->kind) {
                 case JBR_NOP:if(a!=JBR_NONE||b!=JBR_NONE||d!=JBR_NONE)return 0;break;
                 case JBR_CONST:if(!jbr_int_slot(d)||a!=JBR_NONE||b!=JBR_NONE)return 0;break;
+                case JBR_NULL:if(!jbr_ref_slot(d)||d==0||a!=JBR_NONE||b!=JBR_NONE)return 0;break;
+                case JBR_MOVE_REF:if(b!=JBR_NONE||!((a==3&&jbr_ref_slot(d)&&d!=0)||(d==3&&jbr_ref_slot(a))))return 0;break;
                 case JBR_MOVE:if(a>=JBR_SLOTS||d==0||d>=JBR_SLOTS||
                                   jbr_ref_slot(a)!=jbr_ref_slot(d)||b!=JBR_NONE)return 0;break;
                 case JBR_INC:if(!jbr_int_slot(a)||a!=d||b!=JBR_NONE)return 0;break;
@@ -80,6 +88,8 @@ static inline unsigned jbr_pure_step(const JarBoxResidualOp *o,StackEntry *v) {
         case JBR_NOP:break;
         case JBR_CONST:v[o->dst].ivalue=o->imm;break;
         case JBR_MOVE:jbr_copy_slot(&v[o->dst],&v[o->a],o->a);break;
+        case JBR_NULL:v[o->dst].rvalue=NULL;v[o->dst].lvalue=0;break;
+        case JBR_MOVE_REF:v[o->dst].rvalue=v[o->a].rvalue;v[o->dst].lvalue=0;break;
         case JBR_INC:v[o->dst].ivalue=jarbox_java_iadd(a,o->imm);break;
         case JBR_IADD:v[o->dst].ivalue=jarbox_java_iadd(a,b);break;
         case JBR_ISUB:v[o->dst].ivalue=jarbox_java_isub(a,b);break;
@@ -89,6 +99,15 @@ static inline unsigned jbr_pure_step(const JarBoxResidualOp *o,StackEntry *v) {
         case JBR_IF_ICMPEQ:return a==b?o->next:o->alt;
         case JBR_IF_ICMPNE:return a!=b?o->next:o->alt;
         case JBR_IF_ICMPGE:return a>=b?o->next:o->alt;
+        case JBR_IF_ICMPLT:return a<b?o->next:o->alt;
+        case JBR_IF_ICMPGT:return a>b?o->next:o->alt;
+        case JBR_IF_ICMPLE:return a<=b?o->next:o->alt;
+        case JBR_IFEQ:return a==0?o->next:o->alt;
+        case JBR_IFNE:return a!=0?o->next:o->alt;
+        case JBR_IFLT:return a<0?o->next:o->alt;
+        case JBR_IFGE:return a>=0?o->next:o->alt;
+        case JBR_IFGT:return a>0?o->next:o->alt;
+        case JBR_IFLE:return a<=0?o->next:o->alt;
         default:return JBR_END;
     }
     return o->next;

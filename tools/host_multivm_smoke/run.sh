@@ -9,6 +9,7 @@ case "$SUITE" in
   residual_resume) EXTRA="-DJARBOX_HOST_RESIDUAL_TEST=1"; SCENARIOS="residual_resume_diff";;
   residual_read) EXTRA="-DJARBOX_HOST_RESIDUAL_TEST=1"; SCENARIOS="residual_native_diff";;
   residual_closed) EXTRA="-DJARBOX_HOST_RESIDUAL_TEST=1"; SCENARIOS="residual_closed_diff";;
+  residual_extended) EXTRA="-DJARBOX_HOST_RESIDUAL_TEST=1 -DJARBOX_HOST_RESIDUAL_EXTENDED_TEST=1"; SCENARIOS="residual_extended_diff";;
   binding) EXTRA="-DJARBOX_HOST_BINDING_TEST=1"; SCENARIOS="binding_diff";;
   intrinsics|benchmark)
     EXTRA="-DJARBOX_HOST_INTRINSIC_TEST=1 -DTREO_VM_CHAR_LEAF_EXPERIMENT=1 -DTREO_VM_ARRAY_LOOKUP_MODE1_EXPERIMENT=1"
@@ -43,6 +44,13 @@ if [[ "$SUITE" == residual || "$SUITE" == residual_draw || "$SUITE" == residual_
   export UBSAN_OPTIONS=halt_on_error=1
   export ASAN_OPTIONS=halt_on_error=1
 fi
+if [[ "$SUITE" == residual_extended ]]; then
+  python3 "$ROOT/tools/ninja_residual_extended_fixture.py" "$OUT/extended" "$OUT/jarbox_host_residual_fixture.h" "$RT"
+  APP="$OUT/extended/classes"
+  INC="$INC -I$OUT"
+  export UBSAN_OPTIONS=halt_on_error=1
+  export ASAN_OPTIONS=halt_on_error=1
+fi
 if [[ "$SUITE" == binding ]]; then
   python3 "$ROOT/tools/ninja_residual_binding_fixture.py" "$OUT/binding" "$OUT/jarbox_host_binding_fixture.h"
   APP="$OUT/binding/classes"
@@ -67,6 +75,8 @@ for sc in $SCENARIOS; do for i in $(seq 1 $ITER); do
     pass=$((pass+1))
     if [[ "$SUITE" == residual || "$SUITE" == residual_draw || "$SUITE" == residual_resume || "$SUITE" == residual_read || "$SUITE" == residual_closed ]]; then
       grep -E "^residual_((native|resume|closed)_)?diff: PASS|^residual native (calls|compiles|deopts|skipped):" "$OUT/$sc.$i.log"
+    elif [[ "$SUITE" == residual_extended ]]; then
+      grep -E "^residual_extended_diff: PASS|^residual native (calls|compiles|deopts|skipped):|^residual cold deopts:" "$OUT/$sc.$i.log"
     elif [[ "$SUITE" == binding ]]; then
       grep -E "^binding (A|B):|^binding_diff: PASS" "$OUT/$sc.$i.log"
     elif [[ "$SUITE" == intrinsics ]]; then

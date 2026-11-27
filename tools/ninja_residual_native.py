@@ -15,7 +15,9 @@ OP.update({f'iconst_{i}':3+i for i in range(6)},iconst_m1=2)
 OP.update({f'iload_{i}':0x1a+i for i in range(1,4)})
 OP.update({f'istore_{i}':0x3b+i for i in range(1,4)})
 CP_OPS={'getstatic','putstatic','invokestatic','invokevirtual'}
-BRANCHES={'if_icmpeq','if_icmpne','if_icmpge','goto'}
+OP.update(aconst_null=0x01,aload_3=0x2d,astore_3=0x4e,iload=0x15,istore=0x36)
+OP.update({name:0x99+i for i,name in enumerate(('ifeq','ifne','iflt','ifge','ifgt','ifle','if_icmpeq','if_icmpne','if_icmplt','if_icmpge','if_icmpgt','if_icmple'))})
+BRANCHES={k for k in OP if k.startswith('if')}|{'goto'}
 
 
 def encode(ins, order):
@@ -30,6 +32,7 @@ def encode(ins, order):
             out.extend(struct.pack(order+'h',int(arg.split()[0])-pc))
         elif op=='sipush':out.extend(struct.pack(order+'h',int(arg.split()[0])))
         elif op=='bipush':out.extend(struct.pack('b',int(arg.split()[0])))
+        elif op in ('iload','istore'):out.append(int(arg.split()[0]))
         elif op=='iinc':
             idx,value=map(int,arg.split(','));out.extend(struct.pack('Bb',idx,value))
     return bytes(out)

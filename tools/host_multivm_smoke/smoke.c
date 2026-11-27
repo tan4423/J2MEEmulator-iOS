@@ -247,7 +247,7 @@ int main(int argc, char **argv) {
         REQUIRE(!a.rc&&!b.rc&&residual_equal(&a,&b));
     }
 #if defined(JARBOX_HOST_RESIDUAL_TEST)
-    else if (!strcmp(scenario,"residual_native_diff") || !strcmp(scenario,"residual_resume_diff") || !strcmp(scenario,"residual_closed_diff")) {
+    else if (!strcmp(scenario,"residual_native_diff") || !strcmp(scenario,"residual_resume_diff") || !strcmp(scenario,"residual_closed_diff") || !strcmp(scenario,"residual_extended_diff")) {
         // Both VMs load the original fixture, only B admits the native plan.
         init_job(&a,argv,"A","residual",bport,base);
         init_job(&b,argv,"B","residual-native",bport+1,base);
@@ -257,7 +257,8 @@ int main(int argc, char **argv) {
         printf("residual native compiles: A=%llu B=%llu\n",
                (unsigned long long)a.residual_compiles,(unsigned long long)b.residual_compiles);
         printf("residual native deopts: A=%llu B=%llu\n",(unsigned long long)a.residual_deopts,(unsigned long long)b.residual_deopts);
-        const int closed=!strcmp(scenario,"residual_closed_diff");
+        const int extended=!strcmp(scenario,"residual_extended_diff");
+        const int closed=extended||!strcmp(scenario,"residual_closed_diff");
         unsigned admitted=2000;
         if(closed){admitted=0;for(unsigned i=0;i<2000;i++)if(i%53&&i%59)++admitted;}
         printf("residual native skipped: A=%llu B=%llu\n",(unsigned long long)a.residual_skipped,(unsigned long long)b.residual_skipped);
@@ -267,7 +268,7 @@ int main(int argc, char **argv) {
                 (b.residual_deopts>0&&b.residual_deopts<admitted):b.residual_deopts==0));
         REQUIRE(a.residual_skipped==0&&(closed?b.residual_skipped>0:b.residual_skipped==0));
         printf("residual cold deopts: A=%llu B=%llu\n",(unsigned long long)a.residual_cold_deopts,(unsigned long long)b.residual_cold_deopts);
-        REQUIRE(a.residual_cold_deopts==0&&(closed?b.residual_cold_deopts==1:b.residual_cold_deopts==0));
+        REQUIRE(a.residual_cold_deopts==0&&(extended?b.residual_cold_deopts<=b.residual_deopts:closed?b.residual_cold_deopts==1:b.residual_cold_deopts==0));
     }
 #endif
     else if (!strcmp(scenario, "pair")) {

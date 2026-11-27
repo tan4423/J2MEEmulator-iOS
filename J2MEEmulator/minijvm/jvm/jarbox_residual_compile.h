@@ -8,19 +8,21 @@
 // supplies verified symbolic CP kinds and the *converted* immutable code.
 // Merely accepting a shape does not authorize eliminating a graphics sink.
 enum { JBR_MAX_NODES=1024, JBR_MAX_CODE=4096, JBR_MAX_DEPTH=12 };
-enum { JBR_CP_REJECT, JBR_CP_INT, JBR_CP_REF, JBR_CP_INT2, JBR_CP_DRAW, JBR_CP_PLAIN_INT };
+enum { JBR_CP_REJECT, JBR_CP_INT, JBR_CP_REF, JBR_CP_INT2, JBR_CP_DRAW, JBR_CP_PLAIN_INT, JBR_CP_DRAW_IMAGE };
 typedef int (*JarBoxResidualCPKind)(void *,unsigned,unsigned);
 typedef struct {
     JarBoxResidualOp op;
     uint32_t uses,defs,live;
     uint16_t refs;
-    uint8_t raw,seen,depth,initialized,reachable,plain_read;
+    uint8_t raw,seen,depth,initialized,reachable,plain_read,local_refs;
 } JbrCompileNode;
 typedef struct {
     JbrCompileNode nodes[JBR_MAX_NODES];
     uint16_t at[JBR_MAX_CODE], remap[JBR_MAX_NODES];
 } JbrCompileScratch;
-typedef struct { unsigned depth,refs,initialized; } JbrTypes;
+typedef struct { unsigned depth,refs,initialized,local_refs; } JbrTypes;
+static inline int jbr_raw_branch(unsigned raw){return raw>=0x99&&raw<=0xa4;}
+static inline unsigned jbr_local(unsigned n){return n==4?JBR_LOCAL4:n;}
 static inline uint16_t jbr_u16(const unsigned char *p) {uint16_t v;memcpy(&v,p,2);return v;}
 static inline int16_t jbr_i16(const unsigned char *p) {int16_t v;memcpy(&v,p,2);return v;}
 static inline int jbr_pop(JbrTypes *t,int ref) {
@@ -37,9 +39,11 @@ static inline int jbr_push(JbrTypes *t,int ref) {
 }
 static inline unsigned jbr_raw_size(unsigned o) {
     switch(o) {
-        case 0x10:return 2;
+        case 0x10:case 0x15:case 0x36:return 2;
         case 0x11:case 0x84:case 0xb2:case 0xb3:case 0xb8:case 0xb6:
-        case 0x9f:case 0xa0:case 0xa2:case 0xa7:return 3;
+        case 0x99:case 0x9a:case 0x9b:case 0x9c:case 0x9d:case 0x9e:
+        case 0x9f:case 0xa0:case 0xa1:case 0xa2:case 0xa3:case 0xa4:case 0xa7:return 3;
+        case 0x01:case 0x2d:case 0x4e:
         case 0x02:case 0x03:case 0x04:case 0x05:case 0x06:case 0x07:case 0x08:
         case 0x1b:case 0x1c:case 0x1d:case 0x2a:case 0x3c:case 0x3d:case 0x3e:
         case 0x59:case 0x60:case 0x64:case 0x68:case 0x7e:case 0x7a:
@@ -48,10 +52,11 @@ static inline unsigned jbr_raw_size(unsigned o) {
     }
 }
 static inline int jbr_merge(JbrCompileNode *n,const JbrTypes *t,int *changed) {
-    if(!n->seen) {n->seen=1;n->depth=t->depth;n->refs=t->refs;n->initialized=t->initialized;*changed=1;return 1;}
+    if(!n->seen) {n->seen=1;n->depth=t->depth;n->refs=t->refs;n->initialized=t->initialized;n->local_refs=t->local_refs;*changed=1;return 1;}
     if(n->depth!=t->depth||n->refs!=t->refs)return 0;
-    unsigned v=n->initialized&t->initialized;
-    if(v!=n->initialized){n->initialized=v;*changed=1;}
+    unsigned v=n->initialized&t->initialized&~(n->local_refs^t->local_refs);
+    unsigned refs=n->local_refs&v;
+    if(v!=n->initialized||refs!=n->local_refs){n->initialized=v;n->local_refs=refs;*changed=1;}
     return 1;
 }
 static inline void jbr_empty(JbrCompileNode *n) {
@@ -86,7 +91,7 @@ static inline int jbr_closed_draw_regions(const JbrCompileNode *n,unsigned count
         if(!i||incoming[i]!=1||n[i-1].op.next!=i||n[i-1].op.alt!=JBR_END)return 0;
         if(raw==0xb6){active=0;++draws;continue;}
         if(raw==0xb8||raw==0xb3||raw==0xb1||raw==0xa7||
-           raw==0x9f||raw==0xa0||raw==0xa2)return 0;
+           jbr_raw_branch(raw))return 0;
     }
     return !active&&draws>0;
 }
@@ -96,7 +101,7 @@ static inline int jbr_closed_draw_regions(const JbrCompileNode *n,unsigned count
 // the dummy primitive args are valid solely for the trusted sink fixture.
 static inline unsigned jbr_compile(const unsigned char *code,unsigned size,
     JarBoxResidualCPKind cp,void *ctx,int draw_effects,JarBoxResidualOp *out,unsigned capacity) {
-    if(!code||!cp||!out||!size||size>JBR_MAX_CODE||!capacity||draw_effects<0||draw_effects>3)return 0;
+    if(!code||!cp||!out||!size||size>JBR_MAX_CODE||!capacity||draw_effects<0||draw_effects>4)return 0;
     JbrCompileScratch *sc=calloc(1,sizeof(*sc));if(!sc)return 0;
     JbrCompileNode *n=sc->nodes;unsigned count=0,result=0;
     memset(sc->at,0xff,sizeof(sc->at));memset(sc->remap,0xff,sizeof(sc->remap));
@@ -108,16 +113,16 @@ static inline unsigned jbr_compile(const unsigned char *code,unsigned size,
     for(unsigned i=0;i<count;i++) {
         JarBoxResidualOp *o=&n[i].op;unsigned raw=n[i].raw;
         o->next=i+1<count?i+1:JBR_END;o->alt=JBR_END;
-        if(raw==0x9f||raw==0xa0||raw==0xa2||raw==0xa7) {
+        if(jbr_raw_branch(raw)||raw==0xa7) {
             int p=(int)o->pc+jbr_i16(code+o->pc+1);
             if(p<0||(unsigned)p>=size||sc->at[p]==JBR_END)goto done;
             if(raw!=0xa7)o->alt=o->next;
             o->next=sc->at[p];
         } else if(raw==0xb1)o->next=JBR_END;
         if(raw!=0xb1&&o->next==JBR_END)goto done;
-        if((raw==0x9f||raw==0xa0||raw==0xa2)&&o->alt==JBR_END)goto done;
+        if(jbr_raw_branch(raw)&&o->alt==JBR_END)goto done;
     }
-    if(draw_effects==3&&!jbr_closed_draw_regions(n,count))goto done;
+    if(draw_effects>=3&&!jbr_closed_draw_regions(n,count))goto done;
     n[0].seen=1;n[0].initialized=1;
     // Types and definite initialization converge monotonically at CFG merges.
     for(unsigned pass=0;;pass++) {
@@ -125,24 +130,44 @@ static inline unsigned jbr_compile(const unsigned char *code,unsigned size,
         for(unsigned i=0;i<count;i++) {
             JbrCompileNode *v=n+i;if(!v->seen)continue;
             JarBoxResidualOp *o=&v->op;unsigned raw=v->raw,pc0=o->pc;
-            JbrTypes t={v->depth,v->refs,v->initialized};
+            JbrTypes t={v->depth,v->refs,v->initialized,v->local_refs};
+            if(draw_effects!=4&&(raw==0x01||raw==0x2d||raw==0x4e||raw==0x15||raw==0x36||
+                (jbr_raw_branch(raw)&&raw!=0x9f&&raw!=0xa0&&raw!=0xa2)))goto done;
             int a=JBR_NONE,b=JBR_NONE,d=JBR_NONE,kind=JBR_NOP,imm=0,len=0;
             if(raw>=0x02&&raw<=0x08){kind=JBR_CONST;imm=(int)raw-3;d=jbr_push(&t,0);}
             else if(raw==0x10||raw==0x11){kind=JBR_CONST;imm=raw==0x10?(int8_t)code[pc0+1]:jbr_i16(code+pc0+1);d=jbr_push(&t,0);}
-            else if(raw>=0x1b&&raw<=0x1d){kind=JBR_MOVE;a=raw-0x1a;if(!(t.initialized&(1u<<a)))goto done;d=jbr_push(&t,0);}
-            else if(raw>=0x3c&&raw<=0x3e){kind=JBR_MOVE;a=jbr_pop(&t,0);d=raw-0x3b;t.initialized|=1u<<d;}
+            else if(raw==0x01){kind=JBR_NULL;d=jbr_push(&t,1);}
+            else if((raw>=0x1b&&raw<=0x1d)||raw==0x15){
+                unsigned l=raw==0x15?code[pc0+1]:raw-0x1a;
+                if(l<1||l>4||!(t.initialized&(1u<<l))||(t.local_refs&(1u<<l)))goto done;
+                kind=JBR_MOVE;a=jbr_local(l);d=jbr_push(&t,0);
+            }
+            else if((raw>=0x3c&&raw<=0x3e)||raw==0x36){
+                unsigned l=raw==0x36?code[pc0+1]:raw-0x3b;
+                if(l<1||l>4)goto done;
+                kind=JBR_MOVE;a=jbr_pop(&t,0);d=jbr_local(l);
+                t.initialized|=1u<<l;t.local_refs&=~(1u<<l);
+            }
+            else if(raw==0x2d){
+                if(!(t.initialized&8u)||!(t.local_refs&8u))goto done;
+                kind=JBR_MOVE_REF;a=3;d=jbr_push(&t,1);
+            }
+            else if(raw==0x4e){
+                kind=JBR_MOVE_REF;a=jbr_pop(&t,1);d=3;
+                t.initialized|=8u;t.local_refs|=8u;
+            }
             else if(raw==0x2a){
                 // Resume is allowed only before the first operand of a draw
                 // block, with the ordinary locals definitely initialized.
                 // This narrow contract rejects unsupported stack shapes.
                 if(draw_effects>=2){
-                    if(t.depth || (t.initialized&14u)!=14u)goto done;
+                    if(t.depth || (draw_effects==4?(t.initialized&6u)!=6u:(t.initialized&14u)!=14u))goto done;
                     o->checkpoint=1;
                 }
                 kind=JBR_MOVE;a=0;d=jbr_push(&t,1);
             }
             else if(raw==0x59){if(!t.depth||(t.refs&(1u<<(t.depth-1))))goto done;kind=JBR_MOVE;a=4+t.depth-1;d=jbr_push(&t,0);}
-            else if(raw==0x84){kind=JBR_INC;a=d=code[pc0+1];if(a<1||a>3||!(t.initialized&(1u<<a)))goto done;imm=(int8_t)code[pc0+2];}
+            else if(raw==0x84){unsigned l=code[pc0+1];kind=JBR_INC;if(l<1||l>(draw_effects==4?4u:3u)||!(t.initialized&(1u<<l))||(t.local_refs&(1u<<l)))goto done;a=d=jbr_local(l);imm=(int8_t)code[pc0+2];}
             else if(raw==0xb2||raw==0xb3||raw==0xb8||raw==0xb6){
                 int typ=cp(ctx,raw,jbr_u16(code+pc0+1));kind=JBR_EFFECT;imm=raw;len=3;
                 if(raw==0xb2){
@@ -152,16 +177,21 @@ static inline unsigned jbr_compile(const unsigned char *code,unsigned size,
                 }
                 else if(raw==0xb3){if(typ!=JBR_CP_INT)goto done;a=jbr_pop(&t,0);}
                 else if(raw==0xb8){if(typ!=JBR_CP_INT2)goto done;b=jbr_pop(&t,0);a=jbr_pop(&t,0);d=jbr_push(&t,0);}
-                else {if(typ!=JBR_CP_DRAW)goto done;for(unsigned j=0;j<8;j++)if(jbr_pop(&t,0)<0)goto done;
+                else {if(typ!=JBR_CP_DRAW&&(draw_effects!=4||typ!=JBR_CP_DRAW_IMAGE))goto done;for(unsigned j=0;j<(typ==JBR_CP_DRAW_IMAGE?3u:8u);j++)if(jbr_pop(&t,0)<0)goto done;
                     b=jbr_pop(&t,1);a=jbr_pop(&t,1);if(a<0||b<0)goto done;
-                    if(!draw_effects||draw_effects==3){kind=JBR_NOP;a=b=JBR_NONE;imm=len=0;}}
+                    if(!draw_effects||draw_effects>=3){kind=JBR_NOP;a=b=JBR_NONE;imm=len=0;}}
             }
             else if(raw==0xa7)kind=JBR_NOP;
             else if(raw==0xb1){if(t.depth)goto done;kind=JBR_EFFECT;imm=raw;len=1;}
+            else if(jbr_raw_branch(raw)){
+                static const unsigned char kinds[]={JBR_IFEQ,JBR_IFNE,JBR_IFLT,JBR_IFGE,JBR_IFGT,JBR_IFLE,
+                    JBR_IF_ICMPEQ,JBR_IF_ICMPNE,JBR_IF_ICMPLT,JBR_IF_ICMPGE,JBR_IF_ICMPGT,JBR_IF_ICMPLE};
+                if(raw>=0x9f)b=jbr_pop(&t,0);
+                a=jbr_pop(&t,0);kind=kinds[raw-0x99];
+            }
             else {
                 b=jbr_pop(&t,0);a=jbr_pop(&t,raw==0x34);
-                if(raw==0x9f||raw==0xa0||raw==0xa2)kind=raw==0x9f?JBR_IF_ICMPEQ:raw==0xa0?JBR_IF_ICMPNE:JBR_IF_ICMPGE;
-                else {d=jbr_push(&t,0);switch(raw){
+                {d=jbr_push(&t,0);switch(raw){
                     case 0x60:kind=JBR_IADD;break;case 0x64:kind=JBR_ISUB;break;
                     case 0x68:kind=JBR_IMUL;break;case 0x7e:kind=JBR_IAND;break;case 0x7a:kind=JBR_ISHR;break;
                     case 0x34:case 0x6c:case 0x70:kind=JBR_EFFECT;imm=raw;len=1;break;
@@ -187,7 +217,9 @@ static inline unsigned jbr_compile(const unsigned char *code,unsigned size,
                 uint32_t live=(o->next==JBR_END?0:n[o->next].live)|(o->alt==JBR_END?0:n[o->alt].live);
                 // A possible continuation to the original interpreter is
                 // an observer of all ordinary initialized integer locals.
-                live=n[i].uses|(live&~n[i].defs)|(o->checkpoint?14u:0u);
+                uint32_t roots=0;
+                if(o->checkpoint)roots=draw_effects==4?(n[i].initialized&14u)|((n[i].initialized&16u)?1u<<JBR_LOCAL4:0):14u;
+                live=n[i].uses|(live&~n[i].defs)|roots;
                 if(live!=n[i].live){n[i].live=live;changed=1;}
             }
             if(!changed)break;

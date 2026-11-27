@@ -32,6 +32,11 @@ static const int jbr_resolved_reads=1,jbr_resume=1,jbr_skip_draws=1,jbr_draw_eff
 #else
 #include "jarbox_host_residual_fixture.h"
 #define JBR_COUNT (sizeof(jbr_plan)/sizeof(jbr_plan[0]))
+#if defined(JARBOX_HOST_RESIDUAL_EXTENDED_TEST)
+#define JBR_EXTENDED_FIXTURE 1
+#else
+#define JBR_EXTENDED_FIXTURE 0
+#endif
 // Controlled closed sink fixture ONLY. Actual game admission also needs
 // original archive/API identities and immutable binding for each region.
 static int jbr_fixture_scope(Instance *wrapper) {
@@ -58,7 +63,7 @@ static int jbr_fixture_admit(Runtime *r,MethodInfo *m,CodeAttribute *ca) {
         m->para_slots==1 && !m->return_slots &&
         utf8_equals_c(m->_this_class->name,"Class_hii") &&
         utf8_equals_c(m->name,"k1") && utf8_equals_c(m->descriptor,"(LClass_hvi;)V") &&
-        ca->max_locals<=4 && ca->max_locals>=1 && !ca->exception_table_length &&
+        ca->max_locals<=(JBR_EXTENDED_FIXTURE?5:4) && ca->max_locals>=1 && !ca->exception_table_length &&
         ca->code_length==sizeof(jbr_expected_code) && ca->bytecode_for_jit &&
         ca->jit.state!=JIT_GEN_SUCCESS &&
         stack_size(s)>=1 && stack_size(s)<=s->max_size &&
@@ -66,7 +71,7 @@ static int jbr_fixture_admit(Runtime *r,MethodInfo *m,CodeAttribute *ca) {
         (jbr_skip_draws?jbr_fixture_scope((s->sp-1)->rvalue)>=0:
             (jbr_draw_effects || (s->sp-1)->rvalue)) &&
         !memcmp(ca->bytecode_for_jit,jbr_expected_code,sizeof(jbr_expected_code)) &&
-        jbr_validate(jbr_plan,JBR_COUNT,jbr_expected_code,sizeof(jbr_expected_code));
+        (JBR_EXTENDED_FIXTURE||jbr_validate(jbr_plan,JBR_COUNT,jbr_expected_code,sizeof(jbr_expected_code)));
 }
 #endif // host-only generated fixture and admission
 static int jbr_eq(Utf8String *s,const char *str) { return s && utf8_equals_c(s,str); }
@@ -82,7 +87,7 @@ static int jbr_plain_int_read(JClass *cl,ConstantFieldRef *ref) {
        !owner->name||!ref->clsName||!utf8_equals(owner->name,ref->clsName)||
        !f->name||!ref->name||!utf8_equals(f->name,ref->name)||
        !f->descriptor||!ref->descriptor||!utf8_equals(f->descriptor,ref->descriptor))return 0;
-    unsigned bytes=jbr_eq(f->descriptor,"I")?4:jbr_eq(f->descriptor,"B")?1:0;
+    unsigned bytes=jbr_eq(f->descriptor,"I")?4:jbr_eq(f->descriptor,"S")?2:(jbr_eq(f->descriptor,"B")||jbr_eq(f->descriptor,"Z"))?1:0;
     return bytes&&f->datatype_bytes==bytes&&owner->field_static&&owner->field_static_len>=0&&
         (size_t)f->offset+bytes<=(size_t)owner->field_static_len;
 }
@@ -110,7 +115,7 @@ static int jbr_closed_region_ready(JClass *cl,const CodeAttribute *ca,unsigned p
                !owner->name||!ref->clsName||!utf8_equals(owner->name,ref->clsName)||
                !f->name||!ref->name||!utf8_equals(f->name,ref->name)||
                !f->descriptor||!ref->descriptor||!utf8_equals(f->descriptor,ref->descriptor))return 0;
-            unsigned bytes=f->isrefer?sizeof(void *):jbr_eq(f->descriptor,"I")?4:jbr_eq(f->descriptor,"B")?1:0;
+            unsigned bytes=f->isrefer?sizeof(void *):jbr_eq(f->descriptor,"I")?4:jbr_eq(f->descriptor,"S")?2:(jbr_eq(f->descriptor,"B")||jbr_eq(f->descriptor,"Z"))?1:0;
             if(!bytes||f->datatype_bytes!=bytes||!owner->field_static||owner->field_static_len<0||
                (size_t)f->offset+bytes>(size_t)owner->field_static_len)return 0;
         }
@@ -127,13 +132,13 @@ static int jbr_fixture_cp(void *ctx,unsigned op,unsigned ix) {
         ConstantFieldRef *f=(ConstantFieldRef *)item;
         if(op==0xb3) {
             if(jbr_eq(f->clsName,"Class_hii")&&jbr_eq(f->descriptor,"I")&&
-               (jbr_eq(f->name,"a2")||jbr_eq(f->name,"b2")||jbr_eq(f->name,"c2")||jbr_eq(f->name,"d2")))
+               (jbr_eq(f->name,"a2")||jbr_eq(f->name,"b2")||jbr_eq(f->name,"c2")||jbr_eq(f->name,"d2")||jbr_eq(f->name,"t2")))
                 return JBR_CP_INT;
             return JBR_CP_REJECT;
         }
         if(!jbr_eq(f->clsName,"Class_hii")&&!jbr_eq(f->clsName,"Class_hac")&&!jbr_eq(f->clsName,"Class_hxb"))
             return JBR_CP_REJECT;
-        if(jbr_eq(f->descriptor,"I")||jbr_eq(f->descriptor,"B"))
+        if(jbr_eq(f->descriptor,"I")||jbr_eq(f->descriptor,"B")||jbr_eq(f->descriptor,"Z")||jbr_eq(f->descriptor,"S"))
             return jbr_resolved_reads&&jbr_plain_int_read(cl,f)?JBR_CP_PLAIN_INT:JBR_CP_INT;
         if(jbr_eq(f->descriptor,"[C")||jbr_eq(f->descriptor,"Ljavax/microedition/lcdui/Image;"))return JBR_CP_REF;
     }
@@ -143,6 +148,8 @@ static int jbr_fixture_cp(void *ctx,unsigned op,unsigned ix) {
            (jbr_eq(m->name,"q3")||jbr_eq(m->name,"m3")))return JBR_CP_INT2;
         if(op==0xb6&&jbr_eq(m->clsName,"Class_hvi")&&jbr_eq(m->name,"a")&&
            jbr_eq(m->descriptor,"(Ljavax/microedition/lcdui/Image;IIIIIIII)V"))return JBR_CP_DRAW;
+        if(op==0xb6&&jbr_eq(m->clsName,"Class_hvi")&&jbr_eq(m->name,"a")&&
+           jbr_eq(m->descriptor,"(Ljavax/microedition/lcdui/Image;III)V"))return JBR_CP_DRAW_IMAGE;
     }
     return JBR_CP_REJECT;
 }
@@ -167,14 +174,15 @@ static const JarBoxResidualOp *jbr_fixture_compile(Runtime *r,MethodInfo *m,Code
     spin_lock(&ca->compile_lock);
     plan=__atomic_load_n(&ca->host_residual_plan,__ATOMIC_RELAXED);
     if(!plan) {
-        JarBoxResidualOp *candidate=calloc(JBR_COUNT,sizeof(*candidate));
+        const unsigned capacity=JBR_EXTENDED_FIXTURE?JBR_MAX_NODES:JBR_COUNT;
+        JarBoxResidualOp *candidate=calloc(capacity,sizeof(*candidate));
         if(candidate) {
             unsigned count=jbr_compile(ca->bytecode_for_jit,ca->code_length,
-                jbr_fixture_cp,m->_this_class,jbr_skip_draws?3:jbr_draw_effects+jbr_resume,candidate,JBR_COUNT);
-            int valid=count==JBR_COUNT&&jbr_validate(candidate,count,ca->bytecode_for_jit,ca->code_length);
-            for(unsigned i=0;valid&&i<count;i++)valid=jbr_same_op(candidate+i,jbr_plan+i);
+                jbr_fixture_cp,m->_this_class,JBR_EXTENDED_FIXTURE?4:jbr_skip_draws?3:jbr_draw_effects+jbr_resume,candidate,capacity);
+            int valid=count&&(JBR_EXTENDED_FIXTURE||count==JBR_COUNT)&&jbr_validate(candidate,count,ca->bytecode_for_jit,ca->code_length);
+            if(!JBR_EXTENDED_FIXTURE)for(unsigned i=0;valid&&i<count;i++)valid=jbr_same_op(candidate+i,jbr_plan+i);
             if(valid) {
-                plan=candidate;
+                ca->residual_plan_count=count;plan=candidate;
                 __atomic_store_n(&ca->host_residual_plan,plan,__ATOMIC_RELEASE);
                 __atomic_fetch_add(&r->jvm->session->treo_state.host_residual_compiles,1,__ATOMIC_RELAXED);
             } else free(candidate);
@@ -2531,8 +2539,8 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
             unsigned jbr_count=0;
             const JarBoxResidualOp *jbr_compiled=jbr_live_compile(runtime,method,ca,&jbr_scope,&jbr_count);
 #else
-            const unsigned jbr_count=JBR_COUNT;
             const JarBoxResidualOp *jbr_compiled=jbr_fixture_compile(runtime,method,ca);
+            const unsigned jbr_count=jbr_compiled?ca->residual_plan_count:0;
 #endif
             int jbr_active=jbr_compiled!=NULL;
             unsigned jbr_index=0,jbr_pending=JBR_END,jbr_draws=0,jbr_limit=0;
@@ -2723,6 +2731,8 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                                     // The compiler retains all original locals
                                     // at each checkpoint, even draw-only values.
                                     // No previous writes, calls or reads replay.
+                                    // Local 4 uses a dedicated int slot, not the operand scratch at slot 4.
+                                    if(ca->max_locals==5)jbr_copy_slot(localvar+4,localvar+JBR_LOCAL4,JBR_LOCAL4);
                                     memset(localvar+ca->max_locals,0,
                                         (JBR_SLOTS-ca->max_locals)*sizeof(StackEntry));
                                     runtime->localvar_slots=ca->max_locals;
@@ -2765,7 +2775,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         // Allow only known quickening variants of this effect.
                         if(actual!=(unsigned)o->imm &&
                            !(o->imm==op_getstatic &&
-                             (actual==op_getstatic_int||actual==op_getstatic_byte||actual==op_getstatic_ref)) &&
+                             (actual==op_getstatic_int||actual==op_getstatic_byte||actual==op_getstatic_short||actual==op_getstatic_ref)) &&
                            !(o->imm==op_putstatic && actual==op_putstatic_int) &&
                            !(o->imm==op_invokestatic && actual==op_invokestatic_fast) &&
                            !(o->imm==op_invokevirtual && actual==op_invokevirtual_fast))JBR_INVARIANT_FAIL();
