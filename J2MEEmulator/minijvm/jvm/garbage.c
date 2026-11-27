@@ -75,6 +75,15 @@ s32 gc_create(MiniJVM *jvm) {
 #if defined(JARBOX_GC_DEFERRED_INDEX_EXPERIMENT) && JARBOX_GC_DEFERRED_INDEX_EXPERIMENT
 #if defined(JARBOX_HOST_GC_INDEX_TEST)
     collector->deferred_index.disabled = !jvm->host_gc_index_enabled;
+#elif __JVM_OS_IOS__ && defined(TREO_RESIDUAL_EXPERIMENT) && TREO_RESIDUAL_EXPERIMENT
+    // The bridge verifies the exact Nick archive and packaged boot/API
+    // before jvm_init. Index from the first heap batch, never enable it
+    // halfway through a populated heap or on a foreign archive.
+    collector->deferred_index.disabled = !jvm->session || jvm->jdwp_enable ||
+        !__atomic_load_n(&jvm->session->treo_state.residual_archive_verified,__ATOMIC_ACQUIRE);
+    collector->deferred_index_admitted = !collector->deferred_index.disabled;
+#else
+    collector->deferred_index.disabled = 1;
 #endif
 #endif
     collector->objs_holder = hashset_create();
@@ -129,6 +138,13 @@ void gc_destroy(MiniJVM *jvm) {
     //
 #if defined(JARBOX_GC_DEFERRED_INDEX_EXPERIMENT) && JARBOX_GC_DEFERRED_INDEX_EXPERIMENT
     // Worker joined (or never started); terminal cleanup uses the old path.
+#if __JVM_OS_IOS__
+    jvm_printf("[JarBoxVM][GCIndex] admitted=%u indexed_passes=%llu candidate_entries=%llu peak_entries=%u disabled=%d\n",
+        collector->deferred_index_admitted,
+        (unsigned long long)collector->deferred_index_passes,
+        (unsigned long long)collector->deferred_index_entries,
+        collector->deferred_index_peak,collector->deferred_index.disabled);
+#endif
     gc_deferred_index_disable(&collector->deferred_index);
 #endif
     _garbage_clear(collector);
@@ -772,6 +788,15 @@ static void gc_process_deferred_objects(GcCollector *collector) {
     JarBoxGCDeferredIndex *index = &collector->deferred_index;
     const int indexed = !index->disabled;
     size_t cursor = index->count;
+#if __JVM_OS_IOS__
+    // Collector-owned per-pass admission evidence. No per-object counters
+    // or extra heap traversal. Read only after worker join.
+    if(indexed){
+        ++collector->deferred_index_passes;
+        collector->deferred_index_entries+=cursor;
+        if(cursor>collector->deferred_index_peak)collector->deferred_index_peak=(unsigned)cursor;
+    }
+#endif
     MemoryBlock *curmb = indexed ? (cursor ? index->items[--cursor] : NULL) : collector->header;
 #if defined(JARBOX_HOST_GC_INDEX_TEST)
     if (indexed) __atomic_fetch_add(&collector->host_gc_index_passes, 1, __ATOMIC_RELAXED);

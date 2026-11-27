@@ -74,7 +74,7 @@ jobs:
           python3 -m unittest discover -s tools/tests -p test_host_intrinsic_benchmark.py
           bash tools/host_multivm_smoke/run.sh plain 1 benchmark
 
-  # Keep the strict failing compatibility gate visible and mandatory, but do
+  # Keep the strict compatibility gate visible and mandatory, but do
   # not prevent the independent engine and residual jobs from being exercised.
   gc-weak-compatibility:
     runs-on: ubuntu-24.04

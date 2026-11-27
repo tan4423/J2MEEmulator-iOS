@@ -11,6 +11,9 @@ on:
       - 'J2MEEmulator/minijvm/jvm/jarbox_residual_*.h'
       - 'J2MEEmulator/minijvm/jvm/jarbox_block_ir*.h'
       - 'J2MEEmulator/minijvm/jvm/jarbox_render_island.h'
+      - 'J2MEEmulator/minijvm/jvm/jarbox_gc_deferred_index.h'
+      - 'J2MEEmulator/minijvm/jvm/garbage.c'
+      - 'J2MEEmulator/minijvm/jvm/garbage.h'
       - 'J2MEEmulator/minijvm/jvm/class_load.c'
       - 'J2MEEmulator/minijvm/jvm/jvm.h'
       - 'J2MEEmulator/minijvm/jvm/jvm.c'
@@ -23,7 +26,7 @@ on:
       configuration:
         description: 'Isolated binary raster, intrinsic candidate or matched control'
         type: choice
-        options: [binary-trial, binary, intrinsics, control, residual, headless, headless-render]
+        options: [binary-trial, binary, intrinsics, control, residual, headless, headless-render, headless-render-gc]
         default: binary-trial
 permissions:
   contents: read
@@ -31,9 +34,13 @@ jobs:
   ios-candidate:
     runs-on: macos-26
     timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        configuration: ${{ fromJSON(github.event_name == 'workflow_dispatch' && format('["{0}"]', inputs.configuration) || '["residual","headless-render","headless-render-gc"]') }}
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
-      CONFIGURATION: ${{ inputs.configuration || 'headless-render' }}
+      CONFIGURATION: ${{ matrix.configuration }}
     steps:
       - uses: actions/checkout@v4
         with:

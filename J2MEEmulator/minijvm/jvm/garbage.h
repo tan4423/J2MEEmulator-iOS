@@ -52,6 +52,10 @@ struct _GcCollectorType {
     u8 mark_cnt;
 #if defined(JARBOX_GC_DEFERRED_INDEX_EXPERIMENT) && JARBOX_GC_DEFERRED_INDEX_EXPERIMENT
     JarBoxGCDeferredIndex deferred_index;
+#if __JVM_OS_IOS__
+    unsigned deferred_index_admitted,deferred_index_peak;
+    uint64_t deferred_index_passes,deferred_index_entries;
+#endif
 #if defined(JARBOX_HOST_GC_INDEX_TEST)
     uint64_t host_gc_index_passes;
     uint64_t host_gc_index_large_snapshots, host_gc_index_omitted;
