@@ -736,6 +736,34 @@ s32 _gc_thread_run(void *para) {
 }
 
 
+#if defined(JARBOX_HOST_GC_INDEX_TEST)
+// Independent stopped-world coverage/order check. Test builds only: this
+// deliberately walks the heap and is NOT a performance benchmark.
+static void gc_test_shadow_deferred_index(GcCollector *collector) {
+    JarBoxGCDeferredIndex *index = &collector->deferred_index;
+    if (index->disabled) return;
+    size_t cursor = index->count;
+    uint64_t omitted = 0;
+    for (MemoryBlock *mb = collector->header; mb; mb = mb->next) {
+        if (cursor && index->items[cursor-1] == mb) {
+            --cursor;
+        } else {
+            // Missing any potentially effectful instance is a test failure,
+            // including not-yet-initialized classes and finalized weak refs.
+            if (mb->type == MEM_TYPE_INS &&
+                (GCFLAG_WEAKREFERENCE_GET(mb->gcflag) || !mb->clazz ||
+                 mb->clazz->status != CLASS_STATUS_CLINITED || mb->clazz->finalizeMethod))
+                abort();
+            ++omitted;
+        }
+    }
+    if (cursor) abort(); // stale, duplicate or misordered index entries
+    __atomic_fetch_add(&collector->host_gc_index_omitted, omitted, __ATOMIC_RELAXED);
+    if (omitted >= 10000)
+        __atomic_fetch_add(&collector->host_gc_index_large_snapshots, 1, __ATOMIC_RELAXED);
+}
+#endif
+
 static void gc_process_deferred_objects(GcCollector *collector) {
     MiniJVM *jvm = collector->jvm;
     MemoryBlock *head = NULL;
@@ -751,6 +779,9 @@ static void gc_process_deferred_objects(GcCollector *collector) {
 #else
     MemoryBlock *curmb = collector->header;
 #endif
+#if defined(JARBOX_HOST_GC_INDEX_TEST)
+    uint64_t visits = 0, finalizers = 0, weak_callbacks = 0;
+#endif
     for (; curmb;) {
 #if defined(JARBOX_GC_DEFERRED_INDEX_EXPERIMENT) && JARBOX_GC_DEFERRED_INDEX_EXPERIMENT
         MemoryBlock *nextmb = indexed ? (cursor ? index->items[--cursor] : NULL) : curmb->next;
@@ -760,6 +791,9 @@ static void gc_process_deferred_objects(GcCollector *collector) {
         // STOP is terminal. Finish remarking already dispatched objects,
         // but do not begin another Java callback after observing STOP.
         if (gc_thread_status(collector) >= GARBAGE_THREAD_STOP) break;
+#if defined(JARBOX_HOST_GC_INDEX_TEST)
+        ++visits;
+#endif
         if (curmb->type == MEM_TYPE_INS) {
             int defer = 0;
             // Most objects are already marked. Do not chase a class pointer
@@ -768,6 +802,9 @@ static void gc_process_deferred_objects(GcCollector *collector) {
                 !GCFLAG_FINALIZED_GET(curmb->gcflag) &&
                 curmb->clazz->finalizeMethod) {
                 instance_finalize((Instance *)curmb, collector->runtime);
+#if defined(JARBOX_HOST_GC_INDEX_TEST)
+                ++finalizers;
+#endif
                 GCFLAG_FINALIZED_SET(curmb->gcflag);
                 defer = 1;
             }
@@ -777,6 +814,9 @@ static void gc_process_deferred_objects(GcCollector *collector) {
                     (Instance *)curmb, jvm->shortcut.reference_target));
                 if (target && target->mb.garbage_mark != collector->mark_cnt) {
                     instance_of_reference_enqueue((Instance *)curmb, collector->runtime);
+#if defined(JARBOX_HOST_GC_INDEX_TEST)
+                    ++weak_callbacks;
+#endif
                     defer = 1;
                 }
             }
@@ -795,6 +835,11 @@ static void gc_process_deferred_objects(GcCollector *collector) {
         curmb->tmp_next = NULL;
         _gc_mark_object(collector, curmb, collector->mark_cnt);
     }
+#if defined(JARBOX_HOST_GC_INDEX_TEST)
+    __atomic_fetch_add(&collector->host_gc_deferred_visits, visits, __ATOMIC_RELAXED);
+    __atomic_fetch_add(&collector->host_gc_finalizers, finalizers, __ATOMIC_RELAXED);
+    __atomic_fetch_add(&collector->host_gc_weak_callbacks, weak_callbacks, __ATOMIC_RELAXED);
+#endif
 }
 
 /**
@@ -865,6 +910,9 @@ s64 _garbage_collect(GcCollector *collector) {
 #if _JVM_DEBUG_GARBAGE
         jvm_printf("garbage_move_cache %lld\n", (currentTimeMillis() - time));
         time = currentTimeMillis();
+#endif
+#if defined(JARBOX_HOST_GC_INDEX_TEST)
+        gc_test_shadow_deferred_index(collector);
 #endif
         if (_gc_copy_objs(jvm) != 0) {
             // A partial root set is never safe to mark/sweep. Objects

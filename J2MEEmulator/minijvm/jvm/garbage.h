@@ -54,6 +54,8 @@ struct _GcCollectorType {
     JarBoxGCDeferredIndex deferred_index;
 #if defined(JARBOX_HOST_GC_INDEX_TEST)
     uint64_t host_gc_index_passes;
+    uint64_t host_gc_index_large_snapshots, host_gc_index_omitted;
+    uint64_t host_gc_deferred_visits, host_gc_finalizers, host_gc_weak_callbacks;
 #endif
 #endif
     volatile u8 isgc;

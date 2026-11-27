@@ -13,7 +13,7 @@ case "$SUITE" in
   residual_wide) EXTRA="-DJARBOX_HOST_RESIDUAL_TEST=1 -DJARBOX_HOST_RESIDUAL_EXTENDED_TEST=1 -DJARBOX_HOST_RESIDUAL_WIDE_TEST=1"; SCENARIOS="residual_wide_diff";;
   residual_background) EXTRA="-DJARBOX_HOST_RESIDUAL_TEST=1 -DJARBOX_HOST_RESIDUAL_EXTENDED_TEST=1 -DJARBOX_HOST_RESIDUAL_WIDE_TEST=1 -DJARBOX_HOST_RESIDUAL_BACKGROUND_TEST=1"; SCENARIOS="residual_background_diff";;
   binding) EXTRA="-DJARBOX_HOST_BINDING_TEST=1"; SCENARIOS="binding_diff";;
-  gc_index) EXTRA="-DJARBOX_HOST_INTRINSIC_TEST=1 -DJARBOX_GC_DEFERRED_INDEX_EXPERIMENT=1 -DJARBOX_HOST_GC_INDEX_TEST=1"; SCENARIOS="gc_index_diff";;
+  gc_index) EXTRA="-DJARBOX_HOST_INTRINSIC_TEST=1 -DJARBOX_GC_DEFERRED_INDEX_EXPERIMENT=1 -DJARBOX_HOST_GC_INDEX_TEST=1"; SCENARIOS="gc_index_diff gc_index_callbacks";;
   intrinsics|benchmark)
     EXTRA="-DJARBOX_HOST_INTRINSIC_TEST=1 -DTREO_VM_CHAR_LEAF_EXPERIMENT=1 -DTREO_VM_ARRAY_LOOKUP_MODE1_EXPERIMENT=1"
     SCENARIOS=intrinsic_diff
@@ -73,6 +73,10 @@ test -s "$OUT/app/SmokeMain.class"
 if [[ "$SUITE" == intrinsics || "$SUITE" == benchmark || "$SUITE" == gc_index ]]; then
   $JAVAC -nowarn -source 8 -target 8 -bootclasspath "$ROOT/J2MEEmulator/Resources/jars/minijvm_rt.jar" -d "$OUT/app" "$HERE/java/IntrinsicMain.java"
   test -s "$OUT/app/IntrinsicMain.class"
+  if [[ "$SUITE" == gc_index ]]; then
+    $JAVAC -nowarn -source 8 -target 8 -bootclasspath "$RT" -d "$OUT/app" "$HERE/java/GcIndexMain.java"
+    test -s "$OUT/app/GcIndexMain.class"
+  fi
   export UBSAN_OPTIONS=halt_on_error=1
   export ASAN_OPTIONS=halt_on_error=1
 fi
@@ -89,7 +93,7 @@ for sc in $SCENARIOS; do for i in $(seq 1 $ITER); do
     elif [[ "$SUITE" == intrinsics ]]; then
       grep -E '^intrinsics A:|^intrinsic_diff: PASS' "$OUT/$sc.$i.log"
     elif [[ "$SUITE" == gc_index ]]; then
-      grep -E '^gc index A=|^gc_index_diff: PASS' "$OUT/$sc.$i.log"
+      grep -E '^gc index A=|^gc callbacks [AB] |^gc_index_(diff|callbacks): PASS' "$OUT/$sc.$i.log"
     elif [[ "$SUITE" == benchmark ]]; then
       grep -E '^bench |^intrinsic_bench: PASS' "$OUT/$sc.$i.log"
       python3 "$HERE/benchmark_summary.py" "$OUT/$sc.$i.log"

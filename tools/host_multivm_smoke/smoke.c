@@ -17,7 +17,8 @@ typedef struct { const char *rt, *api, *app, *tag, *mode; char save[512]; int po
     int stop_requested, rc;
     uint64_t char_calls, array_calls, gc_cycles;
 #if defined(JARBOX_HOST_GC_INDEX_TEST)
-    uint64_t gc_index_passes;
+    uint64_t gc_index_passes, gc_index_large_snapshots, gc_index_omitted;
+    uint64_t gc_deferred_visits, gc_finalizers, gc_weak_callbacks;
 #endif
     uint64_t thread_cpu_ns, process_cpu_ns, residual_calls, residual_compiles, residual_deopts,residual_skipped,residual_cold_deopts,residual_suspended;
     uint64_t binding_good,binding_bad,binding_mismatch; } Job;
@@ -53,7 +54,8 @@ static void *job_main(void *p) {
     vm->jdwp_enable = 0; vm->max_heap_size = 64 * 1024 * 1024;
     vm->garbage_collect_period_ms = 200; vm->heap_overload_percent = 70;
 #if defined(JARBOX_HOST_GC_INDEX_TEST)
-    vm->host_gc_index_enabled=!strcmp(j->mode,"intrinsic-gc-on");
+    vm->host_gc_index_enabled=!strcmp(j->mode,"intrinsic-gc-on") ||
+                              !strcmp(j->mode,"intrinsic-gc-callbacks-on");
 #endif
     if (jvm_init(vm, (char *)j->rt, cp)) { j->rc = -3; goto cleanup; }
     pthread_mutex_lock(&j->lock);
@@ -77,7 +79,11 @@ static void *job_main(void *p) {
         jarbox_treo_mode_set(&vm->session->treo_state,1);
     }
     uint64_t p0=cpu_now(CLOCK_PROCESS_CPUTIME_ID),t0=cpu_now(CLOCK_THREAD_CPUTIME_ID);
-    j->rc=call_main(vm,intrinsic?"IntrinsicMain":(!strncmp(j->mode,"residual",8)?"ResidualMain":"SmokeMain"),args);
+    const char *main_class=intrinsic?"IntrinsicMain":(!strncmp(j->mode,"residual",8)?"ResidualMain":"SmokeMain");
+#if defined(JARBOX_HOST_GC_INDEX_TEST)
+    if (!strncmp(j->mode,"intrinsic-gc-callbacks-",23)) main_class="GcIndexMain";
+#endif
+    j->rc=call_main(vm,main_class,args);
     uint64_t t1=cpu_now(CLOCK_THREAD_CPUTIME_ID),p1=cpu_now(CLOCK_PROCESS_CPUTIME_ID);
     if (t0 && t1>t0) j->thread_cpu_ns=t1-t0;
     if (p0 && p1>p0) j->process_cpu_ns=p1-p0;
@@ -86,6 +92,11 @@ static void *job_main(void *p) {
     j->gc_cycles=__atomic_load_n(&vm->session->treo_state.gc_worker_cycles,__ATOMIC_RELAXED);
 #if defined(JARBOX_HOST_GC_INDEX_TEST)
     j->gc_index_passes=__atomic_load_n(&vm->collector->host_gc_index_passes,__ATOMIC_RELAXED);
+    j->gc_index_large_snapshots=__atomic_load_n(&vm->collector->host_gc_index_large_snapshots,__ATOMIC_RELAXED);
+    j->gc_index_omitted=__atomic_load_n(&vm->collector->host_gc_index_omitted,__ATOMIC_RELAXED);
+    j->gc_deferred_visits=__atomic_load_n(&vm->collector->host_gc_deferred_visits,__ATOMIC_RELAXED);
+    j->gc_finalizers=__atomic_load_n(&vm->collector->host_gc_finalizers,__ATOMIC_RELAXED);
+    j->gc_weak_callbacks=__atomic_load_n(&vm->collector->host_gc_weak_callbacks,__ATOMIC_RELAXED);
 #endif
 #else
     j->rc = call_main(vm, !strncmp(j->mode,"residual",8)?"ResidualMain":(!strcmp(j->mode,"binding")?"BindingMain":"SmokeMain"), args);
@@ -135,6 +146,16 @@ static int intrinsic_ok(const Job *j) {
     char path[1024],buf[128]={0};
     const char *expected="PASS 4902965299\n"; // verified OpenJDK fixture digest
     snprintf(path,sizeof path,"%s/intrinsic.txt",j->save);
+    FILE *f=fopen(path,"r"); if(!f)return 0;
+    size_t n=fread(buf,1,sizeof buf-1,f); fclose(f);
+    return n==strlen(expected)&&!memcmp(buf,expected,n);
+}
+#endif
+#if defined(JARBOX_HOST_GC_INDEX_TEST)
+static int gc_callbacks_ok(const Job *j) {
+    char path[1024],buf[128]={0};
+    const char *expected="PASS 192 383976000\n"; // OpenJDK fixture oracle
+    snprintf(path,sizeof path,"%s/gc-index.txt",j->save);
     FILE *f=fopen(path,"r"); if(!f)return 0;
     size_t n=fread(buf,1,sizeof buf-1,f); fclose(f);
     return n==strlen(expected)&&!memcmp(buf,expected,n);
@@ -203,7 +224,27 @@ int main(int argc, char **argv) {
     int bport = 20000 + (getpid() % 20000); Job a, b, a2;
 #if defined(JARBOX_HOST_INTRINSIC_TEST) && !__JVM_OS_IOS__
 #if defined(JARBOX_HOST_GC_INDEX_TEST)
-    if (!strcmp(scenario,"gc_index_diff")) {
+    if (!strcmp(scenario,"gc_index_callbacks")) {
+        init_job(&a,argv,"A","intrinsic-gc-callbacks-off",bport,base);
+        init_job(&b,argv,"B","intrinsic-gc-callbacks-on",bport+1,base);
+        start_job(&a); start_job(&b); join_job(&a); join_job(&b);
+        REQUIRE(!a.rc && !b.rc && gc_callbacks_ok(&a) && gc_callbacks_ok(&b));
+        REQUIRE(a.gc_cycles>0 && b.gc_cycles>0 && a.gc_index_passes==0 && b.gc_index_passes>0);
+        REQUIRE(!a.char_calls && !b.char_calls && !a.array_calls && !b.array_calls);
+        REQUIRE(a.gc_deferred_visits>0 && b.gc_deferred_visits>0);
+        REQUIRE(a.gc_finalizers>=192 && b.gc_finalizers>=192);
+        REQUIRE(a.gc_weak_callbacks>=192 && b.gc_weak_callbacks>=192);
+        REQUIRE(!a.gc_index_large_snapshots && !a.gc_index_omitted);
+        REQUIRE(b.gc_index_large_snapshots>0 && b.gc_index_omitted>=10000);
+        printf("gc callbacks A visits=%llu finalizers=%llu weak=%llu cycles=%llu\n",
+               (unsigned long long)a.gc_deferred_visits,(unsigned long long)a.gc_finalizers,
+               (unsigned long long)a.gc_weak_callbacks,(unsigned long long)a.gc_cycles);
+        printf("gc callbacks B visits=%llu finalizers=%llu weak=%llu cycles=%llu indexed=%llu large_snapshots=%llu omitted=%llu\n",
+               (unsigned long long)b.gc_deferred_visits,(unsigned long long)b.gc_finalizers,
+               (unsigned long long)b.gc_weak_callbacks,(unsigned long long)b.gc_cycles,
+               (unsigned long long)b.gc_index_passes,(unsigned long long)b.gc_index_large_snapshots,
+               (unsigned long long)b.gc_index_omitted);
+    } else if (!strcmp(scenario,"gc_index_diff")) {
         init_job(&a,argv,"A","intrinsic-gc-off",bport,base);
         init_job(&b,argv,"B","intrinsic-gc-on",bport+1,base);
         start_job(&a); start_job(&b); join_job(&a); join_job(&b);
