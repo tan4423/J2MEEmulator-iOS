@@ -59,6 +59,10 @@ typedef struct JarBoxTreoState {
 #if defined(JARBOX_HOST_INTRINSIC_TEST) && !__JVM_OS_IOS__
     unsigned host_intrinsic_mask; // fixture only, set before Java entry; bit 0 array, bit 1 char
 #endif
+#if defined(JARBOX_HOST_RESIDUAL_TEST) && !__JVM_OS_IOS__
+    unsigned host_residual_enabled;
+    uint64_t host_residual_calls;
+#endif
     uint64_t ref_leaf_fast_calls;
     uint64_t aload_field_fusions;
     uint64_t smart_heap_peak;

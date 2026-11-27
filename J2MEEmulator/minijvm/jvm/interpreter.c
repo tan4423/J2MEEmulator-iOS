@@ -6,6 +6,36 @@
 #include "jarbox_decoded_int.h"
 #include "jarbox_array_index.h"
 #include "jarbox_java_integer.h"
+#if defined(JARBOX_HOST_RESIDUAL_TEST)
+#if __JVM_OS_IOS__ || defined(TREO_IOS_GAME_JIT)
+#error Residual fixture executor is host-only; no game admission is implemented
+#endif
+#include <stdlib.h>
+#include "jarbox_residual_plan.h"
+#include "jarbox_host_residual_fixture.h"
+#define JBR_COUNT (sizeof(jbr_plan)/sizeof(jbr_plan[0]))
+static int jbr_fixture_admit(Runtime *r,MethodInfo *m,CodeAttribute *ca) {
+    RuntimeStack *s=r->stack;
+    const uint16_t endian=1;
+    // Only this trusted test fixture. In production exact JAR/API/CP and
+    // resolved effect/sink identities must be proved; a name is insufficient.
+    return *(const unsigned char *)&endian==1 &&
+        r->jvm->session && r->jvm->session->treo_state.host_residual_enabled &&
+        !r->jvm->jdwp_enable && !r->thrd_info->is_stop && !r->thrd_info->suspend_count &&
+        !m->breakpoint && m->is_static && !m->is_sync && !m->is_native &&
+        m->para_slots==1 && !m->return_slots &&
+        utf8_equals_c(m->_this_class->name,"Class_hii") &&
+        utf8_equals_c(m->name,"k1") && utf8_equals_c(m->descriptor,"(LClass_hvi;)V") &&
+        ca->max_locals<=4 && ca->max_locals>=1 && !ca->exception_table_length &&
+        ca->code_length==sizeof(jbr_expected_code) && ca->bytecode_for_jit &&
+        ca->jit.state!=JIT_GEN_SUCCESS &&
+        stack_size(s)>=1 && stack_size(s)<=s->max_size &&
+        JBR_SLOTS-1+ca->max_stack+2<=s->max_size-stack_size(s) &&
+        (s->sp-1)->rvalue &&
+        !memcmp(ca->bytecode_for_jit,jbr_expected_code,sizeof(jbr_expected_code)) &&
+        jbr_validate(jbr_plan,JBR_COUNT,jbr_expected_code,sizeof(jbr_expected_code));
+}
+#endif
 
 // Host differential uses the same interpreter candidate blocks and JIT stubs.
 #if defined(JARBOX_HOST_INTRINSIC_TEST)
@@ -2215,6 +2245,17 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
             }
             runtime->pc = ca->code;
 
+#if defined(JARBOX_HOST_RESIDUAL_TEST)
+            const int jbr_active=jbr_fixture_admit(runtime,method,ca);
+            unsigned jbr_index=0,jbr_pending=JBR_END;
+            if(jbr_active) {
+                localvar_init(runtime,JBR_SLOTS,method->para_slots);
+                // Real VM stack storage, visible to GC. Reference lifetime may
+                // extend to frame end in this prototype (not live admission).
+                memset(runtime->localvar+1,0,(JBR_SLOTS-1)*sizeof(StackEntry));
+                __atomic_fetch_add(&jvm->session->treo_state.host_residual_calls,1,__ATOMIC_RELAXED);
+            } else
+#endif
             localvar_init(runtime, ca->max_locals, method->para_slots);
 #if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__
             if (nso_init_probe) {
@@ -2323,6 +2364,69 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
 #endif
 
                 do {
+#if defined(JARBOX_HOST_RESIDUAL_TEST)
+                    if(jbr_active) {
+                        StackEntry *base=localvar+JBR_SLOTS;
+                        if(jbr_pending!=JBR_END) {
+                            const JarBoxResidualOp *o=jbr_plan+jbr_pending;
+                            if(runtime->pc!=ca->code+o->pc) {
+                                // One original effect completed. If resolution
+                                // quickened in place without PC advancement,
+                                // keep the same operands and retry the handler.
+                                if(runtime->pc!=ca->code+o->pc+o->length ||
+                                   sp!=base+(o->dst!=JBR_NONE))abort();
+                                if(o->dst!=JBR_NONE)
+                                    jbr_copy_slot(localvar+o->dst,base,o->dst);
+                                sp=base;
+                                stack->sp=sp;
+                                jbr_index=o->next;
+                                jbr_pending=JBR_END;
+                            }
+                        }
+                        if(jbr_pending==JBR_END) {
+                            // Pure instructions run on slots; each retained
+                            // effect enters the original interpreter switch
+                            // at its original bytecode PC, with ordinary args.
+                            for(;;) {
+                                if(jbr_index>=JBR_COUNT || sp!=base)abort();
+                                const JarBoxResidualOp *o=jbr_plan+jbr_index;
+                                runtime->pc=ca->code+o->pc;
+                                stack->sp=sp;
+                                if(thrd_info->suspend_count) {
+                                    check_suspend_and_pause(runtime);
+                                    sp=stack->sp;
+                                }
+                                if(thrd_info->is_stop) {
+                                    localvar_dispose(runtime);
+                                    ret=RUNTIME_STATUS_ERROR;
+                                    goto label_exit_while;
+                                }
+                                if(o->kind==JBR_EFFECT) {
+                                    if(o->a!=JBR_NONE) {
+                                        jbr_copy_slot(sp,localvar+o->a,o->a);
+                                        ++sp;
+                                    }
+                                    if(o->b!=JBR_NONE) {
+                                        jbr_copy_slot(sp,localvar+o->b,o->b);
+                                        ++sp;
+                                    }
+                                    stack->sp=sp;
+                                    jbr_pending=jbr_index;
+                                    break;
+                                }
+                                jbr_index=jbr_pure_step(o,localvar);
+                            }
+                        }
+                        const JarBoxResidualOp *o=jbr_plan+jbr_pending;
+                        const unsigned actual=*runtime->pc;
+                        // Allow only known quickening variants of this effect.
+                        if(actual!=(unsigned)o->imm &&
+                           !(o->imm==op_getstatic &&
+                             (actual==op_getstatic_int||actual==op_getstatic_byte||actual==op_getstatic_ref)) &&
+                           !(o->imm==op_putstatic && actual==op_putstatic_int) &&
+                           !(o->imm==op_invokestatic && actual==op_invokestatic_fast))abort();
+                    }
+#endif
                     // Avoid a cross-unit function call on every interpreted
                     // bytecode when this JVM has disabled JDWP at startup.
                     if (jvm->jdwp_enable && jdwp_client_count(jvm->jdwpserver)) {

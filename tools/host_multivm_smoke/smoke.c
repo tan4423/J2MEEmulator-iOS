@@ -16,7 +16,7 @@ typedef struct { const char *rt, *api, *app, *tag, *mode; char save[512]; int po
     MiniJVM *jvm; pthread_t th; pthread_mutex_t lock; atomic_int finished;
     int stop_requested, rc;
     uint64_t char_calls, array_calls, gc_cycles;
-    uint64_t thread_cpu_ns, process_cpu_ns; } Job;
+    uint64_t thread_cpu_ns, process_cpu_ns, residual_calls; } Job;
 
 static void request_vm_stop(MiniJVM *vm) {
     vm->collector->exit_flag = 1;
@@ -53,6 +53,9 @@ static void *job_main(void *p) {
     ArrayList *args = arraylist_create(0);
     arraylist_push_back(args, (void *)j->tag); arraylist_push_back(args, (void *)j->save);
     arraylist_push_back(args, (void *)j->mode); arraylist_push_back(args, (void *)portbuf);
+#if defined(JARBOX_HOST_RESIDUAL_TEST)
+    vm->session->treo_state.host_residual_enabled=!strcmp(j->mode,"residual-native");
+#endif
 #if defined(JARBOX_HOST_INTRINSIC_TEST) && !__JVM_OS_IOS__
     int intrinsic=!strncmp(j->mode,"intrinsic-",10);
     unsigned mask=!strcmp(j->mode,"intrinsic-on")?3u:
@@ -65,7 +68,7 @@ static void *job_main(void *p) {
         jarbox_treo_mode_set(&vm->session->treo_state,1);
     }
     uint64_t p0=cpu_now(CLOCK_PROCESS_CPUTIME_ID),t0=cpu_now(CLOCK_THREAD_CPUTIME_ID);
-    j->rc=call_main(vm,intrinsic?"IntrinsicMain":(!strcmp(j->mode,"residual")?"ResidualMain":"SmokeMain"),args);
+    j->rc=call_main(vm,intrinsic?"IntrinsicMain":(!strncmp(j->mode,"residual",8)?"ResidualMain":"SmokeMain"),args);
     uint64_t t1=cpu_now(CLOCK_THREAD_CPUTIME_ID),p1=cpu_now(CLOCK_PROCESS_CPUTIME_ID);
     if (t0 && t1>t0) j->thread_cpu_ns=t1-t0;
     if (p0 && p1>p0) j->process_cpu_ns=p1-p0;
@@ -73,7 +76,10 @@ static void *job_main(void *p) {
     j->array_calls=__atomic_load_n(&vm->session->treo_state.array_lookup_mode1_calls,__ATOMIC_RELAXED);
     j->gc_cycles=__atomic_load_n(&vm->session->treo_state.gc_worker_cycles,__ATOMIC_RELAXED);
 #else
-    j->rc = call_main(vm, !strcmp(j->mode,"residual")?"ResidualMain":"SmokeMain", args);
+    j->rc = call_main(vm, !strncmp(j->mode,"residual",8)?"ResidualMain":"SmokeMain", args);
+#endif
+#if defined(JARBOX_HOST_RESIDUAL_TEST)
+    j->residual_calls=__atomic_load_n(&vm->session->treo_state.host_residual_calls,__ATOMIC_RELAXED);
 #endif
     arraylist_destroy(args);
     pthread_mutex_lock(&j->lock);
@@ -216,7 +222,19 @@ int main(int argc, char **argv) {
         b.app=residual_app;
         start_job(&a); start_job(&b); join_job(&a); join_job(&b);
         REQUIRE(!a.rc&&!b.rc&&residual_equal(&a,&b));
-    } else if (!strcmp(scenario, "pair")) {
+    }
+#if defined(JARBOX_HOST_RESIDUAL_TEST)
+    else if (!strcmp(scenario,"residual_native_diff")) {
+        // Both VMs load the original fixture, only B admits the native plan.
+        init_job(&a,argv,"A","residual",bport,base);
+        init_job(&b,argv,"B","residual-native",bport+1,base);
+        start_job(&a); start_job(&b); join_job(&a); join_job(&b);
+        printf("residual native calls: A=%llu B=%llu\n",
+               (unsigned long long)a.residual_calls,(unsigned long long)b.residual_calls);
+        REQUIRE(!a.rc&&!b.rc&&a.residual_calls==0&&b.residual_calls==2000&&residual_equal(&a,&b));
+    }
+#endif
+    else if (!strcmp(scenario, "pair")) {
         init_job(&a, argv, "A", "short", bport, base); init_job(&b, argv, "B", "short", bport+1, base);
         start_job(&a); start_job(&b); join_job(&a); join_job(&b);
         REQUIRE(!a.rc && !b.rc && result_ok(&a) && result_ok(&b));
