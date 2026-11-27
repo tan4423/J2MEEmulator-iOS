@@ -768,6 +768,11 @@ static s32 n_ninjaCorePaint(Runtime *runtime, JClass *clazz) {
     enabled=state && jarbox_ninja_core_active(&state->ninja_core,treo_runtime_mode(runtime)) &&
         ninja_profile_for_runtime(runtime) && canvas &&
         (canvas->mb.type & MEM_TYPE_INS) && treo_nso_simple_canvas_paint(canvas->mb.clazz);
+#if defined(TREO_RESIDUAL_EXPERIMENT) && TREO_RESIDUAL_EXPERIMENT && __JVM_OS_IOS__
+    // No sink-only candidate on a cold/unrecognized method or failed plan.
+    enabled=enabled&&__atomic_load_n(&state->residual_plan_ready,__ATOMIC_ACQUIRE)&&
+        !__atomic_load_n(&state->residual_faults,__ATOMIC_RELAXED);
+#endif
 #if defined(TREO_CORE_ABA) && TREO_CORE_ABA
     if (enabled) {
         uint64_t epoch=__atomic_load_n(&state->core_aba_start_ns,__ATOMIC_ACQUIRE);

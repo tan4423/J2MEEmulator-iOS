@@ -6,6 +6,8 @@ from zipfile import ZipFile
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from run_ios_candidate_ci import BINARY, RESIDUAL, CANDIDATES, OFF, prepare, verify_ipa
+from generate_residual_build_identity import generate
+import hashlib
 
 
 def config():
@@ -45,6 +47,18 @@ class IOSCandidateTest(unittest.TestCase):
         c['workflows']['jit-probe-unsigned']['environment']['vars'][OFF[0]] = '1'
         with self.assertRaises(ValueError):
             prepare(c, 'intrinsics', {})
+
+    def test_residual_build_identity(self):
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d);out=root/'identity.h'
+            for name,body in [('j2me_api.jar',b'api'),('minijvm_rt.jar',b'boot')]:
+                (root/name).write_bytes(body)
+            generate(root,out);first=out.read_text()
+            generate(root,out);self.assertEqual(first,out.read_text())
+            for body in (b'api',b'boot'):
+                self.assertIn(','.join('0x%02x'%x for x in hashlib.sha256(body).digest()),first)
+            (root/'j2me_api.jar').write_bytes(b'')
+            with self.assertRaises(ValueError):generate(root,out)
 
     def test_archive(self):
         profile = 'const-arith-0_const-branch-0_decoded-int-0_event-sleep-0_paint-qos-0_ninja-core-0_core-aba-0_array-mode1-1_char-leaf-1_binary-sprite-0_residual-0'

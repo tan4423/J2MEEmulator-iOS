@@ -57,9 +57,13 @@ int main(void) {
                 self.assertIn("!treo_game_jit_enabled_fast()", block)
                 self.assertEqual(block.count("treo_game_jit_enabled_fast()"), 1)
         self.assertIn("const int treo_enabled = !jvm->jdwp_enable && treo_game_jit_enabled_fast();", i)
-        # Five interpreter-only tiers plus the ordinary JIT dispatch above.
-        # Keep the total check: an accidental extra hot-path read still fails.
-        self.assertEqual(i.count("treo_game_jit_enabled_fast()"), 6)
+        # The isolated residual candidate also refuses an enabled JIT,
+        # after rejecting the ordinary method signature/shape.
+        residual=i.split("static const JarBoxResidualOp *jbr_live_compile",1)[1].split("// Host differential",1)[0]
+        self.assertEqual(residual.count("treo_game_jit_enabled_fast()"),1)
+        self.assertLess(residual.index('ca->code_length!=1368'),residual.index("treo_game_jit_enabled_fast()"))
+        # Six interpreter-only tiers plus ordinary JIT dispatch. No extra reads.
+        self.assertEqual(i.count("treo_game_jit_enabled_fast()"), 7)
         self.assertNotIn("treo_game_jit_is_enabled()",i)
         self.assertEqual(j.count("int treo_jit_enabled_state;"),1)
         self.assertIn("int treo_game_jit_is_enabled(void) { return treo_game_jit_enabled_fast(); }",j)

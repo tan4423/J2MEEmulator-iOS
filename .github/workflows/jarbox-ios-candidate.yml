@@ -6,6 +6,12 @@ on:
       - '.github/workflows/jarbox-ios-candidate.yml'
       - 'tools/run_ios_candidate_ci.py'
       - 'tools/generate_residual_build_identity.py'
+      - 'tools/tests/test_ios_candidate_ci.py'
+      - 'codemagic.yaml'
+      - 'J2MEEmulator/minijvm/jvm/jarbox_residual_*.h'
+      - 'J2MEEmulator/minijvm/jvm/interpreter.c'
+      - 'J2MEEmulator/NativeBridge/j2me_render.m'
+      - 'J2MEEmulator/NativeBridge/jvm_bridge.c'
   workflow_dispatch:
     inputs:
       configuration:

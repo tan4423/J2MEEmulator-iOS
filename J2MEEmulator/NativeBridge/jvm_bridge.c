@@ -1158,6 +1158,15 @@ int jvm_bridge_flight_sample(JarBoxFlightProcess *process, JarBoxFlightSlot *slo
         out->nso_core_faults=__atomic_load_n(&session->treo_state.ninja_core.faults,__ATOMIC_RELAXED);
         out->scoped_native_draw_skips=__atomic_load_n(&session->treo_state.ninja_core.scoped_native_draw_skips,__ATOMIC_RELAXED);
         out->scoped_vm_draw_skips=__atomic_load_n(&session->treo_state.ninja_core.scoped_vm_draw_skips,__ATOMIC_RELAXED);
+#if defined(TREO_RESIDUAL_EXPERIMENT) && TREO_RESIDUAL_EXPERIMENT && __JVM_OS_IOS__
+        out->residual_verified=__atomic_load_n(&session->treo_state.residual_archive_verified,__ATOMIC_RELAXED);
+        out->residual_ready=__atomic_load_n(&session->treo_state.residual_plan_ready,__ATOMIC_RELAXED);
+        out->residual_compiles=__atomic_load_n(&session->treo_state.host_residual_compiles,__ATOMIC_RELAXED);
+        out->residual_calls=__atomic_load_n(&session->treo_state.host_residual_calls,__ATOMIC_RELAXED);
+        out->residual_skips=__atomic_load_n(&session->treo_state.host_residual_skipped,__ATOMIC_RELAXED);
+        out->residual_deopts=__atomic_load_n(&session->treo_state.host_residual_deopts,__ATOMIC_RELAXED);
+        out->residual_faults=__atomic_load_n(&session->treo_state.residual_faults,__ATOMIC_RELAXED);
+#endif
         out->native_diag_seen=__atomic_load_n(&session->treo_state.native_diag_seen,__ATOMIC_RELAXED);
         out->native_diag_selected_frames=__atomic_load_n(&session->treo_state.native_diag_selected_frames,__ATOMIC_RELAXED);
         out->native_diag_selected_cpu_ns=__atomic_load_n(&session->treo_state.native_diag_selected_cpu_ns,__ATOMIC_RELAXED);

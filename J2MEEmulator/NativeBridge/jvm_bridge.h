@@ -133,6 +133,7 @@ typedef struct {
     uint64_t qos_paint_completed, qos_paint_cpu_ns, qos_paint_wall_ns, qos_paint_over_budget, qos_paint_backoff, qos_original_class;
     uint64_t qos_observed_class, qos_paint_normal_completed, qos_paint_normal_wall_ns, compatible_text_attr_reuses;
     uint64_t nso_core_profile, nso_core_armed, nso_core_rejected, nso_core_frames, nso_core_faults, scoped_native_draw_skips, scoped_vm_draw_skips;
+    uint64_t residual_verified, residual_ready, residual_compiles, residual_calls, residual_skips, residual_deopts, residual_faults;
     uint64_t native_diag_seen, native_diag_selected_frames, native_diag_selected_cpu_ns, native_diag_plain_frames;
     uint64_t native_diag_plain_cpu_ns, native_diag_discarded_frames, native_diag_draw_calls, native_diag_draw_ns;
     uint64_t native_diag_lcd_other_calls, native_diag_lcd_other_ns, native_diag_other_calls, native_diag_other_ns;

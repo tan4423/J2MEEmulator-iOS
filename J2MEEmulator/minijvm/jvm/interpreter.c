@@ -242,20 +242,36 @@ static const JarBoxResidualOp *jbr_live_compile(Runtime *r,MethodInfo *m,CodeAtt
     RuntimeStack *s=r->stack;
     JarBoxTreoState *st=r->jvm->session?&r->jvm->session->treo_state:NULL;
     *count=0;
-    // No active JIT or debugger, exact method, rooted receiver and scope.
-    if(!st||!__atomic_load_n(&st->residual_archive_verified,__ATOMIC_ACQUIRE)||
-       __atomic_load_n(&st->residual_faults,__ATOMIC_RELAXED)||
-       !r->thrd_info->jarbox_headless_scope||treo_game_jit_enabled_fast()||
-       r->jvm->jdwp_enable||r->thrd_info->is_stop||r->thrd_info->suspend_count||
-       m->breakpoint||!m->is_static||m->is_sync||m->is_native||
-       m->para_slots!=1||m->return_slots||!jbr_eq(m->_this_class->name,"Class_hii")||
-       !jbr_eq(m->name,"k1")||!jbr_eq(m->descriptor,"(LClass_hvi;)V")||
+    // Cheap signature rejection precedes control-plane reads for ordinary
+    // methods. No active JIT or debugger, exact method and rooted receiver.
+    if(!st||!m->is_static||m->is_sync||m->is_native||m->para_slots!=1||m->return_slots||
        ca->max_locals!=4||ca->max_stack!=10||ca->exception_table_length||
-       ca->jit.state==JIT_GEN_SUCCESS||stack_size(s)<1||stack_size(s)>s->max_size||
-       JBR_SLOTS-1+ca->max_stack+2>s->max_size-stack_size(s)||
-       !treo_residual_scope_capture(r,(s->sp-1)->rvalue,scope))return NULL;
+       ca->code_length!=1368||!jbr_eq(m->_this_class->name,"Class_hii")||
+       !jbr_eq(m->name,"k1")||!jbr_eq(m->descriptor,"(LClass_hvi;)V")||
+       !__atomic_load_n(&st->residual_archive_verified,__ATOMIC_ACQUIRE)||
+       __atomic_load_n(&st->residual_faults,__ATOMIC_RELAXED)||
+       jarbox_session_phase(r->jvm->session)!=JARBOX_SESSION_PARKED||
+       !jarbox_ninja_core_active(&st->ninja_core,jarbox_treo_mode_get(st))||
+       treo_game_jit_enabled_fast()||r->jvm->jdwp_enable||r->thrd_info->is_stop||
+       r->thrd_info->suspend_count||m->breakpoint||ca->jit.state==JIT_GEN_SUCCESS||
+       stack_size(s)<1||stack_size(s)>s->max_size||
+       JBR_SLOTS-1+ca->max_stack+2>s->max_size-stack_size(s))return NULL;
+    const int in_scope=r->thrd_info->jarbox_headless_scope;
+    Instance *wrapper=(s->sp-1)->rvalue;
+    if(in_scope) {
+        if(!treo_residual_scope_capture(r,wrapper,scope))return NULL;
+    } else {
+        // Precompile during an ordinary full-raster invocation. Do not
+        // arm pixel omission merely because the archive was recognized.
+        JarBoxResidualBinding binding;
+        if(!jbr_nick_binding(r,wrapper,&binding))return NULL;
+        scope->graphics=(uintptr_t)binding.graphics;
+    }
     JarBoxResidualOp *plan=__atomic_load_n(&ca->host_residual_plan,__ATOMIC_ACQUIRE);
-    if(plan){*count=ca->residual_plan_count;return plan;}
+    if(plan){
+        if(!in_scope)return NULL;
+        *count=ca->residual_plan_count;return plan;
+    }
     // Only the exact audited Nick map/wrapper. All removed regions must
     // already have linked and initialized operands; never warm by executing
     // extra Java. A still-cold map takes the original interpreter.
@@ -277,12 +293,13 @@ static const JarBoxResidualOp *jbr_live_compile(Runtime *r,MethodInfo *m,CodeAtt
                 ca->residual_plan_count=n;plan=candidate;
                 __atomic_store_n(&ca->host_residual_plan,plan,__ATOMIC_RELEASE);
                 __atomic_fetch_add(&st->host_residual_compiles,1,__ATOMIC_RELAXED);
+                __atomic_store_n(&st->residual_plan_ready,1,__ATOMIC_RELEASE);
             } else free(candidate);
         }
     }
-    if(plan)*count=ca->residual_plan_count;
+    if(plan&&in_scope)*count=ca->residual_plan_count;
     spin_unlock(&ca->compile_lock);
-    return plan;
+    return in_scope?plan:NULL;
 }
 #endif
 #endif
