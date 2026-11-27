@@ -5,12 +5,13 @@ on:
     paths:
       - '.github/workflows/jarbox-ios-candidate.yml'
       - 'tools/run_ios_candidate_ci.py'
+      - 'tools/generate_residual_build_identity.py'
   workflow_dispatch:
     inputs:
       configuration:
         description: 'Isolated binary raster, intrinsic candidate or matched control'
         type: choice
-        options: [binary-trial, binary, intrinsics, control]
+        options: [binary-trial, binary, intrinsics, control, residual]
         default: binary-trial
 permissions:
   contents: read
@@ -20,7 +21,7 @@ jobs:
     timeout-minutes: 40
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
-      CONFIGURATION: ${{ inputs.configuration || 'binary-trial' }}
+      CONFIGURATION: ${{ inputs.configuration || 'residual' }}
     steps:
       - uses: actions/checkout@v4
         with:

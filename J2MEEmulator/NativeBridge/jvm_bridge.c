@@ -26,6 +26,9 @@
 #include <os/proc.h>
 #if defined(TREO_NINJA_CORE_EXPERIMENT) && TREO_NINJA_CORE_EXPERIMENT
 #include <CommonCrypto/CommonDigest.h>
+#if (defined(TREO_RESIDUAL_EXPERIMENT) && TREO_RESIDUAL_EXPERIMENT && __JVM_OS_IOS__)
+#include "jarbox_residual_build_identity.h"
+#endif
 #endif
 #include <time.h>
 #include <mach/mach.h>
@@ -186,12 +189,12 @@ int treo_ninja_deep_verified(void) {
  */
 #if defined(TREO_NINJA_CORE_EXPERIMENT) && TREO_NINJA_CORE_EXPERIMENT
 // Launch-only exact archive gate. Bounded streaming hash; no file I/O in paint.
-static unsigned treo_ninja_core_archive_profile(const char *path) {
+static int treo_core_digest(const char *path,unsigned char digest[32]) {
     if (!path) return 0;
     FILE *f=fopen(path,"rb");
     if (!f) return 0;
     CC_SHA256_CTX ctx;
-    unsigned char buf[16384],digest[CC_SHA256_DIGEST_LENGTH];
+    unsigned char buf[16384];
     size_t total=0,n;
     int ok=CC_SHA256_Init(&ctx)==1;
     while (ok && (n=fread(buf,1,sizeof(buf),f))!=0) {
@@ -201,8 +204,29 @@ static unsigned treo_ninja_core_archive_profile(const char *path) {
     }
     ok=ok && !ferror(f) && feof(f) && total && CC_SHA256_Final(digest,&ctx)==1;
     fclose(f);
-    return ok ? jarbox_ninja_core_profile(digest) : 0;
+    return ok;
 }
+static unsigned treo_ninja_core_archive_profile(const char *path) {
+    unsigned char digest[32];
+    if(!treo_core_digest(path,digest))return 0;
+#if (defined(TREO_RESIDUAL_EXPERIMENT) && TREO_RESIDUAL_EXPERIMENT && __JVM_OS_IOS__)
+    static const unsigned char newer[32]={0x1e,0x79,0x92,0x76,0x43,0x22,0x8d,0x36,0x9c,0x1f,0x59,0x08,0x79,0xbd,0xef,0xe2,0x05,0x18,0x20,0x08,0x06,0x06,0xdd,0x43,0x3d,0xb7,0xda,0x34,0x90,0x28,0xb9,0xf9};
+    return jarbox_ninja_core_profile(digest)==2||!memcmp(digest,newer,32)?2:0;
+#else
+    return jarbox_ninja_core_profile(digest);
+#endif
+}
+#if (defined(TREO_RESIDUAL_EXPERIMENT) && TREO_RESIDUAL_EXPERIMENT && __JVM_OS_IOS__)
+static int treo_residual_api_identity(const char *root) {
+    char path[1024];unsigned char digest[32];
+    int n=snprintf(path,sizeof(path),"%s/j2me_api.jar",root);
+    if(n<0||(size_t)n>=sizeof(path)||!treo_core_digest(path,digest)||
+       memcmp(digest,jbr_bundled_api_sha256,32))return 0;
+    n=snprintf(path,sizeof(path),"%s/minijvm_rt.jar",root);
+    return n>0&&(size_t)n<sizeof(path)&&treo_core_digest(path,digest)&&
+           !memcmp(digest,jbr_bundled_boot_sha256,32);
+}
+#endif
 #endif
 static int treo_is_nso_family(const char *jar_path, int *init_target) {
     *init_target = 0;
@@ -1426,6 +1450,9 @@ static int bridge_init_slot(JarBoxVMContext *slot, const char *res_root, const c
     ninja_match = treo_is_nso_family(midlet_jar, &init_target);
 #if defined(TREO_NINJA_CORE_EXPERIMENT) && TREO_NINJA_CORE_EXPERIMENT
     if (ninja_match) ninja_core_profile=treo_ninja_core_archive_profile(midlet_jar);
+#if (defined(TREO_RESIDUAL_EXPERIMENT) && TREO_RESIDUAL_EXPERIMENT && __JVM_OS_IOS__)
+    if(ninja_core_profile!=2||!treo_residual_api_identity(res_root))ninja_core_profile=0;
+#endif
 #endif
     printf("[JarBoxVM][NinjaDeep] profile=%s (NSO resource family)\n",
            ninja_match ? "matched" : "generic");
@@ -1495,6 +1522,9 @@ static int bridge_init_slot(JarBoxVMContext *slot, const char *res_root, const c
     jarbox_treo_nso_profile_set(&slot->jvm->session->treo_state,
         ninja_match, init_target);
     __atomic_store_n(&slot->jvm->session->treo_state.ninja_core.profile,ninja_core_profile,__ATOMIC_RELEASE);
+#if (defined(TREO_RESIDUAL_EXPERIMENT) && TREO_RESIDUAL_EXPERIMENT && __JVM_OS_IOS__)
+    __atomic_store_n(&slot->jvm->session->treo_state.residual_archive_verified,ninja_core_profile==2,__ATOMIC_RELEASE);
+#endif
 
     jarbox_session_configure_render_scale(slot->jvm->session, render_3d_scale);
     slot->jvm->jdwp_enable = 0;

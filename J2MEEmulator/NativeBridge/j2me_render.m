@@ -5104,6 +5104,25 @@ int treo_residual_scope_capture(Runtime *runtime,Instance *wrapper,JarBoxResidua
         (uintptr_t)b.wrapper,(uintptr_t)b.canvas,(uintptr_t)b.graphics};
     return 1;
 }
+#if (defined(TREO_RESIDUAL_EXPERIMENT) && TREO_RESIDUAL_EXPERIMENT && __JVM_OS_IOS__)
+// Fast checkpoint guard, no registry lock or repeated ancestry walk. The
+// admitted Canvas holds paintLock until endAfkPaint; TLS serial changes on
+// nested paint/end. All objects remain rooted in the original paint frames.
+int treo_residual_scope_valid(Runtime *r,Instance *wrapper,const JarBoxResidualScope *s) {
+    if(!r||!r->jvm||!r->jvm->session||!r->thrd_info||!s||!wrapper||
+       (uintptr_t)wrapper!=s->wrapper||!s->serial||s->serial!=g_afk_scope_serial||
+       !s->owner||s->owner!=g_afk_canvas_owner_key||s->context!=g_afk_canvas||
+       r->thrd_info->is_stop||!r->thrd_info->jarbox_headless_scope)return 0;
+    JarBoxSession *session=r->jvm->session;
+    JarBoxTreoState *st=&session->treo_state;
+    if(jarbox_session_phase(session)!=JARBOX_SESSION_PARKED||
+       !jarbox_ninja_core_active(&st->ninja_core,treo_runtime_mode(r))||
+       s->owner!=jarbox_native_heap_key_for_runtime(r))return 0;
+    // Detect replacement by any retained call before the next closed region.
+    return jbr_bref(wrapper->mb.clazz,wrapper,"a","Ljavax/microedition/lcdui/Graphics;",
+                   (Instance *)s->graphics,0);
+}
+#endif
 #endif
 
 int treo_afk_elide_graphics(Runtime *runtime, JClass *clazz, Instance *receiver, int core) {

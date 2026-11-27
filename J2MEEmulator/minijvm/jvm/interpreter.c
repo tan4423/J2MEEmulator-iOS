@@ -13,13 +13,23 @@
 #include "jarbox_residual_binding.h"
 #include "jarbox_host_binding_fixture.h"
 #endif
-#if defined(JARBOX_HOST_RESIDUAL_TEST)
-#if __JVM_OS_IOS__ || defined(TREO_IOS_GAME_JIT)
-#error Residual fixture executor is host-only; no game admission is implemented
+#if defined(JARBOX_HOST_RESIDUAL_TEST) && (__JVM_OS_IOS__ || defined(TREO_IOS_GAME_JIT))
+#error Host residual fixtures cannot be used on iOS
 #endif
+#if (defined(JARBOX_HOST_RESIDUAL_TEST) && !__JVM_OS_IOS__) || (defined(TREO_RESIDUAL_EXPERIMENT) && TREO_RESIDUAL_EXPERIMENT && __JVM_OS_IOS__)
+#define JARBOX_RESIDUAL_EXECUTOR 1
 #include <stdlib.h>
 #include "jarbox_residual_compile.h"
 #include "jarbox_residual_binding.h"
+#if (defined(TREO_RESIDUAL_EXPERIMENT) && TREO_RESIDUAL_EXPERIMENT && __JVM_OS_IOS__)
+#if !defined(TREO_NINJA_CORE_EXPERIMENT) || !TREO_NINJA_CORE_EXPERIMENT
+#error Residual candidate requires the paired Canvas sink
+#endif
+#include <CommonCrypto/CommonDigest.h>
+extern int treo_residual_scope_capture(Runtime *,Instance *,JarBoxResidualScope *);
+extern int treo_residual_scope_valid(Runtime *,Instance *,const JarBoxResidualScope *);
+static const int jbr_resolved_reads=1,jbr_resume=1,jbr_skip_draws=1,jbr_draw_effects=0;
+#else
 #include "jarbox_host_residual_fixture.h"
 #define JBR_COUNT (sizeof(jbr_plan)/sizeof(jbr_plan[0]))
 // Controlled closed sink fixture ONLY. Actual game admission also needs
@@ -58,6 +68,7 @@ static int jbr_fixture_admit(Runtime *r,MethodInfo *m,CodeAttribute *ca) {
         !memcmp(ca->bytecode_for_jit,jbr_expected_code,sizeof(jbr_expected_code)) &&
         jbr_validate(jbr_plan,JBR_COUNT,jbr_expected_code,sizeof(jbr_expected_code));
 }
+#endif // host-only generated fixture and admission
 static int jbr_eq(Utf8String *s,const char *str) { return s && utf8_equals_c(s,str); }
 // Host oracle only: resolution must have occurred naturally in the original
 // interpreter. Never resolve, initialize, pin, or sample a field's value here.
@@ -135,6 +146,7 @@ static int jbr_fixture_cp(void *ctx,unsigned op,unsigned ix) {
     }
     return JBR_CP_REJECT;
 }
+#if defined(JARBOX_HOST_RESIDUAL_TEST)
 static int jbr_same_op(const JarBoxResidualOp *a,const JarBoxResidualOp *b) {
     return a->kind==b->kind&&a->a==b->a&&a->b==b->b&&a->dst==b->dst&&
            a->pc==b->pc&&a->next==b->next&&a->alt==b->alt&&
@@ -171,6 +183,108 @@ static const JarBoxResidualOp *jbr_fixture_compile(Runtime *r,MethodInfo *m,Code
     spin_unlock(&ca->compile_lock);
     return plan;
 }
+#else // isolated real iOS candidate
+static int jbr_live_code(const CodeAttribute *ca,unsigned length,const unsigned char digest[32]) {
+    unsigned char actual[32];
+    return ca&&ca->bytecode_for_jit&&ca->code_length==length&&
+        CC_SHA256(ca->bytecode_for_jit,(CC_LONG)length,actual)&&!memcmp(actual,digest,32);
+}
+static MethodInfo *jbr_live_declared(JClass *c,const char *name,const char *desc) {
+    if(!c||c->status!=CLASS_STATUS_CLINITED||!c->methodPool.method||
+       c->methodPool.method_used<0||c->methodPool.method_used>4096)return NULL;
+    MethodInfo *found=NULL;
+    for(int i=0;i<c->methodPool.method_used;i++){
+        MethodInfo *m=c->methodPool.method+i;
+        if(!jbr_eq(m->name,name)||!jbr_eq(m->descriptor,desc))continue;
+        if(found||m->_this_class!=c||m->is_static||m->is_native||m->is_sync||
+           !m->converted_code||m->converted_code->exception_table_length||
+           !(m->access_flags&ACC_PUBLIC))return NULL;
+        found=m;
+    }
+    return found;
+}
+static int jbr_live_wrapper_ready(Instance *w,const JarBoxResidualScope *scope) {
+    static const unsigned char digest[32]={0x13,0xca,0x49,0xde,0x94,0x27,0xbe,0x04,0xff,0xe4,0xb4,0xe0,0xe3,0xa9,0x6a,0xf0,0x0e,0x0d,0x16,0x56,0x20,0x93,0xf8,0x93,0x6a,0x1c,0xa1,0x18,0xf3,0xa8,0x7f,0xa1};
+    static const char *desc="(Ljavax/microedition/lcdui/Image;IIIIIIII)V";
+    if(!w||!scope||!scope->graphics)return 0;
+    JClass *wc=w->mb.clazz;
+    Instance *g=(Instance *)scope->graphics;
+    MethodInfo *wm=jbr_live_declared(wc,"a",desc);
+    MethodInfo *gm=jbr_live_declared(g->mb.clazz,"drawRegion",desc);
+    if(!wm||!gm||!jbr_live_code(wm->converted_code,67,digest)||
+       !jbr_bfield(wc,NULL,"g","I",4,0,1))return 0;
+    // Exact JAR and packaged API identities are launch-gated. Verify that
+    // the wrapper's actual CP refers to those loaded declarations. No
+    // resolver or Java execution on this path.
+    CodeAttribute *ca=wm->converted_code;
+    unsigned ix=jbr_u16(ca->bytecode_for_jit+3);
+    ConstantItem *item=ix&&ix<(unsigned)wc->constant_item_count?class_get_constant_item(wc,ix):NULL;
+    if(!item||item->tag!=CONSTANT_FIELD_REF||!jbr_plain_int_read(wc,(ConstantFieldRef *)item))return 0;
+    ConstantFieldRef *f=(ConstantFieldRef *)item;
+    if(!jbr_eq(f->name,"g")||f->fieldInfo->_this_class!=wc)return 0;
+    ix=jbr_u16(ca->bytecode_for_jit+46);
+    item=ix&&ix<(unsigned)wc->constant_item_count?class_get_constant_item(wc,ix):NULL;
+    if(!item||item->tag!=CONSTANT_FIELD_REF)return 0;
+    f=(ConstantFieldRef *)item;
+    if(!f->fieldInfo||f->fieldInfo->_this_class!=wc||f->fieldInfo->isvolatile||
+       !jbr_eq(f->name,"a")||!jbr_eq(f->descriptor,"Ljavax/microedition/lcdui/Graphics;"))return 0;
+    ix=jbr_u16(ca->bytecode_for_jit+64);
+    item=ix&&ix<(unsigned)wc->constant_item_count?class_get_constant_item(wc,ix):NULL;
+    if(!item||item->tag!=CONSTANT_METHOD_REF)return 0;
+    ConstantMethodRef *mr=(ConstantMethodRef *)item;
+    return jbr_eq(mr->clsName,"javax/microedition/lcdui/Graphics")&&
+        jbr_eq(mr->name,"drawRegion")&&jbr_eq(mr->descriptor,desc)&&
+        (!mr->methodInfo||mr->methodInfo==gm);
+}
+static const JarBoxResidualOp *jbr_live_compile(Runtime *r,MethodInfo *m,CodeAttribute *ca,
+                                                JarBoxResidualScope *scope,unsigned *count) {
+    static const unsigned char digest[32]={0x96,0xd7,0xab,0x33,0x79,0x07,0xcf,0x79,0xd4,0x50,0x14,0x30,0x16,0x8f,0x6f,0x65,0xc2,0x91,0xc6,0xa1,0xba,0x8f,0xe3,0xbd,0x77,0x51,0x56,0x26,0x4c,0xb7,0xd0,0xa5};
+    RuntimeStack *s=r->stack;
+    JarBoxTreoState *st=r->jvm->session?&r->jvm->session->treo_state:NULL;
+    *count=0;
+    // No active JIT or debugger, exact method, rooted receiver and scope.
+    if(!st||!__atomic_load_n(&st->residual_archive_verified,__ATOMIC_ACQUIRE)||
+       __atomic_load_n(&st->residual_faults,__ATOMIC_RELAXED)||
+       !r->thrd_info->jarbox_headless_scope||treo_game_jit_enabled_fast()||
+       r->jvm->jdwp_enable||r->thrd_info->is_stop||r->thrd_info->suspend_count||
+       m->breakpoint||!m->is_static||m->is_sync||m->is_native||
+       m->para_slots!=1||m->return_slots||!jbr_eq(m->_this_class->name,"Class_hii")||
+       !jbr_eq(m->name,"k1")||!jbr_eq(m->descriptor,"(LClass_hvi;)V")||
+       ca->max_locals!=4||ca->max_stack!=10||ca->exception_table_length||
+       ca->jit.state==JIT_GEN_SUCCESS||stack_size(s)<1||stack_size(s)>s->max_size||
+       JBR_SLOTS-1+ca->max_stack+2>s->max_size-stack_size(s)||
+       !treo_residual_scope_capture(r,(s->sp-1)->rvalue,scope))return NULL;
+    JarBoxResidualOp *plan=__atomic_load_n(&ca->host_residual_plan,__ATOMIC_ACQUIRE);
+    if(plan){*count=ca->residual_plan_count;return plan;}
+    // Only the exact audited Nick map/wrapper. All removed regions must
+    // already have linked and initialized operands; never warm by executing
+    // extra Java. A still-cold map takes the original interpreter.
+    if(!jbr_live_code(ca,1368,digest)||!jbr_live_wrapper_ready((s->sp-1)->rvalue,scope))return NULL;
+    for(unsigned p=0;p<(unsigned)ca->code_length;) {
+        unsigned raw=ca->bytecode_for_jit[p],len=jbr_raw_size(raw);
+        if(!len||len>(unsigned)ca->code_length-p)return NULL;
+        if(raw==0x2a&&!jbr_closed_region_ready(m->_this_class,ca,p))return NULL;
+        p+=len;
+    }
+    spin_lock(&ca->compile_lock);
+    plan=__atomic_load_n(&ca->host_residual_plan,__ATOMIC_RELAXED);
+    if(!plan) {
+        JarBoxResidualOp *candidate=calloc(JBR_MAX_NODES,sizeof(*candidate));
+        if(candidate) {
+            unsigned n=jbr_compile(ca->bytecode_for_jit,ca->code_length,
+                jbr_fixture_cp,m->_this_class,3,candidate,JBR_MAX_NODES);
+            if(n&&jbr_validate(candidate,n,ca->bytecode_for_jit,ca->code_length)){
+                ca->residual_plan_count=n;plan=candidate;
+                __atomic_store_n(&ca->host_residual_plan,plan,__ATOMIC_RELEASE);
+                __atomic_fetch_add(&st->host_residual_compiles,1,__ATOMIC_RELAXED);
+            } else free(candidate);
+        }
+    }
+    if(plan)*count=ca->residual_plan_count;
+    spin_unlock(&ca->compile_lock);
+    return plan;
+}
+#endif
 #endif
 
 // Host differential uses the same interpreter candidate blocks and JIT stubs.
@@ -2394,8 +2508,15 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
             }
 #endif
 
-#if defined(JARBOX_HOST_RESIDUAL_TEST)
+#if defined(JARBOX_RESIDUAL_EXECUTOR)
+#if (defined(TREO_RESIDUAL_EXPERIMENT) && TREO_RESIDUAL_EXPERIMENT && __JVM_OS_IOS__)
+            JarBoxResidualScope jbr_scope={0};
+            unsigned jbr_count=0;
+            const JarBoxResidualOp *jbr_compiled=jbr_live_compile(runtime,method,ca,&jbr_scope,&jbr_count);
+#else
+            const unsigned jbr_count=JBR_COUNT;
             const JarBoxResidualOp *jbr_compiled=jbr_fixture_compile(runtime,method,ca);
+#endif
             int jbr_active=jbr_compiled!=NULL;
             unsigned jbr_index=0,jbr_pending=JBR_END,jbr_draws=0,jbr_limit=0;
             if(jbr_active) {
@@ -2515,8 +2636,19 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
 #endif
 
                 do {
-#if defined(JARBOX_HOST_RESIDUAL_TEST)
+#if defined(JARBOX_RESIDUAL_EXECUTOR)
                     if(jbr_active) {
+#if (defined(TREO_RESIDUAL_EXPERIMENT) && TREO_RESIDUAL_EXPERIMENT && __JVM_OS_IOS__)
+// A broken internal invariant is not a legal deopt after effects. Quarantine
+// this owner and unwind using the VM's existing error path, never abort iOS.
+#define JBR_INVARIANT_FAIL() do { \
+    __atomic_fetch_add(&jvm->session->treo_state.residual_faults,1,__ATOMIC_RELAXED); \
+    jarbox_ninja_core_finish(&jvm->session->treo_state.ninja_core,4); \
+    localvar_dispose(runtime); ret=RUNTIME_STATUS_ERROR; goto label_exit_while; \
+} while(0)
+#else
+#define JBR_INVARIANT_FAIL() abort()
+#endif
                         StackEntry *base=localvar+JBR_SLOTS;
                         if(jbr_pending!=JBR_END) {
                             const JarBoxResidualOp *o=jbr_compiled+jbr_pending;
@@ -2525,7 +2657,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                                 // quickened in place without PC advancement,
                                 // keep the same operands and retry the handler.
                                 if(runtime->pc!=ca->code+o->pc+o->length ||
-                                   sp!=base+(o->dst!=JBR_NONE))abort();
+                                   sp!=base+(o->dst!=JBR_NONE))JBR_INVARIANT_FAIL();
                                 if(o->dst!=JBR_NONE)
                                     jbr_copy_slot(localvar+o->dst,base,o->dst);
                                 sp=base;
@@ -2540,7 +2672,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                             // effect enters the original interpreter switch
                             // at its original bytecode PC, with ordinary args.
                             for(;;) {
-                                if(jbr_index>=JBR_COUNT || sp!=base)abort();
+                                if(jbr_index>=jbr_count || sp!=base)JBR_INVARIANT_FAIL();
                                 const JarBoxResidualOp *o=jbr_compiled+jbr_index;
                                 runtime->pc=ca->code+o->pc;
                                 stack->sp=sp;
@@ -2553,11 +2685,21 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                                     ret=RUNTIME_STATUS_ERROR;
                                     goto label_exit_while;
                                 }
-                                int cold_region=0;
-                                if(jbr_skip_draws&&o->checkpoint&&jbr_fixture_scope(localvar[0].rvalue)==1)
-                                    cold_region=!jbr_closed_region_ready(method->_this_class,ca,o->pc);
-                                if(jbr_resume && o->checkpoint &&
-                                   (jbr_skip_draws?(cold_region||jbr_fixture_scope(localvar[0].rvalue)!=1):jbr_draws>=jbr_limit)) {
+                                int cold_region=0,scope_lost=0;
+                                if(o->checkpoint) {
+#if (defined(TREO_RESIDUAL_EXPERIMENT) && TREO_RESIDUAL_EXPERIMENT && __JVM_OS_IOS__)
+                                    // The initial certificate pins all region
+                                    // metadata through this owner class. The
+                                    // paired TLS Canvas sink persists to paint
+                                    // end; a changed scope resumes at entry.
+                                    scope_lost=!treo_residual_scope_valid(runtime,localvar[0].rvalue,&jbr_scope);
+#else
+                                    if(jbr_skip_draws&&jbr_fixture_scope(localvar[0].rvalue)==1)
+                                        cold_region=!jbr_closed_region_ready(method->_this_class,ca,o->pc);
+                                    scope_lost=jbr_skip_draws?(cold_region||jbr_fixture_scope(localvar[0].rvalue)!=1):jbr_draws>=jbr_limit;
+#endif
+                                }
+                                if(jbr_resume && o->checkpoint && scope_lost) {
                                     if(cold_region)__atomic_fetch_add(&jvm->session->treo_state.host_residual_cold_deopts,1,__ATOMIC_RELAXED);
                                     // Resume exactly at the original empty-stack
                                     // aload_0 PC, BEFORE any effect of this draw.
@@ -2609,9 +2751,10 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                              (actual==op_getstatic_int||actual==op_getstatic_byte||actual==op_getstatic_ref)) &&
                            !(o->imm==op_putstatic && actual==op_putstatic_int) &&
                            !(o->imm==op_invokestatic && actual==op_invokestatic_fast) &&
-                           !(o->imm==op_invokevirtual && actual==op_invokevirtual_fast))abort();
+                           !(o->imm==op_invokevirtual && actual==op_invokevirtual_fast))JBR_INVARIANT_FAIL();
                         }
                     }
+#undef JBR_INVARIANT_FAIL
 #endif
                     // Avoid a cross-unit function call on every interpreted
                     // bytecode when this JVM has disabled JDWP at startup.
