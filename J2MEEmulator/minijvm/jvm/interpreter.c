@@ -43,6 +43,22 @@ static int jbr_fixture_admit(Runtime *r,MethodInfo *m,CodeAttribute *ca) {
         jbr_validate(jbr_plan,JBR_COUNT,jbr_expected_code,sizeof(jbr_expected_code));
 }
 static int jbr_eq(Utf8String *s,const char *str) { return s && utf8_equals_c(s,str); }
+// Host oracle only: resolution must have occurred naturally in the original
+// interpreter. Never resolve, initialize, pin, or sample a field's value here.
+// Metadata must be owned by this loaded class's loader and still valid.
+static int jbr_plain_int_read(JClass *cl,ConstantFieldRef *ref) {
+    FieldInfo *f=ref->fieldInfo;
+    if(!f||!f->_this_class||f->isrefer||f->isvolatile||
+       !(f->access_flags&8)||(f->access_flags&0x40))return 0;
+    JClass *owner=f->_this_class;
+    if(owner->status!=CLASS_STATUS_CLINITED||owner->jloader!=cl->jloader||
+       !owner->name||!ref->clsName||!utf8_equals(owner->name,ref->clsName)||
+       !f->name||!ref->name||!utf8_equals(f->name,ref->name)||
+       !f->descriptor||!ref->descriptor||!utf8_equals(f->descriptor,ref->descriptor))return 0;
+    unsigned bytes=jbr_eq(f->descriptor,"I")?4:jbr_eq(f->descriptor,"B")?1:0;
+    return bytes&&f->datatype_bytes==bytes&&owner->field_static&&owner->field_static_len>=0&&
+        (size_t)f->offset+bytes<=(size_t)owner->field_static_len;
+}
 static int jbr_fixture_cp(void *ctx,unsigned op,unsigned ix) {
     JClass *cl=ctx;
     if(!cl->constant_item_ptr || !ix || ix>=(unsigned)cl->constant_item_count)return JBR_CP_REJECT;
@@ -58,7 +74,8 @@ static int jbr_fixture_cp(void *ctx,unsigned op,unsigned ix) {
         }
         if(!jbr_eq(f->clsName,"Class_hii")&&!jbr_eq(f->clsName,"Class_hac")&&!jbr_eq(f->clsName,"Class_hxb"))
             return JBR_CP_REJECT;
-        if(jbr_eq(f->descriptor,"I")||jbr_eq(f->descriptor,"B"))return JBR_CP_INT;
+        if(jbr_eq(f->descriptor,"I")||jbr_eq(f->descriptor,"B"))
+            return jbr_resolved_reads&&jbr_plain_int_read(cl,f)?JBR_CP_PLAIN_INT:JBR_CP_INT;
         if(jbr_eq(f->descriptor,"[C")||jbr_eq(f->descriptor,"Ljavax/microedition/lcdui/Image;"))return JBR_CP_REF;
     }
     if(item->tag==CONSTANT_METHOD_REF) {
@@ -77,6 +94,12 @@ static int jbr_same_op(const JarBoxResidualOp *a,const JarBoxResidualOp *b) {
 }
 static const JarBoxResidualOp *jbr_fixture_compile(Runtime *r,MethodInfo *m,CodeAttribute *ca) {
     if(!jbr_fixture_admit(r,m,ca))return NULL;
+    if(jbr_resolved_reads && !r->jvm->session->treo_state.host_residual_warmed) {
+        // The fixture has exactly one warm-up invocation. Keep the whole
+        // original method on this invocation; no eager resolution or init.
+        r->jvm->session->treo_state.host_residual_warmed=1;
+        return NULL;
+    }
     JarBoxResidualOp *plan=__atomic_load_n(&ca->host_residual_plan,__ATOMIC_ACQUIRE);
     if(plan)return plan;
     // No resolution, Java execution or VM heap allocation while holding

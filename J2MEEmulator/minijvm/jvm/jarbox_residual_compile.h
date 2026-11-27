@@ -8,13 +8,13 @@
 // supplies verified symbolic CP kinds and the *converted* immutable code.
 // Merely accepting a shape does not authorize eliminating a graphics sink.
 enum { JBR_MAX_NODES=1024, JBR_MAX_CODE=4096, JBR_MAX_DEPTH=12 };
-enum { JBR_CP_REJECT, JBR_CP_INT, JBR_CP_REF, JBR_CP_INT2, JBR_CP_DRAW };
+enum { JBR_CP_REJECT, JBR_CP_INT, JBR_CP_REF, JBR_CP_INT2, JBR_CP_DRAW, JBR_CP_PLAIN_INT };
 typedef int (*JarBoxResidualCPKind)(void *,unsigned,unsigned);
 typedef struct {
     JarBoxResidualOp op;
     uint32_t uses,defs,live;
     uint16_t refs;
-    uint8_t raw,seen,depth,initialized,reachable;
+    uint8_t raw,seen,depth,initialized,reachable,plain_read;
 } JbrCompileNode;
 typedef struct {
     JbrCompileNode nodes[JBR_MAX_NODES];
@@ -120,7 +120,11 @@ static inline unsigned jbr_compile(const unsigned char *code,unsigned size,
             else if(raw==0x84){kind=JBR_INC;a=d=code[pc0+1];if(a<1||a>3||!(t.initialized&(1u<<a)))goto done;imm=(int8_t)code[pc0+2];}
             else if(raw==0xb2||raw==0xb3||raw==0xb8||raw==0xb6){
                 int typ=cp(ctx,raw,jbr_u16(code+pc0+1));kind=JBR_EFFECT;imm=raw;len=3;
-                if(raw==0xb2){if(typ!=JBR_CP_INT&&typ!=JBR_CP_REF)goto done;d=jbr_push(&t,typ==JBR_CP_REF);}
+                if(raw==0xb2){
+                    if(typ!=JBR_CP_INT&&typ!=JBR_CP_REF&&typ!=JBR_CP_PLAIN_INT)goto done;
+                    d=jbr_push(&t,typ==JBR_CP_REF);
+                    v->plain_read=typ==JBR_CP_PLAIN_INT;
+                }
                 else if(raw==0xb3){if(typ!=JBR_CP_INT)goto done;a=jbr_pop(&t,0);}
                 else if(raw==0xb8){if(typ!=JBR_CP_INT2)goto done;b=jbr_pop(&t,0);a=jbr_pop(&t,0);d=jbr_push(&t,0);}
                 else {if(typ!=JBR_CP_DRAW)goto done;for(unsigned j=0;j<8;j++)if(jbr_pop(&t,0)<0)goto done;
@@ -166,7 +170,11 @@ static inline unsigned jbr_compile(const unsigned char *code,unsigned size,
         for(unsigned i=0;i<count;i++) {
             JarBoxResidualOp *o=&n[i].op;
             uint32_t live=(o->next==JBR_END?0:n[o->next].live)|(o->alt==JBR_END?0:n[o->alt].live);
-            if(o->kind!=JBR_EFFECT&&!o->checkpoint&&n[i].defs&&!(n[i].defs&live)){jbr_empty(n+i);altered=1;}
+            // Only an already linked, initialized, nonvolatile primitive read
+            // may cease to be a root. A live read still uses the original handler.
+            if((o->kind!=JBR_EFFECT||n[i].plain_read)&&!o->checkpoint&&n[i].defs&&!(n[i].defs&live)){
+                jbr_empty(n+i);n[i].plain_read=0;altered=1;
+            }
         }
         for(unsigned i=0;i<count;i++) {
             JarBoxResidualOp *o=&n[i].op;

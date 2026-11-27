@@ -42,7 +42,7 @@ def disassemble(jar):
     return [(int(m[1]),m[2],m[3]) for line in body.splitlines() if (m:=re.match(r'^\s+(\d+):\s+(\w+)\s*(.*)$',line))]
 
 
-def lower(ins, draw_effects=False):
+def lower(ins, draw_effects=False, plain_reads=()):
     """Typed stack-to-slot CFG. Only accepted observed operations; fail closed."""
     todo=deque([(ins[0][0],())]);seen={};ops={};fields=set();writes=[];pcs=[i[0] for i in ins]
     table={pc:(op,arg,pcs[i+1] if i+1<len(pcs) else None) for i,(pc,op,arg) in enumerate(ins)}
@@ -80,7 +80,9 @@ def lower(ins, draw_effects=False):
                 code=push(kind,name)
                 slot=('s' if kind=='I' else 'r')+str(len(stack)-1)
                 code+=f'Trace.read({slot},"{name}");'
-                effect=True # preserve every read, including linkage/init/volatile effects
+                # Default: every read is a root. The optional fixture oracle
+                # names only explicitly warmed, plain primitive fields.
+                effect=kind!='I' or (name,t) not in plain_reads
             else:
                 if t!='I' or name.split('.')[0]!=OWNER or name.split('.')[1] not in WRITE_FIELDS:raise ValueError('unexpected write')
                 writes.append((pc,name));v=pop('I');code=f'Trace.write({v},"{name.split(".")[1]}");{name}={v};';effect=True

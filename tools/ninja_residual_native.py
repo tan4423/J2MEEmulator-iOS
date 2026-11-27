@@ -41,7 +41,7 @@ def slot(v):
     return (16 if v[0]=='r' else 4)+int(v[1:])
 
 
-def emit(ins,entry,plan,resume=False):
+def emit(ins,entry,plan,resume=False,resolved_reads=False):
     """One node per retained IR operation. Effects delegate at original PC."""
     table={p:(o,a) for p,o,a in ins}
     order=[entry]+sorted(set(plan)-{entry});index={p:i for i,p in enumerate(order)}
@@ -56,7 +56,7 @@ def emit(ins,entry,plan,resume=False):
         if not node.code:
             if node.effect or node.branch or len(node.successors)!=1:raise ValueError('empty effect')
             kind='JBR_NOP'
-        elif node.effect:
+        elif node.effect or op=='getstatic':
             if op not in ('getstatic','putstatic','caload','invokestatic','invokevirtual','idiv','irem','return'):raise ValueError('effect op')
             kind='JBR_EFFECT';length=3 if op in CP_OPS else 1
             imm=OP['return_' if op=='return' else op]
@@ -76,15 +76,22 @@ def emit(ins,entry,plan,resume=False):
     return ('/* Generated host fixture only; no pointer or mutable VM state. */\n'
             f'static const int jbr_draw_effects = {int(any(o.effect and table[p][0]=="invokevirtual" for p,o in plan.items()))};\n'+
             f'static const int jbr_resume = {int(resume)};\n'+
+            f'static const int jbr_resolved_reads = {int(resolved_reads)};\n'+
             'static const unsigned char jbr_expected_code[] = {\n'+
             '\n'.join('    '+','.join(str(x) for x in code[i:i+24])+',' for i in range(0,len(code),24))+
             '\n};\nstatic const JarBoxResidualOp jbr_plan[] = {\n'+'\n'.join(rows)+'\n};\n')
 
 
 def main():
-    p=argparse.ArgumentParser(description=__doc__);p.add_argument('original',type=Path);p.add_argument('header',type=Path);p.add_argument('--draw-effects',action='store_true');p.add_argument('--resume',action='store_true');a=p.parse_args()
+    p=argparse.ArgumentParser(description=__doc__);p.add_argument('original',type=Path);p.add_argument('header',type=Path);p.add_argument('--draw-effects',action='store_true');p.add_argument('--resume',action='store_true');p.add_argument('--resolved-reads',action='store_true');a=p.parse_args()
     if a.resume and not a.draw_effects:raise ValueError('resume requires draw effects')
-    ins=ir.disassemble(a.original);ops,_,_=ir.lower(ins,draw_effects=a.draw_effects)
+    ins=ir.disassemble(a.original);ops,fields,_=ir.lower(ins,draw_effects=a.draw_effects)
+    if a.resolved_reads:
+        if not a.draw_effects:raise ValueError('resolved reads require draw effects')
+        # Synthetic fixture: warmup takes r3==4, not r3==9. b20 is volatile.
+        # Independent expectation; the C compiler must prove the actual metadata.
+        plain={f for f in fields if f[1] in ('I','B') and f[0] not in ('Class_hac.b20','Class_hxb.s5')}
+        ops,_,_=ir.lower(ins,draw_effects=True,plain_reads=plain)
     checkpoints={pc for pc,op,_ in ins if op=='aload_0'} if a.resume else set()
     # Test oracle: every admitted draw block starts with aload_0 on an
     # empty stack and all three original int locals are initialized.
@@ -93,5 +100,10 @@ def main():
     entry,plan=ir.reduce(ops)
     if not checkpoints<=set(plan):raise ValueError('lost resume checkpoint')
     for pc in checkpoints:plan[pc].uses.difference_update(('l1','l2','l3'))
-    a.header.write_text(emit(ins,entry,plan,a.resume));print('native residual plan:',len(plan),'nodes; checkpoints:',len(checkpoints))
+    if a.resolved_reads:
+        removed={pc for pc,op,arg in ins if op=='getstatic' and pc not in plan}
+        retained={pc for pc,op,arg in ins if op=='getstatic' and ('Class_hac.b20:' in arg or 'Class_hxb.s5:' in arg)}
+        if not removed or not retained or not retained<=set(plan):raise ValueError('vacuous read policy')
+        print('resolved-read fixture: removed',len(removed),'read sites; mandatory',len(retained))
+    a.header.write_text(emit(ins,entry,plan,a.resume,a.resolved_reads));print('native residual plan:',len(plan),'nodes; checkpoints:',len(checkpoints))
 if __name__=='__main__':main()
