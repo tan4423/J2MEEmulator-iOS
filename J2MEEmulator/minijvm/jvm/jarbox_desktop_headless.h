@@ -191,23 +191,33 @@ static int desktop_map_leaf(MethodInfo *m,Runtime *r){
  * synchronized super wrapper, never caches a receiver/element, and never
  * synthesizes an exception. Leave the ordinary areturn handler in charge. */
 extern int jarbox_lab_vector_enabled(void);
+extern int jarbox_lab_vector_fixture(void);
+extern void jarbox_lab_vector_probe(unsigned reason);
 static int desktop_vector_body(Runtime *r,StackEntry *sp){
     MethodInfo *m=r->method;CodeAttribute *ca=m->converted_code;JClass *cl=m->_this_class;
     StackEntry *l=r->localvar;RuntimeStack *s=r->stack;
-    if(!jarbox_lab_vector_enabled()||r->jvm->jdwp_enable||
-       r->thrd_info->is_stop||r->thrd_info->suspend_count||m->breakpoint||
-       !m->is_sync||m->is_static||m->is_native||m->para_slots!=2||m->return_slots!=1||
-       ca->code_length!=49||ca->max_locals!=2||ca->max_stack!=4||
-       ca->exception_table_length||!ca->bytecode_for_jit||
-       cl->jloader||cl->status!=CLASS_STATUS_CLINITED||
+    if(!jarbox_lab_vector_enabled()||
        !jbr_eq(cl->name,"java/util/Vector")||!jbr_eq(m->name,"elementAt")||
-       !jbr_eq(m->descriptor,"(I)Ljava/lang/Object;")||
-       !l||sp!=l+2||s->store+s->max_size-sp<4)return 0;
+       !jbr_eq(m->descriptor,"(I)Ljava/lang/Object;"))return 0;
+    jarbox_lab_vector_probe(0);
+    if(r->jvm->jdwp_enable||r->thrd_info->is_stop||r->thrd_info->suspend_count||m->breakpoint){
+        jarbox_lab_vector_probe(1);return 0;
+    }
+    if(!m->is_sync||m->is_static||m->is_native||m->para_slots!=2||m->return_slots!=1){
+        jarbox_lab_vector_probe(2);return 0;
+    }
+    if(ca->code_length!=49||ca->max_locals!=2||ca->max_stack!=4||
+       ca->exception_table_length||!ca->bytecode_for_jit){
+        if(jarbox_lab_vector_fixture())fprintf(stderr,"VECTOR shape len=%d locals=%d stack=%d handlers=%d\n",ca->code_length,ca->max_locals,ca->max_stack,ca->exception_table_length);
+        jarbox_lab_vector_probe(3);return 0;
+    }
+    if(cl->jloader||cl->status!=CLASS_STATUS_CLINITED){jarbox_lab_vector_probe(4);return 0;}
+    if(!l||sp!=l+2||s->store+s->max_size-sp<4){jarbox_lab_vector_probe(5);return 0;}
     Instance *v=l[0].rvalue;
     if(!v||v->mb.type!=MEM_TYPE_INS||!v->mb.clazz||!v->obj_fields||
        r->lock!=(MemoryBlock *)v||
        (v->mb.clazz!=cl&&(v->mb.clazz->superclass!=cl||
-          !jbr_eq(v->mb.clazz->name,"Class_hjf"))))return 0;
+          !jbr_eq(v->mb.clazz->name,"Class_hjf")))){jarbox_lab_vector_probe(6);return 0;}
     uint64_t layout=__atomic_load_n(&ca->desktop_vector_layout,__ATOMIC_ACQUIRE);
     if(!layout){
         const u8 *c=ca->bytecode_for_jit;
@@ -215,18 +225,18 @@ static int desktop_vector_body(Runtime *r,StackEntry *sp){
         // archive. The exceptional branch is left entirely untouched.
         if(c[0]!=0x1b||c[1]!=0x2a||c[2]!=0xb4||c[5]!=0xa1||
            jbg_u16(c+6)!=37||c[42]!=0x2a||c[43]!=0xb4||
-           c[46]!=0x1b||c[47]!=0x32||c[48]!=0xb0)return 0;
+           c[46]!=0x1b||c[47]!=0x32||c[48]!=0xb0){jarbox_lab_vector_probe(7);return 0;}
         FieldInfo *n=jbg_field_at(m,2,"elementCount","I",4,0);
         FieldInfo *a=jbg_field_at(m,43,"elementData","[Ljava/lang/Object;",sizeof(Instance *),1);
         if(!n||!a||(size_t)n->offset_instance>UINT16_MAX||
-           (size_t)a->offset_instance>UINT16_MAX)return 0;
+           (size_t)a->offset_instance>UINT16_MAX){jarbox_lab_vector_probe(8);return 0;}
         layout=(UINT64_C(1)<<32)|((uint64_t)n->offset_instance<<16)|a->offset_instance;
         __atomic_store_n(&ca->desktop_vector_layout,layout,__ATOMIC_RELEASE);
     }
     unsigned no=(uint16_t)(layout>>16),ao=(uint16_t)layout;
     if(v->mb.clazz->field_instance_len<0||
        (size_t)no+sizeof(s32)>(size_t)v->mb.clazz->field_instance_len||
-       (size_t)ao+sizeof(Instance *)>(size_t)v->mb.clazz->field_instance_len)return 0;
+       (size_t)ao+sizeof(Instance *)>(size_t)v->mb.clazz->field_instance_len){jarbox_lab_vector_probe(9);return 0;}
     s32 index=l[1].ivalue,n;
     memcpy(&n,v->obj_fields+no,sizeof(n));
     // A negative index also reaches aaload in the original implementation;
@@ -244,6 +254,7 @@ static int desktop_vector_body(Runtime *r,StackEntry *sp){
     sp[1].rvalue=v;sp[1].ivalue=index;
     s->sp=sp+1;
     r->pc=ca->code+48;
+    jarbox_lab_vector_probe(10);
     jarbox_lab_deep_note(16,1);
     return 1;
 }

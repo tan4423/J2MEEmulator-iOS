@@ -58,6 +58,13 @@ void jarbox_lab_liveness_note(unsigned kind){
 }
 static int deep_admitted;
 int jarbox_lab_vector_enabled(void){return deep_admitted&&atomic_load_explicit(&vector_requested,memory_order_relaxed);}
+int jarbox_lab_vector_fixture(void){return map_fixture&&atomic_load_explicit(&vector_requested,memory_order_relaxed);}
+void jarbox_lab_vector_probe(unsigned reason){
+    static _Atomic unsigned seen;
+    if(jarbox_lab_vector_fixture()&&reason<32&&
+       !(atomic_fetch_or_explicit(&seen,1u<<reason,memory_order_relaxed)&(1u<<reason)))
+        fprintf(stderr,"LAB_VECTOR_ADMISSION reason=%u\n",reason);
+}
 int jarbox_lab_sink_level(int64_t context){
     if(!sink_context||(context&&context!=sink_context)||!deep_admitted||atomic_load(&sink_invalid))return 0;
     return atomic_load_explicit(&sink_requested,memory_order_relaxed);
