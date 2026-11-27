@@ -247,6 +247,8 @@ class Lab:
             (self.session/"session.json").write_text(json.dumps({"jar_sha256":digest,"source_commit":(ROOT/"source-commit.txt").read_text().strip(),"width":w,"height":h,"mode":self.mode.get(),"runtime":"MiniJVM Linux x64","note":"Desktop renderer differs from iOS; no Deep Treo enabled"},indent=2))
             self.log=(self.session/"private-runtime.log").open("wb")
             env={k:v for k,v in os.environ.items() if not k.startswith("JARBOX_LAB_")}
+            # The user-authorized research channel stays inside the owner-only session.
+            if self.mode.get()=="graph":env["JARBOX_LAB_CONTROL"]="1"
             args=[ROOT/"jarbox-lab",ROOT/"jars/minijvm_rt.jar",ROOT/"jars/j2me_api.jar",p,save,self.session/"trace.csv",str(w),str(h),self.mode.get()]
             self.proc=subprocess.Popen([str(x) for x in args],cwd=save,stdout=self.log,stderr=subprocess.STDOUT,env=env,pass_fds=(self.save_lock.fileno(),))
             self.start_btn.configure(state="disabled");self.settings_btn.configure(state="disabled")

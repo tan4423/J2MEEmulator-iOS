@@ -12,6 +12,7 @@
 #include <math.h>
 #include <time.h>
 #include <limits.h>
+#include <stddef.h>
 #include "jvm.h"
 #include "jvm_util.h"
 #include "garbage.h"
@@ -436,6 +437,7 @@ static void *run_vm(void *unused){
         sys_properties_set_c(vm,"j2me.screen.width",w);sys_properties_set_c(vm,"j2me.screen.height",h);
         if(getenv("JARBOX_LAB_UI_FIXTURE")&&getenv("JARBOX_LAB_TEST_PORT"))
             sys_properties_set_c(vm,"jarbox.lab.test.port",getenv("JARBOX_LAB_TEST_PORT"));
+        if(fixture_ui&&getenv("JARBOX_LAB_TEST_CONTROL"))sys_properties_set_c(vm,"jarbox.lab.test.control","1");
         (void)jarbox_session_enter_foreground(vm->session);
         pthread_mutex_lock(&vm_lock);active_vm=vm;pthread_mutex_unlock(&vm_lock);
         ArrayList *args=arraylist_create(0);arraylist_push_back(args,game_path);
@@ -455,6 +457,7 @@ static void enqueue(Event e){LOCK;if(wr-rd>=MAX_EVENTS){event_overflow++;unsuppo
 static int keycode(SDL_Keycode k){
     switch(k){case SDLK_UP:return -1;case SDLK_DOWN:return -2;case SDLK_LEFT:return -3;case SDLK_RIGHT:return -4;case SDLK_RETURN:return -5;case SDLK_F1:return -6;case SDLK_F2:return -7;case SDLK_ASTERISK:return 42;case SDLK_HASH:return 35;default:return k>=SDLK_0&&k<=SDLK_9?k:0;}
 }
+#include "lab_control.h"
 static void sample(void){
     pthread_mutex_lock(&vm_lock);
     if(active_vm)sample_vm_gc(active_vm);
@@ -506,8 +509,9 @@ int main(int argc,char**argv){
     if(!tex){fprintf(stderr,"%s\n",SDL_GetError());return 2;}
     SDL_RenderSetLogicalSize(ren,width,height);
     smoke_install_crash_handler();pthread_t th;
-    sample();if(pthread_create(&th,NULL,run_vm,NULL))return 2;
-    uint64_t last=ns(CLOCK_MONOTONIC),last_graph=last;
+    ctl_open();
+    sample();if(pthread_create(&th,NULL,run_vm,NULL)){ctl_close();return 2;}
+    uint64_t last=ns(CLOCK_MONOTONIC),last_graph=last,last_control=last;
     int pointer_down=0;int pressed[512]={0};
     while(!atomic_load(&finished)){
         SDL_Event e;
@@ -540,13 +544,18 @@ int main(int argc,char**argv){
                 else if(e.type==SDL_MOUSEBUTTONUP&&pointer_down){pointer_down=0;enqueue((Event){2,x,y,0});}
             }else if(e.type==SDL_MOUSEMOTION&&pointer_down)enqueue((Event){1,e.motion.x,e.motion.y,0});
         }
+        uint64_t control_now=ns(CLOCK_MONOTONIC);
+        if(ctl_fd>=0&&control_now-last_control>=100000000ull){
+            int physical=pointer_down;for(int i=0;i<512&&!physical;i++)physical=pressed[i]!=0;
+            ctl_poll(physical);last_control=control_now;
+        }
         LOCK;int draw=dirty;if(draw){SDL_UpdateTexture(tex,NULL,frame,width*4);dirty=0;}UNLOCK;
         if(draw){SDL_RenderClear(ren);SDL_RenderCopy(ren,tex,NULL,NULL);SDL_RenderPresent(ren);}
         uint64_t now=ns(CLOCK_MONOTONIC);if(now-last>=1000000000ull){sample();flush_effects();last=now;}
         if(trace_graph&&now-last_graph>=5000000000ull){if(!write_graph())unsupported("graph export");last_graph=now;}
         SDL_Delay(8);
     }
-    pthread_join(th,NULL);sample();flush_effects();fclose(trace);
+    ctl_close();pthread_join(th,NULL);sample();flush_effects();fclose(trace);
     if(effect_file){fclose(effect_file);fprintf(stderr,"LAB_EFFECTS_LOST=%llu\n",(unsigned long long)effect_lost);}
     if(trace_graph&&!write_graph())unsupported("graph export");
     size_t nl=strlen(trace_path)+32;char *np=malloc(nl);

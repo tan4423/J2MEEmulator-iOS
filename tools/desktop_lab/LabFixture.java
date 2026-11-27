@@ -49,6 +49,10 @@ public final class LabFixture extends MIDlet {
     protected void destroyApp(boolean unconditional) {}
     final class Probe extends Canvas {
         private int s6;
+        private boolean touched;
+        private final boolean control="1".equals(System.getProperty("jarbox.lab.test.control"));
+        protected void pointerPressed(int x,int y){if(control&&x==120&&y==137)touched=true;}
+        protected void pointerReleased(int x,int y){if(control&&touched&&x==120&&y==137){System.out.println("LAB_FIXTURE_BACKGROUND_INPUT_PASS");notifyDestroyed();}}
         protected void paint(Graphics g) {
             s6++;
             if(s6!=1)throw new RuntimeException("fixture state");
@@ -86,7 +90,7 @@ public final class LabFixture extends MIDlet {
             if(rgb[0]!=0xff00aa00)throw new RuntimeException("rounded fill center");
             System.out.println("LAB_FIXTURE_SHAPES_PASS");
             System.out.println("LAB_FIXTURE_PIXEL_PASS");
-            notifyDestroyed();
+            if(!control)notifyDestroyed();
         }
     }
 }

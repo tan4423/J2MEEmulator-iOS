@@ -126,3 +126,16 @@ On orderly exit LAB_LOGIC reports actual plans, spans and operations. These
 counters indicate admission, not CPU savings. The desktop A/B fixture must
 pass arithmetic, TCP/RMS, UI and pixel checks with positive B admission and
 zero A admission. The current live game is not interrupted by this change.
+
+## Background research input
+The graph-mode launcher opts into a private per-session Unix datagram socket
+`control.sock`; CLI users may set JARBOX_LAB_CONTROL=1 in a private session.
+No TCP listener, Windows cursor, foreground focus, shell execution or text
+entry is used. `python3 labctl.py SESSION status|snapshot|stop`,
+`... SESSION tap X Y` (logical Canvas coordinates), and
+`... SESSION key enter|up|down|left|right|f1|f2|f3|0..9` are supported.
+Snapshot writes control-frame.png locally, never in automatic exports;
+it may show private information. Keep it local, inspect before sharing.
+A queued response is not proof that a game action completed. Verify screen
+and state transitions, allowing for login/load delays. Control is separate
+from gameplay timing and is never enabled in default plain CPU baselines.

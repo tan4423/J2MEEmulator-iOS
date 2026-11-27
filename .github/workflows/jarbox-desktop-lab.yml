@@ -35,6 +35,7 @@ jobs:
             ${{ runner.temp }}/lab/build-sha256.txt
             ${{ runner.temp }}/lab/source-commit.txt
             ${{ runner.temp }}/lab/gui.py
+            ${{ runner.temp }}/lab/labctl.py
             ${{ runner.temp }}/lab/lab_inspector.py
             ${{ runner.temp }}/lab/Start-JarBox.cmd
             ${{ runner.temp }}/lab/start-wsl.sh

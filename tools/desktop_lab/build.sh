@@ -35,7 +35,7 @@ gcc "${COMMON[@]}" -rdynamic -no-pie \
   "$RUNNER_TEMP/host-no-jit.c" "$RUNNER_TEMP/lab.o" \
   $(pkg-config --libs sdl2 cairo) -lm -o "$OUT/jarbox-lab"
 (cd "$OUT"; sha256sum jars/*.jar jarbox-lab > build-sha256.txt)
-cp tools/desktop_lab/{gui.py,Start-JarBox.cmd,start-wsl.sh,README.md} "$OUT/"
+cp tools/desktop_lab/{gui.py,labctl.py,Start-JarBox.cmd,start-wsl.sh,README.md} "$OUT/"
 cp tools/desktop_lab/inspect.py "$OUT/lab_inspector.py"
 chmod +x "$OUT/start-wsl.sh"
 git rev-parse HEAD > "$OUT/source-commit.txt"
