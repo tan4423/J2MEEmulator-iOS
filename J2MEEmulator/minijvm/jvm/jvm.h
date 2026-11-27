@@ -2022,6 +2022,10 @@ struct _MiniJVM {
     uint32_t block_ir_bytes; // lifetime logical publication budget, per VM
     uint32_t block_ir_seen;
     uint64_t block_ir_shared_hits, block_ir_plans;
+#if defined(JARBOX_DESKTOP_LAB)
+    int desktop_block_ir_enabled, desktop_block_ir_fixture;
+    uint64_t desktop_block_ir_spans, desktop_block_ir_ops;
+#endif
 #if defined(JARBOX_HOST_BLOCK_IR_TEST)
     int host_block_ir_enabled;
     uint64_t host_block_ir_spans, host_block_ir_ops, host_block_ir_compiles;

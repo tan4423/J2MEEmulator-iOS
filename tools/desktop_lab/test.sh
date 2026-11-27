@@ -41,3 +41,16 @@ assert int(rows[-1]['gc_cycles'])>0 and int(rows[-1]['gc_cpu_ns'])>0
 assert int(rows[-1]['gc_heap_sample_bytes'])>0
 print('DESKTOP_LAB_FIXTURE_PASS')
 PY
+# Exact same arithmetic, TCP, RMS, UI and pixel assertions in A/B.
+# Full-raster both ways; no call graph instrumentation in timing profiles.
+for mode in plain logic; do
+  python3 "$ROOT/tools/desktop_lab/test_transport.py" "$OUT" "$mode" 2>&1 | tee "$OUT/fixture/run-$mode.log"
+  for marker in LOGIC TCP_RMS UI PIXEL SHAPES TALL_ATLAS; do
+    grep -Fx "LAB_FIXTURE_${marker}_PASS" "$OUT/fixture/run-$mode.log"
+  done
+  grep -E 'LAB_EXIT rc=0 failed=0 frames=[1-9][0-9]* input_overflow=0' "$OUT/fixture/run-$mode.log"
+done
+grep -Fx 'LAB_LOGIC mode=0 plans=0 spans=0 ops=0' "$OUT/fixture/run-plain.log"
+grep -E '^LAB_LOGIC mode=1 plans=[1-9][0-9]* spans=[1-9][0-9]* ops=[1-9][0-9]*
+ "$OUT/fixture/run-logic.log"
+echo DESKTOP_LAB_LOGIC_AB_PASS

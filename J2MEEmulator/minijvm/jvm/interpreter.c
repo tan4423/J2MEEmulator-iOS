@@ -197,6 +197,14 @@ static const JbiPlan *jbi_method_plan(Runtime *r,MethodInfo *m,CodeAttribute *ca
 #if defined(JARBOX_HOST_BLOCK_IR_TEST)
     if(!r->jvm->host_block_ir_enabled||
        !utf8_equals_c(m->_this_class->name,"BlockMain"))return NULL;
+#elif defined(JARBOX_DESKTOP_LAB)
+    // Full-render logic-only experiment. The desktop owner verifies the
+    // exact archive before selecting this immutable per-VM profile.
+    const char *name=utf8_cstr(m->_this_class->name);
+    if(!r->jvm->desktop_block_ir_enabled ||
+       (strncmp(name,"Class_",6) &&
+        !(r->jvm->desktop_block_ir_fixture &&
+          (!strcmp(name,"LabFixture")||!strncmp(name,"LabFixture$",11)))))return NULL;
 #elif __JVM_OS_IOS__ && defined(TREO_RESIDUAL_EXPERIMENT) && TREO_RESIDUAL_EXPERIMENT
     // Exact Nick archive AND packaged API/boot identity verified by the
     // existing bridge. No new authorization for render effects.
@@ -3555,6 +3563,12 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
 #if defined(JARBOX_HOST_BLOCK_IR_TEST)
                                 __atomic_fetch_add(&jvm->host_block_ir_spans,1,__ATOMIC_RELAXED);
                                 __atomic_fetch_add(&jvm->host_block_ir_ops,span->count,__ATOMIC_RELAXED);
+#endif
+#if defined(JARBOX_DESKTOP_LAB)
+                                // Per-thread frequency is high: count spans only in the
+                                // explicitly selected logic profile, never baseline.
+                                __atomic_fetch_add(&jvm->desktop_block_ir_spans,1,__ATOMIC_RELAXED);
+                                __atomic_fetch_add(&jvm->desktop_block_ir_ops,span->count,__ATOMIC_RELAXED);
 #endif
                                 continue;
                             }

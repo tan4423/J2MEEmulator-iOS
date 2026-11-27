@@ -111,3 +111,18 @@ period and 70% heap trigger are deliberately fixed and shown read-only. They
 are not exposed as tuning controls because changing them could alter gameplay
 timing and invalidate comparisons. Credentials and raw login data are never
 written into settings or exported research ZIPs.
+
+## Logic-only experimental profile (developer CLI)
+
+The desktop executable accepts a third mode, `logic`, alongside `plain`
+and `graph`. It uses the existing shared MiniJVM Block IR engine for pure
+arithmetic/local spans, with original effect/branch handlers intact. Full
+paint, input, network, GC and RMS paths remain enabled. It requires exact Nick
+t5 SHA-256, except the isolated dummy-display test fixture. It is not headless,
+not an iPhone performance claim, and not selectable in the normal GUI yet.
+Use separate save roots for tests; do not launch a second live session with
+the same account. Compare plain versus logic with graph disabled in both.
+On orderly exit LAB_LOGIC reports actual plans, spans and operations. These
+counters indicate admission, not CPU savings. The desktop A/B fixture must
+pass arithmetic, TCP/RMS, UI and pixel checks with positive B admission and
+zero A admission. The current live game is not interrupted by this change.

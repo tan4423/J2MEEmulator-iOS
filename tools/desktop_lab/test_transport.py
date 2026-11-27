@@ -1,6 +1,11 @@
 """Run the actual MiniJVM MIDlet against a private loopback TCP peer."""
 import os, pathlib, socket, subprocess, sys, threading
 root=pathlib.Path(sys.argv[1]).resolve()
+mode=sys.argv[2] if len(sys.argv)>2 else "graph"
+assert mode in ("graph","plain","logic")
+save=root/"fixture"/("save-"+mode)
+save.mkdir(exist_ok=True)
+trace=root/"fixture"/("trace.csv" if mode=="graph" else "trace-"+mode+".csv")
 errors=[]
 def recv_exact(conn,n):
     result=b""
@@ -23,7 +28,7 @@ with socket.socket() as listener:
     worker=threading.Thread(target=serve,daemon=True)
     worker.start()
     env=dict(os.environ,SDL_VIDEODRIVER="dummy",JARBOX_LAB_UI_FIXTURE="1",JARBOX_LAB_TEST_PORT=str(listener.getsockname()[1]))
-    args=[root/"jarbox-lab",root/"jars/minijvm_rt.jar",root/"jars/j2me_api.jar",root/"fixture/fixture.jar",root/"fixture/save",root/"fixture/trace.csv","240","320","graph"]
+    args=[root/"jarbox-lab",root/"jars/minijvm_rt.jar",root/"jars/j2me_api.jar",root/"fixture/fixture.jar",save,trace,"240","320",mode]
     result=subprocess.run([str(x) for x in args],env=env,timeout=90)
     worker.join(3)
     assert result.returncode==0 and not worker.is_alive() and not errors,(result.returncode,errors)

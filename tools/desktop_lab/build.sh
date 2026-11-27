@@ -24,7 +24,7 @@ CORE="$ROOT/J2MEEmulator/minijvm"
 # Same MiniJVM host build, using the repository's real SSL transport.
 # JIT remains disabled. Compile only the existing host JIT/crash shims.
 # Desktop dependency include paths must not leak into core translation units.
-COMMON=(-g -O2 -fno-pie -Dsignal=smoke_signal -DJARBOX_DESKTOP_LAB=1 -w -std=gnu11 -pthread
+COMMON=(-g -O2 -fno-pie -Dsignal=smoke_signal -DJARBOX_DESKTOP_LAB=1 -DJARBOX_BLOCK_IR_EXPERIMENT=1 -w -std=gnu11 -pthread
   -I"$CORE/jvm" -I"$CORE/utils" -I"$CORE/utils/https" -I"$CORE/utils/https/mbedtls/include")
 gcc "${COMMON[@]}" $(pkg-config --cflags sdl2 cairo) -c tools/desktop_lab/lab.c -o "$RUNNER_TEMP/lab.o"
 # Keep the identical tested JIT and signal shims, remove only the six TLS stubs.

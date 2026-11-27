@@ -16,6 +16,7 @@
 #include "jvm_util.h"
 #include "garbage.h"
 #include "arraylist.h"
+#include "mbedtls/sha256.h"
 
 enum { MAX_SURF=8192, MAX_DIM=8192, MAX_SCREEN=2048, MAX_EVENTS=256, MAX_EDGES=8192 };
 typedef struct { cairo_surface_t *s; cairo_t *c; int image, mutable; uint64_t id; } Surface;
@@ -40,7 +41,8 @@ static uint64_t effect_seq,effect_exported,effect_lost;
 static _Atomic unsigned next_worker;
 static _Thread_local unsigned worker_id;
 static FILE *effect_file;
-static int fixture_ui;
+static int fixture_ui, logic_mode;
+static _Atomic uint64_t logic_plans, logic_spans, logic_ops;
 static char *rt_path,*api_path,*game_path,*save_path;
 static int width,height;
 static int rc=1;
@@ -385,8 +387,25 @@ static java_native_method methods[]={
  N(formShow,"()V",formShow),N(showCanvas,"()V",showCanvas),N(netTraceStage,"(I)V",netTraceStage),
  N(vibrate,"(I)V",noop)
 };
+/* Refuse unknown archives rather than applying an experimental profile.
+ * The fixture exception is already constrained to SDL dummy and loopback. */
+static int nick_archive(const char *path){
+    static const unsigned char expected[32]={
+        0x11,0xb1,0xd4,0xc1,0x1f,0x90,0x82,0xb9,0xd0,0x7b,0xc7,0xbd,0x92,0xa9,0xad,0x3a,
+        0xba,0xd4,0x07,0x64,0x85,0x3e,0x23,0x68,0x6c,0xc8,0x66,0x86,0x86,0x9c,0x96,0x6c};
+    FILE *f=fopen(path,"rb");if(!f)return 0;
+    mbedtls_sha256_context ctx;unsigned char buf[16384],digest[32];size_t n;
+    mbedtls_sha256_init(&ctx);mbedtls_sha256_starts(&ctx,0);
+    while((n=fread(buf,1,sizeof buf,f)))mbedtls_sha256_update(&ctx,buf,n);
+    int ok=!ferror(f);fclose(f);
+    mbedtls_sha256_finish(&ctx,digest);mbedtls_sha256_free(&ctx);
+    return ok&&!memcmp(expected,digest,sizeof digest);
+}
 static void sample_vm_gc(MiniJVM *vm){
     if(!vm)return;
+    atomic_store(&logic_plans,__atomic_load_n(&vm->block_ir_plans,__ATOMIC_RELAXED));
+    atomic_store(&logic_spans,__atomic_load_n(&vm->desktop_block_ir_spans,__ATOMIC_RELAXED));
+    atomic_store(&logic_ops,__atomic_load_n(&vm->desktop_block_ir_ops,__ATOMIC_RELAXED));
     atomic_store(&gc_cycles,__atomic_load_n(&vm->session->treo_state.gc_worker_cycles,__ATOMIC_RELAXED));
     atomic_store(&gc_cpu,__atomic_load_n(&vm->session->treo_state.gc_worker_cpu_ns,__ATOMIC_RELAXED));
     atomic_store(&gc_aborts,__atomic_load_n(&vm->session->treo_state.gc_worker_aborts,__ATOMIC_RELAXED));
@@ -400,6 +419,8 @@ static void *run_vm(void *unused){
         jarbox_session_release(vm->session);jvm_free(vm);goto done;
     }
     uint64_t key=jarbox_native_heap_key_for_vm(vm);
+    vm->desktop_block_ir_enabled=logic_mode;
+    vm->desktop_block_ir_fixture=fixture_ui;
     vm->jdwp_enable=0;vm->jdwp_suspend_on_start=0;vm->max_heap_size=128*1024*1024;
     vm->garbage_collect_period_ms=500;vm->heap_overload_percent=70;
     size_t len=strlen(api_path)+strlen(game_path)+2;char *cp=malloc(len);
@@ -445,7 +466,7 @@ static void sample(void){
         (unsigned long long)atomic_load(&frames),(unsigned long long)atomic_load(&draw_calls),
         (unsigned long long)atomic_load(&image_allocs),(unsigned long long)atomic_load(&events_delivered),
         (unsigned long long)atomic_load(&gc_cycles),(unsigned long long)atomic_load(&gc_cpu),
-        bytes,(unsigned long long)atomic_load(&gc_aborts),(unsigned long long)atomic_load(&gc_heap_sample),trace_graph?"graph":"plain");fflush(trace);
+        bytes,(unsigned long long)atomic_load(&gc_aborts),(unsigned long long)atomic_load(&gc_heap_sample),logic_mode?"logic":trace_graph?"graph":"plain");fflush(trace);
 }
 static int write_graph(void){
     size_t len=strlen(trace_path)+32;char *p=malloc(len),*tmp=malloc(len);
@@ -460,13 +481,17 @@ static int write_graph(void){
 }
 extern void smoke_install_crash_handler(void);
 int main(int argc,char**argv){
-    if(argc!=9){fprintf(stderr,"usage: lab RT.jar API.jar GAME.jar SAVE_DIR TRACE.csv WIDTH HEIGHT graph|plain\n");return 2;}
+    if(argc!=9){fprintf(stderr,"usage: lab RT.jar API.jar GAME.jar SAVE_DIR TRACE.csv WIDTH HEIGHT graph|plain|logic\n");return 2;}
     rt_path=argv[1];api_path=argv[2];game_path=argv[3];save_path=argv[4];
     width=atoi(argv[6]);height=atoi(argv[7]);trace_graph=!strcmp(argv[8],"graph");
-    if(!valid_size(width,height)||width>MAX_SCREEN||height>MAX_SCREEN||(!trace_graph&&strcmp(argv[8],"plain")))return 2;
-    trace_path=argv[5];trace=fopen(trace_path,"w");if(!trace)return 2;
+    logic_mode=!strcmp(argv[8],"logic");
+    if(!valid_size(width,height)||width>MAX_SCREEN||height>MAX_SCREEN||(!trace_graph&&!logic_mode&&strcmp(argv[8],"plain")))return 2;
     fixture_ui=getenv("JARBOX_LAB_UI_FIXTURE")&&strcmp(getenv("JARBOX_LAB_UI_FIXTURE"),"1")==0;
     if(fixture_ui&&(!getenv("SDL_VIDEODRIVER")||strcmp(getenv("SDL_VIDEODRIVER"),"dummy")||!strstr(game_path,"/fixture.jar")))return 2;
+    if(logic_mode&&!fixture_ui&&!nick_archive(game_path)){
+        fprintf(stderr,"LAB_LOGIC_REFUSED unknown archive\n");return 2;
+    }
+    trace_path=argv[5];trace=fopen(trace_path,"w");if(!trace)return 2;
     if(trace_graph){
         size_t n=strlen(trace_path)+24;char*p=malloc(n);if(!p)return 2;
         snprintf(p,n,"%s.effects.csv",trace_path);effect_file=fopen(p,"w");free(p);if(!effect_file)return 2;
@@ -528,6 +553,9 @@ int main(int argc,char**argv){
     if(np){snprintf(np,nl,"%s.network.csv",trace_path);FILE *nf=fopen(np,"w");if(nf){
         fputs("stage,count\n",nf);for(int i=0;i<32;i++)fprintf(nf,"%d,%llu\n",i,(unsigned long long)atomic_load(&net_stages[i]));fclose(nf);
     }free(np);}
+    fprintf(stderr,"LAB_LOGIC mode=%d plans=%llu spans=%llu ops=%llu\n",logic_mode,
+        (unsigned long long)atomic_load(&logic_plans),(unsigned long long)atomic_load(&logic_spans),
+        (unsigned long long)atomic_load(&logic_ops));
     fprintf(stderr,"LAB_EXIT rc=%d failed=%d frames=%llu input_overflow=%llu\n",rc,atomic_load(&failed),(unsigned long long)atomic_load(&frames),(unsigned long long)event_overflow);
     for(unsigned i=1;i<MAX_SURF;i++)if(surfaces[i].s)drop((s64)surfaces[i].id);
     SDL_DestroyTexture(tex);SDL_DestroyRenderer(ren);SDL_DestroyWindow(win);SDL_Quit();free(frame);

@@ -2,7 +2,18 @@ import javax.microedition.midlet.MIDlet;
 import javax.microedition.lcdui.*;
 
 public final class LabFixture extends MIDlet {
+    private static int logicProbe(int seed) {
+        int v=seed;
+        for(int i=0;i<4096;i++) {
+            v=v*33+i;
+            v^=v>>>7;
+            v+=(i<<5)^0x55aa55aa;
+        }
+        return v;
+    }
     protected void startApp() {
+        if(logicProbe(0x12345678)!=-477686842)throw new RuntimeException("logic oracle mismatch");
+        System.out.println("LAB_FIXTURE_LOGIC_PASS");
         try {
             String port=System.getProperty("jarbox.lab.test.port");
             if(port==null)throw new RuntimeException("test port absent");
