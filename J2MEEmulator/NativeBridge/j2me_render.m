@@ -30,6 +30,9 @@
 #include "j2me_input.h"
 #include "jvm.h"
 #include "jvm_util.h"
+#if defined(TREO_NINJA_CORE_EXPERIMENT) && TREO_NINJA_CORE_EXPERIMENT
+#include "jarbox_residual_binding.h"
+#endif
 #include "garbage.h"
 #include <stdio.h>
 #include <stdatomic.h>
@@ -831,6 +834,12 @@ uint64_t treo_afk_main_wakes(void) { return treo_main_wake_count; }
  * Never let a TLS headless Canvas handle carry over to a different VM. */
 static _Thread_local s64 g_afk_canvas;
 static _Thread_local uint64_t g_afk_canvas_owner_key;
+#if defined(TREO_NINJA_CORE_EXPERIMENT) && TREO_NINJA_CORE_EXPERIMENT
+static _Thread_local uint64_t g_afk_scope_serial;
+static inline void treo_residual_scope_advance(void) {
+    if(++g_afk_scope_serial==0)++g_afk_scope_serial;
+}
+#endif
 static _Thread_local uint64_t g_afk_elided_local, g_afk_thread_id;
 static _Atomic uint64_t g_afk_elided, g_afk_paint_tid, g_afk_gc_tid;
 static atomic_bool treo_jar_auditing;
@@ -864,6 +873,9 @@ static inline uint64_t treo_canvas_phase_owner(Runtime *r) {
 }
 #endif
 static s32 n_beginAfkPaint(Runtime *runtime, JClass *clazz) {
+#if defined(TREO_NINJA_CORE_EXPERIMENT) && TREO_NINJA_CORE_EXPERIMENT
+    treo_residual_scope_advance();
+#endif
     const uint64_t key = jarbox_native_heap_key_for_runtime(runtime);
 #if defined(TREO_CANVAS_PHASE_DIAG) && TREO_CANVAS_PHASE_DIAG
     uint64_t phaseOwner=key?treo_canvas_phase_owner(runtime):0;
@@ -904,6 +916,9 @@ static s32 n_beginAfkPaint(Runtime *runtime, JClass *clazz) {
     return RUNTIME_STATUS_NORMAL;
 }
 static s32 n_endAfkPaint(Runtime *runtime, JClass *clazz) {
+#if defined(TREO_NINJA_CORE_EXPERIMENT) && TREO_NINJA_CORE_EXPERIMENT
+    treo_residual_scope_advance();
+#endif
 #if defined(TREO_BINARY_ABA) && TREO_BINARY_ABA
     jarbox_binary_trial_end(&binary_trial_scope);
 #endif
@@ -5056,6 +5071,40 @@ static int treo_instance_offset(JClass *clazz, const char *name, const char *typ
     }
     return -1;
 }
+
+#if defined(TREO_NINJA_CORE_EXPERIMENT) && TREO_NINJA_CORE_EXPERIMENT
+// Read-only real renderer preflight. No residual is admitted by this
+// function alone; exact code/API certification is an additional gate.
+// Do not retain the object identities beyond the invoking rooted frame.
+int treo_residual_scope_capture(Runtime *runtime,Instance *wrapper,JarBoxResidualScope *out) {
+    if(!out)return 0;
+    memset(out,0,sizeof(*out));
+    if(!runtime||!runtime->jvm||!runtime->thrd_info||!runtime->jvm->session||
+       runtime->jvm->jdwp_enable||runtime->thrd_info->is_stop||
+       runtime->thrd_info->suspend_count||!runtime->thrd_info->jarbox_headless_scope)return 0;
+    JarBoxSession *session=runtime->jvm->session;
+    JarBoxTreoState *state=&session->treo_state;
+    if(jarbox_session_phase(session)!=JARBOX_SESSION_PARKED||
+       __atomic_load_n(&state->ninja_core.profile,__ATOMIC_ACQUIRE)!=2||
+       !jarbox_ninja_core_active(&state->ninja_core,treo_runtime_mode(runtime)))return 0;
+    const uint64_t key=jarbox_native_heap_key_for_runtime(runtime);
+    if(!key||key!=g_afk_canvas_owner_key||!g_afk_canvas||!g_afk_scope_serial)return 0;
+    JarBoxResidualBinding b;
+    if(!jbr_nick_binding(runtime,wrapper,&b)||b.context!=g_afk_canvas)return 0;
+    RenderContext *rc=rc_acquire(b.context,key);
+    int screen=rc&&rc->ownsPixels&&rc->heap_key==key;
+    rc_release(rc);
+    if(!screen)return 0;
+    // Recheck control-plane eligibility after the registry lease. The
+    // current paint's TLS scope remains valid until paired paint end;
+    // a mode change is grounds for the next checkpoint to resume.
+    if(jarbox_session_phase(session)!=JARBOX_SESSION_PARKED||
+       !jarbox_ninja_core_active(&state->ninja_core,treo_runtime_mode(runtime)))return 0;
+    *out=(JarBoxResidualScope){key,g_afk_scope_serial,b.context,
+        (uintptr_t)b.wrapper,(uintptr_t)b.canvas,(uintptr_t)b.graphics};
+    return 1;
+}
+#endif
 
 int treo_afk_elide_graphics(Runtime *runtime, JClass *clazz, Instance *receiver, int core) {
     const uint64_t caller_key = jarbox_native_heap_key_for_runtime(runtime);
