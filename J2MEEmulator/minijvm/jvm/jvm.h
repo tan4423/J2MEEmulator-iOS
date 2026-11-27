@@ -936,6 +936,7 @@ struct _CodeAttribute {
 #if defined(JARBOX_DESKTOP_LAB)
     unsigned desktop_glyph_kind;
     uint64_t desktop_map_layout; // immutable linked field offsets, no heap pointers
+    const unsigned char *desktop_verified_digest; // static expected digest, not a heap pointer
 #endif
     spinlock_t compile_lock;
     struct _Jit {
@@ -1169,6 +1170,11 @@ struct _ClassType {
     FieldPool fieldPool;
     MethodPool methodPool;
     AttributePool attributePool;
+#if defined(JARBOX_DESKTOP_LAB) && JARBOX_DESKTOP_LAB
+    // Loaded class-owned metadata only; freed with its normal pools.
+    FieldInfo *desktop_proof_fields[16];
+    MethodInfo *desktop_proof_methods[16];
+#endif
 
     //for array class
     Pairlist *arr_class_type;//for object array create speedup,left is utf8 index of class, right is arr class

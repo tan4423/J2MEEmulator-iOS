@@ -536,12 +536,17 @@ static const JarBoxResidualOp *jbr_fixture_compile(Runtime *r,MethodInfo *m,Code
     return plan;
 }
 #else // isolated real iOS candidate
-static int jbr_live_code(const CodeAttribute *ca,unsigned length,const unsigned char digest[32]) {
+static int jbr_live_code(CodeAttribute *ca,unsigned length,const unsigned char digest[32]) {
     unsigned char actual[32];
 #if (defined(JARBOX_DESKTOP_LAB) && JARBOX_DESKTOP_LAB)
     if(!ca||!ca->bytecode_for_jit||ca->code_length!=length)return 0;
+    // Callers supply static expected digests. bytecode_for_jit is the
+    // immutable original copy, not the interpreter's quickened code.
+    if(__atomic_load_n(&ca->desktop_verified_digest,__ATOMIC_ACQUIRE)==digest)return 1;
     mbedtls_sha256(ca->bytecode_for_jit,length,actual,0);
-    return !memcmp(actual,digest,32);
+    if(memcmp(actual,digest,32))return 0;
+    __atomic_store_n(&ca->desktop_verified_digest,digest,__ATOMIC_RELEASE);
+    return 1;
 #else
     return ca&&ca->bytecode_for_jit&&ca->code_length==length&&
         CC_SHA256(ca->bytecode_for_jit,(CC_LONG)length,actual)&&!memcmp(actual,digest,32);
@@ -551,6 +556,16 @@ static MethodInfo *jbr_live_declared(JClass *c,const char *name,const char *desc
     if(!c||c->status!=CLASS_STATUS_CLINITED||!c->methodPool.method||
        c->methodPool.method_used<0||c->methodPool.method_used>4096)return NULL;
     MethodInfo *found=NULL;
+#if defined(JARBOX_DESKTOP_LAB) && JARBOX_DESKTOP_LAB
+    unsigned slot=jbr_proof_slot(name,desc);
+    MethodInfo *cached=__atomic_load_n(&c->desktop_proof_methods[slot],__ATOMIC_ACQUIRE);
+    if(cached&&jbr_eq(cached->name,name)&&jbr_eq(cached->descriptor,desc)){
+        if(cached->_this_class!=c||cached->is_static||cached->is_native||cached->is_sync||
+           !cached->converted_code||cached->converted_code->exception_table_length||
+           !(cached->access_flags&ACC_PUBLIC))return NULL;
+        return cached;
+    }
+#endif
     for(int i=0;i<c->methodPool.method_used;i++){
         MethodInfo *m=c->methodPool.method+i;
         if(!jbr_eq(m->name,name)||!jbr_eq(m->descriptor,desc))continue;
@@ -559,6 +574,9 @@ static MethodInfo *jbr_live_declared(JClass *c,const char *name,const char *desc
            !(m->access_flags&ACC_PUBLIC))return NULL;
         found=m;
     }
+#if defined(JARBOX_DESKTOP_LAB) && JARBOX_DESKTOP_LAB
+    if(found)__atomic_store_n(&c->desktop_proof_methods[slot],found,__ATOMIC_RELEASE);
+#endif
     return found;
 }
 static inline MethodInfo *jarbox_virtual_lookup(MiniJVM *,ConstantMethodRef *,Instance *);
@@ -3387,7 +3405,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                 unsigned glyph_kind=render_eligible?jbg_live_kind(method,ca):0;
 #endif
 #if defined(JARBOX_DESKTOP_LAB) && JARBOX_DESKTOP_LAB
-                unsigned desktop_glyph=jarbox_lab_sink_level(0)>=3?jbg_live_kind(method,ca):0;
+                unsigned desktop_glyph=(ca->code_length==154||ca->code_length==254)&&jarbox_lab_sink_level(0)>=3?jbg_live_kind(method,ca):0;
 #endif
                 do {
 #if defined(JARBOX_DESKTOP_LAB) && JARBOX_DESKTOP_LAB

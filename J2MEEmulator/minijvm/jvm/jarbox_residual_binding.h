@@ -53,6 +53,50 @@ static inline int jbr_bframe(Runtime *r,Runtime *root,unsigned n) {
     return lo&&hi>=lo&&at>=lo&&at<=hi&&n*sizeof(StackEntry)<=hi-at&&
         (at-lo)%sizeof(StackEntry)==0;
 }
+#if defined(JARBOX_DESKTOP_LAB) && JARBOX_DESKTOP_LAB
+/* Direct-mapped owner-local metadata. Collisions only cause a scan.
+ * No cached mutable object, value, or negative answer. */
+static inline unsigned jbr_proof_slot(const char *name,const char *desc){
+    unsigned h=(unsigned char)name[0]*31u+(unsigned char)desc[0];
+    if(name[0])h=h*31u+(unsigned char)name[1];
+    if(desc[0])h=h*31u+(unsigned char)desc[1];
+    return h&15u;
+}
+static inline FieldInfo *jbr_proof_field(JClass *cl,const char *name,const char *desc){
+    unsigned slot=jbr_proof_slot(name,desc);
+    FieldInfo *f=__atomic_load_n(&cl->desktop_proof_fields[slot],__ATOMIC_ACQUIRE);
+    if(f&&f->_this_class==cl&&f->name&&f->descriptor&&utf8_equals_c(f->name,name)&&utf8_equals_c(f->descriptor,desc))return f;
+    f=NULL;
+    for(int i=0;i<cl->fieldPool.field_used;i++){
+        FieldInfo *v=cl->fieldPool.field+i;
+        if(!v->name||!v->descriptor||!utf8_equals_c(v->name,name)||!utf8_equals_c(v->descriptor,desc))continue;
+        if(f||v->_this_class!=cl)return NULL;
+        f=v;
+    }
+    // Only fully initialized classes publish metadata. Cold classes retry.
+    if(f&&cl->status==CLASS_STATUS_CLINITED)__atomic_store_n(&cl->desktop_proof_fields[slot],f,__ATOMIC_RELEASE);
+    return f;
+}
+static inline const void *jbr_bfield(JClass *decl,Instance *obj,const char *name,const char *desc,
+                                    size_t bytes,int isref,int isstatic) {
+    if(!decl||decl->status<CLASS_STATUS_CLINITED||decl->fieldPool.field_used<0||
+       decl->fieldPool.field_used>4096||!decl->fieldPool.field)return NULL;
+    FieldInfo *f=jbr_proof_field(decl,name,desc);
+    if(!f||f->_this_class!=decl||f->isvolatile||!!f->isrefer!=isref||
+       !!(f->access_flags&8)!=isstatic)return NULL;
+    if(isstatic) {
+        if(!decl->field_static||decl->field_static_len<0||
+           (size_t)f->offset+bytes>(size_t)decl->field_static_len)return NULL;
+        return decl->field_static+f->offset;
+    }
+    if(!obj||obj->mb.type!=MEM_TYPE_INS||!obj->mb.clazz||!obj->obj_fields||
+       (obj->mb.clazz!=decl&&obj->mb.clazz->superclass!=decl)||
+       decl->field_instance_len<0||obj->mb.clazz->field_instance_len<0||
+       (size_t)f->offset_instance+bytes>(size_t)decl->field_instance_len||
+       (size_t)f->offset_instance+bytes>(size_t)obj->mb.clazz->field_instance_len)return NULL;
+    return obj->obj_fields+f->offset_instance;
+}
+#else
 static inline const void *jbr_bfield(JClass *decl,Instance *obj,const char *name,const char *desc,
                                     size_t bytes,int isref,int isstatic) {
     if(!decl||decl->status<CLASS_STATUS_CLINITED||decl->fieldPool.field_used<0||
@@ -78,6 +122,7 @@ static inline const void *jbr_bfield(JClass *decl,Instance *obj,const char *name
     }
     return result;
 }
+#endif
 static inline int jbr_bref(JClass *cl,Instance *obj,const char *name,const char *desc,Instance *expected,int isstatic) {
     const void *p=jbr_bfield(cl,obj,name,desc,sizeof(Instance *),1,isstatic);
     Instance *v=NULL;

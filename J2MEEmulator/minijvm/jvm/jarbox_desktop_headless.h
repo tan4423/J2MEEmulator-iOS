@@ -56,7 +56,7 @@ static int desktop_graphics_leaf_kind(MethodInfo *m){
     return tag==3;
 }
 static int desktop_graphics_leaf(MethodInfo *m,Runtime *r){
-    if(jarbox_lab_sink_level(0)<2||m->return_slots||m->para_slots<4||
+    if(m->return_slots||m->para_slots<4||jarbox_lab_sink_level(0)<2||
        r->jvm->jdwp_enable||r->thrd_info->is_stop||r->thrd_info->suspend_count||
        m->breakpoint||!desktop_graphics_leaf_kind(m)||stack_size(r->stack)<m->para_slots)return 0;
     StackEntry *args=r->stack->sp-m->para_slots;
