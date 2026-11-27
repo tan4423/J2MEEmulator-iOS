@@ -115,10 +115,10 @@ def build(root, archive=None, bootclasspath=None, draw_effects=False, resume=Fal
             # A not-yet-resolved CP read whose result is draw-only, and a
             # volatile read in an otherwise dead argument computation.
             synthetic=synthetic.replace('                a2=x;', '                if(r3==9)g.a(sprite,Class_hxb.s5,24,24,24,0,0,0,0);\n                a2=x;')
-            external='public class Class_hac {public static int r24,v25,y26,b28,e10; public static volatile int b20;}'
+            external='public class Class_hac {public static int r24,v25,y26,b28,e10,coldInit; public static volatile int b20;}'
         (src/'Class_hii.java').write_text(synthetic)
         (src/'Class_hac.java').write_text(external)
-        (src/'Class_hxb.java').write_text('public class Class_hxb {public static int s5;}')
+        (src/'Class_hxb.java').write_text('public class Class_hxb {public static int s5; static {Class_hac.coldInit++; s5=42;}}' if resolved_reads else 'public class Class_hxb {public static int s5;}')
         subprocess.run(['javac','--release','8','-d',str(original),*map(str,src.rglob('*.java'))],check=True)
         ins=ir.disassemble(original)
         data=(original/'Class_hii.class').read_bytes()
@@ -146,13 +146,18 @@ def build(root, archive=None, bootclasspath=None, draw_effects=False, resume=Fal
     (original/'Class_hii.class').write_bytes(data)
     harness=wrapped.harness(HARNESS,fields,resume,skip_draws) if draw_effects else HARNESS
     if resolved_reads:
+        # Do not initialize the cold class from the driver before k1's
+        # first real branch. Preserve the RNG sequence, and record clinit.
+        harness=harness.replace('Class_hxb.s5=next();','next();')
+        harness=harness.replace('Class_hii.d2+":"','Class_hii.d2+":"+Class_hac.coldInit+":"')
+        harness=harness.replace('if(faults==0||changed==0)', 'if(Class_hac.coldInit!=1)throw new IllegalStateException("cold clinit count");\n        if(faults==0||changed==0)')
         harness=harness.replace('        int faults=0,changed=0;', '''        // Natural resolution, one complete ordinary k1 invocation. r3=9
         // stays cold. Do not initialize game classes early in a live VM.
         Class_hii.j1=1;Class_hii.r3=4;Class_hii.d4=24;
         Class_hii.u3=new char[]{1};Class_hii.x3=new int[]{16};
         Class_hac.r24=Class_hac.v25=0;Class_hac.y26=Class_hac.b28=1;
         Class_hii.k1(new Class_hvi(target));
-        if(javax.microedition.lcdui.Graphics.calls!=2)throw new IllegalStateException("warmup coverage");
+        if(javax.microedition.lcdui.Graphics.calls!=2||Class_hac.coldInit!=0)throw new IllegalStateException("warmup coverage");
         int faults=0,changed=0;''')
     (src/'ResidualMain.java').write_text(harness)
     flags=['-source','8','-target','8','-bootclasspath',str(bootclasspath)] if bootclasspath else ['--release','8']
