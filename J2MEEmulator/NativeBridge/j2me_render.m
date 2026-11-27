@@ -5098,8 +5098,14 @@ static int treo_residual_scope_capture_impl(Runtime *runtime,Instance *wrapper,J
     const uint64_t key=jarbox_native_heap_key_for_runtime(runtime);
     if(!key||key!=g_afk_canvas_owner_key||!g_afk_canvas||!g_afk_scope_serial)return 0;
     JarBoxResidualBinding b;
-    if(!(generic?jbr_nick_paint_binding_at(runtime,wrapper,&b,30,5):
-                 jbr_nick_binding(runtime,wrapper,&b))||b.context!=g_afk_canvas)return 0;
+    int bound;
+#if defined(JARBOX_RECONSTRUCT_EXPERIMENT) && JARBOX_RECONSTRUCT_EXPERIMENT
+    if(generic==2)bound=jbr_nick_glyph_binding(runtime,wrapper,&b);
+    else
+#endif
+    bound=generic?jbr_nick_paint_binding_at(runtime,wrapper,&b,30,5):
+                 jbr_nick_binding(runtime,wrapper,&b);
+    if(!bound||b.context!=g_afk_canvas)return 0;
     RenderContext *rc=rc_acquire(b.context,key);
     int screen=rc&&rc->ownsPixels&&rc->heap_key==key;
     rc_release(rc);
@@ -5121,6 +5127,11 @@ int treo_residual_scope_capture(Runtime *runtime,Instance *wrapper,JarBoxResidua
 int treo_render_island_scope_capture(Runtime *runtime,Instance *wrapper,JarBoxResidualScope *out) {
     return treo_residual_scope_capture_impl(runtime,wrapper,out,1);
 }
+#if defined(JARBOX_RECONSTRUCT_EXPERIMENT) && JARBOX_RECONSTRUCT_EXPERIMENT
+int treo_glyph_scope_capture(Runtime *runtime,Instance *wrapper,JarBoxResidualScope *out){
+    return treo_residual_scope_capture_impl(runtime,wrapper,out,2);
+}
+#endif
 #endif
 #if (defined(TREO_RESIDUAL_EXPERIMENT) && TREO_RESIDUAL_EXPERIMENT && __JVM_OS_IOS__)
 // Fast checkpoint guard, no registry lock or repeated ancestry walk. The

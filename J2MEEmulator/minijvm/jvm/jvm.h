@@ -929,6 +929,9 @@ struct _CodeAttribute {
 #if defined(JARBOX_HOST_RENDER_ISLAND_TEST) || (defined(JARBOX_RENDER_ISLAND_EXPERIMENT) && JARBOX_RENDER_ISLAND_EXPERIMENT && __JVM_OS_IOS__)
     void *render_island_plan;
     unsigned render_island_state;
+#if defined(JARBOX_RECONSTRUCT_EXPERIMENT) && JARBOX_RECONSTRUCT_EXPERIMENT
+    unsigned glyph_loop_state; // exact immutable CodeAttribute identity
+#endif
 #endif
     spinlock_t compile_lock;
     struct _Jit {
@@ -2024,10 +2027,17 @@ struct _MiniJVM {
 #if defined(JARBOX_RENDER_ISLAND_EXPERIMENT) && JARBOX_RENDER_ISLAND_EXPERIMENT && __JVM_OS_IOS__
     uint32_t render_island_bytes;
     uint64_t render_island_plans,render_island_skips,render_island_ops,render_wrapper_skips;
+#if defined(JARBOX_RECONSTRUCT_EXPERIMENT) && JARBOX_RECONSTRUCT_EXPERIMENT
+    uint64_t glyph_loops,glyph_chars,glyph_draws;
+#endif
 #endif
 #if defined(JARBOX_HOST_RENDER_ISLAND_TEST)
     int host_render_island_enabled;
     uint64_t host_render_island_skips,host_render_island_ops,host_render_island_refusals,host_render_wrapper_skips;
+#endif
+#if defined(JARBOX_HOST_GLYPH_LOOP_TEST)
+    int host_glyph_enabled;
+    uint64_t host_glyph_loops,host_glyph_chars,host_glyph_shadow,host_glyph_mismatch;
 #endif
     ArrayList *shutdown_hook;//shutdown hook ,it contains thread instance
 

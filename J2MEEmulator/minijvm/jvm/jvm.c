@@ -499,6 +499,12 @@ void jvm_destroy(MiniJVM *jvm) {
        (unsigned long long)__atomic_load_n(&jvm->render_wrapper_skips,__ATOMIC_RELAXED),
        __atomic_load_n(&jvm->render_island_bytes,__ATOMIC_RELAXED));
 #endif
+#if defined(JARBOX_RECONSTRUCT_EXPERIMENT) && JARBOX_RECONSTRUCT_EXPERIMENT && __JVM_OS_IOS__
+    jvm_printf("[JarBoxVM][GlyphLoop] loops=%llu chars=%llu draws=%llu\n",
+       (unsigned long long)__atomic_load_n(&jvm->glyph_loops,__ATOMIC_RELAXED),
+       (unsigned long long)__atomic_load_n(&jvm->glyph_chars,__ATOMIC_RELAXED),
+       (unsigned long long)__atomic_load_n(&jvm->glyph_draws,__ATOMIC_RELAXED));
+#endif
     close_log();
 #if _JVM_DEBUG_LOG_LEVEL > 0
     jvm_printf("[INFO]jvm destoried\n");

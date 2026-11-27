@@ -1,0 +1,16 @@
+# Mode 8 reconstruction: first whole-loop residual
+
+## Device baseline and acceptance
+The b1f9ba1 headless-render-gc build passed CI but the device sample still measured 42.91% process CPU for one Nick tab. Approximately 25.81 percentage points were Canvas paint, 13.12 Java outside paint, 2.12 GC and 1.86 other. The historic mode 8 worker numbers (10–15%) are not the same metric. CI success and static opcode counts cannot establish a device CPU win.
+
+Old mode 8 skipped entire Canvas paint callbacks. Do not restore that behavior: Class_hda.a0 advances skill state and other paint branches may carry gameplay effects. Keep the public Treo behavior, tick, network, RMS and Auto cadence. Reconstruct the benefit by removing complete visual-only loops while retaining the original control path and exception behavior.
+
+## Implemented
+Exact Nick t5 Class_hui.a(Class_hvi,String,III)V and a(Class_hvi,String,III,Class_hui)V: guarded contraction at original loop PC49 to the existing void return PC153 or PC253. Prefix alignment, width calculation and faults still execute normally. Font width used by gameplay is not replaced. Bounds/null/table validation, linked String native contracts and exact method digest are required. For longer strings validate all possible glyph rows and locate only the final row for conservative reference-lane replay. For short strings validate the actual rows. No allocation, resolution or Java execution between proof and commit. Failed proof falls back at original PC49 and does not retry on each iteration. The new glyph-only binding admits the five exact delegate PCs 30,90,106,128,135 with the existing owner, Canvas and Graphics identity, scope and screen-only checks. It does not widen other residuals.
+
+The new headless-reconstructed profile isolates this layer on top of headless-render-gc; default remains off. Push CI builds both profiles. Existing residual/Block IR/GC behavior stays available. Retirement log reports glyph loops, characters and draw count. These counters are not yet integrated in the Flight Recorder snapshots.
+
+## Evidence and limitations
+Local GCC and Clang ASan/UBSan: 40,000 randomized preflight cases (25,325 accept, 14,675 refuse; zero false accept), modeled reference-lane replay. OpenJDK -Xint fixture: PASS 8000. Independent local oracle using the exact original Nick classfiles with LCDUI test stubs: 12,000 cases, 4,990 admissible contractions, 7,010 fallbacks, 1,880 visible draw cases. That oracle tests the Java guard model, not the live C VM adapter. The host job additionally requires actual MiniJVM positive admission and compares original scratch reference lanes on the control VM. It is pending until CI reports. iOS build and device admission are also pending. Scope readiness still depends on the existing certified core. No claim that all paints, glyph calls, allocation sites or GC scheduling are equivalent yet. No claim of reduced device CPU or restored mode 8 performance.
+
+Next work should use whole-method/loop effect boundaries, especially visual text construction and map/UI rendering, then optimize the non-paint Java budget. Do not use unconditional paint skips, JAR edits, JIT, artificial tick delays, or shared mutable VM state.

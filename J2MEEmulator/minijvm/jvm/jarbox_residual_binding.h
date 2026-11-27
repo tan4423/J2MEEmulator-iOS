@@ -165,7 +165,13 @@ static inline int jbr_binding_paint_tail(Runtime *r,Runtime *p,Instance *wrapper
         if(!jbr_bframe(p,r,0))return 0;
         if(jbr_bmethod(p->method,"Class_hxb","a",gd)){delegate=p;break;}
     }
-    if(!jbr_bframe(delegate,r,2)||delegate->method->is_static||!jbr_bpc(delegate,delegate_pc))return 0;
+    if(!jbr_bframe(delegate,r,2)||delegate->method->is_static)return 0;
+    if(delegate_pc==UINT32_MAX){
+        // The exact Nick screen dispatcher has five audited draw routes.
+        // This broader certificate is for the whole glyph loop only.
+        if(!jbr_bpc(delegate,30)&&!jbr_bpc(delegate,90)&&!jbr_bpc(delegate,106)&&
+           !jbr_bpc(delegate,128)&&!jbr_bpc(delegate,135))return 0;
+    }else if(!jbr_bpc(delegate,delegate_pc))return 0;
     Runtime *paint=delegate->parent;
     if(!jbr_bframe(paint,r,2)||!jbr_bmethod(paint->method,"Class_hef","paint",gd)||
        paint->method->is_static||!jbr_bpc(paint,paint_pc))return 0;
@@ -242,6 +248,9 @@ static inline int jbr_nick_paint_binding_at(Runtime *r,Instance *wrapper,
        !jbr_bobject(wrapper,wrapper->mb.clazz)||
        wrapper->mb.clazz->jloader!=r->method->_this_class->jloader)return 0;
     return jbr_binding_paint_tail(r,r->parent,wrapper,r->method->_this_class,out,delegate_pc,paint_pc);
+}
+static inline int jbr_nick_glyph_binding(Runtime *r,Instance *wrapper,JarBoxResidualBinding *out){
+    return jbr_nick_paint_binding_at(r,wrapper,out,UINT32_MAX,5);
 }
 static inline int jbr_binding_at(Runtime *r,Instance *wrapper,JarBoxResidualBinding *out,
                                  unsigned map_pc,unsigned delegate_pc,unsigned paint_pc) {

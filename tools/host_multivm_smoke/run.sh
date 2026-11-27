@@ -15,6 +15,7 @@ case "$SUITE" in
   binding) EXTRA="-DJARBOX_HOST_BINDING_TEST=1"; SCENARIOS="binding_diff";;
   gc_index|gc_callbacks) EXTRA="-DJARBOX_HOST_INTRINSIC_TEST=1 -DJARBOX_GC_DEFERRED_INDEX_EXPERIMENT=1 -DJARBOX_HOST_GC_INDEX_TEST=1"; SCENARIOS="gc_index_diff";
     if [[ "$SUITE" == gc_callbacks ]]; then SCENARIOS="gc_index_callbacks"; fi;;
+  glyph_loop) EXTRA="-DJARBOX_HOST_INTRINSIC_TEST=1 -DJARBOX_HOST_GLYPH_LOOP_TEST=1"; SCENARIOS="glyph_loop_diff";;
   render_island) EXTRA="-DJARBOX_HOST_INTRINSIC_TEST=1 -DJARBOX_HOST_RENDER_ISLAND_TEST=1"; SCENARIOS="render_island_diff";;
   block_ir) EXTRA="-DJARBOX_HOST_INTRINSIC_TEST=1 -DJARBOX_BLOCK_IR_EXPERIMENT=1 -DJARBOX_HOST_BLOCK_IR_TEST=1"; SCENARIOS="block_ir_diff block_ir_share";;
   intrinsics|benchmark)
@@ -73,7 +74,7 @@ mkdir -p $OUT/app
 JAVAC="java -m jdk.compiler/com.sun.tools.javac.Main"
 $JAVAC -nowarn -source 8 -target 8 -bootclasspath "$ROOT/J2MEEmulator/Resources/jars/minijvm_rt.jar" -d "$OUT/app" "$HERE/java/SmokeMain.java"
 test -s "$OUT/app/SmokeMain.class"
-if [[ "$SUITE" == intrinsics || "$SUITE" == benchmark || "$SUITE" == gc_index || "$SUITE" == gc_callbacks || "$SUITE" == block_ir || "$SUITE" == render_island ]]; then
+if [[ "$SUITE" == intrinsics || "$SUITE" == benchmark || "$SUITE" == gc_index || "$SUITE" == gc_callbacks || "$SUITE" == block_ir || "$SUITE" == render_island || "$SUITE" == glyph_loop ]]; then
   $JAVAC -nowarn -source 8 -target 8 -bootclasspath "$ROOT/J2MEEmulator/Resources/jars/minijvm_rt.jar" -d "$OUT/app" "$HERE/java/IntrinsicMain.java"
   test -s "$OUT/app/IntrinsicMain.class"
   if [[ "$SUITE" == gc_callbacks ]]; then
@@ -87,6 +88,10 @@ if [[ "$SUITE" == intrinsics || "$SUITE" == benchmark || "$SUITE" == gc_index ||
   if [[ "$SUITE" == render_island ]]; then
     $JAVAC -nowarn -source 8 -target 8 -bootclasspath "$RT" -d "$OUT/app" "$HERE/java/RenderIslandMain.java"
     test -s "$OUT/app/RenderIslandMain.class"
+  fi
+  if [[ "$SUITE" == glyph_loop ]]; then
+    $JAVAC -nowarn -source 8 -target 8 -bootclasspath "$RT" -d "$OUT/app" "$HERE/java/GlyphLoopMain.java"
+    test -s "$OUT/app/GlyphLoopMain.class"
   fi
   export UBSAN_OPTIONS=halt_on_error=1
   export ASAN_OPTIONS=halt_on_error=1
@@ -103,6 +108,8 @@ for sc in $SCENARIOS; do for i in $(seq 1 $ITER); do
       grep -E "^binding (A|B):|^binding_diff: PASS" "$OUT/$sc.$i.log"
     elif [[ "$SUITE" == intrinsics ]]; then
       grep -E '^intrinsics A:|^intrinsic_diff: PASS' "$OUT/$sc.$i.log"
+    elif [[ "$SUITE" == glyph_loop ]]; then
+      grep -E '^glyph A shadow=|^glyph_loop_diff: PASS' "$OUT/$sc.$i.log"
     elif [[ "$SUITE" == render_island ]]; then
       grep -E '^render islands B=|^render_island_diff: PASS' "$OUT/$sc.$i.log"
     elif [[ "$SUITE" == block_ir ]]; then

@@ -50,7 +50,7 @@ static void putref(unsigned char *p,Instance *o){memcpy(p,&o,sizeof(o));}
 static void putlong(unsigned char *p,int64_t v){memcpy(p,&v,sizeof(v));}
 int main(void) {
     int game_loader,api_loader,vm,thread,foreign;
-    unsigned char cb[80]={0},db[80]={0},wb[80]={0},gb[80]={0},cs[16]={0},code[80]={0};
+    unsigned char cb[80]={0},db[80]={0},wb[80]={0},gb[80]={0},cs[16]={0},code[150]={0};
     JClass cl[7]={0};
     const char *names[]={"Class_hii","Class_hmi","Class_hxb","Class_hef","Class_hvi","javax/microedition/lcdui/Canvas","javax/microedition/lcdui/Graphics"};
     for(unsigned i=0;i<7;i++) {
@@ -108,7 +108,13 @@ int main(void) {
     assert(!jbr_nick_paint_binding_at(r,&other,&b,30,5));
     assert(!jbr_nick_paint_binding_at(r,&w,&b,29,5));
     r[2].jvm=&foreign;assert(!jbr_nick_paint_binding_at(r,&w,&b,30,5));r[2].jvm=&vm;
-    r[0].method=&m[0];
+    const unsigned routes[]={30,90,106,128,135};
+    for(unsigned i=0;i<5;i++){
+        r[2].pc=code+routes[i];assert(jbr_nick_glyph_binding(r,&w,&b));
+        assert(!jbr_nick_glyph_binding(r,&other,&b));
+        r[2].pc=code+routes[i]-1;assert(!jbr_nick_glyph_binding(r,&w,&b));
+    }
+    r[2].pc=code+30;r[0].method=&m[0];
     for(int i=0;i<10000;i++){
         r[2].jvm=&foreign;BAD();r[2].jvm=&vm;
         r[3].thrd_info=&foreign;BAD();r[3].thrd_info=&thread;

@@ -7,6 +7,69 @@
 #include "jarbox_array_index.h"
 #include "jarbox_java_integer.h"
 
+#if defined(JARBOX_HOST_GLYPH_LOOP_TEST) || (defined(JARBOX_RECONSTRUCT_EXPERIMENT) && JARBOX_RECONSTRUCT_EXPERIMENT)
+#include "jarbox_glyph_vm.h"
+#endif
+#if defined(JARBOX_HOST_GLYPH_LOOP_TEST)
+#if __JVM_OS_IOS__ || defined(TREO_IOS_GAME_JIT)
+#error Glyph fixture is not a device admission policy
+#endif
+static FieldInfo *jbg_fixture_field(Instance *o,const char *name,const char *desc,size_t bytes,int ref){
+    if(!o||!o->mb.clazz||!jbg_obj(o,o->mb.clazz))return NULL;
+    JClass *cl=o->mb.clazz;
+    for(int i=0;i<cl->fieldPool.field_used;i++){
+        FieldInfo *f=cl->fieldPool.field+i;
+        if(f->name&&f->descriptor&&utf8_equals_c(f->name,name)&&utf8_equals_c(f->descriptor,desc)&&
+           jbg_layout(f,cl,bytes,ref))return f;
+    }
+    return NULL;
+}
+static int jbg_fixture_closed(Instance *sink){
+    if(!jbg_named(sink,"GlyphLoopMain$Sink"))return 0;
+    FieldInfo *f=jbg_fixture_field(sink,"closed","Z",1,0);
+    return f&&sink->obj_fields[f->offset_instance]!=0;
+}
+/* Both fixture owners use the same closed leaf as the live Graphics
+ * interception: no Java sink frame, no scratch writes past wrapper slots. */
+static int jbg_fixture_sink_return(MethodInfo *m,Runtime *r){
+    if(!r||!r->jvm||!r->stack||!r->thrd_info||r->thrd_info->is_stop||
+       r->thrd_info->suspend_count||r->jvm->jdwp_enable||m->breakpoint||
+       m->is_sync||m->is_native||m->is_static||m->para_slots!=10||m->return_slots||
+       !utf8_equals_c(m->_this_class->name,"GlyphLoopMain$Sink")||
+       !utf8_equals_c(m->name,"region")||
+       !utf8_equals_c(m->descriptor,"(Ljava/lang/Object;IIIIIIII)V")||
+       stack_size(r->stack)<10)return 0;
+    StackEntry *args=r->stack->sp-10;
+    if(!jbg_fixture_closed(args[0].rvalue))return 0;
+    r->stack->sp=args;return 1;
+}
+static unsigned jbg_fixture_kind(MethodInfo *m,CodeAttribute *ca){
+    unsigned kind=ca->code_length==154?1:ca->code_length==254?2:0;
+    if(!kind||m->is_static||m->is_native||m->is_sync||m->breakpoint||
+       m->return_slots||m->para_slots!=5+kind||ca->max_locals!=7+kind||
+       ca->max_stack!=10||ca->exception_table_length||
+       !utf8_equals_c(m->_this_class->name,"GlyphLoopMain$Font")||
+       !utf8_equals_c(m->name,"draw")||
+       !utf8_equals_c(m->descriptor,kind==1?"(LGlyphLoopMain$Wrapper;Ljava/lang/String;III)V":
+         "(LGlyphLoopMain$Wrapper;Ljava/lang/String;IIILGlyphLoopMain$Font;)V"))return 0;
+    return kind;
+}
+static Instance *jbg_fixture_guard(Runtime *r,unsigned kind,JbgProof *proof){
+    Instance *w=r->localvar[1].rvalue;
+    if(!jbg_named(w,"GlyphLoopMain$Wrapper"))return NULL;
+    FieldInfo *f=jbg_fixture_field(w,"sink","LGlyphLoopMain$Sink;",sizeof(Instance *),1);
+    Instance *g=f?jbg_ref(w,f):NULL;
+    if(!jbg_fixture_closed(g))return NULL;
+    MethodInfo *draw=jbg_virtual(r,r->method,kind==1?126:129,w,"draw","(Ljava/lang/Object;IIIIIIII)V");
+    if(!draw||draw->is_native||!draw->converted_code||
+       draw->converted_code->max_locals!=10||draw->converted_code->max_stack!=10||
+       !jbg_vm_preflight(r,kind,"Ljava/lang/Object;",proof))return NULL;
+    return g;
+}
+typedef struct {unsigned end;StackEntry slots[22];} JbgShadow;
+#endif
+
+
 #if defined(JARBOX_HOST_RENDER_ISLAND_TEST)
 #if __JVM_OS_IOS__ || defined(TREO_IOS_GAME_JIT)
 #error Fixture sink is not an iOS admission policy
@@ -659,6 +722,47 @@ static int jri_live_wrapper_proof(Runtime *r,ConstantMethodRef *mr,Instance *w,
        wm->converted_code->jit.state!=JIT_GEN_SUCCESS&&
        jbr_live_target_ready(r->jvm,mr,w,wm);
 }
+
+#if defined(JARBOX_RECONSTRUCT_EXPERIMENT) && JARBOX_RECONSTRUCT_EXPERIMENT
+extern int treo_glyph_scope_capture(Runtime *,Instance *,JarBoxResidualScope *);
+static unsigned jbg_live_kind(MethodInfo *m,CodeAttribute *ca){
+    unsigned kind=ca->code_length==154?1:ca->code_length==254?2:0;
+    if(!kind)return 0;
+    unsigned state=__atomic_load_n(&ca->glyph_loop_state,__ATOMIC_ACQUIRE);
+    if(state)return state<=2?state:0;
+    static const unsigned char single[32]={0x5e,0xd4,0x14,0xd5,0x2a,0xad,0x54,0x0f,0x17,0x20,0xf1,0xcc,0x12,0xa2,0x47,0xed,0x59,0xbd,0xdb,0x36,0xb1,0xea,0x0e,0x4e,0x08,0xbb,0x91,0x20,0xe5,0x6d,0x53,0xe8};
+    static const unsigned char triple[32]={0xff,0xd9,0x09,0x3b,0xb7,0xc4,0xb3,0xb4,0x52,0x48,0x4c,0x82,0x65,0xa7,0xf3,0x44,0x17,0x0c,0xf9,0xf5,0x24,0xdd,0xa6,0xd0,0x97,0x79,0xee,0x9a,0x48,0x61,0x40,0x23};
+    if(m->is_static||m->is_sync||m->is_native||m->return_slots||
+       m->para_slots!=5+kind||ca->max_locals!=7+kind||ca->max_stack!=10||
+       ca->exception_table_length||!(m->_this_class->cff.access_flags&ACC_FINAL)||
+       !jbr_eq(m->_this_class->name,"Class_hui")||!jbr_eq(m->name,"a")||
+       !jbr_eq(m->descriptor,kind==1?"(LClass_hvi;Ljava/lang/String;III)V":
+          "(LClass_hvi;Ljava/lang/String;IIILClass_hui;)V")||
+       !jbr_live_code(ca,kind==1?154:254,kind==1?single:triple))kind=3;
+    __atomic_store_n(&ca->glyph_loop_state,kind,__ATOMIC_RELEASE);
+    return kind<=2?kind:0;
+}
+/* Only the loop is contracted. The original alignment and width calls at
+ * PCs 0..48, including their faults, have already executed. All primitive
+ * writes inside the loop are dead at the original void return. */
+static int jbg_live_skip(Runtime *r,unsigned kind,StackEntry *sp){
+    Instance *w=r->localvar[1].rvalue;
+    JriLiveFrame f={0};
+    ConstantMethodRef *mr=jbg_methodref_at(r->method,kind==1?126:129);
+    JbgProof proof;
+    if(!mr||jri_live_variant(mr)!=0||!w||
+       !treo_glyph_scope_capture(r,w,&f.scope)||
+       !jri_live_wrapper_proof(r,mr,w,&f,0,NULL)||
+       !jbg_vm_preflight(r,kind,"Ljavax/microedition/lcdui/Image;",&proof)||
+       !treo_residual_scope_valid(r,w,&f.scope))return 0;
+    jbg_replay(sp,w,proof.font,proof.row,(Instance *)f.scope.graphics,proof.image);
+    __atomic_fetch_add(&r->jvm->glyph_loops,1,__ATOMIC_RELAXED);
+    __atomic_fetch_add(&r->jvm->glyph_chars,proof.count,__ATOMIC_RELAXED);
+    __atomic_fetch_add(&r->jvm->glyph_draws,proof.count*(kind==1?1u:3u),__ATOMIC_RELAXED);
+    return 1;
+}
+#endif
+
 static int jri_live_skip(Runtime *r,const JriIsland *s,JriLiveFrame *f,
                          StackEntry *locals,StackEntry *sp){
     JClass *cl=r->method->_this_class;
@@ -2587,6 +2691,9 @@ static inline int jarbox_try_ref_leaf(MethodInfo *method, Runtime *caller) {
 
 s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
     JARBOX_HOT_CHECK(pruntime,method,NULL);
+#if defined(JARBOX_HOST_GLYPH_LOOP_TEST)
+    if(jbg_fixture_sink_return(method,pruntime))return RUNTIME_STATUS_NORMAL;
+#endif
 #if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__
     // These server/mod notices are drawn by Class_cu.d(String), from
     // Class_fq.d or Class_gv.g. A popup can be a server-supplied message
@@ -3187,6 +3294,12 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                 const JriPlan *render_island=!jbr_active?jri_live_plan(runtime,method,ca,&render_eligible):NULL;
                 JriLiveFrame render_frame={0};
 #endif
+#if defined(JARBOX_HOST_GLYPH_LOOP_TEST)
+                unsigned glyph_kind=jbg_fixture_kind(method,ca);
+                JbgShadow glyph_shadow={0};
+#elif defined(JARBOX_RECONSTRUCT_EXPERIMENT) && JARBOX_RECONSTRUCT_EXPERIMENT && defined(JARBOX_LIVE_RENDER_ISLAND) && !_JVM_DEBUG_PROFILE && _JVM_DEBUG_LOG_LEVEL <= 1 && !defined(__JVM_DEBUG__)
+                unsigned glyph_kind=render_eligible?jbg_live_kind(method,ca):0;
+#endif
                 do {
 #if defined(JARBOX_RESIDUAL_EXECUTOR)
                     if(jbr_active) {
@@ -3317,6 +3430,51 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         }
                     }
 #undef JBR_INVARIANT_FAIL
+#endif
+#if defined(JARBOX_HOST_GLYPH_LOOP_TEST)
+                    if(glyph_shadow.end&&runtime->pc==ca->code+glyph_shadow.end){
+                        unsigned mismatch=sp!=localvar+ca->max_locals;
+                        if(!mismatch)for(unsigned k=0;k<22;++k)
+                            if(sp[k].rvalue!=glyph_shadow.slots[k].rvalue){mismatch=1;break;}
+                        __atomic_fetch_add(&jvm->host_glyph_shadow,1,__ATOMIC_RELAXED);
+                        if(mismatch)__atomic_fetch_add(&jvm->host_glyph_mismatch,1,__ATOMIC_RELAXED);
+                        glyph_shadow.end=0;
+                    }
+#endif
+#if defined(JARBOX_HOST_GLYPH_LOOP_TEST) || (defined(JARBOX_RECONSTRUCT_EXPERIMENT) && JARBOX_RECONSTRUCT_EXPERIMENT && defined(JARBOX_LIVE_RENDER_ISLAND) && !_JVM_DEBUG_PROFILE && _JVM_DEBUG_LOG_LEVEL <= 1 && !defined(__JVM_DEBUG__))
+                    if(glyph_kind&&runtime->pc==ca->code+49){
+                        unsigned kind=glyph_kind;glyph_kind=0; // one attempt, never recheck on backedge
+                        stack->sp=sp;
+                        check_suspend_and_pause(runtime);
+                        sp=stack->sp;
+                        if(!thrd_info->is_stop&&!thrd_info->suspend_count&&!jvm->jdwp_enable&&
+                           !method->breakpoint&&sp==localvar+ca->max_locals&&
+                           sp<=stack->store+stack->max_size&&stack->store+stack->max_size-sp>=22){
+#if defined(JARBOX_HOST_GLYPH_LOOP_TEST)
+                            JbgProof proof;
+                            Instance *g=jbg_fixture_guard(runtime,kind,&proof);
+                            if(g){
+                                if(jvm->host_glyph_enabled){
+                                    jbg_replay(sp,proof.wrapper,proof.font,proof.row,g,proof.image);
+                                    runtime->pc=ca->code+(kind==1?153:253);
+                                    __atomic_fetch_add(&jvm->host_glyph_loops,1,__ATOMIC_RELAXED);
+                                    __atomic_fetch_add(&jvm->host_glyph_chars,proof.count,__ATOMIC_RELAXED);
+                                    continue;
+                                }
+                                // Execute the original loop in A and compare all
+                                // reference lanes, including untouched scratch.
+                                memcpy(glyph_shadow.slots,sp,sizeof glyph_shadow.slots);
+                                jbg_replay(glyph_shadow.slots,proof.wrapper,proof.font,proof.row,g,proof.image);
+                                glyph_shadow.end=kind==1?153:253;
+                            }
+#else
+                            if(jbg_live_skip(runtime,kind,sp)){
+                                runtime->pc=ca->code+(kind==1?153:253);
+                                continue;
+                            }
+#endif
+                        }
+                    }
 #endif
 #if defined(JARBOX_LIVE_RENDER_ISLAND) && !_JVM_DEBUG_PROFILE && _JVM_DEBUG_LOG_LEVEL <= 1 && !defined(__JVM_DEBUG__)
                     // Render plan precedes Block IR: do not let a pure
