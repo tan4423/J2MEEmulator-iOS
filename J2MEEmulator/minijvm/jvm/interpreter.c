@@ -204,7 +204,7 @@ static const JbiPlan *jbi_method_plan(Runtime *r,MethodInfo *m,CodeAttribute *ca
     // Full-render logic-only experiment. The desktop owner verifies the
     // exact archive before selecting this immutable per-VM profile.
     const char *name=utf8_cstr(m->_this_class->name);
-    if((!r->jvm->desktop_block_ir_enabled && jarbox_lab_sink_level(0)<5) ||
+    if((!r->jvm->desktop_block_ir_enabled && jarbox_lab_sink_level(0)!=5) ||
        (strncmp(name,"Class_",6) &&
         !(r->jvm->desktop_block_ir_fixture &&
           (!strcmp(name,"LabFixture")||!strncmp(name,"LabFixture$",11)))))return NULL;
@@ -259,18 +259,38 @@ static const JbiPlan *jbi_method_plan(Runtime *r,MethodInfo *m,CodeAttribute *ca
 #if defined(JARBOX_HOST_RESIDUAL_TEST) && (__JVM_OS_IOS__ || defined(TREO_IOS_GAME_JIT))
 #error Host residual fixtures cannot be used on iOS
 #endif
-#if (defined(JARBOX_HOST_RESIDUAL_TEST) && !__JVM_OS_IOS__) || (defined(TREO_RESIDUAL_EXPERIMENT) && TREO_RESIDUAL_EXPERIMENT && __JVM_OS_IOS__)
+#if (defined(JARBOX_HOST_RESIDUAL_TEST) && !__JVM_OS_IOS__) || (defined(TREO_RESIDUAL_EXPERIMENT) && TREO_RESIDUAL_EXPERIMENT && __JVM_OS_IOS__) || (defined(JARBOX_DESKTOP_LAB) && JARBOX_DESKTOP_LAB)
 #define JARBOX_RESIDUAL_EXECUTOR 1
 #include <stdlib.h>
 #include "jarbox_residual_compile.h"
 #include "jarbox_residual_binding.h"
-#if (defined(TREO_RESIDUAL_EXPERIMENT) && TREO_RESIDUAL_EXPERIMENT && __JVM_OS_IOS__)
+#if (defined(TREO_RESIDUAL_EXPERIMENT) && TREO_RESIDUAL_EXPERIMENT && __JVM_OS_IOS__) || (defined(JARBOX_DESKTOP_LAB) && JARBOX_DESKTOP_LAB)
+#if (defined(JARBOX_DESKTOP_LAB) && JARBOX_DESKTOP_LAB)
+#include "mbedtls/sha256.h"
+extern int jarbox_lab_sink_level(int64_t context);
+extern void jarbox_lab_deep_note(unsigned kind,unsigned count);
+extern void jarbox_lab_residual_fault(void);
+static int treo_residual_scope_valid(Runtime *r,Instance *w,const JarBoxResidualScope *s) {
+    return r&&r->jvm&&r->thrd_info&&s&&s->owner==(uintptr_t)r->jvm&&
+        !r->thrd_info->is_stop&&!r->thrd_info->suspend_count&&!r->jvm->jdwp_enable&&
+        jarbox_lab_sink_level(s->context)==6&&jbr_scope_fields_valid(s,w);
+}
+static int treo_residual_scope_capture(Runtime *r,Instance *w,JarBoxResidualScope *s) {
+    JarBoxResidualBinding b;
+    if(jarbox_lab_sink_level(0)!=6||!jbr_nick_binding(r,w,&b)||
+       jarbox_lab_sink_level(b.context)!=6)return 0;
+    *s=(JarBoxResidualScope){.owner=(uintptr_t)r->jvm,.context=b.context,
+        .wrapper=(uintptr_t)b.wrapper,.canvas=(uintptr_t)b.canvas,.graphics=(uintptr_t)b.graphics};
+    return jbr_scope_prepare_fields(s)&&treo_residual_scope_valid(r,w,s);
+}
+#else
 #if !defined(TREO_NINJA_CORE_EXPERIMENT) || !TREO_NINJA_CORE_EXPERIMENT
 #error Residual candidate requires the paired Canvas sink
 #endif
 #include <CommonCrypto/CommonDigest.h>
 extern int treo_residual_scope_capture(Runtime *,Instance *,JarBoxResidualScope *);
 extern int treo_residual_scope_valid(Runtime *,Instance *,const JarBoxResidualScope *);
+#endif
 static const int jbr_resolved_reads=1,jbr_resume=1,jbr_skip_draws=1,jbr_draw_effects=0;
 #else
 #include "jarbox_host_residual_fixture.h"
@@ -383,7 +403,7 @@ static int jbr_closed_region_ready(JClass *cl,const CodeAttribute *ca,unsigned p
     }
     return 0;
 }
-#if defined(JARBOX_HOST_RESIDUAL_WIDE_TEST) || (defined(TREO_RESIDUAL_EXPERIMENT) && TREO_RESIDUAL_EXPERIMENT && __JVM_OS_IOS__)
+#if defined(JARBOX_HOST_RESIDUAL_WIDE_TEST) || (defined(TREO_RESIDUAL_EXPERIMENT) && TREO_RESIDUAL_EXPERIMENT && __JVM_OS_IOS__) || (defined(JARBOX_DESKTOP_LAB) && JARBOX_DESKTOP_LAB)
 // Category-1 effect shapes only. A descriptor alone never authorizes game
 // admission or draw omission; the outer exact archive/method gates do.
 static int jbr_fixture_desc(const char **p,int allow_void){
@@ -518,8 +538,14 @@ static const JarBoxResidualOp *jbr_fixture_compile(Runtime *r,MethodInfo *m,Code
 #else // isolated real iOS candidate
 static int jbr_live_code(const CodeAttribute *ca,unsigned length,const unsigned char digest[32]) {
     unsigned char actual[32];
+#if (defined(JARBOX_DESKTOP_LAB) && JARBOX_DESKTOP_LAB)
+    if(!ca||!ca->bytecode_for_jit||ca->code_length!=length)return 0;
+    mbedtls_sha256(ca->bytecode_for_jit,length,actual,0);
+    return !memcmp(actual,digest,32);
+#else
     return ca&&ca->bytecode_for_jit&&ca->code_length==length&&
         CC_SHA256(ca->bytecode_for_jit,(CC_LONG)length,actual)&&!memcmp(actual,digest,32);
+#endif
 }
 static MethodInfo *jbr_live_declared(JClass *c,const char *name,const char *desc) {
     if(!c||c->status!=CLASS_STATUS_CLINITED||!c->methodPool.method||
@@ -836,7 +862,9 @@ static const JarBoxResidualOp *jbr_live_compile(Runtime *r,MethodInfo *m,CodeAtt
     static const unsigned char digest[32]={0x96,0xd7,0xab,0x33,0x79,0x07,0xcf,0x79,0xd4,0x50,0x14,0x30,0x16,0x8f,0x6f,0x65,0xc2,0x91,0xc6,0xa1,0xba,0x8f,0xe3,0xbd,0x77,0x51,0x56,0x26,0x4c,0xb7,0xd0,0xa5};
     static const unsigned char overlay_digest[32]={0xa9,0x55,0x03,0x4d,0x66,0xfe,0x26,0xeb,0x66,0x10,0x36,0x93,0x6c,0x6a,0xcb,0x2d,0x2c,0xcc,0x3e,0x0f,0x82,0x00,0x07,0x48,0xfe,0x7e,0x5b,0x01,0x4c,0xaf,0x85,0x4d};
     RuntimeStack *s=r->stack;
+#if !(defined(JARBOX_DESKTOP_LAB) && JARBOX_DESKTOP_LAB)
     JarBoxTreoState *st=r->jvm->session?&r->jvm->session->treo_state:NULL;
+#endif
     *count=0;
     static const unsigned char minimap_digest[32]={0x2e,0xa5,0xa4,0xe7,0xb0,0x59,0x8b,0xa7,0x65,0x8c,0x4d,0x65,0x60,0x5c,0x4c,0x77,0xb8,0xe8,0x51,0xe5,0x50,0xd5,0x2a,0x12,0x5c,0x82,0x6d,0x84,0xa3,0xde,0xa1,0x63};
     static const unsigned char background_digest[32]={0xbd,0xac,0xc8,0x7a,0x00,0x3a,0x35,0x6a,0x0a,0x01,0xb2,0xdd,0x41,0x99,0x76,0x9f,0x40,0xa3,0xb5,0xc5,0x7f,0x0a,0xf1,0x74,0xad,0x54,0x74,0x6e,0xca,0xd7,0x15,0x5e};
@@ -847,19 +875,28 @@ static const JarBoxResidualOp *jbr_live_compile(Runtime *r,MethodInfo *m,CodeAtt
     const unsigned expected_checkpoints=background?25:minimap?12:overlay?5:21;
     // Cheap signature rejection precedes control-plane reads for ordinary
     // methods. No active JIT or debugger, exact method and rooted receiver.
-    if(!st||!m->is_static||m->is_sync||m->is_native||m->para_slots!=1||m->return_slots||
+    if(!m->is_static||m->is_sync||m->is_native||m->para_slots!=1||m->return_slots||
        ca->max_stack!=(background?6:minimap?7:10)||ca->exception_table_length||
        !jbr_eq(m->_this_class->name,background?"Class_hxb":"Class_hii")||
        !jbr_eq(m->name,background?"j1":minimap?"r2":overlay?"i3":"k1")||!jbr_eq(m->descriptor,"(LClass_hvi;)V")||
-       !__atomic_load_n(&st->residual_archive_verified,__ATOMIC_ACQUIRE)||
+#if (defined(JARBOX_DESKTOP_LAB) && JARBOX_DESKTOP_LAB)
+       jarbox_lab_sink_level(0)!=6||
+#else
+       !st||!__atomic_load_n(&st->residual_archive_verified,__ATOMIC_ACQUIRE)||
        __atomic_load_n(&st->residual_faults,__ATOMIC_RELAXED)||
        jarbox_session_phase(r->jvm->session)!=JARBOX_SESSION_PARKED||
        !jarbox_ninja_core_active(&st->ninja_core,jarbox_treo_mode_get(st))||
-       treo_game_jit_enabled_fast()||r->jvm->jdwp_enable||r->thrd_info->is_stop||
+       treo_game_jit_enabled_fast()||
+#endif
+       r->jvm->jdwp_enable||r->thrd_info->is_stop||
        r->thrd_info->suspend_count||m->breakpoint||ca->jit.state==JIT_GEN_SUCCESS||
        stack_size(s)<1||stack_size(s)>s->max_size||
        JBR_SLOTS-1+ca->max_stack+2>s->max_size-stack_size(s))return NULL;
+#if (defined(JARBOX_DESKTOP_LAB) && JARBOX_DESKTOP_LAB)
+    const int in_scope=1;
+#else
     const int in_scope=r->thrd_info->jarbox_headless_scope;
+#endif
     Instance *wrapper=(s->sp-1)->rvalue;
     if(in_scope) {
         if(!treo_residual_scope_capture(r,wrapper,scope))return NULL;
@@ -920,8 +957,12 @@ static const JarBoxResidualOp *jbr_live_compile(Runtime *r,MethodInfo *m,CodeAtt
             if(valid&&checkpoints==expected_checkpoints){
                 ca->residual_plan_count=n;plan=candidate;
                 __atomic_store_n(&ca->host_residual_plan,plan,__ATOMIC_RELEASE);
+#if (defined(JARBOX_DESKTOP_LAB) && JARBOX_DESKTOP_LAB)
+                jarbox_lab_deep_note(10,1);
+#else
                 __atomic_fetch_add(&st->host_residual_compiles,1,__ATOMIC_RELAXED);
                 __atomic_fetch_or(&st->residual_plan_ready,background?8u:minimap?4u:overlay?2u:1u,__ATOMIC_RELEASE);
+#endif
             } else free(candidate);
         }
     }
@@ -3186,7 +3227,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
 #endif
 
 #if defined(JARBOX_RESIDUAL_EXECUTOR)
-#if (defined(TREO_RESIDUAL_EXPERIMENT) && TREO_RESIDUAL_EXPERIMENT && __JVM_OS_IOS__)
+#if (defined(TREO_RESIDUAL_EXPERIMENT) && TREO_RESIDUAL_EXPERIMENT && __JVM_OS_IOS__) || (defined(JARBOX_DESKTOP_LAB) && JARBOX_DESKTOP_LAB)
             JarBoxResidualScope jbr_scope={0};
             unsigned jbr_count=0;
             const JarBoxResidualOp *jbr_compiled=jbr_live_compile(runtime,method,ca,&jbr_scope,&jbr_count);
@@ -3201,8 +3242,12 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                 // Real VM stack storage, visible to GC. Reference lifetime may
                 // extend to frame end in this prototype (not live admission).
                 memset(runtime->localvar+1,0,(JBR_SLOTS-1)*sizeof(StackEntry));
+#if (defined(JARBOX_DESKTOP_LAB) && JARBOX_DESKTOP_LAB)
+                jarbox_lab_deep_note(11,1);
+#else
                 const uint64_t ordinal=__atomic_fetch_add(&jvm->session->treo_state.host_residual_calls,1,__ATOMIC_RELAXED);
                 jbr_limit=(unsigned)(ordinal%4); // deterministic fixture scope schedule
+#endif
             } else
 #endif
             localvar_init(runtime, ca->max_locals, method->para_slots);
@@ -3353,7 +3398,13 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
 #endif
 #if defined(JARBOX_RESIDUAL_EXECUTOR)
                     if(jbr_active) {
-#if (defined(TREO_RESIDUAL_EXPERIMENT) && TREO_RESIDUAL_EXPERIMENT && __JVM_OS_IOS__)
+#if (defined(TREO_RESIDUAL_EXPERIMENT) && TREO_RESIDUAL_EXPERIMENT && __JVM_OS_IOS__) || (defined(JARBOX_DESKTOP_LAB) && JARBOX_DESKTOP_LAB)
+#if (defined(JARBOX_DESKTOP_LAB) && JARBOX_DESKTOP_LAB)
+#define JBR_INVARIANT_FAIL() do { \
+    jarbox_lab_residual_fault(); \
+    localvar_dispose(runtime); ret=RUNTIME_STATUS_ERROR; goto label_exit_while; \
+} while(0)
+#else
 // A broken internal invariant is not a legal deopt after effects. Quarantine
 // this owner and unwind using the VM's existing error path, never abort iOS.
 #define JBR_INVARIANT_FAIL() do { \
@@ -3361,6 +3412,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
     jarbox_ninja_core_finish(&jvm->session->treo_state.ninja_core,4); \
     localvar_dispose(runtime); ret=RUNTIME_STATUS_ERROR; goto label_exit_while; \
 } while(0)
+#endif
 #else
 #define JBR_INVARIANT_FAIL() abort()
 #endif
@@ -3402,7 +3454,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                                 }
                                 int cold_region=0,scope_lost=0;
                                 if(o->checkpoint) {
-#if (defined(TREO_RESIDUAL_EXPERIMENT) && TREO_RESIDUAL_EXPERIMENT && __JVM_OS_IOS__)
+#if (defined(TREO_RESIDUAL_EXPERIMENT) && TREO_RESIDUAL_EXPERIMENT && __JVM_OS_IOS__) || (defined(JARBOX_DESKTOP_LAB) && JARBOX_DESKTOP_LAB)
                                     // The initial certificate pins all region
                                     // metadata through this owner class. The
                                     // paired TLS Canvas sink persists to paint
@@ -3415,7 +3467,9 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
 #endif
                                 }
                                 if(jbr_resume && o->checkpoint && scope_lost) {
+#if !(defined(JARBOX_DESKTOP_LAB) && JARBOX_DESKTOP_LAB)
                                     if(cold_region)__atomic_fetch_add(&jvm->session->treo_state.host_residual_cold_deopts,1,__ATOMIC_RELAXED);
+#endif
                                     // Resume exactly at the original empty-stack
                                     // aload_0 PC, BEFORE any effect of this draw.
                                     // The compiler retains all original locals
@@ -3429,11 +3483,19 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                                     sp=localvar+ca->max_locals;
                                     stack->sp=sp;
                                     jbr_active=0;
+#if (defined(JARBOX_DESKTOP_LAB) && JARBOX_DESKTOP_LAB)
+                                    jarbox_lab_deep_note(13,1);
+#else
                                     __atomic_fetch_add(&jvm->session->treo_state.host_residual_deopts,1,__ATOMIC_RELAXED);
+#endif
                                     break;
                                 }
                                 if(jbr_skip_draws && o->checkpoint)
+#if (defined(JARBOX_DESKTOP_LAB) && JARBOX_DESKTOP_LAB)
+                                    jarbox_lab_deep_note(12,1);
+#else
                                     __atomic_fetch_add(&jvm->session->treo_state.host_residual_skipped,1,__ATOMIC_RELAXED);
+#endif
                                 if(o->kind==JBR_WIDE_EFFECT){
                                     for(unsigned k=0;k<o->a;k++){
                                         unsigned slot=jbr_wide_arg(o,k);jbr_copy_slot(sp++,localvar+slot,slot);

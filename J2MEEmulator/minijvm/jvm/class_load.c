@@ -629,7 +629,7 @@ s32 _class_method_info_destroy(JClass *clazz) {
             jarbox_block_ir_release(ca,ca->block_ir_plan);
             ca->block_ir_plan = NULL;
 #endif
-#if (defined(JARBOX_HOST_RESIDUAL_TEST) && !__JVM_OS_IOS__) || (defined(TREO_RESIDUAL_EXPERIMENT) && TREO_RESIDUAL_EXPERIMENT && __JVM_OS_IOS__)
+#if (defined(JARBOX_HOST_RESIDUAL_TEST) && !__JVM_OS_IOS__) || (defined(TREO_RESIDUAL_EXPERIMENT) && TREO_RESIDUAL_EXPERIMENT && __JVM_OS_IOS__) || (defined(JARBOX_DESKTOP_LAB) && JARBOX_DESKTOP_LAB)
             free(ca->host_residual_plan);
             ca->host_residual_plan = NULL;
 #endif

@@ -77,7 +77,10 @@ with socket.socket() as listener:
                     assert cmd("snapshot")["state"]=="ok"
                     assert (private/"control-frame.png").read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
                     if sink:
+                        # Synthetic fixtures never authorize exact real-game residual execution.
+                        assert cmd("sink residual")["state"]=="refused"
                         a=cmd("status")
+                        assert a["residual_plans"]==a["residual_calls"]==a["residual_regions"]==0
                         assert cmd("sink map" if map_test else "sink on")["state"]=="ok"
                         assert cmd("key enter")["state"]=="queued"
                         deadline=time.monotonic()+8

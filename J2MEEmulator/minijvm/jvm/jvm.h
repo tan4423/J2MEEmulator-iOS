@@ -919,7 +919,7 @@ struct _CodeAttribute {
     void *block_ir_lease; // pool metadata, NULL for private fallback
     unsigned block_ir_state; // 0 cold, 1 building, 2 ready, 3 rejected
 #endif
-#if (defined(JARBOX_HOST_RESIDUAL_TEST) && !__JVM_OS_IOS__) || (defined(TREO_RESIDUAL_EXPERIMENT) && TREO_RESIDUAL_EXPERIMENT && __JVM_OS_IOS__)
+#if (defined(JARBOX_HOST_RESIDUAL_TEST) && !__JVM_OS_IOS__) || (defined(TREO_RESIDUAL_EXPERIMENT) && TREO_RESIDUAL_EXPERIMENT && __JVM_OS_IOS__) || (defined(JARBOX_DESKTOP_LAB) && JARBOX_DESKTOP_LAB)
     void *host_residual_plan; // owned by this CodeAttribute, immutable after publication
     unsigned residual_plan_count;
 #endif
