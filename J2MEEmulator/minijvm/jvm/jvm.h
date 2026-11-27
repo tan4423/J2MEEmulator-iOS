@@ -915,7 +915,8 @@ struct _CodeAttribute {
     u8 *code; // [code_length];
     u8 *bytecode_for_jit; // [code_length];
 #if defined(JARBOX_BLOCK_IR_EXPERIMENT) && JARBOX_BLOCK_IR_EXPERIMENT
-    void *block_ir_plan; // published once, immutable, owned by CodeAttribute
+    void *block_ir_plan; // published once, immutable, leased by CodeAttribute
+    void *block_ir_lease; // pool metadata, NULL for private fallback
     unsigned block_ir_state; // 0 cold, 1 building, 2 ready, 3 rejected
 #endif
 #if (defined(JARBOX_HOST_RESIDUAL_TEST) && !__JVM_OS_IOS__) || (defined(TREO_RESIDUAL_EXPERIMENT) && TREO_RESIDUAL_EXPERIMENT && __JVM_OS_IOS__)
@@ -1183,6 +1184,10 @@ s32 class_destroy(JClass *clazz);
 
 JClass *class_parse(Instance *loader, ByteBuf *bytebuf, Runtime *runtime);
 void jarbox_prepared_code_cache_trim(void);
+#if defined(JARBOX_BLOCK_IR_EXPERIMENT) && JARBOX_BLOCK_IR_EXPERIMENT
+void *jarbox_block_ir_acquire(CodeAttribute *ca,int *hit);
+void jarbox_block_ir_release(CodeAttribute *ca,void *plan);
+#endif
 
 JClass *load_class(Instance *jloader, Utf8String *pClassName, Runtime *runtime);
 
@@ -2004,7 +2009,9 @@ struct _MiniJVM {
     int host_gc_index_enabled; // selected by the host owner before jvm_init
 #endif
 #if defined(JARBOX_BLOCK_IR_EXPERIMENT) && JARBOX_BLOCK_IR_EXPERIMENT
-    uint32_t block_ir_bytes; // lifetime publication budget, per VM
+    uint32_t block_ir_bytes; // lifetime logical publication budget, per VM
+    uint32_t block_ir_seen;
+    uint64_t block_ir_shared_hits, block_ir_plans;
 #if defined(JARBOX_HOST_BLOCK_IR_TEST)
     int host_block_ir_enabled;
     uint64_t host_block_ir_spans, host_block_ir_ops, host_block_ir_compiles;

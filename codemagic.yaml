@@ -19,6 +19,7 @@ workflows:
         JARBOX_VM_PERF_CANDIDATE: "0" # Matched all-off control for Treo CPU investigation; set 1 to reproduce candidate
         JARBOX_PAINT_QOS_EXPERIMENT: "0" # isolate Ninja Core; QoS trial remains available
         JARBOX_RESIDUAL_EXPERIMENT: "0" # isolated Nick residual candidate, never default
+        JARBOX_BLOCK_IR_EXPERIMENT: "0" # shared semantic execution tape, isolated headless candidate
         JARBOX_NINJA_CORE_EXPERIMENT: "0" # continuous scoped Core trial is OFF
         JARBOX_CORE_ABA: "0" # device E3: scoped sink regressed process CPU; full raster default
         JARBOX_GC_PHASE_DIAG: "1" # coarse GC worker phase attribution; independently switchable
@@ -461,6 +462,15 @@ workflows:
             const_fusion_flags="$const_fusion_flags -DTREO_RESIDUAL_EXPERIMENT=1"
             perf_residual=1
           fi
+          perf_block_ir=0
+          if [[ "${JARBOX_BLOCK_IR_EXPERIMENT:-0}" == "1" ]]; then
+            if [[ "$perf_residual" != "1" ]]; then
+              echo "Headless Block IR requires the exact residual archive/API admission" >&2
+              exit 1
+            fi
+            const_fusion_flags="$const_fusion_flags -DJARBOX_BLOCK_IR_EXPERIMENT=1"
+            perf_block_ir=1
+          fi
           perf_native_diag=0
           if [[ "${JARBOX_NATIVE_PAINT_DIAG:-0}" == "1" ]]; then
             const_fusion_flags="$const_fusion_flags -DTREO_NATIVE_PAINT_DIAG=1"
@@ -518,7 +528,7 @@ workflows:
             const_fusion_flags="$const_fusion_flags -DTREO_BINARY_SPRITE_EXPERIMENT=1 -DTREO_BINARY_ABA=1"
             perf_binary=2
           fi
-          perf_profile="const-arith-${perf_arith}_const-branch-${perf_branch}_decoded-int-${perf_decoded}_event-sleep-${perf_sleep}_paint-qos-${perf_qos}_ninja-core-${perf_core}_native-paint-diag-${perf_native_diag}_crop-v2-${perf_crop}_region-stage-${perf_region}_hotspot-${perf_hot}_core-aba-${perf_aba}_gc-phase-${perf_gc_phase}_canvas-phase-${perf_canvas_phase}_array-mode1-${perf_array_mode1}_char-leaf-${perf_char_leaf}_binary-sprite-${perf_binary}_residual-${perf_residual}"
+          perf_profile="const-arith-${perf_arith}_const-branch-${perf_branch}_decoded-int-${perf_decoded}_event-sleep-${perf_sleep}_paint-qos-${perf_qos}_ninja-core-${perf_core}_native-paint-diag-${perf_native_diag}_crop-v2-${perf_crop}_region-stage-${perf_region}_hotspot-${perf_hot}_core-aba-${perf_aba}_gc-phase-${perf_gc_phase}_canvas-phase-${perf_canvas_phase}_array-mode1-${perf_array_mode1}_char-leaf-${perf_char_leaf}_binary-sprite-${perf_binary}_residual-${perf_residual}_block-ir-${perf_block_ir}"
           echo "[JarBoxVM][BUILD] perf_profile=$perf_profile const_fusion_flags=${const_fusion_flags:-off}"
           xcodebuild -list -project "$J2ME_PROJECT"
           xcodebuild -project "$J2ME_PROJECT" \
@@ -611,6 +621,7 @@ workflows:
         JARBOX_VM_PERF_CANDIDATE: "0" # Matched all-off control for Treo CPU investigation; set 1 to reproduce candidate
         JARBOX_PAINT_QOS_EXPERIMENT: "0" # isolate Ninja Core; QoS trial remains available
         JARBOX_RESIDUAL_EXPERIMENT: "0" # isolated Nick residual candidate, never default
+        JARBOX_BLOCK_IR_EXPERIMENT: "0" # shared semantic execution tape, isolated headless candidate
         JARBOX_NINJA_CORE_EXPERIMENT: "0" # continuous scoped Core trial is OFF
         JARBOX_CORE_ABA: "0" # scoped sink rejected twice
         JARBOX_GC_PHASE_DIAG: "1" # coarse GC worker phase attribution; independently switchable

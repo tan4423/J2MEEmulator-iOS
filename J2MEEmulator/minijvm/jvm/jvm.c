@@ -483,6 +483,14 @@ void jvm_destroy(MiniJVM *jvm) {
     arraylist_destroy(jvm->shutdown_hook);
     native_lib_destroy(jvm);
     sys_properties_dispose(jvm);
+#if defined(JARBOX_BLOCK_IR_EXPERIMENT) && JARBOX_BLOCK_IR_EXPERIMENT && __JVM_OS_IOS__
+    // One line at retirement, not a per-bytecode profiler.
+    jvm_printf("[JarBoxVM][BlockIR] seen=%u plans=%llu shared_hits=%llu logical_bytes=%u\n",
+       __atomic_load_n(&jvm->block_ir_seen,__ATOMIC_RELAXED),
+       (unsigned long long)__atomic_load_n(&jvm->block_ir_plans,__ATOMIC_RELAXED),
+       (unsigned long long)__atomic_load_n(&jvm->block_ir_shared_hits,__ATOMIC_RELAXED),
+       __atomic_load_n(&jvm->block_ir_bytes,__ATOMIC_RELAXED));
+#endif
     close_log();
 #if _JVM_DEBUG_LOG_LEVEL > 0
     jvm_printf("[INFO]jvm destoried\n");

@@ -15,6 +15,27 @@
 #include "jarbox_int_leaf.h"
 #include "jarbox_decoded_int.h"
 #include "jarbox_ref_leaf.h"
+#if defined(JARBOX_BLOCK_IR_EXPERIMENT) && JARBOX_BLOCK_IR_EXPERIMENT
+#include "jarbox_block_ir_shared.h"
+static JbiPool jarbox_block_pool=JBI_POOL_INIT;
+void *jarbox_block_ir_acquire(CodeAttribute *ca,int *hit) {
+    if(ca->exception_table_length>JBI_MAX_HANDLERS)return NULL;
+    JbiHandler handlers[JBI_MAX_HANDLERS];
+    for(unsigned i=0;i<ca->exception_table_length;++i){
+        ExceptionTable *h=ca->exception_table+i;
+        handlers[i]=(JbiHandler){h->start_pc,h->end_pc,h->handler_pc};
+    }
+    JbiSharedEntry *lease=NULL;
+    JbiPlan *plan=jbi_pool_acquire(&jarbox_block_pool,ca->bytecode_for_jit,ca->code_length,
+        ca->max_locals,ca->max_stack,handlers,ca->exception_table_length,0,&lease,hit);
+    ca->block_ir_lease=lease;
+    return plan;
+}
+void jarbox_block_ir_release(CodeAttribute *ca,void *plan) {
+    jbi_pool_release(&jarbox_block_pool,(JbiPlan *)plan,(JbiSharedEntry *)ca->block_ir_lease);
+    ca->block_ir_lease=NULL;
+}
+#endif
 #if defined(__APPLE__) || defined(__linux__)
 #include "jarbox_prepared_code_cache.h"
 // Each parse accumulates locally; concurrent JVMs never share counters.
@@ -602,7 +623,7 @@ s32 _class_method_info_destroy(JClass *clazz) {
             jvm_free(ca->bytecode_for_jit);//
             ca->bytecode_for_jit = NULL;
 #if defined(JARBOX_BLOCK_IR_EXPERIMENT) && JARBOX_BLOCK_IR_EXPERIMENT
-            free(ca->block_ir_plan);
+            jarbox_block_ir_release(ca,ca->block_ir_plan);
             ca->block_ir_plan = NULL;
 #endif
 #if (defined(JARBOX_HOST_RESIDUAL_TEST) && !__JVM_OS_IOS__) || (defined(TREO_RESIDUAL_EXPERIMENT) && TREO_RESIDUAL_EXPERIMENT && __JVM_OS_IOS__)

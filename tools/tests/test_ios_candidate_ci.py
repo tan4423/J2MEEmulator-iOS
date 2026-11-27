@@ -5,14 +5,14 @@ from pathlib import Path
 from zipfile import ZipFile
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from run_ios_candidate_ci import BINARY, RESIDUAL, CANDIDATES, OFF, prepare, verify_ipa
+from run_ios_candidate_ci import BINARY, RESIDUAL, BLOCK_IR, CANDIDATES, OFF, prepare, verify_ipa
 from generate_residual_build_identity import generate
 import hashlib
 
 
 def config():
     return {'workflows': {'jit-probe-unsigned': {
-        'environment': {'vars': dict.fromkeys(CANDIDATES + (BINARY, RESIDUAL) + OFF, '0')},
+        'environment': {'vars': dict.fromkeys(CANDIDATES + (BINARY, RESIDUAL, BLOCK_IR) + OFF, '0')},
         'scripts': [{'name': 'Build and package unsigned iPhone IPA', 'script': 'set -euo pipefail\ntrue'}]
     }}}
 
@@ -31,6 +31,15 @@ class IOSCandidateTest(unittest.TestCase):
         self.assertEqual(candidate[RESIDUAL], '1')
         self.assertEqual(candidate['JARBOX_NINJA_CORE_EXPERIMENT'], '1')
         self.assertEqual(candidate[BINARY], '0')
+        self.assertEqual(candidate[BLOCK_IR], '0')
+        headless=prepare(c, 'headless', {BLOCK_IR:'0'})[1]
+        self.assertEqual(headless[RESIDUAL], '1')
+        self.assertEqual(headless[BLOCK_IR], '1')
+        self.assertEqual(headless['JARBOX_NINJA_CORE_EXPERIMENT'], '1')
+        self.assertEqual(headless[BINARY], '0')
+        self.assertTrue(all(headless[k]=='0' for k in CANDIDATES+tuple(x for x in OFF if x!='JARBOX_NINJA_CORE_EXPERIMENT')))
+        for config_name in ('control','intrinsics','binary','binary-trial','residual'):
+            self.assertEqual(prepare(c,config_name,{BLOCK_IR:'1'})[1][BLOCK_IR],'0')
         self.assertTrue(all(candidate[k]=='0' for k in CANDIDATES+tuple(x for x in OFF if x!='JARBOX_NINJA_CORE_EXPERIMENT')))
         binary=prepare(c, 'binary', {})[1]
         self.assertEqual(binary[BINARY], '1')
@@ -60,11 +69,21 @@ class IOSCandidateTest(unittest.TestCase):
             (root/'j2me_api.jar').write_bytes(b'')
             with self.assertRaises(ValueError):generate(root,out)
 
+    def test_headless_packaged_identity(self):
+        profile='const-arith-0_const-branch-0_decoded-int-0_event-sleep-0_paint-qos-0_ninja-core-1_core-aba-0_array-mode1-0_char-leaf-0_binary-sprite-0_residual-1_block-ir-1'
+        with tempfile.TemporaryDirectory() as d:
+            p=Path(d)/'test.ipa'
+            with ZipFile(p,'w') as z:
+                z.writestr('Payload/JarBox.app/Info.plist',plistlib.dumps({'JarBoxPerfProfile':profile,'JarBoxBuildCommit':'a'}))
+            self.assertEqual(verify_ipa(p,'a','headless'),profile)
+            with self.assertRaises(ValueError):
+                verify_ipa(p,'a','residual')
+
     def test_archive(self):
-        profile = 'const-arith-0_const-branch-0_decoded-int-0_event-sleep-0_paint-qos-0_ninja-core-0_core-aba-0_array-mode1-1_char-leaf-1_binary-sprite-0_residual-0'
+        profile = 'const-arith-0_const-branch-0_decoded-int-0_event-sleep-0_paint-qos-0_ninja-core-0_core-aba-0_array-mode1-1_char-leaf-1_binary-sprite-0_residual-0_block-ir-0'
         with tempfile.TemporaryDirectory() as d:
             p = Path(d) / 'test.ipa'
-            for actual, sha, extra in [(profile, 'a', False), (profile.replace('core-aba-0','core-aba-1'), 'a', False), (profile, 'b', False), (profile, 'a', True), (profile+'_char-leaf-0','a',False)]:
+            for actual, sha, extra in [(profile, 'a', False), (profile.replace('core-aba-0','core-aba-1'), 'a', False), (profile, 'b', False), (profile, 'a', True), (profile+'_char-leaf-0','a',False), (profile.replace('block-ir-0','block-ir-1'),'a',False)]:
                 with ZipFile(p, 'w') as z:
                     z.writestr('Payload/JarBox.app/Info.plist', plistlib.dumps({'JarBoxPerfProfile': actual, 'JarBoxBuildCommit': sha}))
                     if extra:

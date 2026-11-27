@@ -9,6 +9,10 @@ on:
       - 'tools/tests/test_ios_candidate_ci.py'
       - 'codemagic.yaml'
       - 'J2MEEmulator/minijvm/jvm/jarbox_residual_*.h'
+      - 'J2MEEmulator/minijvm/jvm/jarbox_block_ir*.h'
+      - 'J2MEEmulator/minijvm/jvm/class_load.c'
+      - 'J2MEEmulator/minijvm/jvm/jvm.h'
+      - 'J2MEEmulator/minijvm/jvm/jvm.c'
       - 'J2MEEmulator/minijvm/jvm/interpreter.c'
       - 'J2MEEmulator/minijvm/jvm/jarbox_treo_state.h'
       - 'J2MEEmulator/NativeBridge/j2me_render.m'
@@ -18,7 +22,7 @@ on:
       configuration:
         description: 'Isolated binary raster, intrinsic candidate or matched control'
         type: choice
-        options: [binary-trial, binary, intrinsics, control, residual]
+        options: [binary-trial, binary, intrinsics, control, residual, headless]
         default: binary-trial
 permissions:
   contents: read
@@ -28,7 +32,7 @@ jobs:
     timeout-minutes: 40
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
-      CONFIGURATION: ${{ inputs.configuration || 'residual' }}
+      CONFIGURATION: ${{ inputs.configuration || 'headless' }}
     steps:
       - uses: actions/checkout@v4
         with:

@@ -19,9 +19,15 @@ static const JbiPlan *jbi_method_plan(Runtime *r,MethodInfo *m,CodeAttribute *ca
 #if defined(JARBOX_HOST_BLOCK_IR_TEST)
     if(!r->jvm->host_block_ir_enabled||
        !utf8_equals_c(m->_this_class->name,"BlockMain"))return NULL;
+#elif __JVM_OS_IOS__ && defined(TREO_RESIDUAL_EXPERIMENT) && TREO_RESIDUAL_EXPERIMENT
+    // Exact Nick archive AND packaged API/boot identity verified by the
+    // existing bridge. No new authorization for render effects.
+    JarBoxSession *owner=r->jvm->session;
+    if(!owner||!__atomic_load_n(&owner->treo_state.residual_archive_verified,__ATOMIC_ACQUIRE)||
+       jarbox_session_phase(owner)!=JARBOX_SESSION_PARKED||
+       jarbox_treo_mode_get(&owner->treo_state)!=1||treo_game_jit_enabled_fast()||
+       strncmp(utf8_cstr(m->_this_class->name),"Class_",6))return NULL;
 #else
-    // Production admission deliberately absent until the real host gate and
-    // exact archive/build policy are established. Unknown JARs stay ordinary.
     return NULL;
 #endif
     if(r->jvm->jdwp_enable||m->breakpoint||r->thrd_info->is_stop||
@@ -32,22 +38,21 @@ static const JbiPlan *jbi_method_plan(Runtime *r,MethodInfo *m,CodeAttribute *ca
     if(state==2)return (const JbiPlan *)ca->block_ir_plan;
     if(state||__atomic_load_n(&r->jvm->block_ir_bytes,__ATOMIC_RELAXED)>=1048576u)return NULL;
     if(!__atomic_compare_exchange_n(&ca->block_ir_state,&state,1,0,__ATOMIC_ACQ_REL,__ATOMIC_ACQUIRE))return NULL;
-    JbiHandler handlers[JBI_MAX_HANDLERS];
-    for(unsigned i=0;i<ca->exception_table_length;++i){
-        ExceptionTable *h=ca->exception_table+i;
-        handlers[i]=(JbiHandler){h->start_pc,h->end_pc,h->handler_pc};
-    }
-    JbiPlan *p=jbi_build(ca->bytecode_for_jit,ca->code_length,ca->max_locals,ca->max_stack,
-                       handlers,ca->exception_table_length,0);
+    int hit=0;
+    JbiPlan *p=jarbox_block_ir_acquire(ca,&hit);
     if(p){
         uint32_t used=__atomic_load_n(&r->jvm->block_ir_bytes,__ATOMIC_RELAXED);
         for(;;){
-            if(used>1048576u||p->bytes>1048576u-used){free(p);p=NULL;break;}
+            if(used>1048576u||p->bytes>1048576u-used){jarbox_block_ir_release(ca,p);p=NULL;break;}
             if(__atomic_compare_exchange_n(&r->jvm->block_ir_bytes,&used,used+p->bytes,0,
                                            __ATOMIC_RELAXED,__ATOMIC_RELAXED))break;
         }
     }
     ca->block_ir_plan=p;
+    if(p){
+        __atomic_fetch_add(&r->jvm->block_ir_plans,1,__ATOMIC_RELAXED);
+        if(hit)__atomic_fetch_add(&r->jvm->block_ir_shared_hits,1,__ATOMIC_RELAXED);
+    }
 #if defined(JARBOX_HOST_BLOCK_IR_TEST)
     if(p)__atomic_fetch_add(&r->jvm->host_block_ir_compiles,1,__ATOMIC_RELAXED);
 #endif
@@ -2850,6 +2855,9 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                 if(!jbr_active)
 #endif
                     block_ir=jbi_method_plan(runtime,method,ca);
+#if __JVM_OS_IOS__
+                int block_ir_report=block_ir&&!__atomic_load_n(&jvm->block_ir_seen,__ATOMIC_RELAXED);
+#endif
 #endif
                 do {
 #if defined(JARBOX_RESIDUAL_EXECUTOR)
@@ -2996,6 +3004,12 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                                 jbi_execute(block_ir,span,sp,localvar);
                                 sp+=span->delta;
                                 runtime->pc=ca->code+span->end;
+#if __JVM_OS_IOS__
+                                if(block_ir_report){
+                                    block_ir_report=0;
+                                    __atomic_store_n(&jvm->block_ir_seen,1,__ATOMIC_RELAXED);
+                                }
+#endif
 #if defined(JARBOX_HOST_BLOCK_IR_TEST)
                                 __atomic_fetch_add(&jvm->host_block_ir_spans,1,__ATOMIC_RELAXED);
                                 __atomic_fetch_add(&jvm->host_block_ir_ops,span->count,__ATOMIC_RELAXED);

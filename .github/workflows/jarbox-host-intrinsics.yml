@@ -29,6 +29,8 @@ jobs:
         run: |
           gcc -std=c11 -Wall -Wextra -Werror -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -no-pie -I J2MEEmulator/minijvm/jvm tools/tests/block_ir_host.c -o /tmp/jarbox-block-ir
           /tmp/jarbox-block-ir
+          gcc -std=c11 -Wall -Wextra -Werror -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -no-pie -pthread -I J2MEEmulator/minijvm/jvm tools/tests/block_ir_shared_host.c -o /tmp/jarbox-block-shared
+          /tmp/jarbox-block-shared
           bash tools/host_multivm_smoke/run.sh asan 1 block_ir
       - name: JIT flag hot path contract
         run: python3 -m unittest discover -s tools/tests -p test_jit_flag_hot_path.py

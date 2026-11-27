@@ -15,7 +15,7 @@ case "$SUITE" in
   binding) EXTRA="-DJARBOX_HOST_BINDING_TEST=1"; SCENARIOS="binding_diff";;
   gc_index|gc_callbacks) EXTRA="-DJARBOX_HOST_INTRINSIC_TEST=1 -DJARBOX_GC_DEFERRED_INDEX_EXPERIMENT=1 -DJARBOX_HOST_GC_INDEX_TEST=1"; SCENARIOS="gc_index_diff";
     if [[ "$SUITE" == gc_callbacks ]]; then SCENARIOS="gc_index_callbacks"; fi;;
-  block_ir) EXTRA="-DJARBOX_HOST_INTRINSIC_TEST=1 -DJARBOX_BLOCK_IR_EXPERIMENT=1 -DJARBOX_HOST_BLOCK_IR_TEST=1"; SCENARIOS="block_ir_diff";;
+  block_ir) EXTRA="-DJARBOX_HOST_INTRINSIC_TEST=1 -DJARBOX_BLOCK_IR_EXPERIMENT=1 -DJARBOX_HOST_BLOCK_IR_TEST=1"; SCENARIOS="block_ir_diff block_ir_share";;
   intrinsics|benchmark)
     EXTRA="-DJARBOX_HOST_INTRINSIC_TEST=1 -DTREO_VM_CHAR_LEAF_EXPERIMENT=1 -DTREO_VM_ARRAY_LOOKUP_MODE1_EXPERIMENT=1"
     SCENARIOS=intrinsic_diff
@@ -99,7 +99,7 @@ for sc in $SCENARIOS; do for i in $(seq 1 $ITER); do
     elif [[ "$SUITE" == intrinsics ]]; then
       grep -E '^intrinsics A:|^intrinsic_diff: PASS' "$OUT/$sc.$i.log"
     elif [[ "$SUITE" == block_ir ]]; then
-      grep -E '^block IR A=|^block_ir_diff: PASS' "$OUT/$sc.$i.log"
+      grep -E '^block IR A=|^block shared A=|^block_ir_(diff|share): PASS' "$OUT/$sc.$i.log"
     elif [[ "$SUITE" == gc_index || "$SUITE" == gc_callbacks ]]; then
       grep -E '^gc index A=|^gc callbacks [AB] |^gc_index_(diff|callbacks): PASS' "$OUT/$sc.$i.log"
     elif [[ "$SUITE" == benchmark ]]; then

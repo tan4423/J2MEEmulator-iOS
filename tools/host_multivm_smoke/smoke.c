@@ -17,7 +17,7 @@ typedef struct { const char *rt, *api, *app, *tag, *mode; char save[512]; int po
     int stop_requested, rc;
     uint64_t char_calls, array_calls, gc_cycles;
 #if defined(JARBOX_HOST_BLOCK_IR_TEST)
-    uint64_t block_spans, block_ops, block_compiles;
+    uint64_t block_spans, block_ops, block_compiles, block_shared_hits;
 #endif
 #if defined(JARBOX_HOST_GC_INDEX_TEST)
     uint64_t gc_index_passes, gc_index_large_snapshots, gc_index_omitted;
@@ -103,6 +103,7 @@ static void *job_main(void *p) {
     j->block_spans=__atomic_load_n(&vm->host_block_ir_spans,__ATOMIC_RELAXED);
     j->block_ops=__atomic_load_n(&vm->host_block_ir_ops,__ATOMIC_RELAXED);
     j->block_compiles=__atomic_load_n(&vm->host_block_ir_compiles,__ATOMIC_RELAXED);
+    j->block_shared_hits=__atomic_load_n(&vm->block_ir_shared_hits,__ATOMIC_RELAXED);
 #endif
 #if defined(JARBOX_HOST_GC_INDEX_TEST)
     j->gc_index_passes=__atomic_load_n(&vm->collector->host_gc_index_passes,__ATOMIC_RELAXED);
@@ -281,7 +282,18 @@ int main(int argc, char **argv) {
     } else
 #endif
 #if defined(JARBOX_HOST_BLOCK_IR_TEST)
-    if(!strcmp(scenario,"block_ir_diff")){
+    if(!strcmp(scenario,"block_ir_share")){
+        init_job(&a,argv,"A","intrinsic-block-on",bport,base);
+        init_job(&b,argv,"B","intrinsic-block-on",bport+1,base);
+        start_job(&a);start_job(&b);join_job(&a);join_job(&b);
+        REQUIRE(!a.rc&&!b.rc&&block_ok(&a)&&block_ok(&b));
+        REQUIRE(a.gc_cycles>0&&b.gc_cycles>0);
+        REQUIRE(a.block_spans>=8000&&b.block_spans>=8000);
+        REQUIRE(a.block_compiles>=3&&b.block_compiles>=3);
+        REQUIRE(a.block_shared_hits+b.block_shared_hits>=3);
+        printf("block shared A=%llu B=%llu (exact plan hits)\n",
+               (unsigned long long)a.block_shared_hits,(unsigned long long)b.block_shared_hits);
+    } else if(!strcmp(scenario,"block_ir_diff")){
         init_job(&a,argv,"A","intrinsic-block-off",bport,base);
         init_job(&b,argv,"B","intrinsic-block-on",bport+1,base);
         start_job(&a);start_job(&b);join_job(&a);join_job(&b);
