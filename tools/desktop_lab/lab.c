@@ -45,6 +45,7 @@ static _Atomic unsigned next_worker;
 static _Thread_local unsigned worker_id;
 static FILE *effect_file;
 static int fixture_ui, logic_mode;
+int jarbox_lab_test_monitors;
 static int sink_admitted,sink_fixture,map_fixture;
 static _Atomic int sink_requested,sink_invalid;
 static _Atomic uint64_t sink_paints,sink_draws,sink_faults;
@@ -567,6 +568,7 @@ int main(int argc,char**argv){
     logic_mode=!strcmp(argv[8],"logic");
     if(!valid_size(width,height)||width>MAX_SCREEN||height>MAX_SCREEN||(!trace_graph&&!logic_mode&&strcmp(argv[8],"plain")))return 2;
     fixture_ui=getenv("JARBOX_LAB_UI_FIXTURE")&&strcmp(getenv("JARBOX_LAB_UI_FIXTURE"),"1")==0;
+    jarbox_lab_test_monitors=getenv("JARBOX_LAB_TEST_MONITORS")&&strcmp(getenv("JARBOX_LAB_TEST_MONITORS"),"1")==0;
     if(fixture_ui&&(!getenv("SDL_VIDEODRIVER")||strcmp(getenv("SDL_VIDEODRIVER"),"dummy")||!strstr(game_path,"/fixture.jar")))return 2;
     sink_fixture=fixture_ui&&getenv("JARBOX_LAB_TEST_SINK")!=NULL;
     sink_admitted=sink_fixture||nick_archive(game_path);

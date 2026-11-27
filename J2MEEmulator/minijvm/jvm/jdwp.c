@@ -5,7 +5,6 @@
 #include "jdwp.h"
 #include "jvm_util.h"
 #include "garbage.h"
-#include <stdlib.h>
 
 #include "../utils/https/mbedtls/include/mbedtls/net_sockets.h"
 
@@ -969,16 +968,17 @@ Runtime *jdwp_get_runtime(JdwpServer *srv) {
     return srv->runtime_jdwp;
 }
 
-s32 jdwp_is_ignore_sync(JdwpServer *srv) {
 #if defined(JARBOX_DESKTOP_LAB) && JARBOX_DESKTOP_LAB
-    // Only the isolated synchronized-Vector fixture opts into real monitors.
-    // The normal desktop game retains the VM's existing NULL-server policy.
-    if (!srv) {
-        const char *test=getenv("JARBOX_LAB_TEST_MONITORS");
-        if (test && test[0]=='1' && test[1]==0) return 0;
-    }
+extern int jarbox_lab_test_monitors;
 #endif
-    if (!srv)return 1;//srv==NULL mean that vm is creating ,there isn't multi thread,so can be ignore
+s32 jdwp_is_ignore_sync(JdwpServer *srv) {
+    if (!srv) {
+#if defined(JARBOX_DESKTOP_LAB) && JARBOX_DESKTOP_LAB
+        return !jarbox_lab_test_monitors;
+#else
+        return 1;//srv==NULL mean that vm is creating ,there isn't multi thread,so can be ignore
+#endif
+    }
     return srv->thread_sync_ignore != 0;
 }
 
