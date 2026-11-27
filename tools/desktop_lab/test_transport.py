@@ -95,7 +95,7 @@ with socket.socket() as listener:
                             assert time.monotonic()<deadline
                             time.sleep(.1)
                         assert b["paints"]>a["paints"] and b["frames"]==a["frames"]
-                        assert b["sink_draws"]>0 and b["sink_invalid"]==0
+                        assert b["sink_draws"]-a["sink_draws"]>=9 and b["sink_invalid"]==0,(a,b)
                         if map_test:
                             assert b["map_q3"]-a["map_q3"]==10,(a,b)
                             assert b["map_m3"]-a["map_m3"]==10,(a,b)
@@ -123,6 +123,7 @@ with socket.socket() as listener:
                             assert time.monotonic()<deadline
                             time.sleep(.1)
                         assert d["paints"]>b["paints"] and d["sink_faults"]==0
+                        assert d["sink_draws"]==b["sink_draws"],(b,d)
                         print("LAB_SINK_ABA_PASS",json.dumps({"a":a,"b":b,"a2":d}))
                         if map_test:
                             assert d["map_q3"]==b["map_q3"] and d["map_m3"]==b["map_m3"] and d["map_refusals"]==b["map_refusals"]
