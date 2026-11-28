@@ -190,6 +190,8 @@ static unsigned jri_fixture_call_skip(Runtime *r,ConstantMethodRef *mr,MethodInf
 #if defined(JARBOX_DESKTOP_LAB)
 #include "jarbox_desktop_tier.h"
 extern int jarbox_lab_sink_level(int64_t context);
+extern int jarbox_lab_logic_ir_enabled(void);
+extern void jarbox_lab_logic_ir_note(uint64_t spans,uint64_t ops);
 #endif
 #if defined(JARBOX_HOST_BLOCK_IR_TEST) && (__JVM_OS_IOS__ || defined(TREO_IOS_GAME_JIT))
 #error Host block IR selection must never be used on iOS
@@ -204,9 +206,9 @@ static const JbiPlan *jbi_method_plan(Runtime *r,MethodInfo *m,CodeAttribute *ca
 #elif defined(JARBOX_DESKTOP_LAB)
     // Full-render logic-only experiment. The desktop owner verifies the
     // exact archive before selecting this immutable per-VM profile.
+    if(!r->jvm->desktop_block_ir_enabled && !jarbox_desktop_ir_mode(jarbox_lab_sink_level(0)) && !jarbox_lab_logic_ir_enabled())return NULL;
     const char *name=utf8_cstr(m->_this_class->name);
-    if((!r->jvm->desktop_block_ir_enabled && !jarbox_desktop_ir_mode(jarbox_lab_sink_level(0))) ||
-       (strncmp(name,"Class_",6) &&
+    if((strncmp(name,"Class_",6) &&
         !(r->jvm->desktop_block_ir_fixture &&
           (!strcmp(name,"LabFixture")||!strncmp(name,"LabFixture$",11)))))return NULL;
 #elif __JVM_OS_IOS__ && defined(TREO_RESIDUAL_EXPERIMENT) && TREO_RESIDUAL_EXPERIMENT
@@ -3419,6 +3421,10 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                 if(!jbr_active)
 #endif
                     block_ir=jbi_method_plan(runtime,method,ca);
+#if defined(JARBOX_DESKTOP_LAB)
+                const int outside_ir=block_ir&&!jvm->desktop_block_ir_enabled&&!jarbox_lab_sink_level(0);
+                uint64_t outside_spans=0,outside_ops=0;
+#endif
 #if __JVM_OS_IOS__
                 int block_ir_report=block_ir&&!__atomic_load_n(&jvm->block_ir_seen,__ATOMIC_RELAXED);
 #endif
@@ -3692,6 +3698,12 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                     if(block_ir&&!thrd_info->suspend_count&&!thrd_info->is_stop){
                         const JbiSpan *span=jbi_find(block_ir,(unsigned)(runtime->pc-ca->code));
                         if(span){
+#if defined(JARBOX_DESKTOP_LAB)
+                            // Stop new outside-paint spans immediately when the tier is withdrawn.
+                            if(outside_ir&&!jarbox_lab_logic_ir_enabled()) { block_ir=NULL; span=NULL; }
+#endif
+                        }
+                        if(span){
                             ptrdiff_t depth=sp-(localvar+ca->max_locals);
                             ptrdiff_t room=(stack->store+stack->max_size)-sp;
                             if(depth>=span->need&&depth<=ca->max_stack&&room>=span->peak&&
@@ -3714,6 +3726,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                                 // explicitly selected logic profile, never baseline.
                                 __atomic_fetch_add(&jvm->desktop_block_ir_spans,1,__ATOMIC_RELAXED);
                                 __atomic_fetch_add(&jvm->desktop_block_ir_ops,span->count,__ATOMIC_RELAXED);
+                                if(outside_ir){++outside_spans;outside_ops+=span->count;}
 #endif
                                 continue;
                             }
@@ -7750,6 +7763,9 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                     break;
 
                 } while (1);//end while
+#if defined(JARBOX_DESKTOP_LAB) && defined(JARBOX_BLOCK_IR_EXPERIMENT) && JARBOX_BLOCK_IR_EXPERIMENT && !_JVM_DEBUG_PROFILE && _JVM_DEBUG_LOG_LEVEL <= 1 && !defined(__JVM_DEBUG__)
+                if(outside_spans)jarbox_lab_logic_ir_note(outside_spans,outside_ops);
+#endif
             }
 
 #if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__
