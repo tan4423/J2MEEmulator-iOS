@@ -4475,7 +4475,7 @@ class GameViewController: UIViewController {
     }
 
     func deepHeadlessReport() -> String {
-        var lines = ["JARBOX_HEADLESS_DIAG v2",
+        var lines = ["JARBOX_HEADLESS_DIAG v3",
             "build=" + (Bundle.main.object(forInfoDictionaryKey: "JarBoxBuildCommit") as? String ?? "unknown"),
             "profile=" + (Bundle.main.object(forInfoDictionaryKey: "JarBoxPerfProfile") as? String ?? "unknown"),
             "session=\(gameSessionToken) parked=\(parkedTreoActive ? 1 : 0)",
@@ -4519,12 +4519,15 @@ class GameViewController: UIViewController {
             if !parkedTreoActive { blockers.append("not_parked") }
             if JarBoxGameStorage.treoCompatibleOnly(for: jarPath) { blockers.append("compatible_only") }
             if treoOK && treo.family == 0 { blockers.append("family_unrecognized") }
-            if treoOK && treo.canvas == 0 { blockers.append("canvas_unrecognized") }
+            if treoOK && treo.canvas == 0 && s.nso_core_profile != 4 { blockers.append("legacy_canvas_unrecognized") }
             if s.nso_core_profile == 0 { blockers.append("archive_not_in_core_allowlist") }
             if s.nso_core_armed == 0 { blockers.append("core_not_armed") }
             if s.nso_core_rejected != 0 { blockers.append("core_sticky_rejection") }
-            if s.residual_verified == 0 { blockers.append("residual_archive_not_verified") }
-            if s.residual_ready == 0 { blockers.append("residual_no_ready_plan") }
+            if s.nso_core_profile == 2 {
+                if s.residual_verified == 0 { blockers.append("residual_archive_not_verified") }
+                if s.residual_ready == 0 { lines.append("residual_optional=no_ready_plan") }
+            } else { lines.append("residual_optional=Nick_only") }
+            if s.nso_core_frames == 0 { blockers.append("no_core_frame_completed") }
             if s.residual_faults != 0 { blockers.append("residual_fault") }
             if treo_game_jit_is_enabled() != 0 { blockers.append("jit_enabled") }
             lines.append("observed_blockers=" + (blockers.isEmpty ? "none_observed" : blockers.joined(separator: ",")))

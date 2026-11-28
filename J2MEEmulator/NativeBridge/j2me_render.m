@@ -763,6 +763,27 @@ static s32 n_ninjaDeepSkip(Runtime *runtime, JClass *clazz) {
     return RUNTIME_STATUS_NORMAL;
 }
 // Candidate is a scoped screen sink, NOT a skipped paint or a new mode.
+#if defined(TREO_NINJA_CORE_EXPERIMENT) && TREO_NINJA_CORE_EXPERIMENT
+static int treo_core_audited_canvas(JarBoxTreoState *state,JClass *cl) {
+    if(!state||!cl||!cl->name||!cl->superclass||
+       !utf8_equals_c(cl->superclass->name,"javax/microedition/lcdui/Canvas"))return 0;
+    const unsigned profile=(unsigned)__atomic_load_n(&state->ninja_core.profile,__ATOMIC_ACQUIRE);
+    const char *name=jarbox_ninja_core_canvas(profile);
+    if(!name||!utf8_equals_c(cl->name,name))return 0;
+    if(profile!=4)return treo_nso_simple_canvas_paint(cl);
+    // V9's audited 20-byte delegate checks null and catches Throwable.
+    // Do not change this Java method or grant the old mode-8 paint bypass.
+    for(s32 i=0;i<cl->methodPool.method_used;i++){
+        MethodInfo *m=&cl->methodPool.method[i];
+        if(!utf8_equals_c(m->name,"paint")||
+           !utf8_equals_c(m->descriptor,"(Ljavax/microedition/lcdui/Graphics;)V"))continue;
+        CodeAttribute *ca=m->converted_code;
+        return !m->is_native&&!m->is_sync&&!m->is_static&&ca&&ca->code&&
+               ca->code_length==20&&ca->exception_table_length==1;
+    }
+    return 0;
+}
+#endif
 static s32 n_ninjaCorePaint(Runtime *runtime, JClass *clazz) {
     int enabled=0;
 #if defined(TREO_NINJA_CORE_EXPERIMENT) && TREO_NINJA_CORE_EXPERIMENT
@@ -770,11 +791,11 @@ static s32 n_ninjaCorePaint(Runtime *runtime, JClass *clazz) {
     Instance *canvas=runtime->jnienv->localvar_getRefer(runtime->localvar,0);
     enabled=state && jarbox_ninja_core_active(&state->ninja_core,treo_runtime_mode(runtime)) &&
         ninja_profile_for_runtime(runtime) && canvas &&
-        (canvas->mb.type & MEM_TYPE_INS) && treo_nso_simple_canvas_paint(canvas->mb.clazz);
+        (canvas->mb.type & MEM_TYPE_INS) && treo_core_audited_canvas(state,canvas->mb.clazz);
 #if defined(TREO_RESIDUAL_EXPERIMENT) && TREO_RESIDUAL_EXPERIMENT && __JVM_OS_IOS__
-    // No sink-only candidate on a cold/unrecognized method or failed plan.
-    enabled=enabled&&__atomic_load_n(&state->residual_plan_ready,__ATOMIC_ACQUIRE)&&
-        !__atomic_load_n(&state->residual_faults,__ATOMIC_RELAXED)&&!treo_game_jit_is_enabled();
+    // Raster is independent of a residual plan: run ordinary Java paint
+    // and preserve Graphics state, offscreen rendering and pixel checks.
+    enabled=enabled&&!__atomic_load_n(&state->residual_faults,__ATOMIC_RELAXED)&&!treo_game_jit_is_enabled();
 #endif
 #if defined(TREO_CORE_ABA) && TREO_CORE_ABA
     if (enabled) {
@@ -1002,7 +1023,7 @@ static void treo_park_transition_visitor(MiniJVM *vm, void *arg) {
     const int mode = change->entering
         ? jarbox_treo_safe_automatic_park_mode(state, change->compatible_only) : 0;
     jarbox_ninja_core_arm(&state->ninja_core,change->entering && !change->compatible_only &&
-        mode==1 && jarbox_treo_nso_canvas_recognized(state));
+        mode==1); // exact profile is required by arm; actual Canvas is checked per paint
     jarbox_treo_guard_auto_set(state, mode == 8);
     jarbox_treo_smart_set(state, mode == 8);
     if (mode == 8 && jvm_bridge_memory_state(NULL) != 0)

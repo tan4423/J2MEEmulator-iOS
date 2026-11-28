@@ -2,14 +2,20 @@
 #include <stdio.h>
 #include "jarbox_ninja_core_policy.h"
 int main(int argc,char **argv) {
-    assert(argc==5);
+    assert(argc==8);
     for(int i=1;i<argc;i++) {
         unsigned char d[32];
         assert(strlen(argv[i])==64);
         for(unsigned j=0;j<32;j++){unsigned x;assert(sscanf(argv[i]+j*2,"%2x",&x)==1);d[j]=(unsigned char)x;}
-        assert(jarbox_ninja_core_profile(d)==(i<4?(unsigned)i:0));
-        if(i<4)for(unsigned j=0;j<32;j++){d[j]^=1;assert(jarbox_ninja_core_profile(d)==0);d[j]^=1;}
+        assert(jarbox_ninja_core_profile(d)==(i<=5?(unsigned)i:i==6?2:0));
+        if(i<=6)for(unsigned j=0;j<32;j++){d[j]^=1;assert(jarbox_ninja_core_profile(d)==0);d[j]^=1;}
     }
+    const char *canvases[]={"main/b","Class_hef","Class_ek","cu","aq"};
+    for(unsigned i=1;i<=5;i++){
+        assert(jarbox_ninja_core_canvas_name(i,canvases[i-1]));
+        for(unsigned j=1;j<=5;j++)if(i!=j)assert(!jarbox_ninja_core_canvas_name(i,canvases[j-1]));
+    }
+    assert(!jarbox_ninja_core_canvas_name(0,"Class_hef")&&!jarbox_ninja_core_canvas_name(2,NULL));
     JarBoxNinjaCoreState a={.profile=1},b={.profile=2},unknown={0};
     assert(!jarbox_ninja_core_active(&a,1));
     jarbox_ninja_core_arm(&unknown,1);assert(!jarbox_ninja_core_active(&unknown,1));

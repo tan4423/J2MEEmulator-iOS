@@ -12,7 +12,10 @@ DIGESTS=[
 "96f811dc1317ec41ba01953350436dc8f850090c3018a26b4ae35f3124c2e95d",
 "11b1d4c11f9082b9d07bc7bd92a9ad3abad40764853e23686cc86686869c966c",
 "3420df8cb91bcc33852230d1c6f9166a99d6ce3f2c4a332cf1bad851c3f7b276",
-"c48f8e40e8c619a8503626b14940693d3fd37f1ecbba1c1342f53957d42f0080"]
+"c48f8e40e8c619a8503626b14940693d3fd37f1ecbba1c1342f53957d42f0080",
+"0e1594b98d4c439adcae55cbd35ec05af5339ac9dcbadaa2c24b113e9c775ddb",
+"1e79927643228d369c1f590879bdefe2051820080606dd433db7da349028b9f9",
+"0000000000000000000000000000000000000000000000000000000000000000"]
 class NinjaCoreTest(unittest.TestCase):
     def test_policy(self):
         cc=shutil.which(os.environ.get("CC","cc"))
@@ -61,5 +64,13 @@ class NinjaCoreTest(unittest.TestCase):
         self.assertIn("if(visible_warmup)__atomic_fetch_or(&st->residual_visible_ready",i)
         self.assertIn("treo_residual_scope_capture(r,wrapper,scope)",i)
         r=(NATIVE/"j2me_render.m").read_text()
-        self.assertIn("state->residual_plan_ready,__ATOMIC_ACQUIRE",r)
+        sink=r.split("static s32 n_ninjaCorePaint(",1)[1].split("static s32 n_ninjaCorePaintResult(",1)[0]
+        self.assertNotIn("residual_plan_ready",sink)
+        self.assertIn("treo_core_audited_canvas(state,canvas->mb.clazz)",sink)
+        self.assertIn("state->residual_faults",sink)
+        self.assertIn("ca->code_length==20&&ca->exception_table_length==1",r)
+        b=(NATIVE/"jvm_bridge.c").read_text()
+        self.assertIn("residual_archive_verified,ninja_core_profile==2",b)
+        self.assertIn("ninja_core_profile&&!treo_residual_api_identity(res_root)",b)
+        self.assertNotIn("ninja_core_profile!=2||",b)
 if __name__=="__main__":unittest.main()

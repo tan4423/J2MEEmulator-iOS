@@ -209,12 +209,7 @@ static int treo_core_digest(const char *path,unsigned char digest[32]) {
 static unsigned treo_ninja_core_archive_profile(const char *path) {
     unsigned char digest[32];
     if(!treo_core_digest(path,digest))return 0;
-#if (defined(TREO_RESIDUAL_EXPERIMENT) && TREO_RESIDUAL_EXPERIMENT && __JVM_OS_IOS__)
-    static const unsigned char newer[32]={0x1e,0x79,0x92,0x76,0x43,0x22,0x8d,0x36,0x9c,0x1f,0x59,0x08,0x79,0xbd,0xef,0xe2,0x05,0x18,0x20,0x08,0x06,0x06,0xdd,0x43,0x3d,0xb7,0xda,0x34,0x90,0x28,0xb9,0xf9};
-    return jarbox_ninja_core_profile(digest)==2||!memcmp(digest,newer,32)?2:0;
-#else
     return jarbox_ninja_core_profile(digest);
-#endif
 }
 #if (defined(TREO_RESIDUAL_EXPERIMENT) && TREO_RESIDUAL_EXPERIMENT && __JVM_OS_IOS__)
 static int treo_residual_api_identity(const char *root) {
@@ -1493,7 +1488,9 @@ static int bridge_init_slot(JarBoxVMContext *slot, const char *res_root, const c
 #if defined(TREO_NINJA_CORE_EXPERIMENT) && TREO_NINJA_CORE_EXPERIMENT
     if (ninja_match) ninja_core_profile=treo_ninja_core_archive_profile(midlet_jar);
 #if (defined(TREO_RESIDUAL_EXPERIMENT) && TREO_RESIDUAL_EXPERIMENT && __JVM_OS_IOS__)
-    if(ninja_core_profile!=2||!treo_residual_api_identity(res_root))ninja_core_profile=0;
+    // All five exact archive profiles may use the scoped raster sink.
+    // Only Nick profile 2 receives the separate residual authorization below.
+    if(ninja_core_profile&&!treo_residual_api_identity(res_root))ninja_core_profile=0;
 #endif
 #endif
     printf("[JarBoxVM][NinjaDeep] profile=%s (NSO resource family)\n",
