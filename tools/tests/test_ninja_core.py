@@ -52,4 +52,14 @@ class NinjaCoreTest(unittest.TestCase):
         for f in ("nso_core_profile","nso_core_armed","nso_core_rejected","nso_core_frames","nso_core_faults","scoped_native_draw_skips","scoped_vm_draw_skips"):
             self.assertIn("out->"+f+"=",b)
             self.assertIn(f+r"=\(slot."+f+")",scene)
+    def test_residual_warmup_never_executes_foreground(self):
+        i=(VM/"interpreter.c").read_text().split("static const JarBoxResidualOp *jbr_live_compile(",1)[1].split("\n#endif\n#endif",1)[0]
+        self.assertIn("phase==JARBOX_SESSION_FOREGROUND && mode==0 && !in_scope",i)
+        self.assertIn("if(in_scope&&!parked)return NULL;",i)
+        self.assertIn("if(!in_scope)return NULL;",i)
+        self.assertIn("return in_scope?plan:NULL;",i)
+        self.assertIn("if(visible_warmup)__atomic_fetch_or(&st->residual_visible_ready",i)
+        self.assertIn("treo_residual_scope_capture(r,wrapper,scope)",i)
+        r=(NATIVE/"j2me_render.m").read_text()
+        self.assertIn("state->residual_plan_ready,__ATOMIC_ACQUIRE",r)
 if __name__=="__main__":unittest.main()

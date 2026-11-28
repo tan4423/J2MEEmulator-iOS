@@ -906,8 +906,6 @@ static const JarBoxResidualOp *jbr_live_compile(Runtime *r,MethodInfo *m,CodeAtt
 #else
        !st||!__atomic_load_n(&st->residual_archive_verified,__ATOMIC_ACQUIRE)||
        __atomic_load_n(&st->residual_faults,__ATOMIC_RELAXED)||
-       jarbox_session_phase(r->jvm->session)!=JARBOX_SESSION_PARKED||
-       !jarbox_ninja_core_active(&st->ninja_core,jarbox_treo_mode_get(st))||
        treo_game_jit_enabled_fast()||
 #endif
        r->jvm->jdwp_enable||r->thrd_info->is_stop||
@@ -918,6 +916,18 @@ static const JarBoxResidualOp *jbr_live_compile(Runtime *r,MethodInfo *m,CodeAtt
     const int in_scope=1;
 #else
     const int in_scope=r->thrd_info->jarbox_headless_scope;
+    const unsigned bit=background?8u:minimap?4u:overlay?2u:1u;
+    // Only exact audited method candidates reach these one-way masks.
+    // Foreground warmup publishes code metadata, never executes residual.
+    __atomic_fetch_or(&st->residual_seen_mask,bit,__ATOMIC_RELAXED);
+    const unsigned phase=jarbox_session_phase(r->jvm->session);
+    const int mode=jarbox_treo_mode_get(st);
+    const int parked=phase==JARBOX_SESSION_PARKED &&
+        jarbox_ninja_core_active(&st->ninja_core,mode);
+    const int visible_warmup=phase==JARBOX_SESSION_FOREGROUND && mode==0 && !in_scope;
+    if(!parked&&!visible_warmup)return NULL;
+    __atomic_fetch_or(&st->residual_admission_mask,bit,__ATOMIC_RELAXED);
+    if(in_scope&&!parked)return NULL;
 #endif
     Instance *wrapper=(s->sp-1)->rvalue;
     if(in_scope) {
@@ -929,6 +939,9 @@ static const JarBoxResidualOp *jbr_live_compile(Runtime *r,MethodInfo *m,CodeAtt
         if(!jbr_nick_binding(r,wrapper,&binding))return NULL;
         scope->graphics=(uintptr_t)binding.graphics;
     }
+#if !(defined(JARBOX_DESKTOP_LAB) && JARBOX_DESKTOP_LAB)
+    __atomic_fetch_or(&st->residual_binding_mask,bit,__ATOMIC_RELAXED);
+#endif
     JarBoxResidualOp *plan=__atomic_load_n(&ca->host_residual_plan,__ATOMIC_ACQUIRE);
     if(plan){
         if(!in_scope)return NULL;
@@ -938,11 +951,17 @@ static const JarBoxResidualOp *jbr_live_compile(Runtime *r,MethodInfo *m,CodeAtt
     // already have linked and initialized operands; never warm by executing
     // extra Java. A still-cold map takes the original interpreter.
     if(!jbr_live_code(ca,background?1216:minimap?746:overlay?413:1368,
-                         background?background_digest:minimap?minimap_digest:overlay?overlay_digest:digest)||
-       (!minimap&&!background&&!jbr_live_wrapper_ready(r->jvm,wrapper,scope,0))||
+                         background?background_digest:minimap?minimap_digest:overlay?overlay_digest:digest))return NULL;
+#if !(defined(JARBOX_DESKTOP_LAB) && JARBOX_DESKTOP_LAB)
+    __atomic_fetch_or(&st->residual_code_mask,bit,__ATOMIC_RELAXED);
+#endif
+    if((!minimap&&!background&&!jbr_live_wrapper_ready(r->jvm,wrapper,scope,0))||
        ((overlay||minimap||background)&&!jbr_live_wrapper_ready(r->jvm,wrapper,scope,1))||
        (minimap&&!jbr_live_wrapper_ready(r->jvm,wrapper,scope,2))||
        ((minimap||background)&&!jbr_live_wrapper_ready(r->jvm,wrapper,scope,3)))return NULL;
+#if !(defined(JARBOX_DESKTOP_LAB) && JARBOX_DESKTOP_LAB)
+    __atomic_fetch_or(&st->residual_wrapper_mask,bit,__ATOMIC_RELAXED);
+#endif
     for(unsigned p=0;p<(unsigned)ca->code_length;) {
         unsigned raw=ca->bytecode_for_jit[p],len=jbr_raw_size(raw);
         if(!len||len>(unsigned)ca->code_length-p)return NULL;
@@ -963,6 +982,9 @@ static const JarBoxResidualOp *jbr_live_compile(Runtime *r,MethodInfo *m,CodeAtt
         }
         p+=len;
     }
+#if !(defined(JARBOX_DESKTOP_LAB) && JARBOX_DESKTOP_LAB)
+    __atomic_fetch_or(&st->residual_target_mask,bit,__ATOMIC_RELAXED);
+#endif
     spin_lock(&ca->compile_lock);
     plan=__atomic_load_n(&ca->host_residual_plan,__ATOMIC_RELAXED);
     if(!plan) {
@@ -983,7 +1005,8 @@ static const JarBoxResidualOp *jbr_live_compile(Runtime *r,MethodInfo *m,CodeAtt
                 jarbox_lab_deep_note(10,1);
 #else
                 __atomic_fetch_add(&st->host_residual_compiles,1,__ATOMIC_RELAXED);
-                __atomic_fetch_or(&st->residual_plan_ready,background?8u:minimap?4u:overlay?2u:1u,__ATOMIC_RELEASE);
+                __atomic_fetch_or(&st->residual_plan_ready,bit,__ATOMIC_RELEASE);
+                if(visible_warmup)__atomic_fetch_or(&st->residual_visible_ready,bit,__ATOMIC_RELAXED);
 #endif
             } else free(candidate);
         }

@@ -1187,6 +1187,13 @@ int jvm_bridge_flight_sample(JarBoxFlightProcess *process, JarBoxFlightSlot *slo
 #if defined(TREO_RESIDUAL_EXPERIMENT) && TREO_RESIDUAL_EXPERIMENT && __JVM_OS_IOS__
         out->residual_verified=__atomic_load_n(&session->treo_state.residual_archive_verified,__ATOMIC_RELAXED);
         out->residual_ready=__atomic_load_n(&session->treo_state.residual_plan_ready,__ATOMIC_RELAXED);
+        out->residual_seen_mask=__atomic_load_n(&session->treo_state.residual_seen_mask,__ATOMIC_RELAXED);
+        out->residual_admission_mask=__atomic_load_n(&session->treo_state.residual_admission_mask,__ATOMIC_RELAXED);
+        out->residual_binding_mask=__atomic_load_n(&session->treo_state.residual_binding_mask,__ATOMIC_RELAXED);
+        out->residual_code_mask=__atomic_load_n(&session->treo_state.residual_code_mask,__ATOMIC_RELAXED);
+        out->residual_wrapper_mask=__atomic_load_n(&session->treo_state.residual_wrapper_mask,__ATOMIC_RELAXED);
+        out->residual_target_mask=__atomic_load_n(&session->treo_state.residual_target_mask,__ATOMIC_RELAXED);
+        out->residual_visible_ready=__atomic_load_n(&session->treo_state.residual_visible_ready,__ATOMIC_RELAXED);
         out->residual_compiles=__atomic_load_n(&session->treo_state.host_residual_compiles,__ATOMIC_RELAXED);
         out->residual_calls=__atomic_load_n(&session->treo_state.host_residual_calls,__ATOMIC_RELAXED);
         out->residual_skips=__atomic_load_n(&session->treo_state.host_residual_skipped,__ATOMIC_RELAXED);

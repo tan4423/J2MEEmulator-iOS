@@ -4475,7 +4475,7 @@ class GameViewController: UIViewController {
     }
 
     func deepHeadlessReport() -> String {
-        var lines = ["JARBOX_HEADLESS_DIAG v1",
+        var lines = ["JARBOX_HEADLESS_DIAG v2",
             "build=" + (Bundle.main.object(forInfoDictionaryKey: "JarBoxBuildCommit") as? String ?? "unknown"),
             "profile=" + (Bundle.main.object(forInfoDictionaryKey: "JarBoxPerfProfile") as? String ?? "unknown"),
             "session=\(gameSessionToken) parked=\(parkedTreoActive ? 1 : 0)",
@@ -4509,6 +4509,7 @@ class GameViewController: UIViewController {
             lines.append("active_sessions=\(count) core_profile=\(s.nso_core_profile) core_armed=\(s.nso_core_armed) core_rejected=\(s.nso_core_rejected) core_frames=\(s.nso_core_frames) core_faults=\(s.nso_core_faults)")
             lines.append("native_draw_skips=\(s.scoped_native_draw_skips) vm_draw_skips=\(s.scoped_vm_draw_skips)")
             lines.append("residual_verified=\(s.residual_verified) residual_ready_mask=\(s.residual_ready) compiles=\(s.residual_compiles) calls=\(s.residual_calls) skips=\(s.residual_skips) deopts=\(s.residual_deopts) faults=\(s.residual_faults)")
+            lines.append("residual_stage_masks seen=\(s.residual_seen_mask) admission=\(s.residual_admission_mask) binding=\(s.residual_binding_mask) code=\(s.residual_code_mask) wrapper=\(s.residual_wrapper_mask) targets=\(s.residual_target_mask) visible_ready=\(s.residual_visible_ready) [bits 1=map 2=overlay 4=minimap 8=background]")
             lines.append("ir_seen=\(s.block_ir_seen) ir_plans=\(s.block_ir_plans) ir_shared_hits=\(s.block_ir_shared_hits) ir_bytes=\(s.block_ir_bytes)")
             lines.append("island_plans=\(s.render_island_plans) island_skips=\(s.render_island_skips) island_ops=\(s.render_island_ops) wrapper_skips=\(s.render_wrapper_skips)")
             lines.append("glyph_attempts=\(s.glyph_attempts) glyph_loops=\(s.glyph_loops) glyph_chars=\(s.glyph_chars) scope_refusals=\(s.glyph_scope_refusals) link_refusals=\(s.glyph_link_refusals) data_refusals=\(s.glyph_data_refusals)")
