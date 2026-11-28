@@ -5111,17 +5111,22 @@ static int treo_residual_scope_capture_impl(Runtime *runtime,Instance *wrapper,J
     if(!runtime||!runtime->jvm||!runtime->thrd_info||!runtime->jvm->session||
        runtime->jvm->jdwp_enable||runtime->thrd_info->is_stop||
        runtime->thrd_info->suspend_count||!runtime->thrd_info->jarbox_headless_scope)return 0;
+    const int ninja_glyph=(generic==2&&wrapper&&jbr_bname(wrapper->mb.clazz,"t"));
+    if(!wrapper||!jbr_bobject(wrapper,wrapper->mb.clazz)||
+       (ninja_glyph?!jbr_bname(wrapper->mb.clazz,"t"):!jbr_bname(wrapper->mb.clazz,"Class_hvi")))return 0;
+    const unsigned expected_profile=ninja_glyph?1u:2u;
     JarBoxSession *session=runtime->jvm->session;
     JarBoxTreoState *state=&session->treo_state;
     if(jarbox_session_phase(session)!=JARBOX_SESSION_PARKED||
-       __atomic_load_n(&state->ninja_core.profile,__ATOMIC_ACQUIRE)!=2||
+       __atomic_load_n(&state->ninja_core.profile,__ATOMIC_ACQUIRE)!=expected_profile||
        !jarbox_ninja_core_active(&state->ninja_core,treo_runtime_mode(runtime)))return 0;
     const uint64_t key=jarbox_native_heap_key_for_runtime(runtime);
     if(!key||key!=g_afk_canvas_owner_key||!g_afk_canvas||!g_afk_scope_serial)return 0;
     JarBoxResidualBinding b;
     int bound;
 #if defined(JARBOX_RECONSTRUCT_EXPERIMENT) && JARBOX_RECONSTRUCT_EXPERIMENT
-    if(generic==2)bound=jbr_nick_glyph_binding(runtime,wrapper,&b);
+    if(generic==2)bound=ninja_glyph?jbr_ninja_glyph_binding(runtime,wrapper,&b):
+                                    jbr_nick_glyph_binding(runtime,wrapper,&b);
     else
 #endif
     bound=generic?jbr_nick_paint_binding_at(runtime,wrapper,&b,30,5):
@@ -5166,7 +5171,9 @@ int treo_residual_scope_valid(Runtime *r,Instance *wrapper,const JarBoxResidualS
        treo_game_jit_is_enabled()||!r->thrd_info->jarbox_headless_scope)return 0;
     JarBoxSession *session=r->jvm->session;
     JarBoxTreoState *st=&session->treo_state;
+    const unsigned expected_profile=jbr_bname(wrapper->mb.clazz,"t")?1u:2u;
     if(jarbox_session_phase(session)!=JARBOX_SESSION_PARKED||
+       __atomic_load_n(&st->ninja_core.profile,__ATOMIC_ACQUIRE)!=expected_profile||
        !jarbox_ninja_core_active(&st->ninja_core,treo_runtime_mode(r))||
        s->owner!=jarbox_native_heap_key_for_runtime(r))return 0;
     // Recheck all mutable target/pixel-dependency fields after retained calls.
