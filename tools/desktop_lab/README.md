@@ -32,6 +32,13 @@ No arguments, strings, login data or packet bytes in the CSV or edge table.
 Do not publish raw JVM stdout: the game itself may print sensitive data.
 CPU is cumulative process time, including SDL and the observer; compare
 matched plain-mode windows, never use graph-mode CPU as release evidence.
+Plain and graph sessions also collect a bounded PaintHot method profile: one in
+32 genuine Canvas paint callbacks, using per-thread CPU time and inclusive/self
+method attribution in memory. The report is emitted only at clean process exit;
+it contains method signatures, counts and timings, never arguments or strings.
+The observer ratio compares sampled and unsampled paint duration so profiler
+perturbation is visible. Use plain mode for the lowest-overhead login/game
+hotspot capture; graph mode is only needed when caller/callee counts are required.
 GC cycles and CPU are sampled live under the VM lifecycle lock. The call graph is exported atomically every five seconds. Run `python3 tools/desktop_lab/inspect.py /absolute/path/trace.csv --watch` for rolling CPU and graph summaries. Surface and trace storage are bounded
 except the one-row-per-second CSV written until stop.
 

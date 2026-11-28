@@ -1536,14 +1536,16 @@ const char *treo_vm_array_lookup_diag_report(void) {
 }
 
 /* Sampled PaintHot attribution. No Java work is omitted; no bytecode hooks. */
-#if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__ && !defined(TREO_VM_PAINT_SAMPLE_DISABLED)
+#if (defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__ && !defined(TREO_VM_PAINT_SAMPLE_DISABLED)) || (defined(JARBOX_DESKTOP_LAB) && JARBOX_DESKTOP_LAB && !defined(TREO_VM_PAINT_SAMPLE_DISABLED))
 #define TREO_VM_PAINT_SAMPLE 1
 #else
 #define TREO_VM_PAINT_SAMPLE 0
 #endif
 
 #if TREO_VM_PAINT_SAMPLE
+#if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__
 extern _Atomic int treo_afk_mode;
+#endif
 #include <pthread.h>
 #include <time.h>
 #include <stdio.h>
@@ -1611,7 +1613,9 @@ void treo_vm_paint_sample_reset(void) {
 void treo_vm_paint_sample_begin(void) {
     PaintThread *t = &paint_tls;
     if (t->scope) { t->scope++; return; }
+#if !defined(JARBOX_DESKTOP_LAB) || !JARBOX_DESKTOP_LAB
     if (atomic_load_explicit(&treo_afk_mode, memory_order_relaxed) != 8) return;
+#endif
     t->scope = 1;
     t->epoch = atomic_load_explicit(&paint_epoch, memory_order_acquire);
     unsigned n = (unsigned)atomic_fetch_add_explicit(&paint_seen, 1, memory_order_relaxed);

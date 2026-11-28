@@ -21,6 +21,8 @@ grep -Fx 'LAB_FIXTURE_SHAPES_PASS' "$OUT/fixture/run.log"
 grep -Fx 'LAB_FIXTURE_TALL_ATLAS_PASS' "$OUT/fixture/run.log"
 grep -Fx 'LAB_FIXTURE_UI_PASS' "$OUT/fixture/run.log"
 grep -Fx 'LAB_FIXTURE_PIXEL_PASS' "$OUT/fixture/run.log"
+grep -E '^\[JarBoxVM\]\[PaintHot\] enabled=1 rate=1/32 paints=[1-9][0-9]* sampled=[1-9][0-9]* ' "$OUT/fixture/run.log"
+grep -F 'depthOverflow=0' "$OUT/fixture/run.log"
 grep -E 'LAB_EXIT rc=0 failed=0 frames=[1-9][0-9]* input_overflow=0' "$OUT/fixture/run.log"
 python3 - "$OUT/fixture/trace.csv" <<'PY'
 import csv,sys,pathlib

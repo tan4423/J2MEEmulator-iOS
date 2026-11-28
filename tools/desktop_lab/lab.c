@@ -22,6 +22,11 @@
 #include "jarbox_desktop_tier.h"
 #include "jarbox_world_observer.h"
 
+extern void treo_vm_paint_sample_reset(void);
+extern void treo_vm_paint_sample_begin(void);
+extern int treo_vm_paint_sample_end(void);
+extern const char *treo_vm_paint_sample_report(void);
+
 enum { MAX_SURF=8192, MAX_DIM=8192, MAX_SCREEN=2048, MAX_EVENTS=256, MAX_EDGES=8192 };
 typedef struct { cairo_surface_t *s; cairo_t *c; int image, mutable; uint64_t id; } Surface;
 static Surface surfaces[MAX_SURF];
@@ -437,8 +442,8 @@ static uint32_t premul(uint32_t v){unsigned a=v>>24;return (a<<24)|((((v>>16)&25
 FN(drawRGB){if(sink_draw(J(0)))OK;Instance*a=R(2);int o=I(3),stride=I(4),w=I(7),h=I(8);if(range(a,o,stride,w,h)){LOCK;Surface*s=get(J(0));if(s){cairo_surface_t*t=cairo_image_surface_create(CAIRO_FORMAT_ARGB32,w,h);if(cairo_surface_status(t)==CAIRO_STATUS_SUCCESS){for(int y=0;y<h;y++)for(int x=0;x<w;x++){uint32_t v=((uint32_t*)a->arr_body)[(int64_t)o+(int64_t)y*stride+x];put(t,x,y,I(9)?premul(v):v|0xff000000u);}cairo_surface_mark_dirty(t);blit(s,t,w,h,I(5),I(6));}else unsupported("drawRGB allocation");cairo_surface_destroy(t);}UNLOCK;}OK;}
 FN(getImageRGB){sink_read(J(0));Instance*a=R(2);int o=I(3),stride=I(4),x=I(5),y=I(6),w=I(7),h=I(8);if(range(a,o,stride,w,h)){LOCK;Surface*s=get(J(0));if(s&&x>=0&&y>=0&&x<=sw(s)-w&&y<=sh(s)-h){cairo_surface_flush(s->s);for(int j=0;j<h;j++)for(int i=0;i<w;i++)((uint32_t*)a->arr_body)[(int64_t)o+(int64_t)j*stride+i]=pixel(s->s,x+i,y+j);}UNLOCK;}OK;}
 FN(flushToScreen){if(sink_draw(J(0)))OK;LOCK;Surface*s=get(J(0));if(s&&show_canvas&&sw(s)==width&&sh(s)==height){cairo_surface_flush(s->s);for(int y=0;y<height;y++)memcpy(frame+(size_t)y*width,cairo_image_surface_get_data(s->s)+(size_t)y*cairo_image_surface_get_stride(s->s),(size_t)width*4);dirty=1;atomic_fetch_add(&frames,1);}UNLOCK;OK;}
-FN(profilePaintBegin){PJ(ns(CLOCK_THREAD_CPUTIME_ID));OK;}
-FN(profilePaintEnd){flush_deep_counts();uint64_t e=ns(CLOCK_THREAD_CPUTIME_ID),b=J(0);if(b&&e>=b){atomic_fetch_add(&paints,1);atomic_fetch_add(&paint_cpu,e-b);}OK;}
+FN(profilePaintBegin){treo_vm_paint_sample_begin();PJ(ns(CLOCK_THREAD_CPUTIME_ID));OK;}
+FN(profilePaintEnd){(void)treo_vm_paint_sample_end();flush_deep_counts();uint64_t e=ns(CLOCK_THREAD_CPUTIME_ID),b=J(0);if(b&&e>=b){atomic_fetch_add(&paints,1);atomic_fetch_add(&paint_cpu,e-b);}OK;}
 FN(isStopRequested){PI(atomic_load(&stop_requested));OK;}
 FN(pollInputEvent){
     Event e;int found=0;LOCK;if(rd!=wr){e=events[rd++%MAX_EVENTS];found=1;}UNLOCK;
@@ -645,6 +650,7 @@ int main(int argc,char**argv){
         fprintf(stderr,"LAB_LOGIC_REFUSED unknown archive\n");return 2;
     }
     trace_path=argv[5];trace=fopen(trace_path,"w");if(!trace)return 2;
+    treo_vm_paint_sample_reset();
     if(trace_graph){
         size_t n=strlen(trace_path)+24;char*p=malloc(n);if(!p)return 2;
         snprintf(p,n,"%s.effects.csv",trace_path);effect_file=fopen(p,"w");free(p);if(!effect_file)return 2;
@@ -707,7 +713,9 @@ int main(int argc,char**argv){
         if(trace_graph&&atomic_load_explicit(&jarbox_lab_trace_enabled,memory_order_relaxed)&&now-last_graph>=5000000000ull){if(!write_graph())unsupported("graph export");last_graph=now;}
         SDL_Delay(8);
     }
-    ctl_close();pthread_join(th,NULL);sample();flush_effects();fclose(trace);
+    ctl_close();pthread_join(th,NULL);sample();flush_effects();
+    fprintf(stderr,"%s\n",treo_vm_paint_sample_report());
+    fclose(trace);
     if(effect_file){fclose(effect_file);fprintf(stderr,"LAB_EFFECTS_LOST=%llu\n",(unsigned long long)effect_lost);}
     if(trace_graph&&!write_graph())unsupported("graph export");
     size_t nl=strlen(trace_path)+32;char *np=malloc(nl);
