@@ -16,7 +16,21 @@ typedef struct { uint16_t pc,end,first,count,need,peak; int16_t delta; uint16_t 
 /* Exact low-PC bucket: 0 empty, 1..128 unique span index + 1,
  * 255 collision. Immutable after plan publication; collision fallback
  * searches the original sorted span array. No cached VM object or value. */
-typedef struct { uint8_t bucket[64]; uint32_t bytes; uint16_t spans,ops; JbiSpan span[]; } JbiPlan;
+#if defined(JARBOX_DESKTOP_LAB) || defined(JBI_TEST_LOGIC_FILTER)
+#define JBI_LOGIC_FILTER 1
+enum { JBI_LOGIC_MIN_RUN=8 };
+#endif
+typedef struct {
+    uint8_t bucket[64];
+    uint32_t bytes;
+    uint16_t spans,ops;
+#if defined(JBI_LOGIC_FILTER)
+    /* Separate exact-PC index for the selective outside-paint experiment. */
+    uint8_t logic_bucket[64];
+    uint16_t logic_spans,logic_reserved;
+#endif
+    JbiSpan span[];
+} JbiPlan;
 _Static_assert(sizeof(JbiSpan)%_Alignof(JbiOp)==0,"unaligned block tape");
 static inline const JbiOp *jbi_ops(const JbiPlan *p) {return (const JbiOp *)(p->span+p->spans);}
 static inline uint16_t jbi_u16(const uint8_t *p,int be) {
@@ -169,6 +183,15 @@ static inline JbiPlan *jbi_build(const uint8_t *c,unsigned size,unsigned locals,
     JbiPlan *p=malloc(bytes);if(!p)return NULL;
     p->bytes=(uint32_t)bytes;p->spans=(uint16_t)ns;p->ops=(uint16_t)no;
     memcpy(p->bucket,bucket,sizeof bucket);
+#if defined(JBI_LOGIC_FILTER)
+    memset(p->logic_bucket,0,sizeof p->logic_bucket);
+    p->logic_spans=p->logic_reserved=0;
+    for(unsigned i=0;i<ns;++i)if(spans[i].count>=JBI_LOGIC_MIN_RUN){
+        unsigned slot=spans[i].pc&63u;
+        p->logic_bucket[slot]=p->logic_bucket[slot]?255:(uint8_t)(i+1);
+        ++p->logic_spans;
+    }
+#endif
     memcpy(p->span,spans,ns*sizeof(*spans));memcpy((void *)jbi_ops(p),ops,no*sizeof(*ops));return p;
 }
 static inline const JbiSpan *jbi_find(const JbiPlan *p,unsigned pc) {
@@ -183,6 +206,19 @@ static inline const JbiSpan *jbi_find(const JbiPlan *p,unsigned pc) {
     while(l<r){unsigned m=l+(r-l)/2;if(p->span[m].pc<pc)l=m+1;else r=m;}
     return l<p->spans&&p->span[l].pc==pc?p->span+l:NULL;
 }
+#if defined(JBI_LOGIC_FILTER)
+static inline const JbiSpan *jbi_find_logic(const JbiPlan *p,unsigned pc) {
+    if(!p||pc>=JBI_MAX_CODE)return NULL;
+    unsigned slot=p->logic_bucket[pc&63u];
+    if(!slot)return NULL;
+    if(slot!=255){
+        const JbiSpan *s=p->span+(slot-1);
+        return s->pc==pc?s:NULL;
+    }
+    const JbiSpan *s=jbi_find(p,pc);
+    return s&&s->count>=JBI_LOGIC_MIN_RUN?s:NULL;
+}
+#endif
 /* No safepoint within a span: no original opcode here could call or block.
  * Preserve all existing stack writes, including stale reference lanes. */
 static inline void jbi_execute(const JbiPlan *p,const JbiSpan *s,StackEntry *entry,StackEntry *locals) {

@@ -3423,6 +3423,9 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                     block_ir=jbi_method_plan(runtime,method,ca);
 #if defined(JARBOX_DESKTOP_LAB)
                 const int outside_ir=block_ir&&!jvm->desktop_block_ir_enabled&&!jarbox_lab_sink_level(0);
+                // Short pure spans remain on the original interpreter outside paint.
+                // Avoid any per-opcode lookup if the method has no eligible span.
+                if(outside_ir&&!block_ir->logic_spans)block_ir=NULL;
                 uint64_t outside_spans=0,outside_ops=0;
                 // Method-local telemetry batch; flush at a bounded span count
                 // and on interpreter exit, without changing VM stack/effects.
@@ -3699,7 +3702,12 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                     // The original stack storage stays authoritative. All
                     // effect/branch handlers and their safepoints run normally.
                     if(block_ir&&!thrd_info->suspend_count&&!thrd_info->is_stop){
+#if defined(JARBOX_DESKTOP_LAB)
+                        const unsigned ir_pc=(unsigned)(runtime->pc-ca->code);
+                        const JbiSpan *span=outside_ir?jbi_find_logic(block_ir,ir_pc):jbi_find(block_ir,ir_pc);
+#else
                         const JbiSpan *span=jbi_find(block_ir,(unsigned)(runtime->pc-ca->code));
+#endif
                         if(span){
 #if defined(JARBOX_DESKTOP_LAB)
                             // Stop new outside-paint spans immediately when the tier is withdrawn.

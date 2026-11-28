@@ -3,6 +3,7 @@
 #include <stdint.h>
 #include <string.h>
 typedef struct { union { int64_t lvalue;uint64_t ulvalue;int32_t ivalue;uint32_t uivalue; }; void *rvalue; } StackEntry;
+#define JBI_TEST_LOGIC_FILTER 1
 #include "jarbox_block_ir.h"
 /* Independent stack reference, using unsigned arithmetic for modulo Java. */
 static uint64_t rng=UINT64_C(0xabc987ff1234);
@@ -83,5 +84,24 @@ int main(void){
         assert(jbi_find(p,pc)==expected);
     }
     assert(!jbi_find(p,UINT32_MAX));free(p);
+    /* Selective outside-paint index: short spans sharing a bucket must
+     * never be admitted, and ordinary paint lookup remains identical. */
+    uint8_t filtered[270];memset(filtered,0xb1,sizeof filtered);
+    const unsigned fp[]={0,64,128,194,258};
+    const unsigned runs[]={8,8,4,8,4};
+    const uint8_t pure[]={3,4,0x60,0x57};
+    for(unsigned i=0;i<5;++i)for(unsigned k=0;k<runs[i];++k)
+        filtered[fp[i]+k]=pure[k%4];
+    p=jbi_build(filtered,sizeof filtered,0,2,NULL,0,1);
+    assert(p&&p->spans==5&&p->logic_spans==3&&p->logic_bucket[0]==255);
+    for(unsigned pc=0;pc<JBI_MAX_CODE+64;++pc){
+        const JbiSpan *expected=NULL;
+        for(unsigned i=0;i<p->spans;++i)if(p->span[i].pc==pc)expected=p->span+i;
+        assert(jbi_find(p,pc)==expected);
+        assert(jbi_find_logic(p,pc)==(expected&&expected->count>=8?expected:NULL));
+    }
+    assert(!jbi_find_logic(p,UINT32_MAX));free(p);
+    p=jbi_build(boundary,sizeof boundary,0,2,NULL,0,1);
+    assert(p&&p->logic_spans==0&&!jbi_find_logic(p,0)&&jbi_find(p,0));free(p);
     printf("block IR: %u exact stack/local span comparisons PASS\n",checked);
 }
