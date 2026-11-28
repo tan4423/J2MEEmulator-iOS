@@ -3039,17 +3039,17 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
     // path. Null/OOB, uninitialized fields, debugger, suspension and other
     // rare conditions retain the original exception and Java semantics.
 #if TREO_VM_ARRAY_LOOKUP_DESKTOP
-    /* Lab-only gate: exact archive/API/RT identity, explicit opt-in and
-       active level-1 headless paint scope. iOS keeps its separate family gate. */
-    const int lookup_mode1=TREO_VM_ARRAY_LOOKUP_MODE1 &&
-        JARBOX_HOST_INTRINSIC_ALLOWED(pruntime,1u) &&
-        jarbox_lab_array_lookup_enabled();
+    /* Desktop q3 uses desktop_map_leaf() above, which replays the array
+       reference lane. Never fall through to the older shortcut here. */
+    const int lookup_mode1=0;
+    const int lookup_legacy=0;
 #else
     const int lookup_mode1=TREO_VM_ARRAY_LOOKUP_MODE1 && treo_paint_mode==1 &&
         JARBOX_HOST_INTRINSIC_ALLOWED(pruntime,1u) &&
         jarbox_treo_nso_family_verified(&pruntime->jvm->session->treo_state);
+    const int lookup_legacy=TREO_VM_ARRAY_LOOKUP_LEGACY && treo_paint_mode==8;
 #endif
-    if ((lookup_mode1 || (TREO_VM_ARRAY_LOOKUP_LEGACY && treo_paint_mode == 8)) &&
+    if ((lookup_mode1 || lookup_legacy) &&
         method->para_slots == 2 && method->return_slots == 1 && method->is_static &&
         !method->is_native && !method->is_sync && method->breakpoint == NULL &&
         method->_this_class->status >= CLASS_STATUS_CLINITED &&
