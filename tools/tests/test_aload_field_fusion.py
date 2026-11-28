@@ -20,6 +20,7 @@ typedef uint16_t u16;
 enum { op_getfield_ref=0xd6,op_getfield_long,op_getfield_int,
        op_getfield_short,op_getfield_jchar,op_getfield_byte };
 #define TREO_VM_DIRECT_DISPATCH 1
+#define JARBOX_DESKTOP_DIRECT_DISPATCH 0
 #define _JVM_DEBUG_PROFILE 0
 #define _JVM_DEBUG_LOG_LEVEL 0
 typedef struct { u8 *pc; } Runtime;
@@ -88,7 +89,7 @@ class AloadFieldFusionTest(unittest.TestCase):
         cc=shutil.which("clang")
         if not cc:self.skipTest("computed goto requires clang")
         s=(CORE/"interpreter.c").read_text()
-        a=s.index("#if TREO_VM_DIRECT_DISPATCH && !_JVM_DEBUG_PROFILE")
+        a=s.index("#if TREO_VM_DIRECT_DISPATCH && !JARBOX_DESKTOP_DIRECT_DISPATCH && !_JVM_DEBUG_PROFILE")
         e=s.index("#endif",a)+len("#endif")
         with tempfile.TemporaryDirectory() as td:
             p,exe=Path(td)/"test.c",Path(td)/"test"
