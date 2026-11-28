@@ -180,11 +180,17 @@ static inline int jbr_scope_prepare_fields(JarBoxResidualScope *s){
        !jbr_bobject(g,q->graphics_class)||!q->canvas_class->superclass)return 0;
     JClass *api=q->canvas_class->superclass;
     const char *gd="Ljavax/microedition/lcdui/Graphics;";
+    const char *current_name=NULL,*current_desc=NULL;
+    if(jbr_bname(q->canvas_class,"Class_hef")){
+        current_name="g";current_desc="LClass_hef;";
+    }else if(jbr_bname(q->canvas_class,"main/b")){
+        current_name="a";current_desc="Lmain/b;";
+    }else return 0;
     if(!jbr_guard_offset(q->wrapper_class,w,"a",gd,sizeof(Instance *),1,&q->w_graphics)||
        !jbr_guard_offset(api,c,"graphics",gd,sizeof(Instance *),1,&q->c_graphics)||
        !jbr_guard_offset(api,c,"nativeContext","J",8,0,&q->c_context)||
        !jbr_guard_offset(api,c,"treoUsesExplicitBuffer","Z",1,0,&q->c_buffer)||
-       !jbr_guard_offset(q->canvas_class,NULL,"g","LClass_hef;",sizeof(Instance *),1,&q->c_current)||
+       !jbr_guard_offset(q->canvas_class,NULL,current_name,current_desc,sizeof(Instance *),1,&q->c_current)||
        !jbr_guard_offset(q->graphics_class,g,"nativeContext","J",8,0,&q->g_context)||
        !jbr_guard_offset(q->graphics_class,g,"ownsContext","Z",1,0,&q->g_owns)||
        !jbr_guard_offset(q->graphics_class,g,"treoPixelDependent","Z",1,0,&q->g_pixels)||
@@ -296,6 +302,75 @@ static inline int jbr_nick_paint_binding_at(Runtime *r,Instance *wrapper,
 }
 static inline int jbr_nick_glyph_binding(Runtime *r,Instance *wrapper,JarBoxResidualBinding *out){
     return jbr_nick_paint_binding_at(r,wrapper,out,UINT32_MAX,5);
+}
+
+static inline int jbr_ninja_glyph_binding(Runtime *r,Instance *wrapper,JarBoxResidualBinding *out){
+    static const char *gd="(Ljavax/microedition/lcdui/Graphics;)V";
+    static const char *graphics_desc="Ljavax/microedition/lcdui/Graphics;";
+    static const unsigned char delegate_digest[32]={0xf3,0xad,0xdd,0xb0,0x9d,0x11,0x60,0x90,0x37,0xf3,0xb3,0xb9,0x41,0xe0,0x62,0x33,0x61,0x60,0x81,0x76,0xba,0x3d,0xfe,0x9a,0x69,0x1c,0x31,0x2b,0xb0,0xf7,0xf5,0x64};
+    static const unsigned char paint_render_digest[32]={0x59,0x47,0x9f,0xe4,0xa5,0x88,0xc1,0x57,0xa5,0x65,0x84,0xf8,0x18,0x5c,0xdd,0xc6,0x84,0x94,0x7e,0xdb,0x77,0x7d,0xd1,0x03,0xa2,0x41,0xc6,0xa9,0xcf,0x05,0xa7,0x6b};
+    static const unsigned char paint_digest[32]={0xda,0x85,0x84,0x50,0xe1,0x4a,0xf4,0xac,0xd7,0xa0,0x72,0x63,0x69,0x05,0xf7,0x59,0x0c,0xd9,0xc5,0xce,0x4d,0x02,0xb0,0x74,0x0b,0x1b,0x53,0x4b,0x89,0x6b,0xf4,0xcf};
+    if(out)memset(out,0,sizeof(*out));
+    if(!out||!r||!r->jvm||!r->thrd_info||!r->stack||!wrapper||
+       !jbr_bname(wrapper->mb.clazz,"t")||!jbr_bobject(wrapper,wrapper->mb.clazz))return 0;
+    Runtime *delegate=NULL;
+    for(Runtime *p=r->parent;p;p=p->parent){
+        if(!jbr_bframe(p,r,0))return 0;
+        if(jbr_bmethod(p->method,"main/a","a",gd)){delegate=p;break;}
+    }
+    if(!jbr_bframe(delegate,r,2)||delegate->method->is_static||
+       delegate->method->converted_code->max_stack!=6||
+       delegate->method->converted_code->max_locals!=2||
+       delegate->method->converted_code->exception_table_length!=1||
+       !jbr_live_code(delegate->method->converted_code,237,delegate_digest))return 0;
+    Runtime *paint_render=delegate->parent;
+    if(!jbr_bframe(paint_render,r,2)||
+       !jbr_bmethod(paint_render->method,"main/b","paint$render",gd)||
+       !jbr_bpc(paint_render,5)||paint_render->method->is_static||
+       paint_render->method->converted_code->max_stack!=2||
+       paint_render->method->converted_code->max_locals!=2||
+       paint_render->method->converted_code->exception_table_length||
+       !jbr_live_code(paint_render->method->converted_code,9,paint_render_digest))return 0;
+    Runtime *paint=paint_render->parent;
+    if(!jbr_bframe(paint,r,2)||!jbr_bmethod(paint->method,"main/b","paint",gd)||
+       !jbr_bpc(paint,6)||paint->method->is_static||
+       paint->method->converted_code->max_stack!=3||
+       paint->method->converted_code->max_locals!=3||
+       paint->method->converted_code->exception_table_length!=1||
+       !jbr_live_code(paint->method->converted_code,37,paint_digest))return 0;
+    Runtime *canvas_frame=paint->parent;
+    if(!jbr_bframe(canvas_frame,r,1)||
+       !jbr_bmethod(canvas_frame->method,"javax/microedition/lcdui/Canvas","doPaint","()V")||
+       canvas_frame->method->is_static)return 0;
+    Instance *d=delegate->localvar[0].rvalue,*g=delegate->localvar[1].rvalue;
+    Instance *c=paint->localvar[0].rvalue;
+    JClass *dc=delegate->method->_this_class,*cc=paint->method->_this_class;
+    JClass *api=canvas_frame->method->_this_class,*wc=wrapper->mb.clazz;
+    JClass *font_class=r->method->_this_class;
+    if(!jbr_bname(dc,"main/a")||!dc->superclass||!jbr_bname(dc->superclass,"main/c")||
+       !jbr_bname(cc,"main/b")||!cc->superclass||cc->superclass!=api||
+       !jbr_bname(api,"javax/microedition/lcdui/Canvas")||
+       !jbr_bname(font_class,"dd")||!jbr_bobject(d,dc)||!jbr_bobject(c,cc)||
+       !g||!jbr_bobject(g,g->mb.clazz)||!jbr_bname(g->mb.clazz,"javax/microedition/lcdui/Graphics")||
+       paint_render->localvar[0].rvalue!=c||paint_render->localvar[1].rvalue!=g||
+       paint->localvar[1].rvalue!=g||canvas_frame->localvar[0].rvalue!=c||
+       !(wc->cff.access_flags&ACC_FINAL)||!(dc->cff.access_flags&ACC_FINAL)||
+       !(cc->cff.access_flags&ACC_FINAL)||wc->jloader!=font_class->jloader||
+       dc->jloader!=font_class->jloader||cc->jloader!=font_class->jloader||
+       g->mb.clazz->jloader!=api->jloader)return 0;
+    if(!jbr_bref(cc,c,"b","Lmain/c;",d,0)||
+       !jbr_bref(cc,NULL,"a","Lmain/b;",c,1)||
+       !jbr_bref(dc,d,"aj","Lt;",wrapper,0)||
+       !jbr_bref(wc,wrapper,"a",graphics_desc,g,0)||
+       !jbr_bref(api,c,"graphics",graphics_desc,g,0)||
+       !jbr_bzero(api,c,"treoUsesExplicitBuffer")||
+       !jbr_bzero(g->mb.clazz,g,"ownsContext")||
+       !jbr_bzero(g->mb.clazz,g,"treoPixelDependent")||
+       !jbr_bzero(g->mb.clazz,g,"headless"))return 0;
+    int64_t cctx=0,gctx=0;
+    if(!jbr_bcontext(api,c,&cctx)||!jbr_bcontext(g->mb.clazz,g,&gctx)||cctx!=gctx)return 0;
+    out->wrapper=wrapper;out->canvas=c;out->graphics=g;out->context=cctx;
+    return 1;
 }
 static inline int jbr_binding_at(Runtime *r,Instance *wrapper,JarBoxResidualBinding *out,
                                  unsigned map_pc,unsigned delegate_pc,unsigned paint_pc) {
