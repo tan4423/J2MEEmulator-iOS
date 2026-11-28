@@ -13,7 +13,10 @@ enum { JBI_MAX_CODE=8192, JBI_MAX_SPANS=128, JBI_MAX_OPS=512,
 typedef struct { uint16_t start,end,handler; } JbiHandler;
 typedef struct { int32_t imm; int16_t slot; uint16_t local; uint8_t kind; } JbiOp;
 typedef struct { uint16_t pc,end,first,count,need,peak; int16_t delta; uint16_t reserved; } JbiSpan;
-typedef struct { uint64_t filter; uint32_t bytes; uint16_t spans,ops; JbiSpan span[]; } JbiPlan;
+/* Exact low-PC bucket: 0 empty, 1..128 unique span index + 1,
+ * 255 collision. Immutable after plan publication; collision fallback
+ * searches the original sorted span array. No cached VM object or value. */
+typedef struct { uint8_t bucket[64]; uint32_t bytes; uint16_t spans,ops; JbiSpan span[]; } JbiPlan;
 _Static_assert(sizeof(JbiSpan)%_Alignof(JbiOp)==0,"unaligned block tape");
 static inline const JbiOp *jbi_ops(const JbiPlan *p) {return (const JbiOp *)(p->span+p->spans);}
 static inline uint16_t jbi_u16(const uint8_t *p,int be) {
@@ -139,7 +142,7 @@ static inline JbiPlan *jbi_build(const uint8_t *c,unsigned size,unsigned locals,
     for(unsigned pc=0;pc<size;++pc)if(targets[pc]&&!starts[pc])return NULL;
     JbiSpan spans[JBI_MAX_SPANS];JbiOp ops[JBI_MAX_OPS],pending[JBI_MAX_RUN];
     unsigned ns=0,no=0,n=0,start=0;int depth=0,need=0,peak=0;
-    uint64_t filter=0;
+    uint8_t bucket[64]={0};
     for(unsigned pc=0;pc<=size;) {
         JbiOp op;int pop=0,push=0;
         unsigned w=pc<size?jbi_width(c,size,pc,be,targets):0;
@@ -148,7 +151,8 @@ static inline JbiPlan *jbi_build(const uint8_t *c,unsigned size,unsigned locals,
             if(n>=JBI_MIN_RUN&&pc<size&&(unsigned)(need+peak)<=maxstack) {
                 if(ns==JBI_MAX_SPANS||n>JBI_MAX_OPS-no)return NULL;
                 spans[ns++]=(JbiSpan){(uint16_t)start,(uint16_t)pc,(uint16_t)no,(uint16_t)n,(uint16_t)need,(uint16_t)peak,(int16_t)depth,0};
-                memcpy(ops+no,pending,n*sizeof(*ops));no+=n;filter|=UINT64_C(1)<<(start&63u);
+                memcpy(ops+no,pending,n*sizeof(*ops));no+=n;
+                unsigned slot=start&63u;bucket[slot]=bucket[slot]?255:(uint8_t)ns;
             }
             n=0;depth=need=peak=0;
         }
@@ -163,11 +167,18 @@ static inline JbiPlan *jbi_build(const uint8_t *c,unsigned size,unsigned locals,
     if(!ns)return NULL;
     size_t bytes=sizeof(JbiPlan)+ns*sizeof(JbiSpan)+no*sizeof(JbiOp);
     JbiPlan *p=malloc(bytes);if(!p)return NULL;
-    p->bytes=(uint32_t)bytes;p->spans=(uint16_t)ns;p->ops=(uint16_t)no;p->filter=filter;
+    p->bytes=(uint32_t)bytes;p->spans=(uint16_t)ns;p->ops=(uint16_t)no;
+    memcpy(p->bucket,bucket,sizeof bucket);
     memcpy(p->span,spans,ns*sizeof(*spans));memcpy((void *)jbi_ops(p),ops,no*sizeof(*ops));return p;
 }
 static inline const JbiSpan *jbi_find(const JbiPlan *p,unsigned pc) {
-    if(!p||!(p->filter&(UINT64_C(1)<<(pc&63u))))return NULL;
+    if(!p||pc>=JBI_MAX_CODE)return NULL;
+    unsigned slot=p->bucket[pc&63u];
+    if(!slot)return NULL;
+    if(slot!=255){
+        const JbiSpan *s=p->span+(slot-1);
+        return s->pc==pc?s:NULL;
+    }
     unsigned l=0,r=p->spans;
     while(l<r){unsigned m=l+(r-l)/2;if(p->span[m].pc<pc)l=m+1;else r=m;}
     return l<p->spans&&p->span[l].pc==pc?p->span+l:NULL;

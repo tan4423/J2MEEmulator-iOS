@@ -63,5 +63,25 @@ int main(void){
     uint8_t bad[]={0x03,0x04,0x60,0x57,0xaa,0,0,0};assert(!jbi_build(bad,sizeof bad,0,2,NULL,0,1));
     uint8_t jsr[]={0x03,0x04,0x60,0x57,0xa8,0,0};assert(!jbi_build(jsr,sizeof jsr,0,2,NULL,0,1));
     uint8_t boundary[]={3,4,0x60,0x57,0x6c,3,4,0x60,0x57,0xb1};p=jbi_build(boundary,sizeof boundary,0,2,NULL,0,1);assert(p&&p->spans==2&&p->span[0].end==4&&p->span[1].pc==5);free(p);
+    /* Two spans in the same low-PC bucket plus a unique span.
+     * Compare every PC to the original sorted-span reference, including
+     * interior bytes, collision misses and out-of-range inputs. */
+    uint8_t buckets[142];
+    memset(buckets,0,sizeof buckets);
+    for(unsigned k=0;k<sizeof buckets;++k)buckets[k]=0x57;
+    /* ireturn (effect boundary) is not lowered; put pure spans at 0,64,130. */
+    memset(buckets,0xb1,sizeof buckets);
+    const unsigned positions[]={0,64,130};
+    for(unsigned k=0;k<3;++k){
+        unsigned i=positions[k];buckets[i]=3;buckets[i+1]=4;buckets[i+2]=0x60;buckets[i+3]=0x57;
+    }
+    p=jbi_build(buckets,sizeof buckets,0,2,NULL,0,1);
+    assert(p&&p->spans==3&&p->bucket[0]==255&&p->bucket[2]==3);
+    for(unsigned pc=0;pc<JBI_MAX_CODE+64;++pc){
+        const JbiSpan *expected=NULL;
+        for(unsigned j=0;j<p->spans;++j)if(p->span[j].pc==pc)expected=p->span+j;
+        assert(jbi_find(p,pc)==expected);
+    }
+    assert(!jbi_find(p,UINT32_MAX));free(p);
     printf("block IR: %u exact stack/local span comparisons PASS\n",checked);
 }
