@@ -2,6 +2,23 @@
 #define JARBOX_RESIDUAL_BINDING_H
 #include <stdint.h>
 #include <string.h>
+#if defined(JARBOX_DESKTOP_LAB) && JARBOX_DESKTOP_LAB
+#include "mbedtls/sha256.h"
+#else
+#include <CommonCrypto/CommonDigest.h>
+#endif
+
+static inline int jbr_code_digest_matches(CodeAttribute *ca,unsigned length,
+                                           const unsigned char digest[32]){
+    if(!ca||!ca->bytecode_for_jit||ca->code_length!=length||!digest)return 0;
+    unsigned char actual[32];
+#if defined(JARBOX_DESKTOP_LAB) && JARBOX_DESKTOP_LAB
+    if(mbedtls_sha256(ca->bytecode_for_jit,length,actual,0)!=0)return 0;
+#else
+    if(!CC_SHA256(ca->bytecode_for_jit,(CC_LONG)length,actual))return 0;
+#endif
+    return memcmp(actual,digest,32)==0;
+}
 
 // Include after jvm.h. Read-only preflight for the exact audited Nick t5
 // binding. Not an archive/API identity check or a runtime admission by itself.
@@ -322,7 +339,7 @@ static inline int jbr_ninja_glyph_binding(Runtime *r,Instance *wrapper,JarBoxRes
        delegate->method->converted_code->max_stack!=6||
        delegate->method->converted_code->max_locals!=2||
        delegate->method->converted_code->exception_table_length!=1||
-       !jbr_live_code(delegate->method->converted_code,237,delegate_digest))return 0;
+       !jbr_code_digest_matches(delegate->method->converted_code,237,delegate_digest))return 0;
     Runtime *paint_render=delegate->parent;
     if(!jbr_bframe(paint_render,r,2)||
        !jbr_bmethod(paint_render->method,"main/b","paint$render",gd)||
@@ -330,14 +347,14 @@ static inline int jbr_ninja_glyph_binding(Runtime *r,Instance *wrapper,JarBoxRes
        paint_render->method->converted_code->max_stack!=2||
        paint_render->method->converted_code->max_locals!=2||
        paint_render->method->converted_code->exception_table_length||
-       !jbr_live_code(paint_render->method->converted_code,9,paint_render_digest))return 0;
+       !jbr_code_digest_matches(paint_render->method->converted_code,9,paint_render_digest))return 0;
     Runtime *paint=paint_render->parent;
     if(!jbr_bframe(paint,r,2)||!jbr_bmethod(paint->method,"main/b","paint",gd)||
        !jbr_bpc(paint,6)||paint->method->is_static||
        paint->method->converted_code->max_stack!=3||
        paint->method->converted_code->max_locals!=3||
        paint->method->converted_code->exception_table_length!=1||
-       !jbr_live_code(paint->method->converted_code,37,paint_digest))return 0;
+       !jbr_code_digest_matches(paint->method->converted_code,37,paint_digest))return 0;
     Runtime *canvas_frame=paint->parent;
     if(!jbr_bframe(canvas_frame,r,1)||
        !jbr_bmethod(canvas_frame->method,"javax/microedition/lcdui/Canvas","doPaint","()V")||
