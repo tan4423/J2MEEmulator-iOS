@@ -140,11 +140,14 @@ with socket.socket() as listener:
                         assert b["paints"]>a["paints"] and b["frames"]==a["frames"]
                         assert b["sink_draws"]>a["sink_draws"] and b["sink_invalid"]==0,(a,b)
                         if map_test:
-                            assert b["map_q3"]-a["map_q3"]==10,(a,b)
-                            assert b["map_m3"]-a["map_m3"]==10,(a,b)
-                            assert b["map_refusals"]-a["map_refusals"]==6,(a,b)
-                            assert b["map_layout_builds"]-a["map_layout_builds"]==2,(a,b)
-                            assert b["map_layout_hits"]>a["map_layout_hits"],(a,b)
+                            # Level-4 Map tests the Vector and whole-map paths.
+                            # The exact q3 leaf is deliberately a separate level-1
+                            # lookup A/B/A experiment below; it must stay cold here.
+                            assert b["map_q3"]==a["map_q3"]==0,(a,b)
+                            assert b["map_m3"]==a["map_m3"]==0,(a,b)
+                            assert b["map_refusals"]==a["map_refusals"]==0,(a,b)
+                            assert b["map_layout_builds"]==a["map_layout_builds"]==0,(a,b)
+                            assert b["map_layout_hits"]==a["map_layout_hits"]==0,(a,b)
                             assert b["vector_hits"]-a["vector_hits"]==12,(a,b)
                             assert b["vector_refusals"]-a["vector_refusals"]==6,(a,b)
                         # Idle/disconnected is normal: no synthetic Nick skill,
