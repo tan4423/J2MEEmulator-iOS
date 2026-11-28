@@ -710,12 +710,12 @@ int main(int argc,char**argv){
         LOCK;int draw=dirty;if(draw){SDL_UpdateTexture(tex,NULL,frame,width*4);dirty=0;}UNLOCK;
         if(draw){SDL_RenderClear(ren);SDL_RenderCopy(ren,tex,NULL,NULL);SDL_RenderPresent(ren);}
         uint64_t now=ns(CLOCK_MONOTONIC);if(now-last>=1000000000ull){sample();flush_effects();last=now;}
-        if(now-last_paint_report>=5000000000ull){fprintf(stderr,"LAB_PAINT_WINDOW mono_ns=%llu\\n%s\\n",(unsigned long long)now,treo_vm_paint_sample_report());treo_vm_paint_sample_reset();last_paint_report=now;}
+        if(now-last_paint_report>=5000000000ull){fprintf(stderr,"LAB_PAINT_WINDOW mono_ns=%llu\n%s\n",(unsigned long long)now,treo_vm_paint_sample_report());treo_vm_paint_sample_reset();last_paint_report=now;}
         if(trace_graph&&atomic_load_explicit(&jarbox_lab_trace_enabled,memory_order_relaxed)&&now-last_graph>=5000000000ull){if(!write_graph())unsupported("graph export");last_graph=now;}
         SDL_Delay(8);
     }
     ctl_close();pthread_join(th,NULL);sample();flush_effects();
-    fprintf(stderr,"LAB_PAINT_WINDOW final=1 mono_ns=%llu\\n%s\\n",(unsigned long long)ns(CLOCK_MONOTONIC),treo_vm_paint_sample_report());
+    fprintf(stderr,"LAB_PAINT_WINDOW final=1 mono_ns=%llu\n%s\n",(unsigned long long)ns(CLOCK_MONOTONIC),treo_vm_paint_sample_report());
     fclose(trace);
     if(effect_file){fclose(effect_file);fprintf(stderr,"LAB_EFFECTS_LOST=%llu\n",(unsigned long long)effect_lost);}
     if(trace_graph&&!write_graph())unsupported("graph export");
