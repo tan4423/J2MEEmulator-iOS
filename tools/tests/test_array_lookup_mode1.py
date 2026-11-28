@@ -29,6 +29,7 @@ class ArrayLookupMode1Test(unittest.TestCase):
 
     def test_desktop_q3_leaf_guards_and_fallback(self):
         headless=(VM/"jarbox_desktop_headless.h").read_text()
+        kind=headless.split("static unsigned desktop_map_kind",1)[1].split("static FieldInfo *desktop_map_field",1)[0]
         leaf=headless.split("static int desktop_map_leaf",1)[1].split("/* Independent Desktop Logic A/B",1)[0]
         for guard in (
             "ca->code_length==17",
@@ -36,6 +37,9 @@ class ArrayLookupMode1Test(unittest.TestCase):
             'jbr_eq(m->_this_class->name,"Class_hii")',
             'jbr_eq(m->descriptor,"(II)I")',
             'c[10]==0x2e&&jbr_eq(m->name,"q3")',
+        ):
+            self.assertIn(guard,kind)
+        for guard in (
             "if(kind!=2)return 0",
             'desktop_map_field(cl,jbg_u16(c+1),"x3","[I"',
             'desktop_map_field(cl,jbg_u16(c+5),"j1","I"',
