@@ -34,6 +34,8 @@ import java.io.FileOutputStream;
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.util.Map;
+import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.concurrent.ConcurrentHashMap;
 
 import javax.microedition.rms.InvalidRecordIDException;
@@ -54,6 +56,58 @@ public class AndroidRecordStoreManager implements RecordStoreManager {
 	// opening a store from a hot paint path does not call mkdirs()/exists() on
 	// every open. Different roots remain isolated by the map key.
 	private static final Map<String, File> DATA_DIR_CACHE = new ConcurrentHashMap<>();
+
+	private static final int MAX_CLOSED_STORES = 16;
+	private static final long MAX_CLOSED_STORE_BYTES = 256 * 1024L;
+	private static final long MAX_CLOSED_CACHE_BYTES = 1024 * 1024L;
+	private final LinkedHashMap<String, RecordStoreImpl> closedStoreCache =
+			new LinkedHashMap<>(16, 0.75f, true);
+	private long closedStoreCacheBytes;
+
+	void cacheClosedStore(RecordStoreImpl store) {
+		String name = store.getRecordStoreName();
+		long bytes = store.getCachedBytes();
+		synchronized (closedStoreCache) {
+			RecordStoreImpl previous = closedStoreCache.remove(name);
+			if (previous != null) closedStoreCacheBytes -= previous.getCachedBytes();
+			if (bytes > MAX_CLOSED_STORE_BYTES) {
+				store.clearCachedRecords();
+				return;
+			}
+			closedStoreCache.put(name, store);
+			closedStoreCacheBytes += bytes;
+			while (closedStoreCache.size() > MAX_CLOSED_STORES
+					|| closedStoreCacheBytes > MAX_CLOSED_CACHE_BYTES) {
+				Iterator<Map.Entry<String, RecordStoreImpl>> it =
+						closedStoreCache.entrySet().iterator();
+				if (!it.hasNext()) break;
+				RecordStoreImpl evicted = it.next().getValue();
+				it.remove();
+				closedStoreCacheBytes -= evicted.getCachedBytes();
+				evicted.clearCachedRecords();
+			}
+		}
+	}
+
+	private boolean takeClosedStore(String name, RecordStoreImpl store) {
+		synchronized (closedStoreCache) {
+			if (closedStoreCache.get(name) != store) return false;
+			closedStoreCache.remove(name);
+			closedStoreCacheBytes -= store.getCachedBytes();
+			return true;
+		}
+	}
+
+	private void evictClosedStore(String name) {
+		synchronized (closedStoreCache) {
+			RecordStoreImpl evicted = closedStoreCache.remove(name);
+			if (evicted != null) {
+				closedStoreCacheBytes -= evicted.getCachedBytes();
+				evicted.clearCachedRecords();
+			}
+		}
+	}
+
 
 	private static File getDataDir() {
 		String root = System.getProperty("app.save.root");
@@ -102,6 +156,7 @@ public class AndroidRecordStoreManager implements RecordStoreManager {
 		if (value instanceof RecordStoreImpl && ((RecordStoreImpl) value).isOpen()) {
 			throw new RecordStoreException();
 		}
+		evictClosedStore(recordStoreName);
 
 		File dataDir = getDataDir();
 		String prefix = recordStoreName + ".";
@@ -131,6 +186,12 @@ public class AndroidRecordStoreManager implements RecordStoreManager {
 		if (value instanceof RecordStoreImpl && ((RecordStoreImpl) value).isOpen()) {
 			((RecordStoreImpl) value).setOpen();
 			RmsEventLog.note("OPEN", recordStoreName, -1, -1);
+			return (RecordStoreImpl) value;
+		}
+		if (value instanceof RecordStoreImpl
+				&& takeClosedStore(recordStoreName, (RecordStoreImpl) value)) {
+			((RecordStoreImpl) value).setOpen();
+			RmsEventLog.note("OPEN_CACHE", recordStoreName, -1, -1);
 			return (RecordStoreImpl) value;
 		}
 

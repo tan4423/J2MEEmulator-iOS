@@ -142,6 +142,26 @@ public class RecordStoreImpl extends RecordStore {
 		return open;
 	}
 
+	String getRecordStoreName() {
+		return recordStoreName;
+	}
+
+	long getCachedBytes() {
+		synchronized (records) {
+			long total = 0;
+			for (byte[] data : records.values()) {
+				if (data != null) total += data.length;
+			}
+			return total;
+		}
+	}
+
+	void clearCachedRecords() {
+		synchronized (records) {
+			records.clear();
+		}
+	}
+
 	void setOpen() {
 		openCount++;
 		this.open = true;
@@ -162,9 +182,12 @@ public class RecordStoreImpl extends RecordStore {
 				recordListeners.removeAllElements();
 			}
 
-			records.clear();
-
 			open = false;
+		}
+		if (recordStoreManager instanceof AndroidRecordStoreManager) {
+			((AndroidRecordStoreManager) recordStoreManager).cacheClosedStore(this);
+		} else {
+			clearCachedRecords();
 		}
 		System.out.println("RecordStore " + recordStoreName + " closed");
 	}

@@ -48,6 +48,48 @@ public class RmsSmoke {
             }
             return;
         }
+        if ("cache".equals(mode)) {
+            RecordStore r = RecordStore.openRecordStore("settings", false);
+            byte[] actual = r.getRecord(1);
+            if (!args[2].equals(new String(actual, "UTF-8")))
+                throw new AssertionError("cached RMS data changed");
+            r.closeRecordStore();
+            java.lang.reflect.Field managerField = RecordStore.class.getDeclaredField("recordStoreManager");
+            managerField.setAccessible(true);
+            Object manager = managerField.get(null);
+            java.lang.reflect.Field cacheField = manager.getClass().getDeclaredField("closedStoreCache");
+            cacheField.setAccessible(true);
+            java.util.Map cache = (java.util.Map) cacheField.get(manager);
+            if (cache.size() != 1) throw new AssertionError("closed store not cached");
+            RecordStore again = RecordStore.openRecordStore("settings", false);
+            if (!args[2].equals(new String(again.getRecord(1), "UTF-8")))
+                throw new AssertionError("cached reopen data mismatch");
+            if (cache.size() != 0) throw new AssertionError("cache entry not claimed");
+            again.closeRecordStore();
+            if (cache.size() != 1) throw new AssertionError("closed store not returned to cache");
+            return;
+        }
+        if ("cache-lru".equals(mode)) {
+            for (int i = 0; i < 17; i++) {
+                RecordStore r = RecordStore.openRecordStore("store" + i, true);
+                byte[] data = ("VALUE_" + i).getBytes("UTF-8");
+                r.addRecord(data, 0, data.length);
+                r.closeRecordStore();
+            }
+            java.lang.reflect.Field managerField = RecordStore.class.getDeclaredField("recordStoreManager");
+            managerField.setAccessible(true);
+            Object manager = managerField.get(null);
+            java.lang.reflect.Field cacheField = manager.getClass().getDeclaredField("closedStoreCache");
+            cacheField.setAccessible(true);
+            java.util.Map cache = (java.util.Map) cacheField.get(manager);
+            if (cache.size() != 16) throw new AssertionError("closed cache bound violated");
+            RecordStore first = RecordStore.openRecordStore("store0", false);
+            if (!"VALUE_0".equals(new String(first.getRecord(1), "UTF-8")))
+                throw new AssertionError("evicted store did not reload from disk");
+            first.closeRecordStore();
+            if (cache.size() != 16) throw new AssertionError("LRU cache size changed");
+            return;
+        }
         if ("corrupt".equals(mode)) {
             try {
                 RecordStore.openRecordStore("settings", true);
@@ -114,6 +156,14 @@ class RmsPersistenceAuditTest(unittest.TestCase):
         self.assertNotIn(b"ACCOUNT_B_PRIVATE", file_a)
         self.assertIn(b"ACCOUNT_B_PRIVATE", file_b)
         self.assertNotIn(b"ACCOUNT_A_PRIVATE", file_b)
+
+    def test_closed_store_cache_and_lru_eviction(self):
+        classes = self.compile()
+        root = self.root / "cache"
+        root.mkdir()
+        self.run_case(classes, root, "write", "CACHE_PRIVATE")
+        self.run_case(classes, root, "cache", "CACHE_PRIVATE")
+        self.run_case(classes, root, "cache-lru")
 
     def test_corrupted_header_and_record_are_preserved_not_reinitialized(self):
         classes = self.compile()
