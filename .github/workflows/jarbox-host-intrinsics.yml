@@ -34,6 +34,8 @@ jobs:
           bash tools/host_multivm_smoke/run.sh asan 1 block_ir
       - name: JIT flag hot path contract
         run: python3 -m unittest discover -s tools/tests -p test_jit_flag_hot_path.py
+      - name: UTF-16 String.indexOf cache differential
+        run: python3 -m unittest discover -s tools/tests -p test_string_index_cache.py
       - name: Mode8 whole bitmap glyph loop and original reference-lane differential
         run: |
           gcc -std=c11 -Wall -Wextra -Werror -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -no-pie -I J2MEEmulator/minijvm/jvm tools/tests/glyph_loop_host.c -o /tmp/jarbox-glyph-loop
