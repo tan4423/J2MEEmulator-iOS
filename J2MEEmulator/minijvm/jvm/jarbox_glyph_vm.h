@@ -167,8 +167,8 @@ static inline int jbg_ninja_vm_preflight(Runtime *r,unsigned kind,
        wrapper->mb.clazz->jloader!=cl->jloader||
        (kind==4&&!jbg_obj(l[6].rvalue,cl))){jbg_host_note(r,1);return 0;}
     FieldInfo *charset=jbg_field_at(m,55,"x","Ljava/lang/String;",sizeof(Instance *),1);
-    FieldInfo *table=jbg_field_at(m,kind==3?86:186,"y","[[I",sizeof(Instance *),1);
-    FieldInfo *image=jbg_field_at(m,kind==3?82:182,"w",image_desc,sizeof(Instance *),1);
+    FieldInfo *table=jbg_field_at(m,kind==3?86:187,"y","[[I",sizeof(Instance *),1);
+    FieldInfo *image=jbg_field_at(m,kind==3?81:182,"w",image_desc,sizeof(Instance *),1);
     FieldInfo *spacing=jbg_field_at(m,kind==3?138:238,"u","I",4,0);
     if(!charset||!table||!image||!spacing){jbg_host_note(r,2);return 0;}
     Instance *a=jbg_ref(font,charset),*rows=jbg_ref(font,table);
