@@ -173,7 +173,7 @@ public class AndroidRecordStoreManager implements RecordStoreManager {
 		// If a record is corrupt, the caller receives a failure and must
 		// never reopen a half-populated in-memory store as if it were valid.
 		synchronized (recordStoreImpl.records) {
-			File dataDir = new File(getDataDir());
+			File dataDir = getDataDir();
 			String prefix = recordStoreName + ".";
 			String[] files = dataDir.list();
 			if (files != null) {
