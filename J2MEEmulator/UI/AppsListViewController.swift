@@ -2527,11 +2527,9 @@ class AppsListViewController: UIViewController,
                                       message: lines.joined(separator: "\n"),
                                       preferredStyle: .alert)
         if let game = activeGame {
-            alert.addAction(UIAlertAction(title: "Log Deep Headless", style: .default) { [weak self, weak game] _ in
-                DispatchQueue.main.async { [weak self, weak game] in
-                    guard let self, let game else { return }
-                    game.showDeepHeadlessReport(from: self)
-                }
+            alert.addAction(UIAlertAction(title: "Sao chép log Deep Headless", style: .default) { [weak game] _ in
+                guard let game else { return }
+                UIPasteboard.general.string = game.deepHeadlessReport()
             })
         }
         alert.addAction(UIAlertAction(title: "Nhật ký save", style: .default) { [weak self] _ in

@@ -4468,7 +4468,7 @@ class GameViewController: UIViewController {
         presenter.present(alert, animated: true)
     }
 
-    private func deepHeadlessReport() -> String {
+    func deepHeadlessReport() -> String {
         var lines = ["JARBOX_HEADLESS_DIAG v1",
             "build=" + (Bundle.main.object(forInfoDictionaryKey: "JarBoxBuildCommit") as? String ?? "unknown"),
             "profile=" + (Bundle.main.object(forInfoDictionaryKey: "JarBoxPerfProfile") as? String ?? "unknown"),
