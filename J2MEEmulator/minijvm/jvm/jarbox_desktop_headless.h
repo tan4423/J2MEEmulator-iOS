@@ -8,21 +8,35 @@ extern int jarbox_lab_sink_level(int64_t context);
 extern void jarbox_lab_deep_note(unsigned kind,unsigned count);
 /* Shared residual compiler above supplies the exact wrapper/link proofs. */
 static unsigned jbg_live_kind(MethodInfo *m,CodeAttribute *ca){
-    unsigned kind=ca->code_length==154?1:ca->code_length==254?2:0;
+    unsigned kind=ca->code_length==154?1:ca->code_length==254?2:
+                  ca->code_length==156?3:ca->code_length==256?4:0;
     if(!kind)return 0;
     unsigned state=__atomic_load_n(&ca->desktop_glyph_kind,__ATOMIC_ACQUIRE);
-    if(state)return state<=2?state:0;
+    if(state)return state<=4?state:0;
     static const unsigned char single[32]={0x5e,0xd4,0x14,0xd5,0x2a,0xad,0x54,0x0f,0x17,0x20,0xf1,0xcc,0x12,0xa2,0x47,0xed,0x59,0xbd,0xdb,0x36,0xb1,0xea,0x0e,0x4e,0x08,0xbb,0x91,0x20,0xe5,0x6d,0x53,0xe8};
     static const unsigned char triple[32]={0xff,0xd9,0x09,0x3b,0xb7,0xc4,0xb3,0xb4,0x52,0x48,0x4c,0x82,0x65,0xa7,0xf3,0x44,0x17,0x0c,0xf9,0xf5,0x24,0xdd,0xa6,0xd0,0x97,0x79,0xee,0x9a,0x48,0x61,0x40,0x23};
-    if(m->is_static||m->is_sync||m->is_native||m->return_slots||
-       m->para_slots!=5+kind||ca->max_locals!=7+kind||ca->max_stack!=10||
-       ca->exception_table_length||!(m->_this_class->cff.access_flags&ACC_FINAL)||
-       !jbr_eq(m->_this_class->name,"Class_hui")||!jbr_eq(m->name,"a")||
-       !jbr_eq(m->descriptor,kind==1?"(LClass_hvi;Ljava/lang/String;III)V":
-          "(LClass_hvi;Ljava/lang/String;IIILClass_hui;)V")||
-       !jbr_live_code(ca,kind==1?154:254,kind==1?single:triple))kind=3;
+    static const unsigned char ninja_single[32]={0x66,0x2b,0xb5,0x4d,0xf2,0xb1,0xc8,0xcd,0x00,0xce,0xe5,0x3c,0x19,0xc4,0xf8,0xdd,0x65,0x62,0xf5,0x58,0x7a,0x56,0x2b,0xe8,0x64,0xfe,0x7d,0x13,0x94,0x41,0x33,0xae};
+    static const unsigned char ninja_triple[32]={0x78,0x2a,0x51,0x73,0xba,0x35,0x76,0xfd,0x49,0x51,0xf6,0x47,0x27,0x59,0xf3,0x4b,0xd2,0x6a,0xcd,0xcf,0xbd,0x14,0xb0,0x94,0x75,0xb6,0xd9,0x03,0x93,0xaf,0x4d,0xb5};
+    if(kind<=2){
+        if(m->is_static||m->is_sync||m->is_native||m->return_slots||
+           m->para_slots!=5+kind||ca->max_locals!=7+kind||ca->max_stack!=10||
+           ca->exception_table_length||!(m->_this_class->cff.access_flags&ACC_FINAL)||
+           !jbr_eq(m->_this_class->name,"Class_hui")||!jbr_eq(m->name,"a")||
+           !jbr_eq(m->descriptor,kind==1?"(LClass_hvi;Ljava/lang/String;III)V":
+              "(LClass_hvi;Ljava/lang/String;IIILClass_hui;)V")||
+           !jbr_live_code(ca,kind==1?154:254,kind==1?single:triple))kind=5;
+    }else{
+        if(m->is_static||m->is_sync||m->is_native||m->return_slots||
+           m->para_slots!=(kind==3?6:7)||ca->max_locals!=(kind==3?8:9)||
+           ca->max_stack!=10||ca->exception_table_length||
+           !(m->_this_class->cff.access_flags&ACC_FINAL)||
+           !jbr_eq(m->_this_class->name,"dd")||!jbr_eq(m->name,"a$render")||
+           !jbr_eq(m->descriptor,kind==3?"(Lt;Ljava/lang/String;III)V":
+              "(Lt;Ljava/lang/String;IIILdd;)V")||
+           !jbr_live_code(ca,kind==3?156:256,kind==3?ninja_single:ninja_triple))kind=5;
+    }
     __atomic_store_n(&ca->desktop_glyph_kind,kind,__ATOMIC_RELEASE);
-    return kind<=2?kind:0;
+    return kind<=4?kind:0;
 }
 
 /* Diagnostic only; cached role belongs to the loaded MethodInfo. */
@@ -69,26 +83,34 @@ static int desktop_graphics_leaf(MethodInfo *m,Runtime *r){
 static int desktop_glyph_skip(Runtime *r,unsigned kind,StackEntry *sp){
     if(jarbox_lab_sink_level(0)<3)return 0;
     jarbox_lab_deep_note(1,1);
+    const int ninja=kind>=3;
     Instance *w=r->localvar[1].rvalue;
     JarBoxResidualBinding b;
-    if(!jbr_nick_glyph_binding(r,w,&b)||jarbox_lab_sink_level(b.context)<3){
+    if(!w||(ninja?!jbr_ninja_glyph_binding(r,w,&b):!jbr_nick_glyph_binding(r,w,&b))||
+       jarbox_lab_sink_level(b.context)<3){
         jarbox_lab_deep_note(2,1);return 0;
     }
-    JarBoxResidualScope scope={.context=b.context,.wrapper=(uintptr_t)b.wrapper,.canvas=(uintptr_t)b.canvas,.graphics=(uintptr_t)b.graphics};
-    ConstantMethodRef *mr=jbg_methodref_at(r->method,kind==1?126:129);
+    const unsigned call_pc=kind==1?126:kind==2?129:kind==3?124:224;
+    ConstantMethodRef *mr=jbg_methodref_at(r->method,call_pc);
     const char *desc="(Ljavax/microedition/lcdui/Image;IIIIIIII)V";
+    static const unsigned char wrapper_digest[32]={0x0f,0xd2,0x09,0x76,0xfe,0x8b,0x7f,0x81,0xb6,0xbb,0xcc,0x82,0x87,0x69,0x20,0xc0,0xa8,0x81,0xa1,0x89,0x7b,0x1a,0xc6,0xa2,0x49,0xdf,0xd1,0x99,0xa2,0xa5,0x17,0xf5};
     MethodInfo *wm=jbr_live_declared(w->mb.clazz,"a",desc);
     MethodInfo *gm=jbr_live_declared(b.graphics->mb.clazz,"drawRegion",desc);
-    if(!mr||!wm||!gm||!jbr_eq(mr->clsName,"Class_hvi")||!jbr_eq(mr->name,"a")||
-       !jbr_eq(mr->descriptor,desc)||!jbr_live_target_ready(r->jvm,mr,w,wm)||
+    if(!mr||!wm||!gm||!jbr_eq(mr->clsName,ninja?"t":"Class_hvi")||
+       !jbr_eq(mr->name,"a")||!jbr_eq(mr->descriptor,desc)||
+       !jbr_live_target_ready(r->jvm,mr,w,wm)||
        wm->breakpoint||gm->breakpoint||wm->para_slots!=10||gm->para_slots!=10||
+       wm->return_slots||gm->return_slots||!wm->converted_code||
        wm->converted_code->max_locals!=10||wm->converted_code->max_stack!=10||
+       wm->converted_code->exception_table_length||
        wm->converted_code->jit.state==JIT_GEN_SUCCESS||!desktop_graphics_leaf_kind(gm)||
-       !jbr_live_wrapper_ready(r->jvm,w,&scope,0)){
+       (ninja?!jbr_live_code(wm->converted_code,31,wrapper_digest):
+               !jbr_live_wrapper_ready(r->jvm,w,&(JarBoxResidualScope){.context=b.context,.wrapper=(uintptr_t)b.wrapper,.canvas=(uintptr_t)b.canvas,.graphics=(uintptr_t)b.graphics},0))){
         jarbox_lab_deep_note(3,1);return 0;
     }
     JbgProof proof;
-    if(!jbg_vm_preflight(r,kind,"Ljavax/microedition/lcdui/Image;",&proof)){
+    if(ninja?!jbg_ninja_vm_preflight(r,kind,"Ljavax/microedition/lcdui/Image;",&proof):
+              !jbg_vm_preflight(r,kind,"Ljavax/microedition/lcdui/Image;",&proof)){
         jarbox_lab_deep_note(4,1);return 0;
     }
     if(jarbox_lab_sink_level(b.context)<3)return 0;
