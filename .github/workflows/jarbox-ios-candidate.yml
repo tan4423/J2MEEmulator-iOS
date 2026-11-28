@@ -27,7 +27,7 @@ on:
       configuration:
         description: 'Isolated binary raster, intrinsic candidate or matched control'
         type: choice
-        options: [binary-trial, binary, intrinsics, control, residual, headless, headless-render, headless-render-gc, headless-reconstructed]
+        options: [binary-trial, binary, intrinsics, control, residual, headless, headless-render, headless-render-gc, headless-reconstructed, deep-treo-unified]
         default: binary-trial
 permissions:
   contents: read
@@ -38,7 +38,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        configuration: ${{ fromJSON(github.event_name == 'workflow_dispatch' && format('["{0}"]', inputs.configuration) || '["headless-render-gc","headless-reconstructed"]') }}
+        configuration: ${{ fromJSON(github.event_name == 'workflow_dispatch' && format('["{0}"]', inputs.configuration) || '["headless-render-gc","deep-treo-unified"]') }}
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
       CONFIGURATION: ${{ matrix.configuration }}
