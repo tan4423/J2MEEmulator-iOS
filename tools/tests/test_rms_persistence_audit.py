@@ -62,7 +62,14 @@ public class RmsSmoke {
             java.util.Map cache = (java.util.Map) cacheField.get(manager);
             if (cache.size() != 1) throw new AssertionError("closed store not cached");
             RecordStore again = RecordStore.openRecordStore("settings", false);
-            if (again != r) throw new AssertionError("cache did not reuse same RecordStore instance");
+            if (again == r) throw new AssertionError("cache reused a closed RecordStore handle");
+            boolean staleHandleStayedClosed = false;
+            try {
+                r.getRecord(1);
+            } catch (RecordStoreException expected) {
+                staleHandleStayedClosed = true;
+            }
+            if (!staleHandleStayedClosed) throw new AssertionError("stale closed handle became usable again");
             if (!args[2].equals(new String(again.getRecord(1), "UTF-8")))
                 throw new AssertionError("cached reopen data mismatch");
             if (cache.size() != 0) throw new AssertionError("cache entry not claimed");
