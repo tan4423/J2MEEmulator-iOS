@@ -35,10 +35,6 @@ struct _GcCollectorType {
     // Last existing GC heap measurement + 1 (zero means not sampled).
     // Read atomically under a native session callback lease.
     uint64_t jarbox_status_heap_sample;
-    // Identity/epoch invalidate thread-local weak String lookup caches when
-    // a VM is recreated or a successful stop-the-world collection reclaims objects.
-    uint64_t string_cache_identity;
-    uint64_t string_cache_epoch;
     s64 lastgc;//last gc at mills
     Runtime *runtime;
     //

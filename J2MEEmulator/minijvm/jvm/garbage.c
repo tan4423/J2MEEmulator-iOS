@@ -8,8 +8,6 @@
 #endif
 #include "jvm_util.h"
 
-static uint64_t g_string_cache_identity = 0;
-
 s32 _gc_thread_run(void *para);
 
 void _dump_refer(GcCollector *collector);
@@ -74,12 +72,6 @@ s32 gc_create(MiniJVM *jvm) {
     GcCollector *collector = jvm_calloc(sizeof(GcCollector));
     jvm->collector = collector;
     collector->jvm = jvm;
-    collector->string_cache_identity =
-        __atomic_add_fetch(&g_string_cache_identity, 1, __ATOMIC_RELAXED);
-    if (!collector->string_cache_identity)
-        collector->string_cache_identity =
-            __atomic_add_fetch(&g_string_cache_identity, 1, __ATOMIC_RELAXED);
-    collector->string_cache_epoch = 1;
 #if defined(JARBOX_GC_DEFERRED_INDEX_EXPERIMENT) && JARBOX_GC_DEFERRED_INDEX_EXPERIMENT
 #if defined(JARBOX_HOST_GC_INDEX_TEST)
     collector->deferred_index.disabled = !jvm->host_gc_index_enabled;
@@ -992,9 +984,6 @@ s64 _garbage_collect(GcCollector *collector) {
             collector->mark_cnt = 1;
         }
         _gc_big_search(collector);
-        // Invalidate thread-local weak object-identity caches before Java
-        // threads resume and any unreachable String objects are reclaimed.
-        __atomic_add_fetch(&collector->string_cache_epoch, 1, __ATOMIC_RELEASE);
         JARBOX_GC_BOUNDARY(3);
         //
 #if _JVM_DEBUG_GARBAGE
