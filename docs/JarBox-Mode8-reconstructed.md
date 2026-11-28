@@ -5,6 +5,12 @@ The b1f9ba1 headless-render-gc build passed CI but the device sample still measu
 
 Old mode 8 skipped entire Canvas paint callbacks. Do not restore that behavior: Class_hda.a0 advances skill state and other paint branches may carry gameplay effects. Keep the public Treo behavior, tick, network, RMS and Auto cadence. Reconstruct the benefit by removing complete visual-only loops while retaining the original control path and exception behavior.
 
+## Unified build profile
+
+`deep-treo-unified` is the single selectable build profile for the combined engine. It is an alias for the existing `headless-reconstructed` configuration and compiles the complete validated stack together: exact-Nick Core scope + four residuals + shared Block IR + general render islands + collector-local deferred GC index + whole-loop Glyph contraction. The build recipe stamps every enabled tier into `JarBoxPerfProfile` and verifies the packaged IPA against the selected profile. All optimization flags remain OFF in ordinary/default builds; only this explicit candidate enables the stack. Exact archive and packaged boot/API identity, owner/Canvas/Graphics/screen-scope checks, original-PC fallback, GC fallback and gameplay effects remain mandatory.
+
+The q3 array-leaf experiment is deliberately not folded into this iOS profile: its current exact leaf is a Desktop Lab level-1 experiment, while iOS production remains disabled. Keep it separately gated until the real iOS MiniJVM and HUD/state differential passes. This avoids combining an unvalidated map shortcut with the already-certified engine tiers.
+
 ## Implemented
 Exact Nick t5 Class_hui.a(Class_hvi,String,III)V and a(Class_hvi,String,III,Class_hui)V: guarded contraction at original loop PC49 to the existing void return PC153 or PC253. Prefix alignment, width calculation and faults still execute normally. Font width used by gameplay is not replaced. Bounds/null/table validation, linked String native contracts and exact method digest are required. For longer strings validate all possible glyph rows and locate only the final row for conservative reference-lane replay. For short strings validate the actual rows. No allocation, resolution or Java execution between proof and commit. Failed proof falls back at original PC49 and does not retry on each iteration. The new glyph-only binding admits the five exact delegate PCs 30,90,106,128,135 with the existing owner, Canvas and Graphics identity, scope and screen-only checks. It does not widen other residuals.
 
