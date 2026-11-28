@@ -18,6 +18,8 @@ on:
       - 'J2MEEmulator/minijvm/jvm/jarbox_gc_deferred_index.h'
       - 'J2MEEmulator/minijvm/jvm/garbage.c'
       - 'J2MEEmulator/minijvm/jvm/garbage.h'
+      - 'J2MEEmulator/minijvm/jvm/jvm_util.c'
+      - 'J2MEEmulator/minijvm/jvm/jarbox_string_index_cache.h'
       - 'J2MEEmulator/minijvm/jvm/class_load.c'
       - 'J2MEEmulator/minijvm/jvm/jvm.h'
       - 'J2MEEmulator/minijvm/jvm/jvm.c'
