@@ -1200,7 +1200,29 @@ static inline void jarbox_hot_checkpoint(Runtime *r,MethodInfo *m,const u8 *pc) 
  * Preserve the original switch for non-Clang/standard builds and JDWP.
  * Use -DTREO_VM_FORCE_SWITCH=1 to compile a matched baseline IPA.
  */
-#if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__ && defined(__clang__) && !defined(TREO_VM_FORCE_SWITCH)
+#if defined(JARBOX_DESKTOP_LAB) && defined(__GNUC__) && !defined(TREO_VM_FORCE_SWITCH) && !_JVM_DEBUG_PROFILE && _JVM_DEBUG_LOG_LEVEL == 0 && !defined(__JVM_DEBUG__)
+#define JARBOX_DESKTOP_DIRECT_DISPATCH 1
+#include <stdatomic.h>
+extern _Atomic int jarbox_lab_sink_requested;
+extern int jarbox_lab_dispatch_fixture;
+static _Atomic uint64_t desktop_direct_methods;
+static _Thread_local unsigned desktop_direct_pending;
+uint64_t jarbox_desktop_direct_method_batches(void){
+    return atomic_load_explicit(&desktop_direct_methods,memory_order_relaxed);
+}
+static inline void desktop_direct_note(void){
+    if(++desktop_direct_pending==64u){
+        atomic_fetch_add_explicit(&desktop_direct_methods,64,memory_order_relaxed);
+        desktop_direct_pending=0;
+    }
+}
+#else
+#define JARBOX_DESKTOP_DIRECT_DISPATCH 0
+#if defined(JARBOX_DESKTOP_LAB)
+uint64_t jarbox_desktop_direct_method_batches(void){return 0;}
+#endif
+#endif
+#if (defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__ && defined(__clang__) && !defined(TREO_VM_FORCE_SWITCH)) || JARBOX_DESKTOP_DIRECT_DISPATCH
 #define TREO_VM_DIRECT_DISPATCH 1
 #define TREO_VM_HANDLER(op) treo_vm_label_##op:
 #else
@@ -1244,7 +1266,7 @@ int treo_vm_direct_dispatch_build(void) { return TREO_VM_DIRECT_DISPATCH; }
 // No code rewrite, no extra heap access, no bypass of resolution or calls.
 // The ordinary loop has no safepoint between these two forward opcodes
 // outside JDWP. Debug/profiling builds and switch dispatch stay untouched.
-#if TREO_VM_DIRECT_DISPATCH && !_JVM_DEBUG_PROFILE && _JVM_DEBUG_LOG_LEVEL == 0 && !defined(__JVM_DEBUG__) && !defined(TREO_VM_ALOAD_FIELD_FUSION_DISABLED)
+#if TREO_VM_DIRECT_DISPATCH && !JARBOX_DESKTOP_DIRECT_DISPATCH && !_JVM_DEBUG_PROFILE && _JVM_DEBUG_LOG_LEVEL == 0 && !defined(__JVM_DEBUG__) && !defined(TREO_VM_ALOAD_FIELD_FUSION_DISABLED)
 #define TREO_VM_FUSE_ALOAD_FIELD() do { \
     if (treo_vm_use_direct && runtime->pc < treo_vm_code_end && \
         treo_vm_code_end - runtime->pc >= 3) { \
@@ -3414,6 +3436,9 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                 const u8 *const treo_vm_code_end = ca->code + ca->code_length;
 #endif
 #endif
+#if JARBOX_DESKTOP_DIRECT_DISPATCH
+                int desktop_direct_seen=0;
+#endif
 
 #if defined(JARBOX_BLOCK_IR_EXPERIMENT) && JARBOX_BLOCK_IR_EXPERIMENT && !_JVM_DEBUG_PROFILE && _JVM_DEBUG_LOG_LEVEL <= 1 && !defined(__JVM_DEBUG__)
                 const JbiPlan *block_ir=NULL;
@@ -4045,9 +4070,21 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         [op_invokeinterface_fast] = &&treo_vm_label_op_invokeinterface_fast,
                         [op_invokedynamic_fast] = &&treo_vm_label_op_invokedynamic_fast,
                     };
+#if JARBOX_DESKTOP_DIRECT_DISPATCH
+                    // Same original handlers, no fusion. Re-read tier at dispatch
+                    // so even long-running methods restore the switch after OFF.
+                    if (!jvm->jdwp_enable && (jarbox_lab_dispatch_fixture ||
+                        jarbox_desktop_dispatch_mode(atomic_load_explicit(&jarbox_lab_sink_requested,memory_order_relaxed)))) {
+#else
                     if (treo_vm_use_direct) {
+#endif
                         void *target = treo_vm_targets[(u8)*runtime->pc];
-                        if (target) goto *target;
+                        if (target) {
+#if JARBOX_DESKTOP_DIRECT_DISPATCH
+                            if(!desktop_direct_seen){desktop_direct_seen=1;desktop_direct_note();}
+#endif
+                            goto *target;
+                        }
                         goto treo_vm_label_default;
                     }
 #endif

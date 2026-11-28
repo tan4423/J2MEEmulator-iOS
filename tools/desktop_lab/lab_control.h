@@ -98,9 +98,9 @@ static void ctl_poll(int physical){
             }
         }
         else if(!strcmp(req,"sink off")){atomic_store(&sink_requested,0);atomic_store(&array_lookup_requested,0);state="ok";}
-        else if(!strcmp(req,"sink on")||!strcmp(req,"sink deep")||!strcmp(req,"sink glyph")||!strcmp(req,"sink map")||!strcmp(req,"sink ir")||!strcmp(req,"sink residual")||!strcmp(req,"sink unified")||!strcmp(req,"sink logic")){
+        else if(!strcmp(req,"sink on")||!strcmp(req,"sink deep")||!strcmp(req,"sink glyph")||!strcmp(req,"sink map")||!strcmp(req,"sink ir")||!strcmp(req,"sink residual")||!strcmp(req,"sink unified")||!strcmp(req,"sink logic")||!strcmp(req,"sink dispatch")){
             if(sink_admitted&&canvas&&atomic_load(&frames)&&!physical&&(!queued||sink_fixture)&&!atomic_load(&sink_invalid)){
-                int level=!strcmp(req,"sink logic")?8:!strcmp(req,"sink unified")?7:!strcmp(req,"sink residual")?6:!strcmp(req,"sink ir")?5:!strcmp(req,"sink map")?4:!strcmp(req,"sink glyph")?3:!strcmp(req,"sink deep")?2:1;
+                int level=!strcmp(req,"sink dispatch")?9:!strcmp(req,"sink logic")?8:!strcmp(req,"sink unified")?7:!strcmp(req,"sink residual")?6:!strcmp(req,"sink ir")?5:!strcmp(req,"sink map")?4:!strcmp(req,"sink glyph")?3:!strcmp(req,"sink deep")?2:1;
                 if(level==1||(deep_admitted&&(level<6||!sink_fixture))){
                     atomic_store(&sink_requested,level);
                     if(level!=1)atomic_store(&array_lookup_requested,0);

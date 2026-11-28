@@ -2,15 +2,17 @@
 import os, pathlib, socket, subprocess, sys, threading, time, json, tempfile, uuid
 root=pathlib.Path(sys.argv[1]).resolve()
 mode=sys.argv[2] if len(sys.argv)>2 else "graph"
-assert mode in ("graph","plain","logic","control","sink","map","lookup")
+assert mode in ("graph","plain","logic","dispatch","control","sink","map","lookup")
+dispatch_test=mode=="dispatch"
+if dispatch_test:mode="plain"
 map_test=mode=="map"
 lookup_test=mode=="lookup"
 sink=mode in ("sink","map","lookup")
 control=mode in ("control","sink","map","lookup")
 if control:mode="graph"
-save=root/"fixture"/("save-"+mode)
+save=root/"fixture"/("save-"+("dispatch" if dispatch_test else mode))
 save.mkdir(exist_ok=True)
-trace=root/"fixture"/("trace.csv" if mode=="graph" else "trace-"+mode+".csv")
+trace=root/"fixture"/("trace-dispatch.csv" if dispatch_test else "trace.csv" if mode=="graph" else "trace-"+mode+".csv")
 errors=[]
 def recv_exact(conn,n):
     result=b""
@@ -33,6 +35,7 @@ with socket.socket() as listener:
     worker=threading.Thread(target=serve,daemon=True)
     worker.start()
     env=dict(os.environ,SDL_VIDEODRIVER="dummy",JARBOX_LAB_UI_FIXTURE="1",JARBOX_LAB_TEST_PORT=str(listener.getsockname()[1]))
+    if dispatch_test:env["JARBOX_LAB_TEST_DISPATCH"]="1"
     args=[root/"jarbox-lab",root/"jars/minijvm_rt.jar",root/"jars/j2me_api.jar",root/"fixture/fixture.jar",save,trace,"240","320",mode]
     if not control:
         result=subprocess.run([str(x) for x in args],env=env,timeout=90)
@@ -126,6 +129,7 @@ with socket.socket() as listener:
                         assert cmd("sink residual")["state"]=="refused"
                         assert cmd("sink unified")["state"]=="refused"
                         assert cmd("sink logic")["state"]=="refused"
+                        assert cmd("sink dispatch")["state"]=="refused"
                         a=cmd("status")
                         assert not a["vector_enabled"] and a["vector_hits"]==0
                         if map_test:assert cmd("vector on")["state"]=="ok"

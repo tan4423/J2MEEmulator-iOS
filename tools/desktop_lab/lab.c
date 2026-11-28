@@ -48,7 +48,11 @@ static FILE *effect_file;
 static int fixture_ui, logic_mode;
 int jarbox_lab_test_monitors;
 static int sink_admitted,sink_fixture,map_fixture;
-static _Atomic int sink_requested,sink_invalid;
+_Atomic int jarbox_lab_sink_requested;
+#define sink_requested jarbox_lab_sink_requested
+static _Atomic int sink_invalid;
+int jarbox_lab_dispatch_fixture; /* immutable after launch, fixture only */
+extern uint64_t jarbox_desktop_direct_method_batches(void);
 static _Atomic uint64_t sink_paints,sink_draws,sink_faults;
 static _Thread_local s64 sink_context;
 static _Thread_local uint64_t sink_draw_pending;
@@ -588,7 +592,7 @@ static void sample(void){
     for(unsigned i=0;i<18;i++)fprintf(trace,",%llu",(unsigned long long)atomic_load(&deep_counts[i]));
     fprintf(trace,",%d,%llu,%llu,%llu,%llu,%llu,%llu",atomic_load(&jarbox_lab_trace_enabled),(unsigned long long)atomic_load(&logic_plans),(unsigned long long)atomic_load(&logic_spans),(unsigned long long)atomic_load(&logic_ops),(unsigned long long)atomic_load(&live_counts[0]),(unsigned long long)atomic_load(&live_counts[1]),(unsigned long long)atomic_load(&live_counts[2]));
     fprintf(trace,",%d,%llu,%llu,%llu",jarbox_lab_gc_index_admit(),(unsigned long long)atomic_load(&gc_index_passes),(unsigned long long)atomic_load(&gc_index_entries),(unsigned long long)atomic_load(&gc_index_fallbacks));
-    fprintf(trace,",%llu,%llu\n",(unsigned long long)atomic_load(&outside_ir_spans),(unsigned long long)atomic_load(&outside_ir_ops));fflush(trace);
+    fprintf(trace,",%llu,%llu,%llu\n",(unsigned long long)atomic_load(&outside_ir_spans),(unsigned long long)atomic_load(&outside_ir_ops),(unsigned long long)jarbox_desktop_direct_method_batches());fflush(trace);
 }
 static int write_graph(void){
     size_t len=strlen(trace_path)+32;char *p=malloc(len),*tmp=malloc(len);
@@ -612,6 +616,7 @@ int main(int argc,char**argv){
     fixture_ui=getenv("JARBOX_LAB_UI_FIXTURE")&&strcmp(getenv("JARBOX_LAB_UI_FIXTURE"),"1")==0;
     jarbox_lab_test_monitors=getenv("JARBOX_LAB_TEST_MONITORS")&&strcmp(getenv("JARBOX_LAB_TEST_MONITORS"),"1")==0;
     if(fixture_ui&&(!getenv("SDL_VIDEODRIVER")||strcmp(getenv("SDL_VIDEODRIVER"),"dummy")||!strstr(game_path,"/fixture.jar")))return 2;
+    jarbox_lab_dispatch_fixture=fixture_ui&&getenv("JARBOX_LAB_TEST_DISPATCH")&&strcmp(getenv("JARBOX_LAB_TEST_DISPATCH"),"1")==0;
     sink_fixture=fixture_ui&&getenv("JARBOX_LAB_TEST_SINK")!=NULL;
     sink_admitted=sink_fixture||nick_archive(game_path);
     map_fixture=sink_fixture&&getenv("JARBOX_LAB_TEST_MAP")&&strcmp(getenv("JARBOX_LAB_TEST_MAP"),"1")==0;
@@ -625,7 +630,7 @@ int main(int argc,char**argv){
         snprintf(p,n,"%s.effects.csv",trace_path);effect_file=fopen(p,"w");free(p);if(!effect_file)return 2;
         fprintf(effect_file,"sequence,monotonic_ns,worker,method,pc,operation,value,lost_total\n");
     }
-    fprintf(trace,"monotonic_ns,process_cpu_ns,paints,paint_cpu_ns,frames,draw_calls,image_allocs,input_events,gc_cycles,gc_cpu_ns,native_surface_bytes,gc_aborts,gc_heap_sample_bytes,mode,sink_requested,sink_paints,sink_draws,sink_faults,sink_invalid,deep_leaves,glyph_attempts,glyph_scope_refusals,glyph_link_refusals,glyph_data_refusals,glyph_loops,glyph_chars,map_q3,map_m3,map_refusals,residual_plans,residual_calls,residual_regions,residual_deopts,map_layout_builds,map_layout_hits,vector_hits,vector_refusals,graph_enabled,ir_plans,ir_spans,ir_ops,skill_advances_live,network_calls_live,update_calls_live,gc_index_eligible,gc_index_passes,gc_index_entries,gc_index_fallbacks,ir_outside_spans,ir_outside_ops\n");
+    fprintf(trace,"monotonic_ns,process_cpu_ns,paints,paint_cpu_ns,frames,draw_calls,image_allocs,input_events,gc_cycles,gc_cpu_ns,native_surface_bytes,gc_aborts,gc_heap_sample_bytes,mode,sink_requested,sink_paints,sink_draws,sink_faults,sink_invalid,deep_leaves,glyph_attempts,glyph_scope_refusals,glyph_link_refusals,glyph_data_refusals,glyph_loops,glyph_chars,map_q3,map_m3,map_refusals,residual_plans,residual_calls,residual_regions,residual_deopts,map_layout_builds,map_layout_hits,vector_hits,vector_refusals,graph_enabled,ir_plans,ir_spans,ir_ops,skill_advances_live,network_calls_live,update_calls_live,gc_index_eligible,gc_index_passes,gc_index_entries,gc_index_fallbacks,ir_outside_spans,ir_outside_ops,direct_methods\n");
     frame=calloc((size_t)width*height,4);if(!frame)return 2;
     if(SDL_Init(SDL_INIT_VIDEO|SDL_INIT_EVENTS)){fprintf(stderr,"%s\n",SDL_GetError());return 2;}
     SDL_Window *win=SDL_CreateWindow("JarBox Research Lab",SDL_WINDOWPOS_CENTERED,SDL_WINDOWPOS_CENTERED,width*2,height*2,SDL_WINDOW_RESIZABLE);
@@ -692,6 +697,7 @@ int main(int argc,char**argv){
     fprintf(stderr,"LAB_LOGIC mode=%d plans=%llu spans=%llu ops=%llu\n",logic_mode,
         (unsigned long long)atomic_load(&logic_plans),(unsigned long long)atomic_load(&logic_spans),
         (unsigned long long)atomic_load(&logic_ops));
+    fprintf(stderr,"LAB_DISPATCH fixture=%d methods=%llu\n",jarbox_lab_dispatch_fixture,(unsigned long long)jarbox_desktop_direct_method_batches());
     fprintf(stderr,"LAB_EXIT rc=%d failed=%d frames=%llu input_overflow=%llu\n",rc,atomic_load(&failed),(unsigned long long)atomic_load(&frames),(unsigned long long)event_overflow);
     for(unsigned i=1;i<MAX_SURF;i++)if(surfaces[i].s)drop((s64)surfaces[i].id);
     SDL_DestroyTexture(tex);SDL_DestroyRenderer(ren);SDL_DestroyWindow(win);SDL_Quit();free(frame);

@@ -45,7 +45,7 @@ print('DESKTOP_LAB_FIXTURE_PASS')
 PY
 # Exact same arithmetic, TCP, RMS, UI and pixel assertions in A/B.
 # Full-raster both ways; no call graph instrumentation in timing profiles.
-for mode in plain logic; do
+for mode in plain logic dispatch; do
   python3 "$ROOT/tools/desktop_lab/test_transport.py" "$OUT" "$mode" 2>&1 | tee "$OUT/fixture/run-$mode.log"
   for marker in LOGIC TCP_RMS UI PIXEL SHAPES TALL_ATLAS; do
     grep -Fx "LAB_FIXTURE_${marker}_PASS" "$OUT/fixture/run-$mode.log"
@@ -54,6 +54,42 @@ for mode in plain logic; do
 done
 grep -Fx 'LAB_LOGIC mode=0 plans=0 spans=0 ops=0' "$OUT/fixture/run-plain.log"
 grep -E '^LAB_LOGIC mode=1 plans=[1-9][0-9]* spans=[1-9][0-9]* ops=[1-9][0-9]*$' "$OUT/fixture/run-logic.log"
+grep -Fx 'LAB_DISPATCH fixture=0 methods=0' "$OUT/fixture/run-plain.log"
+grep -E '^LAB_DISPATCH fixture=1 methods=[1-9][0-9]*
+
+
+# Focus-independent input: real Java pointer callbacks on SDL dummy.
+python3 "$ROOT/tools/desktop_lab/test_transport.py" "$OUT" control 2>&1 | tee "$OUT/fixture/run-control.log"
+grep -Fx 'LAB_FIXTURE_BACKGROUND_INPUT_PASS' "$OUT/fixture/run-control.log"
+grep -Fx 'LAB_CONTROL_READY' "$OUT/fixture/run-control.log"
+echo DESKTOP_LAB_BACKGROUND_CONTROL_PASS
+
+python3 "$ROOT/tools/desktop_lab/test_transport.py" "$OUT" sink 2>&1 | tee "$OUT/fixture/run-sink.log"
+grep -F 'LAB_SINK_ABA_PASS' "$OUT/fixture/run-sink.log"
+grep -Fx 'LAB_SINK_PAINT 3' "$OUT/fixture/run-sink.log"
+grep -Fx 'LAB_IDLE_HEADLESS_PASS' "$OUT/fixture/run-sink.log"
+grep -Fx 'LAB_FIXTURE_BACKGROUND_INPUT_PASS' "$OUT/fixture/run-sink.log"
+
+python3 "$ROOT/tools/desktop_lab/test_transport.py" "$OUT" map 2>&1 | tee "$OUT/fixture/run-map.log"
+grep -Fx 'LAB_MAP_ABA_PASS' "$OUT/fixture/run-map.log"
+grep -Fx 'LAB_VECTOR_ABA_PASS' "$OUT/fixture/run-map.log"
+test "$(grep -Fc 'LAB_VECTOR_ORACLE_PASS' "$OUT/fixture/run-map.log")" -eq 3
+test "$(grep -Fc 'LAB_MAP_ORACLE_PASS' "$OUT/fixture/run-map.log")" -eq 3
+
+# Exact q3 fast-path oracle in MiniJVM, with level-1 headless sink held constant.
+python3 "$ROOT/tools/desktop_lab/test_transport.py" "$OUT" lookup 2>&1 | tee "$OUT/fixture/run-lookup.log"
+grep -F 'LAB_ARRAY_LOOKUP_ABA_PASS' "$OUT/fixture/run-lookup.log"
+grep -Fx 'LAB_FIXTURE_BACKGROUND_INPUT_PASS' "$OUT/fixture/run-lookup.log"
+test "$(grep -Fc 'LAB_MAP_ORACLE_PASS' "$OUT/fixture/run-lookup.log")" -ge 3
+
+# Standalone Java arithmetic differential and source-level guard wiring.
+python3 "$ROOT/tools/tests/test_array_lookup_mode1.py" -v
+
+# Exhaustive mode routing, including visible/unknown modes.
+cc -std=c11 -Wall -Wextra -Werror -I"$ROOT/J2MEEmulator/minijvm/jvm" "$ROOT/tools/desktop_lab/test_tier.c" -o "$OUT/fixture/test-tier"
+"$OUT/fixture/test-tier"
+ "$OUT/fixture/run-dispatch.log"
+echo DESKTOP_LAB_DIRECT_DISPATCH_AB_PASS
 echo DESKTOP_LAB_LOGIC_AB_PASS
 
 
