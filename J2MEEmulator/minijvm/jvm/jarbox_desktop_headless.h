@@ -136,10 +136,10 @@ static FieldInfo *desktop_map_field(JClass *cl,unsigned ix,const char *name,cons
 }
 static int desktop_map_leaf(MethodInfo *m,Runtime *r){
     if(!m->is_static||m->para_slots!=2||m->return_slots!=1||m->is_native||m->is_sync||
-       jarbox_lab_sink_level(0)<4||r->jvm->jdwp_enable||r->thrd_info->is_stop||
+       !jarbox_lab_array_lookup_enabled()||jarbox_lab_sink_level(0)!=1||r->jvm->jdwp_enable||r->thrd_info->is_stop||
        r->thrd_info->suspend_count||m->breakpoint||m->_this_class->status!=CLASS_STATUS_CLINITED)return 0;
     unsigned kind=desktop_map_kind(m);
-    if(kind<2)return 0;
+    if(kind!=2)return 0;
     CodeAttribute *ca=m->converted_code;
     const u8 *c=ca->bytecode_for_jit;
     JClass *cl=m->_this_class;
@@ -152,7 +152,7 @@ static int desktop_map_leaf(MethodInfo *m,Runtime *r){
     // references or values. Cold linkage remains eligible for later retry.
     uint64_t layout=__atomic_load_n(&ca->desktop_map_layout,__ATOMIC_ACQUIRE);
     if(!layout){
-        FieldInfo *af=desktop_map_field(cl,jbg_u16(c+1),kind==2?"x3":"u3",kind==2?"[I":"[C",sizeof(__refer),1);
+        FieldInfo *af=desktop_map_field(cl,jbg_u16(c+1),"x3","[I",sizeof(__refer),1);
         FieldInfo *wf=desktop_map_field(cl,jbg_u16(c+5),"j1","I",4,0);
         if(!af||!wf){jarbox_lab_deep_note(9,1);return 0;}
         layout=(UINT64_C(1)<<32)|((uint64_t)af->offset<<16)|wf->offset;
@@ -178,10 +178,10 @@ static int desktop_map_leaf(MethodInfo *m,Runtime *r){
        !jarbox_array_index(args[0].ivalue,args[1].ivalue,width,arr->arr_length,&idx)){
         jarbox_lab_deep_note(9,1);return 0;
     }
-    s32 value=kind==2?((s32 *)arr->arr_body)[idx]:((u16 *)arr->arr_body)[idx];
+    s32 value=((s32 *)arr->arr_body)[idx];
     args[3].rvalue=arr;
     s->sp=args;push_int(s,value);
-    jarbox_lab_deep_note(kind==2?7:8,1);
+    jarbox_lab_deep_note(7,1);
     return 1;
 }
 
