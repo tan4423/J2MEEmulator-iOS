@@ -189,6 +189,7 @@ public class AndroidRecordStoreManager implements RecordStoreManager {
 		initializeIfNecessary();
 		recordStoreName = sanitizeName(recordStoreName);
 
+		RecordStoreImpl recordStoreImpl;
 		Object value = recordStores.get(recordStoreName);
 		if (value instanceof RecordStoreImpl && ((RecordStoreImpl) value).isOpen()) {
 			((RecordStoreImpl) value).setOpen();
@@ -207,7 +208,6 @@ public class AndroidRecordStoreManager implements RecordStoreManager {
 		}
 
 		boolean created = false;
-		RecordStoreImpl recordStoreImpl;
 		String headerName = getHeaderFileName(recordStoreName);
 		File headerFile = new File(getDataDir(), headerName);
 		try (DataInputStream dis = new DataInputStream(new FileInputStream(headerFile))) {
