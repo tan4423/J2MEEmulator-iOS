@@ -188,6 +188,7 @@ static unsigned jri_fixture_call_skip(Runtime *r,ConstantMethodRef *mr,MethodInf
 #include "jarbox_block_ir.h"
 #include <stddef.h>
 #if defined(JARBOX_DESKTOP_LAB)
+#include "jarbox_desktop_tier.h"
 extern int jarbox_lab_sink_level(int64_t context);
 #endif
 #if defined(JARBOX_HOST_BLOCK_IR_TEST) && (__JVM_OS_IOS__ || defined(TREO_IOS_GAME_JIT))
@@ -204,7 +205,7 @@ static const JbiPlan *jbi_method_plan(Runtime *r,MethodInfo *m,CodeAttribute *ca
     // Full-render logic-only experiment. The desktop owner verifies the
     // exact archive before selecting this immutable per-VM profile.
     const char *name=utf8_cstr(m->_this_class->name);
-    if((!r->jvm->desktop_block_ir_enabled && jarbox_lab_sink_level(0)!=5) ||
+    if((!r->jvm->desktop_block_ir_enabled && !jarbox_desktop_ir_mode(jarbox_lab_sink_level(0))) ||
        (strncmp(name,"Class_",6) &&
         !(r->jvm->desktop_block_ir_fixture &&
           (!strcmp(name,"LabFixture")||!strncmp(name,"LabFixture$",11)))))return NULL;
@@ -274,12 +275,12 @@ extern void jarbox_lab_residual_fault(void);
 static int treo_residual_scope_valid(Runtime *r,Instance *w,const JarBoxResidualScope *s) {
     return r&&r->jvm&&r->thrd_info&&s&&s->owner==(uintptr_t)r->jvm&&
         !r->thrd_info->is_stop&&!r->thrd_info->suspend_count&&!r->jvm->jdwp_enable&&
-        jarbox_lab_sink_level(s->context)==6&&jbr_scope_fields_valid(s,w);
+        jarbox_desktop_residual_mode(jarbox_lab_sink_level(s->context))&&jbr_scope_fields_valid(s,w);
 }
 static int treo_residual_scope_capture(Runtime *r,Instance *w,JarBoxResidualScope *s) {
     JarBoxResidualBinding b;
-    if(jarbox_lab_sink_level(0)!=6||!jbr_nick_binding(r,w,&b)||
-       jarbox_lab_sink_level(b.context)!=6)return 0;
+    if(!jarbox_desktop_residual_mode(jarbox_lab_sink_level(0))||!jbr_nick_binding(r,w,&b)||
+       !jarbox_desktop_residual_mode(jarbox_lab_sink_level(b.context)))return 0;
     *s=(JarBoxResidualScope){.owner=(uintptr_t)r->jvm,.context=b.context,
         .wrapper=(uintptr_t)b.wrapper,.canvas=(uintptr_t)b.canvas,.graphics=(uintptr_t)b.graphics};
     return jbr_scope_prepare_fields(s)&&treo_residual_scope_valid(r,w,s);
@@ -899,7 +900,7 @@ static const JarBoxResidualOp *jbr_live_compile(Runtime *r,MethodInfo *m,CodeAtt
        !jbr_eq(m->_this_class->name,background?"Class_hxb":"Class_hii")||
        !jbr_eq(m->name,background?"j1":minimap?"r2":overlay?"i3":"k1")||!jbr_eq(m->descriptor,"(LClass_hvi;)V")||
 #if (defined(JARBOX_DESKTOP_LAB) && JARBOX_DESKTOP_LAB)
-       jarbox_lab_sink_level(0)!=6||
+       !jarbox_desktop_residual_mode(jarbox_lab_sink_level(0))||
 #else
        !st||!__atomic_load_n(&st->residual_archive_verified,__ATOMIC_ACQUIRE)||
        __atomic_load_n(&st->residual_faults,__ATOMIC_RELAXED)||

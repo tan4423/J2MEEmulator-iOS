@@ -124,6 +124,7 @@ with socket.socket() as listener:
                     if sink and not lookup_test:
                         # Synthetic fixtures never authorize exact real-game residual execution.
                         assert cmd("sink residual")["state"]=="refused"
+                        assert cmd("sink unified")["state"]=="refused"
                         a=cmd("status")
                         assert not a["vector_enabled"] and a["vector_hits"]==0
                         if map_test:assert cmd("vector on")["state"]=="ok"

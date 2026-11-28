@@ -27,6 +27,12 @@ CORE="$ROOT/J2MEEmulator/minijvm"
 # Desktop dependency include paths must not leak into core translation units.
 COMMON=(-g -O2 -fno-pie -Dsignal=smoke_signal -DJARBOX_DESKTOP_LAB=1 -DJARBOX_BLOCK_IR_EXPERIMENT=1 -DJARBOX_DESKTOP_ARRAY_LOOKUP_TEST=1 -DTREO_VM_ARRAY_LOOKUP_MODE1_EXPERIMENT=1 -w -std=gnu11 -pthread
   -I"$CORE/jvm" -I"$CORE/utils" -I"$CORE/utils/https" -I"$CORE/utils/https/mbedtls/include")
+case "${JARBOX_DESKTOP_GC_INDEX:-0}" in
+  0) ;;
+  1) COMMON+=(-DJARBOX_GC_DEFERRED_INDEX_EXPERIMENT=1) ;;
+  *) echo "JARBOX_DESKTOP_GC_INDEX must be 0 or 1" >&2; exit 2 ;;
+esac
+printf 'gc_deferred_index=%s\n' "${JARBOX_DESKTOP_GC_INDEX:-0}" > "$OUT/build-profile.txt"
 gcc "${COMMON[@]}" -I"$RUNNER_TEMP" $(pkg-config --cflags sdl2 cairo) -c tools/desktop_lab/lab.c -o "$RUNNER_TEMP/lab.o"
 # Keep the identical tested JIT and signal shims, remove only the six TLS stubs.
 sed '/^int sslc_/d' tools/host_multivm_smoke/stubs.c > "$RUNNER_TEMP/host-no-jit.c"

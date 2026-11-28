@@ -75,6 +75,9 @@ s32 gc_create(MiniJVM *jvm) {
 #if defined(JARBOX_GC_DEFERRED_INDEX_EXPERIMENT) && JARBOX_GC_DEFERRED_INDEX_EXPERIMENT
 #if defined(JARBOX_HOST_GC_INDEX_TEST)
     collector->deferred_index.disabled = !jvm->host_gc_index_enabled;
+#elif defined(JARBOX_DESKTOP_LAB) && JARBOX_DESKTOP_LAB
+    extern int jarbox_lab_gc_index_admit(void);
+    collector->deferred_index.disabled = jvm->jdwp_enable || !jarbox_lab_gc_index_admit();
 #elif __JVM_OS_IOS__ && defined(TREO_RESIDUAL_EXPERIMENT) && TREO_RESIDUAL_EXPERIMENT
     // The bridge verifies the exact Nick archive and packaged boot/API
     // before jvm_init. Index from the first heap batch, never enable it
@@ -802,6 +805,10 @@ static void gc_process_deferred_objects(GcCollector *collector) {
     JarBoxGCDeferredIndex *index = &collector->deferred_index;
     const int indexed = !index->disabled;
     size_t cursor = index->count;
+#if defined(JARBOX_DESKTOP_LAB) && JARBOX_DESKTOP_LAB
+    extern void jarbox_lab_gc_index_note(int indexed, size_t entries);
+    jarbox_lab_gc_index_note(indexed,cursor);
+#endif
 #if __JVM_OS_IOS__
     // Collector-owned per-pass admission evidence. No per-object counters
     // or extra heap traversal. Read only after worker join.
