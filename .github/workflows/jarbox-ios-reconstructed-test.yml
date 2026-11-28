@@ -1,0 +1,41 @@
+name: JarBox iOS reconstructed JAR test (one IPA)
+on:
+  push:
+    branches: ['jarbox/ios-reconstructed-test-20261128']
+    paths:
+      - '.github/workflows/jarbox-ios-reconstructed-test.yml'
+permissions:
+  contents: read
+jobs:
+  ios-candidate:
+    runs-on: macos-26
+    timeout-minutes: 40
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
+      CONFIGURATION: control
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Prepare recipe validation
+        run: |
+          python3 -m pip install PyYAML==6.0.2
+          python3 -m unittest discover -s tools/tests -p test_ios_candidate_ci.py
+          python3 tools/run_ios_candidate_ci.py --configuration "$CONFIGURATION" --plan
+          xcodebuild -version
+          /usr/libexec/java_home -v 17
+      - name: Run same checked-in Codemagic recipe with isolated flags
+        run: python3 tools/run_ios_candidate_ci.py --configuration "$CONFIGURATION"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: jarbox-ios-reconstructed-control-${{ github.sha }}
+          path: J2ME-Treo-jar-cpu-audit-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 7
