@@ -45,7 +45,7 @@ class ArrayLookupMode1Test(unittest.TestCase):
         self.assertIn('utf8_equals_c(m->descriptor,"(II)I")',s)
         self.assertIn("TREO_VM_ARRAY_LOOKUP_DESKTOP",s)
         self.assertIn("jarbox_lab_deep_note(7,64)",s)
-                self.assertIn("const int lookup_mode1=0",block)
+                self.assertIn("const int lookup_mode1=0",s)
                 headless=(VM/"jarbox_desktop_headless.h").read_text()
                 map_leaf=headless.split("static int desktop_map_leaf",1)[1].split("/* Independent Desktop Logic A/B",1)[0]
                 self.assertIn("jarbox_lab_array_lookup_enabled()",map_leaf)
