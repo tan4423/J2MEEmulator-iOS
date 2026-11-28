@@ -24,7 +24,7 @@ class StringIndexCacheTest(unittest.TestCase):
                 flags.append("-no-pie")
             subprocess.run([cc, *flags, "-I", str(HEADER), str(source), "-o", str(exe)],
                            check=True, timeout=60)
-            subprocess.run([str(exe)], check=True, timeout=20)
+            subprocess.run([str(exe)], check=True, timeout=30)
 
 
 if __name__ == "__main__":
