@@ -5,7 +5,7 @@ from pathlib import Path
 from zipfile import ZipFile
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from run_ios_candidate_ci import BINARY, RESIDUAL, BLOCK_IR, RENDER_ISLAND, GC_INDEX, RECONSTRUCT, CANDIDATES, OFF, prepare, verify_ipa
+from run_ios_candidate_ci import BINARY, RESIDUAL, BLOCK_IR, RENDER_ISLAND, GC_INDEX, RECONSTRUCT, CANDIDATES, OFF, DEEP_TREO_UNIFIED, prepare, verify_ipa
 from generate_residual_build_identity import generate
 import hashlib
 
@@ -47,7 +47,9 @@ class IOSCandidateTest(unittest.TestCase):
         self.assertEqual(combined[GC_INDEX], '1')
         self.assertEqual(combined[RECONSTRUCT], '0')
         rebuilt=prepare(c,'headless-reconstructed',{})[1]
+        unified=prepare(c,DEEP_TREO_UNIFIED,{})[1]
         self.assertEqual(rebuilt[RECONSTRUCT],'1')
+        self.assertEqual(unified,rebuilt)
         self.assertEqual({k:v for k,v in rebuilt.items() if k!=RECONSTRUCT},
                          {k:v for k,v in combined.items() if k!=RECONSTRUCT})
         for config_name in ('control','intrinsics','binary','binary-trial','residual','headless','headless-render','headless-render-gc'):
@@ -119,6 +121,7 @@ class IOSCandidateTest(unittest.TestCase):
             with ZipFile(p,'w') as z:
                 z.writestr('Payload/JarBox.app/Info.plist',plistlib.dumps({'JarBoxPerfProfile':rebuilt_profile,'JarBoxBuildCommit':'a'}))
             self.assertEqual(verify_ipa(p,'a','headless-reconstructed'),rebuilt_profile)
+            self.assertEqual(verify_ipa(p,'a',DEEP_TREO_UNIFIED),rebuilt_profile)
             with self.assertRaises(ValueError):
                 verify_ipa(p,'a','headless-render-gc')
             with self.assertRaises(ValueError):
