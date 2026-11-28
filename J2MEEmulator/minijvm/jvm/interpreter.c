@@ -7221,6 +7221,10 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                             fi = class_get_constant_fieldref(clazz, idx)->fieldInfo;
                             ptr = getStaticFieldPtr(fi);
                             *((s16 *) ptr) = (s16) (--sp)->ivalue;
+#if defined(JARBOX_DESKTOP_LAB)
+                            extern void jarbox_lab_world_write(FieldInfo *,int,unsigned);
+                            jarbox_lab_world_write(fi,0,(unsigned)sp->ivalue);
+#endif
                             runtime->pc += 3;
 #if _JVM_DEBUG_LOG_LEVEL > 5
                             invoke_deepth(runtime);
@@ -7234,6 +7238,10 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                             fi = class_get_constant_fieldref(clazz, idx)->fieldInfo;
                             ptr = getStaticFieldPtr(fi);
                             *((s8 *) ptr) = (s8) (--sp)->ivalue;
+#if defined(JARBOX_DESKTOP_LAB)
+                            extern void jarbox_lab_world_write(FieldInfo *,int,unsigned);
+                            jarbox_lab_world_write(fi,1,(unsigned)sp->ivalue);
+#endif
                             runtime->pc += 3;
 #if _JVM_DEBUG_LOG_LEVEL > 5
                             invoke_deepth(runtime);

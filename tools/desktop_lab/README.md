@@ -187,3 +187,6 @@ Desktop tier 8 selective admission experiment: outside-paint Block IR now requir
 ## Desktop direct dispatch control
 
 `sink dispatch` (tier 9) retains tier 7 paint policy and uses the same original opcode bodies through the precompiled label table. Tier 8 outside-paint IR remains independent. No opcode fusion, JIT, changed safepoints, or game timing. The tier is re-read at each opcode dispatch; OFF restores switch dispatch even within long-running methods. `direct_methods` counts actual method-level dispatch admissions in batches of 64 per worker, not opcode totals. The explicit dummy SDL fixture runs the same Java logic/TCP/RMS/UI/pixel checks under full-render direct dispatch. Live CPU benefit is unverified.
+
+## Java world evidence (desktop lab)
+For the exact admitted Nick archive, observe committed primitive static writes to `Class_hii.o4:S` (map) and `Class_hii.l4:B` (zone), as identified in historical Java diagnostics. Publish `java_map`, `java_zone`, `world_epoch` through status and CSV even headless. Unknown values are -1; unchanged writes do not increment epoch. No JAR mutation or Java invocation. Exact archive live validation is still required; liveness is not evidence of monsters or combat.

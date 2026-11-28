@@ -20,6 +20,7 @@
 #include "mbedtls/sha256.h"
 #include "jarbox_residual_build_identity.h"
 #include "jarbox_desktop_tier.h"
+#include "jarbox_world_observer.h"
 
 enum { MAX_SURF=8192, MAX_DIM=8192, MAX_SCREEN=2048, MAX_EVENTS=256, MAX_EDGES=8192 };
 typedef struct { cairo_surface_t *s; cairo_t *c; int image, mutable; uint64_t id; } Surface;
@@ -64,6 +65,21 @@ void jarbox_lab_liveness_note(unsigned kind){
     if(kind<3)atomic_fetch_add_explicit(&live_counts[kind],1,memory_order_relaxed);
 }
 static int deep_admitted;
+static _Atomic uint64_t world_state;
+/* Exact Nick JAR + boot/API identities already admitted before VM starts.
+ * Observe actual committed Java PUTSTATIC writes. Never initialize a class,
+ * call Java, change a field or inspect arbitrary heap objects. */
+void jarbox_lab_world_write(FieldInfo *fi,int zone,unsigned value){
+    if(!deep_admitted||sink_fixture||fixture_ui||!fi||!fi->_this_class)return;
+    if(!utf8_equals_c(fi->name,zone?"l4":"o4")||
+       !utf8_equals_c(fi->descriptor,zone?"B":"S")||
+       !utf8_equals_c(fi->_this_class->name,"Class_hii"))return;
+    uint64_t old=atomic_load_explicit(&world_state,memory_order_relaxed),next;
+    do {
+        next=jwo_update(old,zone,value);
+        if(next==old)return;
+    } while(!atomic_compare_exchange_weak_explicit(&world_state,&old,next,memory_order_release,memory_order_relaxed));
+}
 static _Atomic uint64_t outside_ir_spans,outside_ir_ops;
 int jarbox_lab_logic_ir_enabled(void){
     return deep_admitted&&!sink_fixture&&!fixture_ui&&!atomic_load(&sink_invalid)&&
@@ -592,7 +608,8 @@ static void sample(void){
     for(unsigned i=0;i<18;i++)fprintf(trace,",%llu",(unsigned long long)atomic_load(&deep_counts[i]));
     fprintf(trace,",%d,%llu,%llu,%llu,%llu,%llu,%llu",atomic_load(&jarbox_lab_trace_enabled),(unsigned long long)atomic_load(&logic_plans),(unsigned long long)atomic_load(&logic_spans),(unsigned long long)atomic_load(&logic_ops),(unsigned long long)atomic_load(&live_counts[0]),(unsigned long long)atomic_load(&live_counts[1]),(unsigned long long)atomic_load(&live_counts[2]));
     fprintf(trace,",%d,%llu,%llu,%llu",jarbox_lab_gc_index_admit(),(unsigned long long)atomic_load(&gc_index_passes),(unsigned long long)atomic_load(&gc_index_entries),(unsigned long long)atomic_load(&gc_index_fallbacks));
-    fprintf(trace,",%llu,%llu,%llu\n",(unsigned long long)atomic_load(&outside_ir_spans),(unsigned long long)atomic_load(&outside_ir_ops),(unsigned long long)jarbox_desktop_direct_method_batches());fflush(trace);
+    uint64_t world=atomic_load_explicit(&world_state,memory_order_acquire);
+    fprintf(trace,",%llu,%llu,%llu,%d,%d,%llu\n",(unsigned long long)atomic_load(&outside_ir_spans),(unsigned long long)atomic_load(&outside_ir_ops),(unsigned long long)jarbox_desktop_direct_method_batches(),jwo_map(world),jwo_zone(world),(unsigned long long)jwo_epoch(world));fflush(trace);
 }
 static int write_graph(void){
     size_t len=strlen(trace_path)+32;char *p=malloc(len),*tmp=malloc(len);
@@ -630,7 +647,7 @@ int main(int argc,char**argv){
         snprintf(p,n,"%s.effects.csv",trace_path);effect_file=fopen(p,"w");free(p);if(!effect_file)return 2;
         fprintf(effect_file,"sequence,monotonic_ns,worker,method,pc,operation,value,lost_total\n");
     }
-    fprintf(trace,"monotonic_ns,process_cpu_ns,paints,paint_cpu_ns,frames,draw_calls,image_allocs,input_events,gc_cycles,gc_cpu_ns,native_surface_bytes,gc_aborts,gc_heap_sample_bytes,mode,sink_requested,sink_paints,sink_draws,sink_faults,sink_invalid,deep_leaves,glyph_attempts,glyph_scope_refusals,glyph_link_refusals,glyph_data_refusals,glyph_loops,glyph_chars,map_q3,map_m3,map_refusals,residual_plans,residual_calls,residual_regions,residual_deopts,map_layout_builds,map_layout_hits,vector_hits,vector_refusals,graph_enabled,ir_plans,ir_spans,ir_ops,skill_advances_live,network_calls_live,update_calls_live,gc_index_eligible,gc_index_passes,gc_index_entries,gc_index_fallbacks,ir_outside_spans,ir_outside_ops,direct_methods\n");
+    fprintf(trace,"monotonic_ns,process_cpu_ns,paints,paint_cpu_ns,frames,draw_calls,image_allocs,input_events,gc_cycles,gc_cpu_ns,native_surface_bytes,gc_aborts,gc_heap_sample_bytes,mode,sink_requested,sink_paints,sink_draws,sink_faults,sink_invalid,deep_leaves,glyph_attempts,glyph_scope_refusals,glyph_link_refusals,glyph_data_refusals,glyph_loops,glyph_chars,map_q3,map_m3,map_refusals,residual_plans,residual_calls,residual_regions,residual_deopts,map_layout_builds,map_layout_hits,vector_hits,vector_refusals,graph_enabled,ir_plans,ir_spans,ir_ops,skill_advances_live,network_calls_live,update_calls_live,gc_index_eligible,gc_index_passes,gc_index_entries,gc_index_fallbacks,ir_outside_spans,ir_outside_ops,direct_methods,java_map,java_zone,world_epoch\n");
     frame=calloc((size_t)width*height,4);if(!frame)return 2;
     if(SDL_Init(SDL_INIT_VIDEO|SDL_INIT_EVENTS)){fprintf(stderr,"%s\n",SDL_GetError());return 2;}
     SDL_Window *win=SDL_CreateWindow("JarBox Research Lab",SDL_WINDOWPOS_CENTERED,SDL_WINDOWPOS_CENTERED,width*2,height*2,SDL_WINDOW_RESIZABLE);

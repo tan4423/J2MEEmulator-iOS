@@ -41,6 +41,7 @@ assert int(rows[-1]['gc_cycles'])>0 and int(rows[-1]['gc_cpu_ns'])>0
 assert int(rows[-1]['gc_heap_sample_bytes'])>0
 # Unknown/synthetic archives must not activate the exact-Nick GC index.
 assert all(int(r[k])==0 for r in rows for k in ('gc_index_eligible','gc_index_passes','gc_index_entries','gc_index_fallbacks'))
+assert all(int(r['java_map'])==-1 and int(r['java_zone'])==-1 and int(r['world_epoch'])==0 for r in rows)
 print('DESKTOP_LAB_FIXTURE_PASS')
 PY
 # Exact same arithmetic, TCP, RMS, UI and pixel assertions in A/B.
@@ -90,3 +91,6 @@ python3 "$ROOT/tools/tests/test_array_lookup_mode1.py" -v
 # Exhaustive mode routing, including visible/unknown modes.
 cc -std=c11 -Wall -Wextra -Werror -I"$ROOT/J2MEEmulator/minijvm/jvm" "$ROOT/tools/desktop_lab/test_tier.c" -o "$OUT/fixture/test-tier"
 "$OUT/fixture/test-tier"
+
+cc -std=c11 -Wall -Wextra -Werror -I"$ROOT/J2MEEmulator/minijvm/jvm" "$ROOT/tools/desktop_lab/test_world.c" -o "$OUT/fixture/test-world"
+"$OUT/fixture/test-world"
