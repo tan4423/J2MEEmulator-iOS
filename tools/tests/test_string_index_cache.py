@@ -4,6 +4,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+import sys
 
 ROOT = Path(__file__).resolve().parents[2]
 HEADER = ROOT / "J2MEEmulator/minijvm/jvm"
@@ -17,11 +18,12 @@ class StringIndexCacheTest(unittest.TestCase):
         source = ROOT / "tools/tests/string_index_cache_host.c"
         with tempfile.TemporaryDirectory() as d:
             exe = Path(d) / "string-index-cache"
-            subprocess.run(
-                [cc, "-std=c11", "-Wall", "-Wextra", "-Werror", "-O1", "-g",
-                 "-fsanitize=address,undefined", "-fno-omit-frame-pointer", "-no-pie",
-                 "-I", str(HEADER), str(source), "-o", str(exe)],
-                check=True, timeout=60)
+            flags = ["-std=c11", "-Wall", "-Wextra", "-Werror", "-O1", "-g",
+                     "-fsanitize=address,undefined", "-fno-omit-frame-pointer"]
+            if sys.platform.startswith("linux"):
+                flags.append("-no-pie")
+            subprocess.run([cc, *flags, "-I", str(HEADER), str(source), "-o", str(exe)],
+                           check=True, timeout=60)
             subprocess.run([str(exe)], check=True, timeout=20)
 
 
