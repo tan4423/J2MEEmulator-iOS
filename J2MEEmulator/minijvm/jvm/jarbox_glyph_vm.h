@@ -91,9 +91,11 @@ static inline MethodInfo *jbg_virtual(Runtime *r,MethodInfo *caller,unsigned pc,
  * native charAt0. Only its successful branch may be bypassed. The exact
  * code shape bounds its reference writes to scratch slots overwritten by
  * the glyph body. Native indexOf uses UTF-16 count/offset, first match. */
-static inline int jbg_string_calls(Runtime *r,MethodInfo *m,Instance *text,Instance *alphabet){
-    MethodInfo *at=jbg_virtual(r,m,63,text,"charAt","(I)C");
-    MethodInfo *find=jbg_virtual(r,m,66,alphabet,"indexOf","(I)I");
+static inline int jbg_string_calls_at(Runtime *r,MethodInfo *m,Instance *text,
+                                          Instance *alphabet,unsigned char_at_pc,
+                                          unsigned index_of_pc){
+    MethodInfo *at=jbg_virtual(r,m,char_at_pc,text,"charAt","(I)C");
+    MethodInfo *find=jbg_virtual(r,m,index_of_pc,alphabet,"indexOf","(I)I");
     if(!at||!find||at->is_native||!find->is_native||
        find->native_func!=java_lang_String_indexOf||at->para_slots!=2||
        at->return_slots!=1||find->para_slots!=2||find->return_slots!=1)return 0;
@@ -109,6 +111,9 @@ static inline int jbg_string_calls(Runtime *r,MethodInfo *m,Instance *text,Insta
     MethodInfo *leaf=jbg_virtual(r,at,22,text,"charAt0","(I)C");
     return count==r->jvm->shortcut.string_count&&count&&leaf&&leaf->is_native&&
            leaf->native_func==java_lang_String_charAt0&&leaf->para_slots==2&&leaf->return_slots==1;
+}
+static inline int jbg_string_calls(Runtime *r,MethodInfo *m,Instance *text,Instance *alphabet){
+    return jbg_string_calls_at(r,m,text,alphabet,63,66);
 }
 static inline void *jbg_vm_row(void *ctx,unsigned i){
     Instance *a=ctx,*v=NULL;
@@ -146,5 +151,35 @@ static inline int jbg_vm_preflight(Runtime *r,unsigned kind,const char *image_de
     if(!jbg_string_calls(r,m,text,a)){jbg_host_note(r,4);return 0;}
     if(!jbg_loop_preflight(t,alphabet,jbg_vm_row,rows,&last)){jbg_host_note(r,5);return 0;}
     *out=(JbgProof){font,wrapper,(Instance *)last,jbg_ref(font,image),t.count};return 1;
+}
+static inline int jbg_ninja_vm_preflight(Runtime *r,unsigned kind,
+                                         const char *image_desc,JbgProof *out){
+    MethodInfo *m=r->method;JClass *cl=m->_this_class;
+    StackEntry *l=r->localvar;
+    const unsigned nslot=kind==3?6u:7u;
+    if(!l||(kind!=3&&kind!=4)||!jbg_bname(cl,"dd")||
+       r->localvar_slots<(int)(nslot+2)||l[nslot+1].ivalue!=0||
+       l[nslot].ivalue<=0||l[nslot].ivalue>JBG_MAX_TEXT){
+        jbg_host_note(r,0);return 0;
+    }
+    Instance *font=l[0].rvalue,*wrapper=l[1].rvalue,*text=l[2].rvalue;
+    if(!jbg_obj(font,cl)||!jbg_named(wrapper,"t")||
+       wrapper->mb.clazz->jloader!=cl->jloader||
+       (kind==4&&!jbg_obj(l[6].rvalue,cl))){jbg_host_note(r,1);return 0;}
+    FieldInfo *charset=jbg_field_at(m,55,"x","Ljava/lang/String;",sizeof(Instance *),1);
+    FieldInfo *table=jbg_field_at(m,kind==3?86:186,"y","[[I",sizeof(Instance *),1);
+    FieldInfo *image=jbg_field_at(m,kind==3?82:182,"w",image_desc,sizeof(Instance *),1);
+    FieldInfo *spacing=jbg_field_at(m,kind==3?138:238,"u","I",4,0);
+    if(!charset||!table||!image||!spacing){jbg_host_note(r,2);return 0;}
+    Instance *a=jbg_ref(font,charset),*rows=jbg_ref(font,table);
+    JbgText t={0},alphabet={0};void *last=NULL;
+    if(!jbg_text(r,text,&t)||!jbg_text(r,a,&alphabet)||
+       t.count!=(unsigned)l[nslot].ivalue||alphabet.count>JBG_MAX_ALPHABET){
+        jbg_host_note(r,3);return 0;
+    }
+    if(!jbg_string_calls_at(r,m,text,a,61,64)){jbg_host_note(r,4);return 0;}
+    if(!jbg_loop_preflight(t,alphabet,jbg_vm_row,rows,&last)){jbg_host_note(r,5);return 0;}
+    *out=(JbgProof){font,wrapper,(Instance *)last,jbg_ref(font,image),t.count};
+    return 1;
 }
 #endif
