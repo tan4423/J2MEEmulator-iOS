@@ -323,7 +323,8 @@ workflows:
             javax.microedition.rms.impl.RecordStoreImpl > "$RUNNER_TEMP/jarbox-rms-recordstore.txt"
           grep -Fq 'cacheClosedStore' "$RUNNER_TEMP/jarbox-rms-recordstore.txt"
           grep -Fq 'detachCacheSnapshot' "$RUNNER_TEMP/jarbox-rms-recordstore.txt"
-          echo "[JarBoxStorage][BUILD] rms_metadata_log=present bounded_closed_store_cache=enabled"
+          jar tf "$jars/j2me_api.jar" | grep -Fxq 'javax/microedition/rms/impl/RecordStoreImpl$CacheSnapshot.class'
+          echo "[JarBoxStorage][BUILD] rms_metadata_log=present bounded_detached_store_cache=enabled"
           # The shipped Connector.class was the unsupported-transport stub.
           # Require the actual Java ME protocol dispatcher in the built JAR.
           javap -classpath "$jars/j2me_api.jar:$jars/minijvm_rt.jar" -c javax.microedition.io.Connector > "$RUNNER_TEMP/connector-bytecode.txt"
