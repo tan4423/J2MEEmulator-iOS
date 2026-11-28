@@ -7,3 +7,14 @@ Independent JARBOX_VM_ARRAY_LOOKUP_MODE1_EXPERIMENT=0 by default; explicitly sel
 Per-session successes logged in Flight Recorder, batched 64 on owning Java thread, up to 63 unreported per thread; no new global mode-1 state. Existing legacy global diagnostic retained only for its historical path. Build stamp array-mode1-0/1 records requested switch. Candidate disabled by default in production: no new CPU saving claimed. The 2026-11-28 Desktop Lab experiment adds a separate build-only opt-in (JARBOX_DESKTOP_ARRAY_LOOKUP_TEST) and a labctl lookup on/off control. It is admitted only when the exact Nick archive and packaged API/RT identities are verified and a level-1 headless paint scope is active. It reuses the same bytecode matcher, resolved-field/type checks, per-call field reads, Java index helper and interpreter fallback. The toggle defaults OFF and is cleared when the sink is disabled, changed to another level, or faulted. This does not change the iOS production setting, which remains JARBOX_VM_ARRAY_LOOKUP_MODE1_EXPERIMENT=0. Additional checks may reduce eligible calls; old opt-in path also gains stricter guards.
 
 Actual local GCC and Clang ASan+UBSan differential: 214,641 cases (11^4 boundary combinations and 200,000 deterministic pseudorandom inputs), byte-for-byte output equals OpenJDK arithmetic oracle, including Java signed wrap and rejected out-of-bounds indices. This checks the exact index helper, not the interpreter, concurrent GC, class initialization, exception effects or device performance. Source wiring unit test added; full iOS CI and real MiniJVM differential still required. No new String intrinsic: existing String.charAt0 calls jstring_char_at and uses per-VM shortcut fields; bypassing Java/native frames needs separate verified contracts. Keep full raster default and scoped Core off. No install request.
+
+
+Desktop Lab correction (2026-11-28): the first level-1 experiment used the older
+interpreter shortcut, which did not replay the reference stack lane left by
+`getstatic`. Its A/B produced q3 hits but failed the HUD comparison, so it is
+rejected. Lookup ON at Sink Level 1 now routes through `desktop_map_leaf` only:
+exact Nick `Class_hii.q3(II)I` pattern, resolved `x3:[I` and `j1:I` field offsets,
+per-call array/width loads, Java 32-bit index semantics, and interpreter fallback
+on every refusal. It preserves `args[3].rvalue`, the reference lane written by
+the original `getstatic`. The older direct shortcut is disabled in Desktop
+builds; iOS production remains unchanged and OFF by default.
