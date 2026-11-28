@@ -3424,6 +3424,9 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
 #if defined(JARBOX_DESKTOP_LAB)
                 const int outside_ir=block_ir&&!jvm->desktop_block_ir_enabled&&!jarbox_lab_sink_level(0);
                 uint64_t outside_spans=0,outside_ops=0;
+                // Method-local telemetry batch; flush at a bounded span count
+                // and on interpreter exit, without changing VM stack/effects.
+                unsigned desktop_ir_pending_spans=0,desktop_ir_pending_ops=0;
 #endif
 #if __JVM_OS_IOS__
                 int block_ir_report=block_ir&&!__atomic_load_n(&jvm->block_ir_seen,__ATOMIC_RELAXED);
@@ -3722,10 +3725,14 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                                 __atomic_fetch_add(&jvm->host_block_ir_ops,span->count,__ATOMIC_RELAXED);
 #endif
 #if defined(JARBOX_DESKTOP_LAB)
-                                // Per-thread frequency is high: count spans only in the
-                                // explicitly selected logic profile, never baseline.
-                                __atomic_fetch_add(&jvm->desktop_block_ir_spans,1,__ATOMIC_RELAXED);
-                                __atomic_fetch_add(&jvm->desktop_block_ir_ops,span->count,__ATOMIC_RELAXED);
+                                // Avoid two shared atomic RMWs on each pure span.
+                                // A bounded batch still publishes during long methods.
+                                desktop_ir_pending_ops+=span->count;
+                                if(++desktop_ir_pending_spans==64u){
+                                    __atomic_fetch_add(&jvm->desktop_block_ir_spans,desktop_ir_pending_spans,__ATOMIC_RELAXED);
+                                    __atomic_fetch_add(&jvm->desktop_block_ir_ops,desktop_ir_pending_ops,__ATOMIC_RELAXED);
+                                    desktop_ir_pending_spans=desktop_ir_pending_ops=0;
+                                }
                                 if(outside_ir){++outside_spans;outside_ops+=span->count;}
 #endif
                                 continue;
@@ -7764,6 +7771,10 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
 
                 } while (1);//end while
 #if defined(JARBOX_DESKTOP_LAB) && defined(JARBOX_BLOCK_IR_EXPERIMENT) && JARBOX_BLOCK_IR_EXPERIMENT && !_JVM_DEBUG_PROFILE && _JVM_DEBUG_LOG_LEVEL <= 1 && !defined(__JVM_DEBUG__)
+                if(desktop_ir_pending_spans){
+                    __atomic_fetch_add(&jvm->desktop_block_ir_spans,desktop_ir_pending_spans,__ATOMIC_RELAXED);
+                    __atomic_fetch_add(&jvm->desktop_block_ir_ops,desktop_ir_pending_ops,__ATOMIC_RELAXED);
+                }
                 if(outside_spans)jarbox_lab_logic_ir_note(outside_spans,outside_ops);
 #endif
             }
