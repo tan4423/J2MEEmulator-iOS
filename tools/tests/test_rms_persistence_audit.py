@@ -73,7 +73,7 @@ public class RmsSmoke {
             if (new File(args[0] + "/rms/settings.rsh").exists())
                 throw new AssertionError("deleted store header remained on disk");
             RecordStore fresh = RecordStore.openRecordStore("settings", true);
-            if (fresh.getRecord(1) != null) throw new AssertionError("deleted store data leaked into recreated store");
+            if (fresh.getNumRecords() != 0) throw new AssertionError("deleted store data leaked into recreated store");
             fresh.closeRecordStore();
             return;
         }
