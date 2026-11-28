@@ -157,7 +157,7 @@ static inline int jbg_ninja_vm_preflight(Runtime *r,unsigned kind,
     MethodInfo *m=r->method;JClass *cl=m->_this_class;
     StackEntry *l=r->localvar;
     const unsigned nslot=kind==3?6u:7u;
-    if(!l||(kind!=3&&kind!=4)||!jbg_bname(cl,"dd")||
+    if(!l||(kind!=3&&kind!=4)||(!cl||!cl->name||!utf8_equals_c(cl->name,"dd"))||
        r->localvar_slots<(int)(nslot+2)||l[nslot+1].ivalue!=0||
        l[nslot].ivalue<=0||l[nslot].ivalue>JBG_MAX_TEXT){
         jbg_host_note(r,0);return 0;
