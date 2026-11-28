@@ -190,3 +190,5 @@ Desktop tier 8 selective admission experiment: outside-paint Block IR now requir
 
 ## Java world evidence (desktop lab)
 For the exact admitted Nick archive, observe committed primitive static writes to `Class_hii.o4:S` (map) and `Class_hii.l4:B` (zone), as identified in historical Java diagnostics. Publish `java_map`, `java_zone`, `world_epoch` through status and CSV even headless. Unknown values are -1; unchanged writes do not increment epoch. No JAR mutation or Java invocation. Exact archive live validation is still required; liveness is not evidence of monsters or combat.
+
+Tier 10 (`sink native4`) is an isolated desktop native-superinstruction pilot over Unified 7: exact four-op integer load/constant, load/constant, arithmetic/bitwise, store spans only. Retains each original stack/local write, unchanged fallback and all existing scope/stack checks; no direct dispatch or outside-paint IR. `native4_spans` is admission telemetry. World changes also emit bounded-field `LAB_WORLD` records at changed values only. No live CPU benefit claimed before A/B/A.

@@ -103,5 +103,24 @@ int main(void){
     assert(!jbi_find_logic(p,UINT32_MAX));free(p);
     p=jbi_build(boundary,sizeof boundary,0,2,NULL,0,1);
     assert(p&&p->logic_spans==0&&!jbi_find_logic(p,0)&&jbi_find(p,0));free(p);
+    /* Test all four operand-source combinations, nine operators and
+     * destination/source aliasing. Compare every stale numeric/reference lane. */
+    for(unsigned trial=0;trial<40000;++trial){
+        uint8_t code[]={0x1a,0x1b,0x60,0x3b,0xb1};
+        if(trial&1)code[0]=(uint8_t)(2+trial%7);
+        if(trial&2)code[1]=(uint8_t)(2+(trial/7)%7);
+        code[2]=iops[(trial/4)%9];code[3]=(uint8_t)(0x3b+(trial/36)%4);
+        p=jbi_build(code,sizeof code,4,2,NULL,0,1);
+        assert(p&&p->spans==1&&p->span[0].reserved&&p->span[0].delta==0);
+        StackEntry a[8],b[8],la[4],lb[4];
+        for(unsigned i=0;i<8;++i){a[i].ulvalue=random64();a[i].rvalue=i&1?a:NULL;}
+        for(unsigned i=0;i<4;++i){la[i].ulvalue=random64();la[i].rvalue=i&1?la:NULL;}
+        memcpy(b,a,sizeof a);memcpy(lb,la,sizeof la);
+        assert(reference(code,4,a,la,2)==2);
+        assert(jbi_execute_native4(p,p->span,b+2,lb));
+        assert(!memcmp(a,b,sizeof a)&&!memcmp(la,lb,sizeof la));free(p);
+    }
+    p=jbi_build(boundary,sizeof boundary,0,2,NULL,0,1);
+    StackEntry untouched[4]={0};assert(p&&!jbi_execute_native4(p,p->span,untouched,untouched));free(p);
     printf("block IR: %u exact stack/local span comparisons PASS\n",checked);
 }

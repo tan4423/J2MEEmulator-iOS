@@ -3451,7 +3451,8 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                 // Short pure spans remain on the original interpreter outside paint.
                 // Avoid any per-opcode lookup if the method has no eligible span.
                 if(outside_ir&&!block_ir->logic_spans)block_ir=NULL;
-                uint64_t outside_spans=0,outside_ops=0;
+                uint64_t outside_spans=0,outside_ops=0,native4_spans=0;
+                const int native4_mode=block_ir&&!outside_ir&&jarbox_lab_sink_level(0)==10;
                 // Method-local telemetry batch; flush at a bounded span count
                 // and on interpreter exit, without changing VM stack/effects.
                 unsigned desktop_ir_pending_spans=0,desktop_ir_pending_ops=0;
@@ -3744,7 +3745,12 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                             ptrdiff_t room=(stack->store+stack->max_size)-sp;
                             if(depth>=span->need&&depth<=ca->max_stack&&room>=span->peak&&
                                ca->max_stack-depth>=span->peak){
-                                jbi_execute(block_ir,span,sp,localvar);
+#if defined(JARBOX_DESKTOP_LAB)
+                                if(native4_mode&&span->reserved&&jarbox_lab_sink_level(0)==10&&
+                                   jbi_execute_native4(block_ir,span,sp,localvar))++native4_spans;
+                                else
+#endif
+                                    jbi_execute(block_ir,span,sp,localvar);
                                 sp+=span->delta;
                                 runtime->pc=ca->code+span->end;
 #if __JVM_OS_IOS__
@@ -7829,6 +7835,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                     __atomic_fetch_add(&jvm->desktop_block_ir_ops,desktop_ir_pending_ops,__ATOMIC_RELAXED);
                 }
                 if(outside_spans)jarbox_lab_logic_ir_note(outside_spans,outside_ops);
+                if(native4_spans){extern void jarbox_lab_native4_note(uint64_t);jarbox_lab_native4_note(native4_spans);}
 #endif
             }
 

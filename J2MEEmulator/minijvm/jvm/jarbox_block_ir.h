@@ -142,6 +142,40 @@ static inline int jbi_lower(const uint8_t *p,unsigned locals,int be,JbiOp *out,i
     if(localop&&(local>=locals||(unsigned)localop>locals-local))return 0;
     *out=(JbiOp){.kind=(uint8_t)k,.local=(uint16_t)local,.imm=imm};*pop=a;*push=b;return 1;
 }
+#if defined(JBI_LOGIC_FILTER)
+/* Four exact pure operations. Classification happens once during plan build.
+ * No local/stack write is elided: even stale stack lanes must match. */
+static inline unsigned jbi_native4_kind(const JbiOp *o,unsigned n){
+    if(n!=4||o[0].slot!=0||o[1].slot!=1||o[2].slot!=0||o[3].slot!=0||
+       (o[0].kind!=JBI_ILOAD&&o[0].kind!=JBI_ICONST)||
+       (o[1].kind!=JBI_ILOAD&&o[1].kind!=JBI_ICONST)||o[3].kind!=JBI_ISTORE)return 0;
+    switch(o[2].kind){
+        case JBI_ADD:case JBI_SUB:case JBI_MUL:case JBI_SHL:case JBI_SHR:
+        case JBI_USHR:case JBI_AND:case JBI_OR:case JBI_XOR:return o[2].kind;
+        default:return 0;
+    }
+}
+static inline int jbi_execute_native4(const JbiPlan *p,const JbiSpan *s,StackEntry *entry,StackEntry *locals){
+    if(!s->reserved)return 0;
+    const JbiOp *o=jbi_ops(p)+s->first;
+    entry[0].ivalue=o[0].kind==JBI_ILOAD?locals[o[0].local].ivalue:o[0].imm;
+    entry[1].ivalue=o[1].kind==JBI_ILOAD?locals[o[1].local].ivalue:o[1].imm;
+    switch(s->reserved){
+        case JBI_ADD:entry[0].ivalue=jarbox_java_iadd(entry[0].ivalue,entry[1].ivalue);break;
+        case JBI_SUB:entry[0].ivalue=jarbox_java_isub(entry[0].ivalue,entry[1].ivalue);break;
+        case JBI_MUL:entry[0].ivalue=jarbox_java_imul(entry[0].ivalue,entry[1].ivalue);break;
+        case JBI_SHL:entry[0].ivalue=jarbox_java_ishl(entry[0].ivalue,entry[1].ivalue);break;
+        case JBI_SHR:entry[0].ivalue=jarbox_java_ishr(entry[0].ivalue,entry[1].ivalue);break;
+        case JBI_USHR:entry[0].uivalue>>=entry[1].uivalue&31u;break;
+        case JBI_AND:entry[0].ivalue&=entry[1].ivalue;break;
+        case JBI_OR:entry[0].ivalue|=entry[1].ivalue;break;
+        case JBI_XOR:entry[0].ivalue^=entry[1].ivalue;break;
+        default:abort(); /* immutable plan classification invariant */
+    }
+    locals[o[3].local].ivalue=entry[0].ivalue;
+    return 1;
+}
+#endif
 static inline JbiPlan *jbi_build(const uint8_t *c,unsigned size,unsigned locals,unsigned maxstack,
         const JbiHandler *handlers,unsigned nh,int be) {
     if(!c||size<5||size>JBI_MAX_CODE||locals>32767||maxstack>32767||nh>JBI_MAX_HANDLERS||(nh&&!handlers))return NULL;
@@ -165,6 +199,9 @@ static inline JbiPlan *jbi_build(const uint8_t *c,unsigned size,unsigned locals,
             if(n>=JBI_MIN_RUN&&pc<size&&(unsigned)(need+peak)<=maxstack) {
                 if(ns==JBI_MAX_SPANS||n>JBI_MAX_OPS-no)return NULL;
                 spans[ns++]=(JbiSpan){(uint16_t)start,(uint16_t)pc,(uint16_t)no,(uint16_t)n,(uint16_t)need,(uint16_t)peak,(int16_t)depth,0};
+#if defined(JBI_LOGIC_FILTER)
+                spans[ns-1].reserved=(uint16_t)jbi_native4_kind(pending,n);
+#endif
                 memcpy(ops+no,pending,n*sizeof(*ops));no+=n;
                 unsigned slot=start&63u;bucket[slot]=bucket[slot]?255:(uint8_t)ns;
             }
