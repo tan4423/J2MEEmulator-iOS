@@ -14,6 +14,7 @@
 #include <stdatomic.h>
 #include <time.h>
 #include "garbage.h"
+#include "jarbox_string_index_cache.h"
 #include "jdwp.h"
 #if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__
 #include "../../NativeBridge/jvm_bridge.h"
@@ -1830,6 +1831,18 @@ u16 jstring_char_at(Instance *jstr, s32 index, Runtime *runtime) {
 }
 
 
+typedef struct {
+    MiniJVM *jvm;
+    GcCollector *collector;
+    uint64_t identity, epoch;
+    Instance *string, *array;
+    s32 count, offset;
+    unsigned calls;
+    JarBoxStringIndexMap map;
+} JStringIndexCache;
+
+static _Thread_local JStringIndexCache g_jstring_index_cache;
+
 s32 jstring_index_of(Instance *jstr, u16 ch, s32 startAt, Runtime *runtime) {
     c8 *fieldPtr = jstring_get_value_ptr(jstr, runtime);
     Instance *ptr = (Instance *) getFieldRefer(fieldPtr);//c8[]数组实例
@@ -1837,6 +1850,50 @@ s32 jstring_index_of(Instance *jstr, u16 ch, s32 startAt, Runtime *runtime) {
         u16 *jchar_arr = (u16 *) ptr->arr_body;
         s32 count = jstring_get_count(jstr, runtime);
         s32 offset = jstring_get_offset(jstr, runtime);
+
+        /* The NSO font helpers repeatedly call String.indexOf(char) on one
+         * immutable UTF-16 alphabet. Build a bounded per-thread map only
+         * after repeated use; uncommon/large/invalid strings keep the
+         * original linear implementation. The collector epoch makes the
+         * raw object identities weak and safe across every successful GC. */
+        if (startAt == 0 && count >= 16 &&
+            count <= (s32)JARBOX_STRING_INDEX_CACHE_MAX_COUNT &&
+            offset >= 0 && ptr->mb.arr_type_index == DATATYPE_JCHAR &&
+            offset <= ptr->arr_length && count <= ptr->arr_length - offset &&
+            runtime && runtime->jvm && runtime->jvm->collector) {
+            GcCollector *collector = runtime->jvm->collector;
+            const uint64_t identity =
+                __atomic_load_n(&collector->string_cache_identity, __ATOMIC_ACQUIRE);
+            const uint64_t epoch =
+                __atomic_load_n(&collector->string_cache_epoch, __ATOMIC_ACQUIRE);
+            if (identity && epoch) {
+                JStringIndexCache *cache = &g_jstring_index_cache;
+                if (cache->jvm != runtime->jvm || cache->collector != collector ||
+                    cache->identity != identity || cache->epoch != epoch ||
+                    cache->string != jstr || cache->array != ptr ||
+                    cache->count != count || cache->offset != offset) {
+                    memset(cache, 0, sizeof(*cache));
+                    cache->jvm = runtime->jvm;
+                    cache->collector = collector;
+                    cache->identity = identity;
+                    cache->epoch = epoch;
+                    cache->string = jstr;
+                    cache->array = ptr;
+                    cache->count = count;
+                    cache->offset = offset;
+                }
+                if (cache->map.capacity)
+                    return jarbox_string_index_map_lookup(&cache->map, ch);
+                if (cache->calls < 6) ++cache->calls;
+                if (cache->calls >= 6) {
+                    if (jarbox_string_index_map_build(&cache->map,
+                            jchar_arr, offset, count))
+                        return jarbox_string_index_map_lookup(&cache->map, ch);
+                    cache->calls = 0;
+                }
+            }
+        }
+
         s32 i;
         for (i = startAt; i < count; i++) {
             if (jchar_arr[i + offset] == ch) {
