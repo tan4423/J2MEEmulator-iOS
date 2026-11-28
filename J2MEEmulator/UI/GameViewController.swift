@@ -1335,6 +1335,7 @@ class GameViewController: UIViewController {
                      attributes: lastMeasurement == nil ? .disabled : []) { [weak self] _ in
                 self?.showLastMeasurement()
             },
+            UIAction(title: "Log Deep Headless") { [weak self] _ in self?.showDeepHeadlessReport(from: self) },
             UIAction(title: "Chẩn đoán kết nối") { [weak self] _ in self?.showNetworkDiagnostics() },
             UIAction(title: "Âm nền Treo (thử nghiệm)") { [weak self] _ in
                 if let self { JarBoxBackgroundDiagnostics.showAudio(from: self) }
@@ -4454,6 +4455,77 @@ class GameViewController: UIViewController {
     /// Values attributable to this parked session's active Treo interval.
     /// Process-wide CPU/thermal/battery belong in the *global* JarBox menu,
     /// never under an individual JAR's resource consumption.
+    /// On-demand, read-only report. No new sampling timer or game hook.
+    func showDeepHeadlessReport(from presenter: UIViewController?) {
+        guard let presenter, presenter.presentedViewController == nil else { return }
+        let report = deepHeadlessReport()
+        let alert = UIAlertController(title: "Log Deep Headless",
+                                      message: report, preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "Sao chép", style: .default) { _ in
+            UIPasteboard.general.string = report
+        })
+        alert.addAction(UIAlertAction(title: "Đóng", style: .cancel))
+        presenter.present(alert, animated: true)
+    }
+
+    private func deepHeadlessReport() -> String {
+        var lines = ["JARBOX_HEADLESS_DIAG v1",
+            "build=" + (Bundle.main.object(forInfoDictionaryKey: "JarBoxBuildCommit") as? String ?? "unknown"),
+            "profile=" + (Bundle.main.object(forInfoDictionaryKey: "JarBoxPerfProfile") as? String ?? "unknown"),
+            "session=\(gameSessionToken) parked=\(parkedTreoActive ? 1 : 0)",
+            "compatible_only=\(JarBoxGameStorage.treoCompatibleOnly(for: jarPath) ? 1 : 0) jit=\(treo_game_jit_is_enabled())"]
+        var treo = JarBoxTreoSnapshot()
+        let treoOK = jvm_bridge_treo_snapshot_for_token(gameSessionToken, &treo) != 0
+        if treoOK {
+            lines.append("mode=\(treo.mode) family=\(treo.family) canvas=\(treo.canvas)")
+            lines.append("requests=\(treo.repaint_requests) repaint_skips=\(treo.repaint_skips) service_skips=\(treo.service_skips) paint_skips=\(treo.paint_skips)")
+            lines.append("gc_cycles=\(treo.gc_worker_cycles) gc_cpu_ns=\(treo.gc_worker_cpu_ns) gc_aborts=\(treo.gc_worker_aborts)")
+        } else { lines.append("treo_snapshot=unavailable") }
+        var cpu = JarBoxCpuSnapshot()
+        if jvm_bridge_cpu_snapshot_for_token(gameSessionToken, &cpu) != 0 {
+            func window(_ name: String, _ w: JarBoxCpuWindow) -> String {
+                guard w.valid != 0, w.elapsed_ns > 0 else { return "\(name)=unavailable" }
+                let scale = 100.0 / Double(w.elapsed_ns)
+                let proc = w.process_ok != 0 ? String(format: "%.2f", Double(w.process_ns)*scale) : "?"
+                let java = w.threads_ok != 0 ? String(format: "%.2f", Double(w.java_ns)*scale) : "?"
+                let gc = w.threads_ok != 0 ? String(format: "%.2f", Double(w.gc_ns)*scale) : "?"
+                let runner = w.threads_ok != 0 ? String(format: "%.2f", Double(w.runner_ns)*scale) : "?"
+                return "\(name) mode=\(w.mode) seconds=\(Double(w.elapsed_ns)/1e9) process_cpu=\(proc) java_cpu=\(java) gc_cpu=\(gc) runner_cpu=\(runner) requests=\(w.requests) errors=\(w.sample_errors)"
+            }
+            lines += [window("visible", cpu.last_visible), window("last_treo", cpu.last_treo), window("current", cpu.current)]
+        } else { lines.append("cpu_snapshot=unavailable") }
+        var process = JarBoxFlightProcess()
+        var slots = Array(repeating: JarBoxFlightSlot(), count: 16)
+        let count = slots.withUnsafeMutableBufferPointer { buffer in
+            jvm_bridge_flight_sample(&process, buffer.baseAddress, Int32(buffer.count), 1)
+        }
+        if count > 0, let s = slots.prefix(Int(count)).first(where: { $0.token == gameSessionToken }), s.counters_ok != 0 {
+            lines.append("active_sessions=\(count) core_profile=\(s.nso_core_profile) core_armed=\(s.nso_core_armed) core_rejected=\(s.nso_core_rejected) core_frames=\(s.nso_core_frames) core_faults=\(s.nso_core_faults)")
+            lines.append("native_draw_skips=\(s.scoped_native_draw_skips) vm_draw_skips=\(s.scoped_vm_draw_skips)")
+            lines.append("residual_verified=\(s.residual_verified) residual_ready_mask=\(s.residual_ready) compiles=\(s.residual_compiles) calls=\(s.residual_calls) skips=\(s.residual_skips) deopts=\(s.residual_deopts) faults=\(s.residual_faults)")
+            lines.append("ir_seen=\(s.block_ir_seen) ir_plans=\(s.block_ir_plans) ir_shared_hits=\(s.block_ir_shared_hits) ir_bytes=\(s.block_ir_bytes)")
+            lines.append("island_plans=\(s.render_island_plans) island_skips=\(s.render_island_skips) island_ops=\(s.render_island_ops) wrapper_skips=\(s.render_wrapper_skips)")
+            lines.append("glyph_attempts=\(s.glyph_attempts) glyph_loops=\(s.glyph_loops) glyph_chars=\(s.glyph_chars) scope_refusals=\(s.glyph_scope_refusals) link_refusals=\(s.glyph_link_refusals) data_refusals=\(s.glyph_data_refusals)")
+            lines.append("canvas_phase_ok=\(s.canvas_phase_ok) frames=\(s.canvas_phase_frames) pre_ns=\(s.canvas_phase_pre_ns) paint_ns=\(s.canvas_phase_paint_ns) post_ns=\(s.canvas_phase_post_ns)")
+            lines.append("gc_phase_ok=\(s.gc_phase_ok) cycles=\(s.gc_phase_cycles) deferred_ns=\(s.gc_phase_deferred_cpu_ns) mark_ns=\(s.gc_phase_mark_cpu_ns) sweep_ns=\(s.gc_phase_sweep_cpu_ns)")
+            var blockers: [String] = []
+            if !parkedTreoActive { blockers.append("not_parked") }
+            if JarBoxGameStorage.treoCompatibleOnly(for: jarPath) { blockers.append("compatible_only") }
+            if treoOK && treo.family == 0 { blockers.append("family_unrecognized") }
+            if treoOK && treo.canvas == 0 { blockers.append("canvas_unrecognized") }
+            if s.nso_core_profile == 0 { blockers.append("archive_not_in_core_allowlist") }
+            if s.nso_core_armed == 0 { blockers.append("core_not_armed") }
+            if s.nso_core_rejected != 0 { blockers.append("core_sticky_rejection") }
+            if s.residual_verified == 0 { blockers.append("residual_archive_not_verified") }
+            if s.residual_ready == 0 { blockers.append("residual_no_ready_plan") }
+            if s.residual_faults != 0 { blockers.append("residual_fault") }
+            if treo_game_jit_is_enabled() != 0 { blockers.append("jit_enabled") }
+            lines.append("observed_blockers=" + (blockers.isEmpty ? "none_observed" : blockers.joined(separator: ",")))
+        } else { lines.append("flight_snapshot=unavailable_or_busy") }
+        lines.append("CPU 100%=one logical core; process includes all tabs. Counters cumulative; plan presence does not prove execution.")
+        return lines.joined(separator: "\n")
+    }
+
     func parkedSessionInformation() -> String {
         guard ownsLiveGameSession(for: jarPath), parkedTreoActive else {
             return "Phiên Java: không có phiên Treo đang hoạt động."

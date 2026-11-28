@@ -2526,6 +2526,14 @@ class AppsListViewController: UIViewController,
         let alert = UIAlertController(title: "Thông tin · " + app.name + " · " + tabName,
                                       message: lines.joined(separator: "\n"),
                                       preferredStyle: .alert)
+        if let game = activeGame {
+            alert.addAction(UIAlertAction(title: "Log Deep Headless", style: .default) { [weak self, weak game] _ in
+                DispatchQueue.main.async { [weak self, weak game] in
+                    guard let self, let game else { return }
+                    game.showDeepHeadlessReport(from: self)
+                }
+            })
+        }
         alert.addAction(UIAlertAction(title: "Nhật ký save", style: .default) { [weak self] _ in
             self?.showSaveLog(for: app, cloneID: cloneID, tabName: tabName)
         })

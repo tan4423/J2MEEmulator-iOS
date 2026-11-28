@@ -8,6 +8,8 @@ on:
       - 'tools/generate_residual_build_identity.py'
       - 'tools/tests/test_*.py'
       - 'codemagic.yaml'
+      - 'J2MEEmulator/UI/GameViewController.swift'
+      - 'J2MEEmulator/UI/AppsListViewController.swift'
       - 'J2MEEmulator/minijvm/jvm/jarbox_residual_*.h'
       - 'J2MEEmulator/minijvm/jvm/jarbox_block_ir*.h'
       - 'J2MEEmulator/minijvm/jvm/jarbox_render_island.h'
