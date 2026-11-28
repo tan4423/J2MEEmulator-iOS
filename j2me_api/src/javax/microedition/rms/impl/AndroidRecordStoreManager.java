@@ -50,12 +50,20 @@ public class AndroidRecordStoreManager implements RecordStoreManager {
 
 	private Map<String, Object> recordStores = null;
 
-	private static String getDataDir() {
+	// The save root is fixed for a MiniJVM session. Cache its RMS directory so
+	// opening a store from a hot paint path does not call mkdirs()/exists() on
+	// every open. Different roots remain isolated by the map key.
+	private static final Map<String, File> DATA_DIR_CACHE = new ConcurrentHashMap<>();
+
+	private static File getDataDir() {
 		String root = System.getProperty("app.save.root");
 		if (root == null) root = ".";
-		String dir = root + "/rms";
-		new File(dir).mkdirs();
-		return dir;
+		File cached = DATA_DIR_CACHE.get(root);
+		if (cached != null) return cached;
+		File dir = new File(root + "/rms");
+		dir.mkdirs();
+		File raced = DATA_DIR_CACHE.putIfAbsent(root, dir);
+		return raced == null ? dir : raced;
 	}
 
 	private static String sanitizeName(String name) {
@@ -70,7 +78,7 @@ public class AndroidRecordStoreManager implements RecordStoreManager {
 	private synchronized void initializeIfNecessary() {
 		if (recordStores == null) {
 			recordStores = new ConcurrentHashMap<>();
-			String[] list = new File(getDataDir()).list();
+			String[] list = getDataDir().list();
 			if (list != null) {
 				for (String fileName : list) {
 					if (fileName.endsWith(RECORD_STORE_HEADER_SUFFIX)) {
@@ -95,7 +103,7 @@ public class AndroidRecordStoreManager implements RecordStoreManager {
 			throw new RecordStoreException();
 		}
 
-		File dataDir = new File(getDataDir());
+		File dataDir = getDataDir();
 		String prefix = recordStoreName + ".";
 		String[] files = dataDir.list();
 		if (files != null) {

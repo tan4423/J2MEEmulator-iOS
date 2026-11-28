@@ -38,6 +38,16 @@ public class RmsSmoke {
             r.closeRecordStore();
             return;
         }
+        if ("reopen".equals(mode)) {
+            for (int i = 0; i < 64; i++) {
+                RecordStore r = RecordStore.openRecordStore("settings", false);
+                byte[] actual = r.getRecord(1);
+                if (!args[2].equals(new String(actual, "UTF-8")))
+                    throw new AssertionError("RMS data changed during repeated reopen");
+                r.closeRecordStore();
+            }
+            return;
+        }
         if ("corrupt".equals(mode)) {
             try {
                 RecordStore.openRecordStore("settings", true);
@@ -85,6 +95,8 @@ class RmsPersistenceAuditTest(unittest.TestCase):
         self.run_case(classes, b, "write", "ACCOUNT_B_PRIVATE")
         self.run_case(classes, a, "read", "ACCOUNT_A_PRIVATE")
         self.run_case(classes, b, "read", "ACCOUNT_B_PRIVATE")
+        self.run_case(classes, a, "reopen", "ACCOUNT_A_PRIVATE")
+        self.run_case(classes, b, "reopen", "ACCOUNT_B_PRIVATE")
         log_a = (a / "rms-events.log").read_text()
         log_b = (b / "rms-events.log").read_text()
         self.assertIn("RMS_SAVE", log_a)
