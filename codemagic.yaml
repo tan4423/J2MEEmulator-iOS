@@ -315,6 +315,10 @@ workflows:
             j2me_api/src/javax/microedition/io/Connector.java \
             j2me_api/src/javax/microedition/io/MicroCompatibleSocketConnection.java
           jar uf "$jars/j2me_api.jar" -C "$classes" .
+          jar tf "$jars/j2me_api.jar" | grep -Fxq 'javax/microedition/lcdui/Display$SleepCanvas.class'
+          javap -classpath "$jars/j2me_api.jar:$jars/minijvm_rt.jar" -c -p javax.microedition.lcdui.Display > "$RUNNER_TEMP/jarbox-angel-sleep.txt"
+          grep -Fq 'applyAngelSleep' "$RUNNER_TEMP/jarbox-angel-sleep.txt"
+          echo '[JarBox][BUILD] Angel Sleep Canvas packaged'
           jar tf "$jars/j2me_api.jar" | grep -Fxq 'javax/microedition/rms/impl/RmsEventLog.class'
           javap -classpath "$jars/j2me_api.jar:$jars/minijvm_rt.jar" -c \
             javax.microedition.rms.impl.AndroidRecordStoreManager > "$RUNNER_TEMP/jarbox-rms-manager.txt"

@@ -8,6 +8,9 @@ on:
       - 'J2MEEmulator/UI/GameViewController.swift'
       - 'j2me_api/src/javax/microedition/lcdui/Display.java'
       - 'j2me_api/src/javax/microedition/lcdui/Canvas.java'
+      - 'tools/tests/test_canvas_input_token.py'
+      - 'tools/tests/test_input_teardown.py'
+      - 'codemagic.yaml'
 permissions:
   contents: read
 jobs:

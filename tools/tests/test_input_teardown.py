@@ -16,7 +16,7 @@ PRE = r'''
 typedef struct MiniJVM { int id; } MiniJVM;
 typedef struct { atomic_uint read_pos,write_pos; } JarBoxInputRing;
 static void jarbox_input_ring_reset(JarBoxInputRing *ring) { atomic_store(&ring->write_pos,0); atomic_store(&ring->read_pos,0); }
-typedef struct { _Atomic(MiniJVM *) vm; uint64_t heap_key,session_token; atomic_int accepting_input,display_wait_enabled; JarBoxInputRing ring; unsigned wakes; } J2MEInputContext;
+typedef struct { _Atomic(MiniJVM *) vm; uint64_t heap_key,session_token; atomic_int accepting_input,display_wait_enabled,angel_sleep_requested; JarBoxInputRing ring; unsigned wakes; } J2MEInputContext;
 #define JARBOX_INPUT_CONTEXT_CAPACITY 4
 static J2MEInputContext g_input_contexts[JARBOX_INPUT_CONTEXT_CAPACITY];
 static pthread_mutex_t g_input_context_lock=PTHREAD_MUTEX_INITIALIZER;
@@ -28,7 +28,7 @@ static void signal_display_wait(J2MEInputContext *ctx) { ctx->wakes++; }
 MAIN = r'''
 static void bind_model(J2MEInputContext *ctx, MiniJVM *vm, uint64_t token) {
     atomic_store(&ctx->vm,vm);ctx->heap_key=token+100;ctx->session_token=token;
-    atomic_store(&ctx->accepting_input,1);atomic_store(&ctx->display_wait_enabled,1);
+    atomic_store(&ctx->accepting_input,1);atomic_store(&ctx->display_wait_enabled,1);atomic_store(&ctx->angel_sleep_requested,1);
     atomic_store(&ctx->ring.read_pos,3);atomic_store(&ctx->ring.write_pos,7);ctx->wakes=0;
 }
 static void *consume(void *p) {
@@ -43,10 +43,10 @@ int main(void) {
     for(int i=0;i<10000;i++) {
         bind_model(x,&a,11);bind_model(y,&b,22);atomic_store(&g_visible_input_context,y);
         j2me_input_quiesce_vm(&a);
-        assert(!atomic_load(&x->accepting_input)&&!atomic_load(&x->display_wait_enabled));
+        assert(!atomic_load(&x->accepting_input)&&!atomic_load(&x->display_wait_enabled)&&!atomic_load(&x->angel_sleep_requested));
         assert(atomic_load(&x->vm)==&a&&x->session_token==11&&x->heap_key==111);
         assert(atomic_load(&x->ring.read_pos)==3&&atomic_load(&x->ring.write_pos)==7);
-        assert(visible_input_context()==y&&atomic_load(&y->accepting_input)&&y->wakes==0);
+        assert(visible_input_context()==y&&atomic_load(&y->accepting_input)&&atomic_load(&y->angel_sleep_requested)&&y->wakes==0);
         j2me_input_release_for_token(0);j2me_input_release_for_token(99);
         assert(x->session_token==11&&y->session_token==22);
         j2me_input_release_for_token(11);
