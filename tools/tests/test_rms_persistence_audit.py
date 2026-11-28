@@ -194,9 +194,13 @@ class RmsPersistenceAuditTest(unittest.TestCase):
         return target
 
     def run_case(self, classes, root, mode, value=""):
-        return subprocess.run(
+        result = subprocess.run(
             ["java", "-cp", str(classes), "RmsSmoke", str(root), mode, value],
-            check=True, text=True, capture_output=True, timeout=15)
+            check=False, text=True, capture_output=True, timeout=15)
+        if result.returncode:
+            raise AssertionError(
+                "RmsSmoke failed: " + result.stdout[-2000:] + result.stderr[-2000:])
+        return result
 
     def test_two_install_roots_do_not_share_save_data_or_logs(self):
         classes = self.compile()

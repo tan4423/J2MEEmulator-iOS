@@ -75,7 +75,7 @@ public class RecordStoreImpl extends RecordStore {
 	private int version = 0;
 	private long lastModified = 0;
 	private int openCount = 0;
-	private boolean open;
+	private volatile boolean open;
 
 	RecordStoreImpl(RecordStoreManager recordStoreManager, String recordStoreName) {
 		this.recordStoreManager = recordStoreManager;
