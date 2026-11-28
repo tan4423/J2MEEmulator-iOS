@@ -215,7 +215,7 @@ public class RecordStoreImpl extends RecordStore {
 		} else {
 			clearCachedRecords();
 		}
-		System.out.println("RecordStore " + recordStoreName + " closed");
+		// No console formatting or UTF-8 encoding in the paint-time close path.
 	}
 
 	@Override

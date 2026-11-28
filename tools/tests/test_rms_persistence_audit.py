@@ -252,6 +252,10 @@ class RmsPersistenceAuditTest(unittest.TestCase):
         root.mkdir()
         self.run_case(classes, root, "cache-bytes")
 
+    def test_close_path_has_no_console_logging(self):
+        source = (RMS / "impl/RecordStoreImpl.java").read_text(encoding="utf-8")
+        self.assertNotIn('System.out.println("RecordStore " + recordStoreName + " closed")', source)
+
     def test_corrupted_header_and_record_are_preserved_not_reinitialized(self):
         classes = self.compile()
         for corrupt_file in ("settings.rsh", "settings.1.rsr"):
