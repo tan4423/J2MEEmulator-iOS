@@ -962,27 +962,34 @@ static const JarBoxResidualOp *jbr_live_compile(Runtime *r,MethodInfo *m,CodeAtt
 #if !(defined(JARBOX_DESKTOP_LAB) && JARBOX_DESKTOP_LAB)
     __atomic_fetch_or(&st->residual_wrapper_mask,bit,__ATOMIC_RELAXED);
 #endif
+#if !(defined(JARBOX_DESKTOP_LAB) && JARBOX_DESKTOP_LAB)
+#define JBR_TARGET_REFUSE(reason,pc) do{if(background)__atomic_store_n(&st->residual_bg_refusal,((unsigned)(reason)<<16)|(pc),__ATOMIC_RELAXED);return NULL;}while(0)
+#else
+#define JBR_TARGET_REFUSE(reason,pc) return NULL
+#endif
     for(unsigned p=0;p<(unsigned)ca->code_length;) {
         unsigned raw=ca->bytecode_for_jit[p],len=jbr_raw_size(raw);
-        if(!len||len>(unsigned)ca->code_length-p)return NULL;
+        if(!len||len>(unsigned)ca->code_length-p)JBR_TARGET_REFUSE(1,p);
         if(raw==0xb6){
             JClass *cl=m->_this_class;
             unsigned ix=jbr_u16(ca->bytecode_for_jit+p+1);
             int typ=cp(cl,raw,ix);
             if(!jbr_draw_shape(typ)){
-                if((!minimap&&!background)||!(typ&JBR_CP_CALL_FLAG))return NULL;
+                if((!minimap&&!background)||!(typ&JBR_CP_CALL_FLAG))JBR_TARGET_REFUSE(2,p);
             } else {
                 if((typ==JBR_CP_DRAW_RECT&&!minimap&&!background)||(typ==JBR_CP_DRAW_IMAGE&&!overlay&&!minimap&&!background)||
-                   (typ==JBR_CP_DRAW&&(minimap||background)))return NULL;
+                   (typ==JBR_CP_DRAW&&(minimap||background)))JBR_TARGET_REFUSE(3,p);
                 ConstantMethodRef *mr=(ConstantMethodRef *)class_get_constant_item(cl,ix);
                 const char *desc=typ==JBR_CP_DRAW_RECT?"(IIII)V":typ==JBR_CP_DRAW_IMAGE?
                     "(Ljavax/microedition/lcdui/Image;III)V":"(Ljavax/microedition/lcdui/Image;IIIIIIII)V";
-                if(!jbr_live_target_ready(r->jvm,mr,wrapper,jbr_live_declared(wrapper->mb.clazz,utf8_cstr(mr->name),desc)))return NULL;
+                if(!jbr_live_target_ready(r->jvm,mr,wrapper,jbr_live_declared(wrapper->mb.clazz,utf8_cstr(mr->name),desc)))JBR_TARGET_REFUSE(4,p);
             }
         }
         p+=len;
     }
+#undef JBR_TARGET_REFUSE
 #if !(defined(JARBOX_DESKTOP_LAB) && JARBOX_DESKTOP_LAB)
+    if(background)__atomic_store_n(&st->residual_bg_refusal,0,__ATOMIC_RELAXED);
     __atomic_fetch_or(&st->residual_target_mask,bit,__ATOMIC_RELAXED);
 #endif
     spin_lock(&ca->compile_lock);

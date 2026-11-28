@@ -67,6 +67,7 @@ typedef struct JarBoxTreoState {
     uint64_t host_residual_deopts,host_residual_skipped,host_residual_cold_deopts;
     unsigned residual_archive_verified,residual_plan_ready;
     unsigned residual_seen_mask,residual_admission_mask,residual_binding_mask,residual_code_mask,residual_wrapper_mask,residual_target_mask,residual_visible_ready;
+    unsigned residual_bg_refusal; // last bounded reason/PC; no Java payload
     uint64_t residual_faults;
 #endif
 #if defined(JARBOX_HOST_BINDING_TEST) && !__JVM_OS_IOS__

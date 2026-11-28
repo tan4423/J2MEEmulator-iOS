@@ -1189,6 +1189,7 @@ int jvm_bridge_flight_sample(JarBoxFlightProcess *process, JarBoxFlightSlot *slo
         out->residual_wrapper_mask=__atomic_load_n(&session->treo_state.residual_wrapper_mask,__ATOMIC_RELAXED);
         out->residual_target_mask=__atomic_load_n(&session->treo_state.residual_target_mask,__ATOMIC_RELAXED);
         out->residual_visible_ready=__atomic_load_n(&session->treo_state.residual_visible_ready,__ATOMIC_RELAXED);
+        out->residual_bg_refusal=__atomic_load_n(&session->treo_state.residual_bg_refusal,__ATOMIC_RELAXED);
         out->residual_compiles=__atomic_load_n(&session->treo_state.host_residual_compiles,__ATOMIC_RELAXED);
         out->residual_calls=__atomic_load_n(&session->treo_state.host_residual_calls,__ATOMIC_RELAXED);
         out->residual_skips=__atomic_load_n(&session->treo_state.host_residual_skipped,__ATOMIC_RELAXED);

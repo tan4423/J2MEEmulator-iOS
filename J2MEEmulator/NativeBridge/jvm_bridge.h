@@ -135,6 +135,7 @@ typedef struct {
     uint64_t nso_core_profile, nso_core_armed, nso_core_rejected, nso_core_frames, nso_core_faults, scoped_native_draw_skips, scoped_vm_draw_skips;
     uint64_t residual_verified, residual_ready, residual_compiles, residual_calls, residual_skips, residual_deopts, residual_faults;
     uint64_t residual_seen_mask, residual_admission_mask, residual_binding_mask, residual_code_mask, residual_wrapper_mask, residual_target_mask, residual_visible_ready;
+    uint64_t residual_bg_refusal;
     uint64_t block_ir_seen, block_ir_plans, block_ir_shared_hits, block_ir_bytes;
     uint64_t render_island_plans, render_island_skips, render_island_ops, render_wrapper_skips, render_island_bytes;
     uint64_t glyph_loops, glyph_chars, glyph_draws, glyph_attempts;

@@ -25,7 +25,10 @@ class CoreABATest(unittest.TestCase):
         r=(NATIVE/"j2me_render.m").read_text()
         gate=r.split("static s32 n_ninjaCorePaint(",1)[1].split("\n}",1)[0]
         self.assertIn("jarbox_ninja_core_active",gate)
-        self.assertIn("treo_nso_simple_canvas_paint",gate)
+        self.assertIn("treo_core_audited_canvas",gate)
+        audit=r.split("static int treo_core_audited_canvas(",1)[1].split("\n}",1)[0]
+        self.assertIn("treo_nso_simple_canvas_paint(cl)",audit)
+        self.assertIn("jarbox_ninja_core_canvas(profile)",audit)
         self.assertIn("enabled=jarbox_core_aba_sink(phase)",gate)
         park=r.split("static void treo_park_transition_visitor(",1)[1].split("\n}",1)[0]
         self.assertIn("!state->core_aba_used",park)

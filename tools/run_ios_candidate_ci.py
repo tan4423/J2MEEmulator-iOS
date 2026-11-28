@@ -22,7 +22,8 @@ OFF = ('JARBOX_VM_ARRAY_LOOKUP_EXPERIMENT', 'JARBOX_VM_ARRAY_LOOKUP_DIAGNOSTIC',
        'JARBOX_VM_CONST_BRANCH_FUSION_EXPERIMENT')
 IPA = 'J2ME-Treo-jar-cpu-audit-unsigned.ipa'
 DEEP_TREO_UNIFIED = 'deep-treo-unified'
-RECONSTRUCTED = ('headless-reconstructed', DEEP_TREO_UNIFIED)
+DEEP_TREO_PROFILE = 'deep-treo-profile'
+RECONSTRUCTED = ('headless-reconstructed', DEEP_TREO_UNIFIED, DEEP_TREO_PROFILE)
 
 
 def prepare(config, configuration, environ):
@@ -56,6 +57,9 @@ def prepare(config, configuration, environ):
     if configuration in ('binary-trial', 'residual', 'headless', 'headless-render', 'headless-render-gc', *RECONSTRUCTED):
         for k in ('JARBOX_NATIVE_PAINT_DIAG', 'JARBOX_REGION_STAGE_DIAG', 'JARBOX_HOTSPOT_DIAG'):
             env[k] = '0'
+    if configuration == DEEP_TREO_PROFILE:
+        env['JARBOX_NATIVE_PAINT_DIAG'] = '1'
+        env['JARBOX_HOTSPOT_DIAG'] = '1'
     return script, env
 
 
@@ -81,6 +85,10 @@ def verify_ipa(path, commit, configuration):
                        ('const-arith', '0'), ('const-branch', '0')]:
         if [p for p in profile if p.startswith(key + '-')] != [key + '-' + value]:
             raise ValueError('packaged profile mismatch: ' + key)
+    if configuration == DEEP_TREO_PROFILE:
+        for key in ('hotspot','native-paint-diag'):
+            if [p for p in profile if p.startswith(key+'-')] != [key+'-1']:
+                raise ValueError('missing diagnostic profile: '+key)
     return info['JarBoxPerfProfile']
 
 

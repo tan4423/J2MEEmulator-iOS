@@ -4475,7 +4475,7 @@ class GameViewController: UIViewController {
     }
 
     func deepHeadlessReport() -> String {
-        var lines = ["JARBOX_HEADLESS_DIAG v3",
+        var lines = ["JARBOX_HEADLESS_DIAG v4",
             "build=" + (Bundle.main.object(forInfoDictionaryKey: "JarBoxBuildCommit") as? String ?? "unknown"),
             "profile=" + (Bundle.main.object(forInfoDictionaryKey: "JarBoxPerfProfile") as? String ?? "unknown"),
             "session=\(gameSessionToken) parked=\(parkedTreoActive ? 1 : 0)",
@@ -4510,10 +4510,15 @@ class GameViewController: UIViewController {
             lines.append("native_draw_skips=\(s.scoped_native_draw_skips) vm_draw_skips=\(s.scoped_vm_draw_skips)")
             lines.append("residual_verified=\(s.residual_verified) residual_ready_mask=\(s.residual_ready) compiles=\(s.residual_compiles) calls=\(s.residual_calls) skips=\(s.residual_skips) deopts=\(s.residual_deopts) faults=\(s.residual_faults)")
             lines.append("residual_stage_masks seen=\(s.residual_seen_mask) admission=\(s.residual_admission_mask) binding=\(s.residual_binding_mask) code=\(s.residual_code_mask) wrapper=\(s.residual_wrapper_mask) targets=\(s.residual_target_mask) visible_ready=\(s.residual_visible_ready) [bits 1=map 2=overlay 4=minimap 8=background]")
+            lines.append("background_target_refusal=\(s.residual_bg_refusal) [packed reason*65536+PC; 1=opcode,2=call_shape,3=draw_shape,4=target_not_linked]")
             lines.append("ir_seen=\(s.block_ir_seen) ir_plans=\(s.block_ir_plans) ir_shared_hits=\(s.block_ir_shared_hits) ir_bytes=\(s.block_ir_bytes)")
             lines.append("island_plans=\(s.render_island_plans) island_skips=\(s.render_island_skips) island_ops=\(s.render_island_ops) wrapper_skips=\(s.render_wrapper_skips)")
             lines.append("glyph_attempts=\(s.glyph_attempts) glyph_loops=\(s.glyph_loops) glyph_chars=\(s.glyph_chars) scope_refusals=\(s.glyph_scope_refusals) link_refusals=\(s.glyph_link_refusals) data_refusals=\(s.glyph_data_refusals)")
             lines.append("canvas_phase_ok=\(s.canvas_phase_ok) frames=\(s.canvas_phase_frames) pre_ns=\(s.canvas_phase_pre_ns) paint_ns=\(s.canvas_phase_paint_ns) post_ns=\(s.canvas_phase_post_ns)")
+            let hot = withUnsafePointer(to: s) { String(cString: jvm_bridge_flight_hot_text($0)) }
+            lines.append("hot_ok=\(s.hot_ok) samples=\(s.hot_samples) busy=\(s.hot_busy) invalid=\(s.hot_invalid)")
+            lines.append("hot_rows=" + hot)
+            lines.append("native_paint_selected_frames=\(s.native_diag_selected_frames) total_cpu_ns=\(s.native_diag_selected_cpu_ns) draw_cpu_ns=\(s.native_diag_draw_ns) lcd_other_ns=\(s.native_diag_lcd_other_ns) other_native_ns=\(s.native_diag_other_ns)")
             lines.append("gc_phase_ok=\(s.gc_phase_ok) cycles=\(s.gc_phase_cycles) deferred_ns=\(s.gc_phase_deferred_cpu_ns) mark_ns=\(s.gc_phase_mark_cpu_ns) sweep_ns=\(s.gc_phase_sweep_cpu_ns)")
             var blockers: [String] = []
             if !parkedTreoActive { blockers.append("not_parked") }

@@ -5,7 +5,7 @@ from pathlib import Path
 from zipfile import ZipFile
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from run_ios_candidate_ci import BINARY, RESIDUAL, BLOCK_IR, RENDER_ISLAND, GC_INDEX, RECONSTRUCT, CANDIDATES, OFF, DEEP_TREO_UNIFIED, prepare, verify_ipa
+from run_ios_candidate_ci import BINARY, RESIDUAL, BLOCK_IR, RENDER_ISLAND, GC_INDEX, RECONSTRUCT, CANDIDATES, OFF, DEEP_TREO_UNIFIED, DEEP_TREO_PROFILE, prepare, verify_ipa
 from generate_residual_build_identity import generate
 import hashlib
 
@@ -50,6 +50,10 @@ class IOSCandidateTest(unittest.TestCase):
         unified=prepare(c,DEEP_TREO_UNIFIED,{})[1]
         self.assertEqual(rebuilt[RECONSTRUCT],'1')
         self.assertEqual(unified,rebuilt)
+        diagnostic=prepare(c,DEEP_TREO_PROFILE,{})[1]
+        self.assertEqual(diagnostic['JARBOX_NATIVE_PAINT_DIAG'],'1')
+        self.assertEqual(diagnostic['JARBOX_HOTSPOT_DIAG'],'1')
+        self.assertEqual({k:v for k,v in diagnostic.items() if k not in ('JARBOX_NATIVE_PAINT_DIAG','JARBOX_HOTSPOT_DIAG')},{k:v for k,v in unified.items() if k not in ('JARBOX_NATIVE_PAINT_DIAG','JARBOX_HOTSPOT_DIAG')})
         self.assertEqual({k:v for k,v in rebuilt.items() if k!=RECONSTRUCT},
                          {k:v for k,v in combined.items() if k!=RECONSTRUCT})
         for config_name in ('control','intrinsics','binary','binary-trial','residual','headless','headless-render','headless-render-gc'):
@@ -122,6 +126,11 @@ class IOSCandidateTest(unittest.TestCase):
                 z.writestr('Payload/JarBox.app/Info.plist',plistlib.dumps({'JarBoxPerfProfile':rebuilt_profile,'JarBoxBuildCommit':'a'}))
             self.assertEqual(verify_ipa(p,'a','headless-reconstructed'),rebuilt_profile)
             self.assertEqual(verify_ipa(p,'a',DEEP_TREO_UNIFIED),rebuilt_profile)
+            with self.assertRaises(ValueError):verify_ipa(p,'a',DEEP_TREO_PROFILE)
+            diag_profile=rebuilt_profile+'_hotspot-1_native-paint-diag-1'
+            with ZipFile(p,'w') as z:
+                z.writestr('Payload/JarBox.app/Info.plist',plistlib.dumps({'JarBoxPerfProfile':diag_profile,'JarBoxBuildCommit':'a'}))
+            self.assertEqual(verify_ipa(p,'a',DEEP_TREO_PROFILE),diag_profile)
             with self.assertRaises(ValueError):
                 verify_ipa(p,'a','headless-render-gc')
             with self.assertRaises(ValueError):
