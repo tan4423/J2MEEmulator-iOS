@@ -5,6 +5,8 @@ on:
     paths:
       - 'tools/desktop_lab/**'
       - 'tools/tests/test_array_lookup_mode1.py'
+      - 'tools/tests/test_rms_persistence_audit.py'
+      - 'tools/tests/test_rms_eventlog_boot_compat.py'
       - 'J2MEEmulator/minijvm/**'
       - 'J2MEEmulator/Resources/jars/**'
       - 'J2MEEmulator/RuntimePatches/**'
@@ -35,6 +37,8 @@ jobs:
         env:
           JARBOX_DESKTOP_GC_INDEX: ${{ matrix.gc_index }}
       - run: bash tools/desktop_lab/test.sh "$RUNNER_TEMP/lab"
+      - run: python3 tools/tests/test_rms_persistence_audit.py -v
+      - run: python3 tools/tests/test_rms_eventlog_boot_compat.py -v
       - run: xvfb-run -a python3 tools/desktop_lab/test_gui.py "$RUNNER_TEMP/lab"
       - uses: actions/upload-artifact@v4
         if: success()

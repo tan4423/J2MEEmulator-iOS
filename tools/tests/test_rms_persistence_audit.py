@@ -62,11 +62,39 @@ public class RmsSmoke {
             java.util.Map cache = (java.util.Map) cacheField.get(manager);
             if (cache.size() != 1) throw new AssertionError("closed store not cached");
             RecordStore again = RecordStore.openRecordStore("settings", false);
+            if (again != r) throw new AssertionError("cache did not reuse same RecordStore instance");
             if (!args[2].equals(new String(again.getRecord(1), "UTF-8")))
                 throw new AssertionError("cached reopen data mismatch");
             if (cache.size() != 0) throw new AssertionError("cache entry not claimed");
             again.closeRecordStore();
             if (cache.size() != 1) throw new AssertionError("closed store not returned to cache");
+            RecordStore.deleteRecordStore("settings");
+            if (cache.size() != 0) throw new AssertionError("deleted store remained cached");
+            if (new File(args[0] + "/rms/settings.rsh").exists())
+                throw new AssertionError("deleted store header remained on disk");
+            RecordStore fresh = RecordStore.openRecordStore("settings", true);
+            if (fresh.getRecord(1) != null) throw new AssertionError("deleted store data leaked into recreated store");
+            fresh.closeRecordStore();
+            return;
+        }
+        if ("cache-bytes".equals(mode)) {
+            RecordStore r = RecordStore.openRecordStore("large", true);
+            byte[] data = new byte[300 * 1024];
+            java.util.Arrays.fill(data, (byte) 7);
+            r.addRecord(data, 0, data.length);
+            r.closeRecordStore();
+            java.lang.reflect.Field managerField = RecordStore.class.getDeclaredField("recordStoreManager");
+            managerField.setAccessible(true);
+            Object manager = managerField.get(null);
+            java.lang.reflect.Field cacheField = manager.getClass().getDeclaredField("closedStoreCache");
+            cacheField.setAccessible(true);
+            java.util.Map cache = (java.util.Map) cacheField.get(manager);
+            if (cache.size() != 0) throw new AssertionError("oversized store retained in cache");
+            RecordStore again = RecordStore.openRecordStore("large", false);
+            if (again.getRecord(1).length != 300 * 1024)
+                throw new AssertionError("oversized store failed to reload from disk");
+            again.closeRecordStore();
+            if (cache.size() != 0) throw new AssertionError("oversized store re-entered cache");
             return;
         }
         if ("cache-lru".equals(mode)) {
@@ -164,6 +192,12 @@ class RmsPersistenceAuditTest(unittest.TestCase):
         self.run_case(classes, root, "write", "CACHE_PRIVATE")
         self.run_case(classes, root, "cache", "CACHE_PRIVATE")
         self.run_case(classes, root, "cache-lru")
+
+    def test_cache_byte_limit_and_eviction(self):
+        classes = self.compile()
+        root = self.root / "cache-bytes"
+        root.mkdir()
+        self.run_case(classes, root, "cache-bytes")
 
     def test_corrupted_header_and_record_are_preserved_not_reinitialized(self):
         classes = self.compile()

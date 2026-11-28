@@ -139,7 +139,9 @@ public class RecordStoreImpl extends RecordStore {
 	}
 
 	boolean isOpen() {
-		return open;
+		synchronized (records) {
+			return open;
+		}
 	}
 
 	String getRecordStoreName() {
@@ -163,8 +165,10 @@ public class RecordStoreImpl extends RecordStore {
 	}
 
 	void setOpen() {
-		openCount++;
-		this.open = true;
+		synchronized (records) {
+			openCount++;
+			this.open = true;
+		}
 	}
 
 	@Override

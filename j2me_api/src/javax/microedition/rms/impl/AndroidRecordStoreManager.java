@@ -64,12 +64,21 @@ public class AndroidRecordStoreManager implements RecordStoreManager {
 			new LinkedHashMap<>(16, 0.75f, true);
 	private long closedStoreCacheBytes;
 
-	void cacheClosedStore(RecordStoreImpl store) {
+	synchronized void cacheClosedStore(RecordStoreImpl store) {
 		String name = store.getRecordStoreName();
+		// A close can race a new open. Never retain an instance that is no
+		// longer the manager's current object for this store name.
+		if (recordStores == null || recordStores.get(name) != store || store.isOpen()) {
+			store.clearCachedRecords();
+			return;
+		}
 		long bytes = store.getCachedBytes();
 		synchronized (closedStoreCache) {
 			RecordStoreImpl previous = closedStoreCache.remove(name);
-			if (previous != null) closedStoreCacheBytes -= previous.getCachedBytes();
+			if (previous != null) {
+				closedStoreCacheBytes -= previous.getCachedBytes();
+				previous.clearCachedRecords();
+			}
 			if (bytes > MAX_CLOSED_STORE_BYTES) {
 				store.clearCachedRecords();
 				return;
@@ -145,7 +154,7 @@ public class AndroidRecordStoreManager implements RecordStoreManager {
 	}
 
 	@Override
-	public void deleteRecordStore(String recordStoreName) throws RecordStoreException {
+	public synchronized void deleteRecordStore(String recordStoreName) throws RecordStoreException {
 		initializeIfNecessary();
 
 		recordStoreName = sanitizeName(recordStoreName);
@@ -177,7 +186,7 @@ public class AndroidRecordStoreManager implements RecordStoreManager {
 	}
 
 	@Override
-	public RecordStore openRecordStore(String recordStoreName, boolean createIfNecessary)
+	public synchronized RecordStore openRecordStore(String recordStoreName, boolean createIfNecessary)
 			throws RecordStoreException {
 		initializeIfNecessary();
 		recordStoreName = sanitizeName(recordStoreName);

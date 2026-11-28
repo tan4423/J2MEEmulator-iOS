@@ -21,45 +21,40 @@ public final class RmsEventLog {
 
     private RmsEventLog() {}
 
-    public static synchronized void note(String operation, String storeName,
-                                         int recordId, int bytes) {
-        if (count >= MAX_EVENTS_PER_JVM) return;
-        String root = System.getProperty("app.save.root");
-        if (root == null || root.length() == 0) return;
-        // Whitelist fixed event names only. Prevent JAR-controlled strings
-        // from being emitted verbatim or injecting newline log entries.
-        if (!"OPEN".equals(operation) &&
-            !"CREATE".equals(operation) &&
-            !"DELETE_STORE".equals(operation) &&
-            !"SAVE".equals(operation) &&
-            !"DELETE_RECORD".equals(operation) &&
-            !"READ_ERROR".equals(operation) &&
-            !"SAVE_ERROR".equals(operation) &&
-            !"DELETE_ERROR".equals(operation)) return;
-        File log = new File(root, "rms-events.log");
-        if (log.exists() && log.length() >= MAX_LOG_BYTES) return;
-        // Stable opaque-ish ID, not the raw RecordStore name. A hash
-        // is diagnostic metadata, not a security guarantee.
-        String id = storeName == null ? "0" : Integer.toHexString(storeName.hashCode());
-        String row = System.currentTimeMillis() + "\tRMS_" + operation +
-                     "\tstore#" + id + "\trecord=" + recordId +
-                     "\tbytes=" + Math.max(-1, bytes) + "\n";
-        FileOutputStream out = null;
-        try {
-            // miniJVM's boot java.io.FileOutputStream implements the
-            // (String, boolean) append constructor, not (File, boolean).
-            // Using the unsupported overload raises NoSuchMethodError during
-            // RMS metadata logging, which can interrupt an otherwise valid
-            // game save before any IOException can be caught.
-            out = new FileOutputStream(log.getPath(), true);
-            out.write(row.getBytes("UTF-8"));
-            count++;
-        } catch (IOException ignored) {
-            // Logging must never turn a successful save into a failed save.
-        } finally {
-            if (out != null) {
-                try { out.close(); } catch (IOException ignored) {}
+    public static void note(String operation, String storeName,
+                            int recordId, int bytes) {
+        // OPEN is a hot-path diagnostic, not a persistence event. Writing a
+        // file (or taking the logger lock) for every paint-time RMS open can
+        // itself dominate the cost we are trying to measure.
+        if ("OPEN".equals(operation) || "OPEN_CACHE".equals(operation)) return;
+        synchronized (RmsEventLog.class) {
+            if (count >= MAX_EVENTS_PER_JVM) return;
+            String root = System.getProperty("app.save.root");
+            if (root == null || root.length() == 0) return;
+            if (!"CREATE".equals(operation) &&
+                !"DELETE_STORE".equals(operation) &&
+                !"SAVE".equals(operation) &&
+                !"DELETE_RECORD".equals(operation) &&
+                !"READ_ERROR".equals(operation) &&
+                !"SAVE_ERROR".equals(operation) &&
+                !"DELETE_ERROR".equals(operation)) return;
+            File log = new File(root, "rms-events.log");
+            if (log.exists() && log.length() >= MAX_LOG_BYTES) return;
+            String id = storeName == null ? "0" : Integer.toHexString(storeName.hashCode());
+            String row = System.currentTimeMillis() + "\tRMS_" + operation +
+                         "\tstore#" + id + "\trecord=" + recordId +
+                         "\tbytes=" + Math.max(-1, bytes) + "\n";
+            FileOutputStream out = null;
+            try {
+                out = new FileOutputStream(log.getPath(), true);
+                out.write(row.getBytes("UTF-8"));
+                count++;
+            } catch (IOException ignored) {
+                // Logging must never turn a successful save into a failed save.
+            } finally {
+                if (out != null) {
+                    try { out.close(); } catch (IOException ignored) {}
+                }
             }
         }
-    }
-}
+    }}
