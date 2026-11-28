@@ -43,9 +43,11 @@ int main(void) {
     }
 
     /* Slices use absolute backing-array offsets but return String-relative indices. */
-    uint16_t sliced[] = {0x7777, 'A', 'B', 'A', 0x8888};
+    uint16_t sliced[18] = {0x7777, 'A', 'B', 'A'};
+    for (unsigned i = 4; i < 17; ++i) sliced[i] = (uint16_t)(0x3000u + i);
+    sliced[17] = 0x8888;
     memset(&map, 0, sizeof(map));
-    assert(jarbox_string_index_map_build(&map, sliced, 1, 3));
+    assert(jarbox_string_index_map_build(&map, sliced, 1, 16));
     assert(jarbox_string_index_map_lookup(&map, 'A') == 0);
     assert(jarbox_string_index_map_lookup(&map, 'B') == 1);
     assert(jarbox_string_index_map_lookup(&map, 'Z') == -1);
