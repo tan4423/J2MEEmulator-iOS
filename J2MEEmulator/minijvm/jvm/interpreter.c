@@ -787,40 +787,79 @@ static int jri_live_wrapper_proof(Runtime *r,ConstantMethodRef *mr,Instance *w,
 
 #if defined(JARBOX_RECONSTRUCT_EXPERIMENT) && JARBOX_RECONSTRUCT_EXPERIMENT
 extern int treo_glyph_scope_capture(Runtime *,Instance *,JarBoxResidualScope *);
+static int jri_ninja_glyph_wrapper_proof(Runtime *r,ConstantMethodRef *mr,Instance *w,JriLiveFrame *f){
+    static const char *desc="(Ljavax/microedition/lcdui/Image;IIIIIIII)V";
+    static const unsigned char wrapper_digest[32]={0x0f,0xd2,0x09,0x76,0xfe,0x8b,0x7f,0x81,0xb6,0xbb,0xcc,0x82,0x87,0x69,0x20,0xc0,0xa8,0x81,0xa1,0x89,0x7b,0x1a,0xc6,0xa2,0x49,0xdf,0xd1,0x99,0xa2,0xa5,0x17,0xf5};
+    if(!r||!mr||!w||!f||!jbr_bname(w->mb.clazz,"t")||!jbr_bobject(w,w->mb.clazz)||
+       !jbr_eq(mr->clsName,"t")||!jbr_eq(mr->name,"a")||!jbr_eq(mr->descriptor,desc)||
+       __atomic_load_n(&r->jvm->session->treo_state.residual_faults,__ATOMIC_RELAXED))return 0;
+    Instance *g=(Instance *)f->scope.graphics;
+    if(!g||!jbr_bobject(g,g->mb.clazz)||!jbr_bname(g->mb.clazz,"javax/microedition/lcdui/Graphics"))return 0;
+    MethodInfo *wm=jbr_live_declared(w->mb.clazz,"a",desc);
+    MethodInfo *gm=jbr_live_declared(g->mb.clazz,"drawRegion",desc);
+    if(!wm||!gm||wm->is_static||wm->is_native||wm->is_sync||wm->return_slots||
+       wm->para_slots!=10||gm->para_slots!=10||gm->return_slots||
+       !wm->converted_code||wm->converted_code->max_locals!=10||
+       wm->converted_code->max_stack!=10||wm->converted_code->exception_table_length||
+       !jbg_live_code(wm->converted_code,31,wrapper_digest)||
+       wm->breakpoint||gm->breakpoint||
+       wm->converted_code->jit.state==JIT_GEN_SUCCESS||!treo_headless_eligible(gm)||
+       __atomic_load_n(&gm->treo_afk_kind,__ATOMIC_RELAXED)!=3||
+       !jbr_live_target_ready(r->jvm,mr,w,wm))return 0;
+    f->wrapper[0]=wm;f->graphics[0]=gm;return 1;
+}
 static unsigned jbg_live_kind(MethodInfo *m,CodeAttribute *ca){
-    unsigned kind=ca->code_length==154?1:ca->code_length==254?2:0;
+    unsigned kind=ca->code_length==154?1:ca->code_length==254?2:
+                  ca->code_length==156?3:ca->code_length==256?4:0;
     if(!kind)return 0;
     unsigned state=__atomic_load_n(&ca->glyph_loop_state,__ATOMIC_ACQUIRE);
-    if(state)return state<=2?state:0;
+    if(state)return state<=4?state:0;
     static const unsigned char single[32]={0x5e,0xd4,0x14,0xd5,0x2a,0xad,0x54,0x0f,0x17,0x20,0xf1,0xcc,0x12,0xa2,0x47,0xed,0x59,0xbd,0xdb,0x36,0xb1,0xea,0x0e,0x4e,0x08,0xbb,0x91,0x20,0xe5,0x6d,0x53,0xe8};
     static const unsigned char triple[32]={0xff,0xd9,0x09,0x3b,0xb7,0xc4,0xb3,0xb4,0x52,0x48,0x4c,0x82,0x65,0xa7,0xf3,0x44,0x17,0x0c,0xf9,0xf5,0x24,0xdd,0xa6,0xd0,0x97,0x79,0xee,0x9a,0x48,0x61,0x40,0x23};
-    if(m->is_static||m->is_sync||m->is_native||m->return_slots||
-       m->para_slots!=5+kind||ca->max_locals!=7+kind||ca->max_stack!=10||
-       ca->exception_table_length||!(m->_this_class->cff.access_flags&ACC_FINAL)||
-       !jbr_eq(m->_this_class->name,"Class_hui")||!jbr_eq(m->name,"a")||
-       !jbr_eq(m->descriptor,kind==1?"(LClass_hvi;Ljava/lang/String;III)V":
-          "(LClass_hvi;Ljava/lang/String;IIILClass_hui;)V")||
-       !jbr_live_code(ca,kind==1?154:254,kind==1?single:triple))kind=3;
+    static const unsigned char ninja_single[32]={0x66,0x2b,0xb5,0x4d,0xf2,0xb1,0xc8,0xcd,0x00,0xce,0xe5,0x3c,0x19,0xc4,0xf8,0xdd,0x65,0x62,0xf5,0x58,0x7a,0x56,0x2b,0xe8,0x64,0xfe,0x7d,0x13,0x94,0x41,0x33,0xae};
+    static const unsigned char ninja_triple[32]={0x78,0x2a,0x51,0x73,0xba,0x35,0x76,0xfd,0x49,0x51,0xf6,0x47,0x27,0x59,0xf3,0x4b,0xd2,0x6a,0xcd,0xcf,0xbd,0x14,0xb0,0x94,0x75,0xb6,0xd9,0x03,0x93,0xaf,0x4d,0xb5};
+    if(kind<=2){
+        if(m->is_static||m->is_sync||m->is_native||m->return_slots||
+           m->para_slots!=5+kind||ca->max_locals!=7+kind||ca->max_stack!=10||
+           ca->exception_table_length||!(m->_this_class->cff.access_flags&ACC_FINAL)||
+           !jbr_eq(m->_this_class->name,"Class_hui")||!jbr_eq(m->name,"a")||
+           !jbr_eq(m->descriptor,kind==1?"(LClass_hvi;Ljava/lang/String;III)V":
+              "(LClass_hvi;Ljava/lang/String;IIILClass_hui;)V")||
+           !jbg_live_code(ca,kind==1?154:254,kind==1?single:triple))kind=5;
+    }else{
+        if(m->is_static||m->is_sync||m->is_native||m->return_slots||
+           m->para_slots!=(kind==3?6:7)||ca->max_locals!=(kind==3?8:9)||
+           ca->max_stack!=10||ca->exception_table_length||
+           !(m->_this_class->cff.access_flags&ACC_FINAL)||
+           !jbr_eq(m->_this_class->name,"dd")||!jbr_eq(m->name,"a$render")||
+           !jbr_eq(m->descriptor,kind==3?"(Lt;Ljava/lang/String;III)V":
+              "(Lt;Ljava/lang/String;IIILdd;)V")||
+           !jbg_live_code(ca,kind==3?156:256,kind==3?ninja_single:ninja_triple))kind=5;
+    }
     __atomic_store_n(&ca->glyph_loop_state,kind,__ATOMIC_RELEASE);
-    return kind<=2?kind:0;
+    return kind<=4?kind:0;
 }
 /* Only the loop is contracted. The original alignment and width calls at
  * PCs 0..48, including their faults, have already executed. All primitive
  * writes inside the loop are dead at the original void return. */
 static int jbg_live_skip(Runtime *r,unsigned kind,StackEntry *sp){
     Instance *w=r->localvar[1].rvalue;
+    const int ninja=kind>=3;
     JriLiveFrame f={0};
-    ConstantMethodRef *mr=jbg_methodref_at(r->method,kind==1?126:129);
+    const unsigned call_pc=kind==1?126:kind==2?129:kind==3?124:224;
+    ConstantMethodRef *mr=jbg_methodref_at(r->method,call_pc);
     JbgProof proof;
     __atomic_fetch_add(&r->jvm->glyph_attempts,1,__ATOMIC_RELAXED);
-    if(!mr||jri_live_variant(mr)!=0||!w||
+    if(!mr||(!ninja&&jri_live_variant(mr)!=0)||!w||
        !treo_glyph_scope_capture(r,w,&f.scope)){
         __atomic_fetch_add(&r->jvm->glyph_scope_refusals,1,__ATOMIC_RELAXED);return 0;
     }
-    if(!jri_live_wrapper_proof(r,mr,w,&f,0,NULL)){
+    if(ninja?!jri_ninja_glyph_wrapper_proof(r,mr,w,&f):
+              !jri_live_wrapper_proof(r,mr,w,&f,0,NULL)){
         __atomic_fetch_add(&r->jvm->glyph_link_refusals,1,__ATOMIC_RELAXED);return 0;
     }
-    if(!jbg_vm_preflight(r,kind,"Ljavax/microedition/lcdui/Image;",&proof)){
+    if(ninja?!jbg_ninja_vm_preflight(r,kind,"Ljavax/microedition/lcdui/Image;",&proof):
+              !jbg_vm_preflight(r,kind,"Ljavax/microedition/lcdui/Image;",&proof)){
         __atomic_fetch_add(&r->jvm->glyph_data_refusals,1,__ATOMIC_RELAXED);return 0;
     }
     if(!treo_residual_scope_valid(r,w,&f.scope)){
@@ -829,7 +868,7 @@ static int jbg_live_skip(Runtime *r,unsigned kind,StackEntry *sp){
     jbg_replay(sp,w,proof.font,proof.row,(Instance *)f.scope.graphics,proof.image);
     __atomic_fetch_add(&r->jvm->glyph_loops,1,__ATOMIC_RELAXED);
     __atomic_fetch_add(&r->jvm->glyph_chars,proof.count,__ATOMIC_RELAXED);
-    __atomic_fetch_add(&r->jvm->glyph_draws,proof.count*(kind==1?1u:3u),__ATOMIC_RELAXED);
+    __atomic_fetch_add(&r->jvm->glyph_draws,proof.count*((kind==1||kind==3)?1u:3u),__ATOMIC_RELAXED);
     return 1;
 }
 #endif
