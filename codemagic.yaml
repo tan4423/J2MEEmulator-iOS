@@ -310,6 +310,7 @@ workflows:
             -d "$classes" j2me_api/src/javax/microedition/lcdui/{Display,Canvas,Graphics,Image,TextBox,NativeBridge,Form,ChoiceGroup,List}.java \
             j2me_api/src/javax/microedition/shell/MIDletRunner.java \
             j2me_api/src/javax/microedition/rms/impl/AndroidRecordStoreManager.java \
+            j2me_api/src/javax/microedition/rms/impl/RecordStoreImpl.java \
             j2me_api/src/javax/microedition/rms/impl/RmsEventLog.java \
             j2me_api/src/javax/microedition/io/Connector.java \
             j2me_api/src/javax/microedition/io/MicroCompatibleSocketConnection.java
@@ -318,7 +319,11 @@ workflows:
           javap -classpath "$jars/j2me_api.jar:$jars/minijvm_rt.jar" -c \
             javax.microedition.rms.impl.AndroidRecordStoreManager > "$RUNNER_TEMP/jarbox-rms-manager.txt"
           grep -Fq 'RmsEventLog.note' "$RUNNER_TEMP/jarbox-rms-manager.txt"
-          echo "[JarBoxStorage][BUILD] rms_metadata_log=present corrupted_save_preservation=enabled"
+          javap -classpath "$jars/j2me_api.jar:$jars/minijvm_rt.jar" -c -p \
+            javax.microedition.rms.impl.RecordStoreImpl > "$RUNNER_TEMP/jarbox-rms-recordstore.txt"
+          grep -Fq 'cacheClosedStore' "$RUNNER_TEMP/jarbox-rms-recordstore.txt"
+          grep -Fq 'getCachedBytes' "$RUNNER_TEMP/jarbox-rms-recordstore.txt"
+          echo "[JarBoxStorage][BUILD] rms_metadata_log=present bounded_closed_store_cache=enabled"
           # The shipped Connector.class was the unsupported-transport stub.
           # Require the actual Java ME protocol dispatcher in the built JAR.
           javap -classpath "$jars/j2me_api.jar:$jars/minijvm_rt.jar" -c javax.microedition.io.Connector > "$RUNNER_TEMP/connector-bytecode.txt"
