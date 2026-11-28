@@ -77,6 +77,41 @@ public class RmsSmoke {
             fresh.closeRecordStore();
             return;
         }
+        if ("cache-race".equals(mode)) {
+            final java.util.concurrent.CountDownLatch ready = new java.util.concurrent.CountDownLatch(4);
+            final java.util.concurrent.CountDownLatch start = new java.util.concurrent.CountDownLatch(1);
+            final java.util.concurrent.atomic.AtomicReference<Throwable> failure =
+                    new java.util.concurrent.atomic.AtomicReference<Throwable>();
+            Thread[] threads = new Thread[4];
+            for (int t = 0; t < threads.length; t++) {
+                threads[t] = new Thread(new Runnable() {
+                    public void run() {
+                        ready.countDown();
+                        try {
+                            start.await();
+                            for (int i = 0; i < 80; i++) {
+                                RecordStore r = RecordStore.openRecordStore("settings", false);
+                                if (!args[2].equals(new String(r.getRecord(1), "UTF-8")))
+                                    throw new AssertionError("concurrent RMS reopen data mismatch");
+                                r.closeRecordStore();
+                            }
+                        } catch (Throwable e) {
+                            failure.compareAndSet(null, e);
+                        }
+                    }
+                });
+                threads[t].start();
+            }
+            ready.await();
+            start.countDown();
+            for (Thread thread : threads) thread.join();
+            if (failure.get() != null) throw new AssertionError("concurrent RMS open/close failed", failure.get());
+            RecordStore finalStore = RecordStore.openRecordStore("settings", false);
+            if (!args[2].equals(new String(finalStore.getRecord(1), "UTF-8")))
+                throw new AssertionError("final concurrent RMS data mismatch");
+            finalStore.closeRecordStore();
+            return;
+        }
         if ("cache-bytes".equals(mode)) {
             RecordStore r = RecordStore.openRecordStore("large", true);
             byte[] data = new byte[300 * 1024];
@@ -192,6 +227,13 @@ class RmsPersistenceAuditTest(unittest.TestCase):
         self.run_case(classes, root, "write", "CACHE_PRIVATE")
         self.run_case(classes, root, "cache", "CACHE_PRIVATE")
         self.run_case(classes, root, "cache-lru")
+
+    def test_concurrent_open_close_keeps_single_consistent_store(self):
+        classes = self.compile()
+        root = self.root / "cache-race"
+        root.mkdir()
+        self.run_case(classes, root, "write", "RACE_PRIVATE")
+        self.run_case(classes, root, "cache-race", "RACE_PRIVATE")
 
     def test_cache_byte_limit_and_eviction(self):
         classes = self.compile()

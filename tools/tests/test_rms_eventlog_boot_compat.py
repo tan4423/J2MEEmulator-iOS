@@ -22,6 +22,8 @@ import javax.microedition.rms.impl.RmsEventLog;
 public class RmsAppendCheck {
     public static void main(String[] args) {
         System.setProperty("app.save.root", args[0]);
+        RmsEventLog.note("OPEN", "private_store", -1, -1);
+        RmsEventLog.note("OPEN_CACHE", "private_store", -1, -1);
         RmsEventLog.note("SAVE", "private_store", 1, 5);
         RmsEventLog.note("SAVE", "private_store", 2, 6);
     }
@@ -91,6 +93,8 @@ class RmsEventLogBootCompatTest(unittest.TestCase):
             rows = log.read_text(encoding="utf-8")
             self.assertTrue(rows.startswith("PRESERVED\n"))
             self.assertEqual(rows.count("RMS_SAVE"), 2)
+            self.assertNotIn("RMS_OPEN", rows)
+            self.assertNotIn("RMS_OPEN_CACHE", rows)
             self.assertNotIn("private_store", rows)
             self.assertNotIn(str(save_root), rows)
 
