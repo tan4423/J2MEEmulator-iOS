@@ -42,6 +42,7 @@ static int frame_w,frame_h, dirty, show_canvas=1;
 static uint32_t *frame;
 static unsigned long long native_bytes;
 _Atomic int jarbox_lab_trace_enabled;
+_Atomic int jarbox_lab_paint_profile_enabled;
 int jarbox_lab_effect_enabled;
 static int trace_graph; // launch profile, immutable after startup
 enum { EFFECT_CAP=4096 };
@@ -639,6 +640,7 @@ int main(int argc,char**argv){
     logic_mode=!strcmp(argv[8],"logic");
     if(!valid_size(width,height)||width>MAX_SCREEN||height>MAX_SCREEN||(!trace_graph&&!logic_mode&&strcmp(argv[8],"plain")))return 2;
     fixture_ui=getenv("JARBOX_LAB_UI_FIXTURE")&&strcmp(getenv("JARBOX_LAB_UI_FIXTURE"),"1")==0;
+    atomic_store(&jarbox_lab_paint_profile_enabled,fixture_ui||(getenv("JARBOX_LAB_PAINT_PROFILE")&&strcmp(getenv("JARBOX_LAB_PAINT_PROFILE"),"1")==0));
     jarbox_lab_test_monitors=getenv("JARBOX_LAB_TEST_MONITORS")&&strcmp(getenv("JARBOX_LAB_TEST_MONITORS"),"1")==0;
     if(fixture_ui&&(!getenv("SDL_VIDEODRIVER")||strcmp(getenv("SDL_VIDEODRIVER"),"dummy")||!strstr(game_path,"/fixture.jar")))return 2;
     jarbox_lab_dispatch_fixture=fixture_ui&&getenv("JARBOX_LAB_TEST_DISPATCH")&&strcmp(getenv("JARBOX_LAB_TEST_DISPATCH"),"1")==0;

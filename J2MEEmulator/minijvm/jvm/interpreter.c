@@ -1546,6 +1546,9 @@ const char *treo_vm_array_lookup_diag_report(void) {
 #if defined(TREO_IOS_GAME_JIT) && __JVM_OS_IOS__
 extern _Atomic int treo_afk_mode;
 #endif
+#if defined(JARBOX_DESKTOP_LAB) && JARBOX_DESKTOP_LAB
+extern _Atomic int jarbox_lab_paint_profile_enabled;
+#endif
 #include <pthread.h>
 #include <time.h>
 #include <stdio.h>
@@ -1613,7 +1616,9 @@ void treo_vm_paint_sample_reset(void) {
 void treo_vm_paint_sample_begin(void) {
     PaintThread *t = &paint_tls;
     if (t->scope) { t->scope++; return; }
-#if !defined(JARBOX_DESKTOP_LAB) || !JARBOX_DESKTOP_LAB
+#if defined(JARBOX_DESKTOP_LAB) && JARBOX_DESKTOP_LAB
+    if (!__atomic_load_n(&jarbox_lab_paint_profile_enabled,__ATOMIC_RELAXED)) return;
+#else
     if (atomic_load_explicit(&treo_afk_mode, memory_order_relaxed) != 8) return;
 #endif
     t->scope = 1;
