@@ -4,11 +4,6 @@
 #include <string.h>
 #include "jarbox_string_index_cache.h"
 
-static int linear(const uint16_t *s, unsigned n, uint16_t ch) {
-    for (unsigned i = 0; i < n; ++i) if (s[i] == ch) return (int)i;
-    return -1;
-}
-
 static uint32_t rng = 0x71c3a5d9u;
 static uint32_t next_random(void) {
     rng ^= rng << 13;
@@ -37,9 +32,13 @@ int main(void) {
         assert(jarbox_string_index_map_build(&map, chars, 0, (int)n));
         assert(map.count == n);
         assert(map.capacity == jarbox_string_index_capacity(n));
+        static int16_t expected[65536];
+        memset(expected, 0xff, sizeof(expected));
+        for (unsigned i = 0; i < n; ++i)
+            if (expected[chars[i]] < 0) expected[chars[i]] = (int16_t)i;
         for (unsigned ch = 0; ch <= 0xffffu; ++ch)
             assert(jarbox_string_index_map_lookup(&map, (uint16_t)ch) ==
-                   linear(chars, n, (uint16_t)ch));
+                   expected[ch]);
     }
 
     /* Slices use absolute backing-array offsets but return String-relative indices. */
