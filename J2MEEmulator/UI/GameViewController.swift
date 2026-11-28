@@ -1441,6 +1441,13 @@ class GameViewController: UIViewController {
         present(alert, animated: true)
     }
 
+    // Shared, on-demand CPU snapshot for both diagnostics. Never polled.
+    private func readDiagnosticCPU() -> (Bool, JarBoxCpuSnapshot) {
+        var snapshot = JarBoxCpuSnapshot()
+        let ok = jvm_bridge_cpu_snapshot_for_token(gameSessionToken, &snapshot) != 0
+        return (ok, snapshot)
+    }
+
     private func showNetworkDiagnostics() {
         guard viewIfLoaded?.window != nil, presentedViewController == nil else { return }
         let trace = String(cString: jvm_bridge_net_trace_for_token(gameSessionToken))
@@ -1467,8 +1474,7 @@ class GameViewController: UIViewController {
             "aload_field_fusions_approx=\(treo.aload_field_fusions)"
         ]
         let treoLine = "treo_session:" + (treoAvailable ? treoFields.joined(separator: ",") : "unavailable")
-        var cpu = JarBoxCpuSnapshot()
-        let cpuAvailable = jvm_bridge_cpu_snapshot_for_token(gameSessionToken, &cpu) != 0
+        let (cpuAvailable, cpu) = readDiagnosticCPU()
         func cpuWindow(_ name: String, _ w: JarBoxCpuWindow) -> String {
             guard cpuAvailable, w.valid != 0 else { return "cpu_\(name):unavailable" }
             let fields: [String] = [
@@ -4481,8 +4487,8 @@ class GameViewController: UIViewController {
             lines.append("requests=\(treo.repaint_requests) repaint_skips=\(treo.repaint_skips) service_skips=\(treo.service_skips) paint_skips=\(treo.paint_skips)")
             lines.append("gc_cycles=\(treo.gc_worker_cycles) gc_cpu_ns=\(treo.gc_worker_cpu_ns) gc_aborts=\(treo.gc_worker_aborts)")
         } else { lines.append("treo_snapshot=unavailable") }
-        var cpu = JarBoxCpuSnapshot()
-        if jvm_bridge_cpu_snapshot_for_token(gameSessionToken, &cpu) != 0 {
+        let (cpuAvailable, cpu) = readDiagnosticCPU()
+        if cpuAvailable {
             func window(_ name: String, _ w: JarBoxCpuWindow) -> String {
                 guard w.valid != 0, w.elapsed_ns > 0 else { return "\(name)=unavailable" }
                 let scale = 100.0 / Double(w.elapsed_ns)
