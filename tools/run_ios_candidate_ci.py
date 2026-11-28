@@ -21,10 +21,12 @@ OFF = ('JARBOX_VM_ARRAY_LOOKUP_EXPERIMENT', 'JARBOX_VM_ARRAY_LOOKUP_DIAGNOSTIC',
        'JARBOX_VM_EVENT_SLEEP_EXPERIMENT', 'JARBOX_VM_CONST_ARITH_FUSION_EXPERIMENT',
        'JARBOX_VM_CONST_BRANCH_FUSION_EXPERIMENT')
 IPA = 'J2ME-Treo-jar-cpu-audit-unsigned.ipa'
+DEEP_TREO_UNIFIED = 'deep-treo-unified'
+RECONSTRUCTED = ('headless-reconstructed', DEEP_TREO_UNIFIED)
 
 
 def prepare(config, configuration, environ):
-    if configuration not in ('control', 'intrinsics', 'binary', 'binary-trial', 'residual', 'headless', 'headless-render', 'headless-render-gc', 'headless-reconstructed'):
+    if configuration not in ('control', 'intrinsics', 'binary', 'binary-trial', 'residual', 'headless', 'headless-render', 'headless-render-gc', *RECONSTRUCTED):
         raise ValueError('invalid configuration')
     workflow = config['workflows']['jit-probe-unsigned']
     variables = workflow['environment']['vars']
@@ -45,13 +47,13 @@ def prepare(config, configuration, environ):
     for k in CANDIDATES:
         env[k] = '1' if configuration == 'intrinsics' else '0'
     env[BINARY] = {'binary': '1', 'binary-trial': '2'}.get(configuration, '0')
-    env[RESIDUAL] = '1' if configuration in ('residual', 'headless', 'headless-render', 'headless-render-gc', 'headless-reconstructed') else '0'
-    env[BLOCK_IR] = '1' if configuration in ('headless', 'headless-render', 'headless-render-gc', 'headless-reconstructed') else '0'
-    env[RENDER_ISLAND] = '1' if configuration in ('headless-render', 'headless-render-gc', 'headless-reconstructed') else '0'
-    env[GC_INDEX] = '1' if configuration in ('headless-render-gc', 'headless-reconstructed') else '0'
-    env[RECONSTRUCT] = '1' if configuration == 'headless-reconstructed' else '0'
-    if configuration in ('residual', 'headless', 'headless-render', 'headless-render-gc', 'headless-reconstructed'): env['JARBOX_NINJA_CORE_EXPERIMENT'] = '1'
-    if configuration in ('binary-trial', 'residual', 'headless', 'headless-render', 'headless-render-gc', 'headless-reconstructed'):
+    env[RESIDUAL] = '1' if configuration in ('residual', 'headless', 'headless-render', 'headless-render-gc', *RECONSTRUCTED) else '0'
+    env[BLOCK_IR] = '1' if configuration in ('headless', 'headless-render', 'headless-render-gc', *RECONSTRUCTED) else '0'
+    env[RENDER_ISLAND] = '1' if configuration in ('headless-render', 'headless-render-gc', *RECONSTRUCTED) else '0'
+    env[GC_INDEX] = '1' if configuration in ('headless-render-gc', *RECONSTRUCTED) else '0'
+    env[RECONSTRUCT] = '1' if configuration in RECONSTRUCTED else '0'
+    if configuration in ('residual', 'headless', 'headless-render', 'headless-render-gc', *RECONSTRUCTED): env['JARBOX_NINJA_CORE_EXPERIMENT'] = '1'
+    if configuration in ('binary-trial', 'residual', 'headless', 'headless-render', 'headless-render-gc', *RECONSTRUCTED):
         for k in ('JARBOX_NATIVE_PAINT_DIAG', 'JARBOX_REGION_STAGE_DIAG', 'JARBOX_HOTSPOT_DIAG'):
             env[k] = '0'
     return script, env
@@ -69,12 +71,12 @@ def verify_ipa(path, commit, configuration):
     enabled = '1' if configuration == 'intrinsics' else '0'
     for key, value in [('array-mode1', enabled), ('char-leaf', enabled),
                        ('binary-sprite', {'binary': '1', 'binary-trial': '2'}.get(configuration, '0')),
-                       ('core-aba', '0'), ('ninja-core', '1' if configuration in ('residual', 'headless', 'headless-render', 'headless-render-gc', 'headless-reconstructed') else '0'),
-                       ('residual', '1' if configuration in ('residual', 'headless', 'headless-render', 'headless-render-gc', 'headless-reconstructed') else '0'),
-                       ('block-ir', '1' if configuration in ('headless', 'headless-render', 'headless-render-gc', 'headless-reconstructed') else '0'),
-                       ('render-island', '1' if configuration in ('headless-render', 'headless-render-gc', 'headless-reconstructed') else '0'),
-                       ('gc-index', '1' if configuration in ('headless-render-gc', 'headless-reconstructed') else '0'),
-                       ('reconstruct', '1' if configuration == 'headless-reconstructed' else '0'), ('paint-qos', '0'),
+                       ('core-aba', '0'), ('ninja-core', '1' if configuration in ('residual', 'headless', 'headless-render', 'headless-render-gc', *RECONSTRUCTED) else '0'),
+                       ('residual', '1' if configuration in ('residual', 'headless', 'headless-render', 'headless-render-gc', *RECONSTRUCTED) else '0'),
+                       ('block-ir', '1' if configuration in ('headless', 'headless-render', 'headless-render-gc', *RECONSTRUCTED) else '0'),
+                       ('render-island', '1' if configuration in ('headless-render', 'headless-render-gc', *RECONSTRUCTED) else '0'),
+                       ('gc-index', '1' if configuration in ('headless-render-gc', *RECONSTRUCTED) else '0'),
+                       ('reconstruct', '1' if configuration in RECONSTRUCTED else '0'), ('paint-qos', '0'),
                        ('decoded-int', '0'), ('event-sleep', '0'),
                        ('const-arith', '0'), ('const-branch', '0')]:
         if [p for p in profile if p.startswith(key + '-')] != [key + '-' + value]:
@@ -85,7 +87,7 @@ def verify_ipa(path, commit, configuration):
 def main():
     import yaml
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument('--configuration', choices=('control', 'intrinsics', 'binary', 'binary-trial', 'residual', 'headless', 'headless-render', 'headless-render-gc', 'headless-reconstructed'), default='binary-trial')
+    p.add_argument('--configuration', choices=('control', 'intrinsics', 'binary', 'binary-trial', 'residual', 'headless', 'headless-render', 'headless-render-gc', *RECONSTRUCTED), default='binary-trial')
     p.add_argument('--plan', action='store_true', help='validate recipe and print switches only')
     a = p.parse_args()
     script, env = prepare(yaml.safe_load((ROOT / 'codemagic.yaml').read_text()), a.configuration, os.environ)
