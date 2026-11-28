@@ -46,6 +46,21 @@ import javax.microedition.rms.RecordStoreNotOpenException;
 public class RecordStoreImpl extends RecordStore {
 	private static final String TAG = RecordStoreImpl.class.getName();
 
+	static final class CacheSnapshot {
+		final String recordStoreName;
+		final int lastRecordId;
+		final int version;
+		final long lastModified;
+		final HashMap<Integer, byte[]> records;
+		final long bytes;
+		CacheSnapshot(String name, int lastId, int version, long modified,
+					  HashMap<Integer, byte[]> records, long bytes) {
+			this.recordStoreName=name; this.lastRecordId=lastId; this.version=version;
+			this.lastModified=modified; this.records=records; this.bytes=bytes;
+		}
+		void clear() { records.clear(); }
+	}
+
 	private static final byte[] fileIdentifier = "MIDRMS".getBytes();
 	private static final byte versionMajor = 0x03;
 	private static final byte versionMinor = 0x00;
@@ -74,6 +89,15 @@ public class RecordStoreImpl extends RecordStore {
 
 	RecordStoreImpl(RecordStoreManager recordStoreManager) {
 		this.recordStoreManager = recordStoreManager;
+	}
+
+	RecordStoreImpl(RecordStoreManager recordStoreManager, CacheSnapshot snapshot) {
+		this.recordStoreManager = recordStoreManager;
+		this.recordStoreName = snapshot.recordStoreName;
+		this.lastRecordId = snapshot.lastRecordId;
+		this.version = snapshot.version;
+		this.lastModified = snapshot.lastModified;
+		synchronized (records) { records.putAll(snapshot.records); snapshot.clear(); }
 	}
 
 	void readHeader(DataInputStream dis) throws IOException {
@@ -148,20 +172,18 @@ public class RecordStoreImpl extends RecordStore {
 		return recordStoreName;
 	}
 
-	long getCachedBytes() {
+	CacheSnapshot detachCacheSnapshot() {
 		synchronized (records) {
 			long total = 0;
-			for (byte[] data : records.values()) {
-				if (data != null) total += data.length;
-			}
-			return total;
+			for (byte[] data : records.values()) if (data != null) total += data.length;
+			HashMap<Integer, byte[]> cached = new HashMap<>(records);
+			records.clear();
+			return new CacheSnapshot(recordStoreName, lastRecordId, version, lastModified, cached, total);
 		}
 	}
 
 	void clearCachedRecords() {
-		synchronized (records) {
-			records.clear();
-		}
+		synchronized (records) { records.clear(); }
 	}
 
 	void setOpen() {
