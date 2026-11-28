@@ -23,6 +23,51 @@ public class Display {
     private volatile boolean running;
     private static final EventQueue eventQueue = new EventQueue();
     private MIDlet currentMIDlet;
+    // Only Display's event loop owns these references. The regular MIDP screen
+    // switch remains authoritative when a game opens another screen in sleep.
+    private Canvas angelSleepOriginal;
+    private Canvas angelSleepCanvas;
+
+    private static final class SleepCanvas extends Canvas {
+        SleepCanvas() { super(true); }
+        protected void paint(Graphics g) {
+            g.setColor(0);
+            g.fillRect(0, 0, getWidth(), getHeight());
+        }
+    }
+
+    private void applyAngelSleep(boolean enabled) {
+        if (enabled) {
+            if (angelSleepCanvas != null) return;
+            Displayable original = current;
+            if (!(original instanceof Canvas)) {
+                System.out.println("[AngelSleep] no Canvas; compatible blackout only");
+                return;
+            }
+            angelSleepOriginal = (Canvas) original;
+            angelSleepCanvas = new SleepCanvas();
+            if (!setCurrentIfExpected(angelSleepCanvas, original, true)) {
+                angelSleepOriginal = null;
+                angelSleepCanvas = null;
+                System.out.println("[AngelSleep] screen changed; compatible blackout only");
+            } else {
+                System.out.println("[AngelSleep] entered");
+            }
+        } else {
+            Canvas original = angelSleepOriginal;
+            Canvas sleeper = angelSleepCanvas;
+            angelSleepOriginal = null;
+            angelSleepCanvas = null;
+            if (sleeper == null || original == null) return;
+            if (setCurrentIfExpected(original, sleeper, true)) {
+                original.requestFullRepaint();
+                System.out.println("[AngelSleep] restored");
+            } else {
+                // Never replace a newer screen with an obsolete pre-sleep Canvas.
+                System.out.println("[AngelSleep] game changed screen; preserved new screen");
+            }
+        }
+    }
 
     // Screen dimensions (configurable via system properties)
     private static int screenWidth = 240;
@@ -49,9 +94,14 @@ public class Display {
     }
 
     public void setCurrent(Displayable d) {
-        if (d == null) return;
+        setCurrentIfExpected(d, null, false);
+    }
+
+    private boolean setCurrentIfExpected(Displayable d, Displayable expected, boolean conditional) {
+        if (d == null) return false;
         Displayable old;
         synchronized (screenChange) {
+            if (conditional && current != expected) return false;
             NativeBridge.lockScreen();
             try {
                 old = current;
@@ -94,6 +144,7 @@ public class Display {
             ((Canvas) old).destroyContext();
         }
         NativeBridge.displayWake();
+        return true;
     }
 
     public void setCurrent(Alert alert, Displayable nextDisplayable) {
@@ -170,6 +221,14 @@ public class Display {
             int[] nativeEvent;
             while ((nativeEvent = NativeBridge.pollInputEvent()) != null) {
                 int type = nativeEvent[0];
+                if (type == 90) { // internal native control, never a MIDlet key
+                    try {
+                        applyAngelSleep(nativeEvent[1] != 0);
+                    } catch (RuntimeException failure) {
+                        System.out.println("[AngelSleep] transition error: " + failure);
+                    }
+                    continue;
+                }
                 Displayable target;
                 synchronized (screenChange) {
                     if (type >= 10 && nativeEvent[1] != NativeBridge.screenRevision()) continue;
@@ -278,6 +337,8 @@ public class Display {
             ((Canvas) current).destroyContext();
         }
         current = null;
+        angelSleepOriginal = null;
+        angelSleepCanvas = null;
         currentMIDlet = null;
         instance = null; // Reset for next MIDlet launch
         System.out.println("[Display] Event loop stopped");

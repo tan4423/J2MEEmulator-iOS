@@ -36,6 +36,8 @@ typedef struct {
     JarBoxInputRing ring;
     atomic_int accepting_input; // terminal revocation, before worker drain
     atomic_int display_wait_enabled;
+    atomic_int angel_sleep_requested; // per-session reliable control mailbox
+    int angel_sleep_delivered; // only the Java Display polling consumer writes
     pthread_mutex_t display_wait_lock;
     pthread_cond_t display_wait_cond;
     uint32_t display_wait_sequence;
@@ -104,6 +106,8 @@ static int bind_input_context(MiniJVM *vm) {
                 ctx = candidate;
                 jarbox_input_ring_reset(&ctx->ring);
                 atomic_store_explicit(&ctx->display_wait_enabled, 0, memory_order_relaxed);
+                atomic_store_explicit(&ctx->angel_sleep_requested, 0, memory_order_relaxed);
+                ctx->angel_sleep_delivered = 0;
                 ctx->canvas_width = 240;
                 ctx->canvas_height = 320;
                 ctx->generation = ++g_input_next_generation;
@@ -177,9 +181,13 @@ static void signal_display_wait(J2MEInputContext *ctx) {
     pthread_cond_broadcast(&ctx->display_wait_cond);
     pthread_mutex_unlock(&ctx->display_wait_lock);
 }
+static int display_should_wait(J2MEInputContext *ctx) {
+    return ctx && (atomic_load_explicit(&ctx->display_wait_enabled, memory_order_acquire) ||
+                   atomic_load_explicit(&ctx->angel_sleep_requested, memory_order_acquire));
+}
 static void wake_input_context(J2MEInputContext *ctx) {
     if (!ctx) return;
-    if (atomic_load_explicit(&ctx->display_wait_enabled, memory_order_acquire)) {
+    if (display_should_wait(ctx)) {
         atomic_fetch_add_explicit(&g_display_wake_signals, 1, memory_order_relaxed);
         signal_display_wait(ctx);
     }
@@ -295,6 +303,23 @@ static void enqueue_event_for_token(uint64_t token, int type, int x, int y, int 
         enqueue_to_context(ctx, type, x, y, keyCode);
     pthread_mutex_unlock(&g_input_context_lock);
 }
+// Unlike the input ring, start/stop cannot be dropped on queue overflow.
+int j2me_angel_sleep_set_for_token(uint64_t token, int enabled) {
+    if (!token) return 0;
+    int found = 0;
+    pthread_mutex_lock(&g_input_context_lock);
+    for (int i = 0; i < JARBOX_INPUT_CONTEXT_CAPACITY; ++i) {
+        J2MEInputContext *ctx = &g_input_contexts[i];
+        if (ctx->session_token != token || !atomic_load_explicit(&ctx->accepting_input, memory_order_acquire)) continue;
+        if (enabled && visible_input_context() != ctx) break;
+        atomic_store_explicit(&ctx->angel_sleep_requested, enabled != 0, memory_order_release);
+        signal_display_wait(ctx);
+        found = 1;
+        break;
+    }
+    pthread_mutex_unlock(&g_input_context_lock);
+    return found;
+}
 void j2me_input_post_key_for_token(uint64_t token, int type, int keyCode) {
     enqueue_event_for_token(token, type, 0, 0, keyCode);
 }
@@ -334,9 +359,18 @@ static s32 n_pollInputEvent(Runtime *runtime, JClass *clazz) {
     JniEnv *env = runtime->jnienv;
     JarBoxInputEvent evt;
 
-    if (!dequeue_event(context_for_runtime(runtime), &evt)) {
-        env->push_ref(runtime->stack, NULL);
-        return RUNTIME_STATUS_NORMAL;
+    J2MEInputContext *ctx = context_for_runtime(runtime);
+    int control = 0;
+    if (!dequeue_event(ctx, &evt)) {
+        const int requested = ctx ? atomic_load_explicit(&ctx->angel_sleep_requested, memory_order_acquire) : 0;
+        if (!ctx || requested == ctx->angel_sleep_delivered) {
+            env->push_ref(runtime->stack, NULL);
+            return RUNTIME_STATUS_NORMAL;
+        }
+        // Drain existing input (including key releases) before changing Canvas.
+        // This event never enters the bounded ring or the game's key handler.
+        evt = (JarBoxInputEvent){90, requested, 0, 0};
+        control = 1;
     }
 
     // Create int[4] array
@@ -355,6 +389,7 @@ static s32 n_pollInputEvent(Runtime *runtime, JClass *clazz) {
     body[1] = evt.x;
     body[2] = evt.y;
     body[3] = evt.keyCode;
+    if (control) ctx->angel_sleep_delivered = evt.x;
     trace_modal_key("polled", evt.type, evt.keyCode);
 
     env->push_ref(runtime->stack, arr);
@@ -431,8 +466,7 @@ static s32 n_isStopRequested(Runtime *runtime, JClass *clazz) {
 // ============================================================
 static s32 n_displayWaitEnabled(Runtime *runtime, JClass *clazz) {
     J2MEInputContext *ctx = context_for_runtime(runtime);
-    push_int(runtime->stack, ctx &&
-        atomic_load_explicit(&ctx->display_wait_enabled, memory_order_acquire));
+    push_int(runtime->stack, display_should_wait(ctx));
     return RUNTIME_STATUS_NORMAL;
 }
 static s32 n_displayWaitVersion(Runtime *runtime, JClass *clazz) {
@@ -461,8 +495,7 @@ static s32 n_displayWaitIfUnchanged(Runtime *runtime, JClass *clazz) {
     int timedOut = 0;
     int vmBlocked = 0;
     pthread_mutex_lock(&ctx->display_wait_lock);
-    if (atomic_load_explicit(&ctx->display_wait_enabled, memory_order_acquire)
-        && ctx->display_wait_sequence == seq) {
+    if (display_should_wait(ctx) && ctx->display_wait_sequence == seq) {
         struct timespec until;
         if (clock_gettime(CLOCK_REALTIME, &until) == 0) {
             until.tv_sec += milliseconds / 1000;
@@ -516,6 +549,7 @@ static void input_quiesce_locked(J2MEInputContext *ctx) {
     if (visible_input_context() == ctx)
         atomic_store_explicit(&g_visible_input_context, NULL, memory_order_release);
     atomic_store_explicit(&ctx->display_wait_enabled, 0, memory_order_release);
+    atomic_store_explicit(&ctx->angel_sleep_requested, 0, memory_order_release);
     signal_display_wait(ctx);
 }
 void j2me_input_quiesce_vm(MiniJVM *vm) {

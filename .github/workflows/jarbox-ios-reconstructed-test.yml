@@ -4,6 +4,10 @@ on:
     branches: ['jarbox/ios-reconstructed-test-20261128']
     paths:
       - '.github/workflows/jarbox-ios-reconstructed-test.yml'
+      - 'J2MEEmulator/NativeBridge/j2me_input.*'
+      - 'J2MEEmulator/UI/GameViewController.swift'
+      - 'j2me_api/src/javax/microedition/lcdui/Display.java'
+      - 'j2me_api/src/javax/microedition/lcdui/Canvas.java'
 permissions:
   contents: read
 jobs:
@@ -35,7 +39,7 @@ jobs:
         run: python3 tools/run_ios_candidate_ci.py --configuration "$CONFIGURATION"
       - uses: actions/upload-artifact@v4
         with:
-          name: jarbox-ios-reconstructed-control-${{ github.sha }}
+          name: jarbox-ios-angel-sleep-${{ github.sha }}
           path: J2ME-Treo-jar-cpu-audit-unsigned.ipa
           if-no-files-found: error
           retention-days: 7

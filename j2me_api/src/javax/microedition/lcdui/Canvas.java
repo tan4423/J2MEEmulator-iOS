@@ -104,8 +104,8 @@ public abstract class Canvas extends Displayable {
 
     public void repaint(int x, int y, int w, int h) {
         limitFps(); // preserve configured frame pacing
-        if (ninjaDeepSkip(0)) return;
         if (!Display.isCurrentCanvas(this)) return;
+        if (ninjaDeepSkip(0)) return;
         if (!repaintPending) {
             // First repaint request — set clip to this rect
             clipX = x;
@@ -135,6 +135,7 @@ public abstract class Canvas extends Displayable {
      * to ensure serialized access (matching J2ME-Loader behavior).
      */
     public void serviceRepaints() {
+        if (!Display.isCurrentCanvas(this)) return;
         if (ninjaDeepSkip(1)) return;
         if (repaintPending && Display.isCurrentCanvas(this)) {
             doPaint();
@@ -305,6 +306,17 @@ public abstract class Canvas extends Displayable {
             fullRepaint = true;
             clipX = 0; clipY = 0; clipW = width; clipH = height;
         }
+    }
+
+    // Wake from Canvas sleep without changing the game's limitFps cadence.
+    void requestFullRepaint() {
+        synchronized (paintLock) {
+            if (!Display.isCurrentCanvas(this)) return;
+            fullRepaint = true;
+            clipX = 0; clipY = 0; clipW = width; clipH = height;
+            repaintPending = true;
+        }
+        NativeBridge.displayWake();
     }
 
     // Repaint after skipped raster; legacy blackout can publish the old buffer.

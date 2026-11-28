@@ -47,6 +47,8 @@ void j2me_input_post_touch_for_owner(uint64_t owner_key, int type, int x, int y)
 void j2me_input_post_key(int type, int keyCode);
 /// Physical UI controls: drop events if the original launch is no longer focused.
 void j2me_input_post_key_for_token(uint64_t token, int type, int keyCode);
+/// Opt-in Canvas sleep control; token-scoped, reliable even if input ring is full.
+int j2me_angel_sleep_set_for_token(uint64_t token, int enabled);
 void j2me_input_post_touch_for_token(uint64_t token, int type, int x, int y);
 
 /// Generation-bound key event for sound completion callbacks. Call on the

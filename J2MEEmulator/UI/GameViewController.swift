@@ -513,6 +513,7 @@ class GameViewController: UIViewController {
     private var blackoutBatteryMonitoringWasEnabled: Bool?
     private var blackoutHUDUpdates = 0
     private var blackoutRequestedMode: Int32 = 0
+    private var blackoutAngelSleep = false
     // Capture the 8-second live NSO repaint-request cadence BEFORE Treo.
     // -1 means unavailable; this is a heartbeat proxy, not a proven game tick.
     private var blackoutNSOLiveHz: Double = -1
@@ -589,6 +590,7 @@ class GameViewController: UIViewController {
                 // invoking an actor-isolated instance method from deinit.
                 _ = treo_park_end_for_token(gameSessionToken)
             }
+            if blackoutAngelSleep { _ = j2me_angel_sleep_set_for_token(gameSessionToken, 0) }
             treo_afk_buffer_audit_set(0, 0)
             if jarBoxSmartTreo { treo_gc_smart_set(0) }
             treo_afk_guard_auto_set(0)
@@ -1357,7 +1359,11 @@ class GameViewController: UIViewController {
             diagnostics.append(UIAction(title: "Hủy chẩn đoán CPU JAR", attributes: .destructive) { [weak self] _ in self?.stopJarAudit() })
         }
         let debug = UIMenu(title: "Debug", children: diagnostics)
-        screenMenu.menu = UIMenu(children: [keyboard, proxy, debug])
+        let angelSleep = UIAction(title: "Treo Angel Sleep (thử nghiệm)", image: UIImage(systemName: "moon.zzz")) { [weak self] _ in
+            guard let self, self.ownsVisibleGameSession() else { return }
+            self.showBlackout(angelSleep: true)
+        }
+        screenMenu.menu = UIMenu(children: [angelSleep, keyboard, proxy, debug])
     }
 
     @objc private func closeTabTapped() {
@@ -2101,6 +2107,7 @@ class GameViewController: UIViewController {
     // The VM checks the active Canvas's small paint-forwarding shape before
     // enabling NSO-specific skips.
     private func blackoutModeName() -> String {
+        if blackoutAngelSleep { return "Angel Sleep (thử nghiệm)" }
         if blackoutRequestedMode == 8 && treo_ninja_deep_verified() != 0 &&
            treo_nso_canvas_recognized() != 0 {
             return "Chuyên biệt (NSO)"
@@ -2204,10 +2211,11 @@ class GameViewController: UIViewController {
     }
 
     private func showBlackout(mode: Int32 = 1, smartGC: Bool = false,
-                              deepPaint: Bool = false) {
+                              deepPaint: Bool = false, angelSleep: Bool = false) {
         guard blackout == nil, jarAuditID == nil else { return }
         discardCPUProfile()
         blackoutRequestedMode = mode
+        blackoutAngelSleep = angelSleep
         blackoutNSOLiveHz = treo_nso_prior_repaint_hz()
         cancelGameInput()
         let cover = UIButton(type: .custom)
@@ -2280,6 +2288,10 @@ class GameViewController: UIViewController {
         // Reset sampling before AFK starts. The springboard animation fix is untouched.
         treo_vm_paint_sample_reset()
         treo_render_set_afk_mode(mode)
+        if blackoutAngelSleep && j2me_angel_sleep_set_for_token(gameSessionToken, 1) == 0 {
+            blackoutAngelSleep = false
+            cover.setTitle(blackoutModeTitle(), for: .normal)
+        }
         // Only verified NSO Canvas in the specialized mode. Its repaint and
         // serviceRepaints paths are already elided, so the Display thread can
         // wait for input, screen changes or the forced wake instead of
@@ -2318,6 +2330,10 @@ class GameViewController: UIViewController {
 
     @objc private func hideBlackout() {
         guard blackout != nil else { return }
+        if blackoutAngelSleep {
+            _ = j2me_angel_sleep_set_for_token(gameSessionToken, 0)
+            blackoutAngelSleep = false
+        }
         // Stop all passive UI work and restore monitoring before teardown.
         let hudUpdates = blackoutHUDUpdates
         stopBlackoutDashboard()
